@@ -2,16 +2,18 @@
 wallet.py — Agent-side Stellar wallet + budget session management.
 
 Two main classes:
-  AgentWallet    — Stellar wallet that sends USDC payments
-  BudgetSession  — Budget-managed multi-tool session
+  AgentWallet  — Stellar wallet that sends USDC payments
+  Session      — Budget-aware session with fallback routing
 """
+
+import httpx
+import logging
+from decimal import Decimal
 
 from stellar_sdk import (
     Keypair, Server, Network, Asset,
     TransactionBuilder
 )
-from decimal import Decimal
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,15 @@ HORIZON_MAINNET = "https://horizon.stellar.org"
 USDC_ISSUER_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
 USDC_ISSUER_MAINNET = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
+
+# ── Exceptions ────────────────────────────────────────────────────────────────
+
+class BudgetExceeded(Exception):
+    """Raised when a tool call would exceed the session budget."""
+    pass
+
+
+# ── Stellar Wallet ────────────────────────────────────────────────────────────
 
 class AgentWallet:
     """
@@ -104,32 +115,40 @@ class AgentWallet:
         return (self._total_spent + Decimal(amount_usdc)) > Decimal(max_budget)
 
 
-class BudgetExceeded(Exception):
-    """Raised when a tool call would exceed the session budget."""
-    pass
+# ── Budget-Aware Session ──────────────────────────────────────────────────────
+
+def _fmt(amount) -> str:
+    """Format a Decimal/str/float as '$0.0030' with clean trailing-zero stripping."""
+    s = f"{float(amount):.7f}".rstrip("0").rstrip(".")
+    return f"${s}"
 
 
-class BudgetSession:
+class Session:
     """
-    Budget-managed session for multi-tool agent tasks.
+    Budget-aware session for multi-tool agent tasks.
 
-    Tracks spend across multiple tool calls and enforces a hard cap.
-    Use as a context manager for automatic summary on exit.
+    Enforces a hard spend cap across all tool calls, with automatic fallback
+    to the next-cheapest tool in the same category when budget is tight or a
+    tool is unavailable.
 
-    Example:
-        with BudgetSession(wallet, gateway_url, max_spend="0.10") as session:
-            price = session.call("token_price", {"symbol": "ETH"})
-            liq   = session.call("dex_liquidity", {"token_a": "ETH"})
-            print(session.summary())
+    Usage:
+        with Session(wallet, gateway_url, max_spend="0.10") as s:
+            price   = s.estimate("token_price")   # "$0.001"
+            balance = s.remaining()               # "$0.099"
+            result  = s.call("token_price", {"symbol": "ETH"})
+            print(s.summary())
     """
 
     def __init__(self, wallet: AgentWallet, gateway_url: str, max_spend: str = "0.10"):
         self.wallet = wallet
-        self.gateway_url = gateway_url
+        self.gateway_url = gateway_url.rstrip("/")
         self.max_spend = Decimal(max_spend)
         self._spent = Decimal("0")
         self._call_log: list[dict] = []
-        self._price_cache: dict[str, str] = {}
+        self._tool_cache: dict[str, dict] = {}   # tool_name → full tool metadata
+        self._all_tools_cache: list[dict] | None = None
+
+    # ── Context manager ───────────────────────────────────────────────────────
 
     def __enter__(self):
         return self
@@ -138,60 +157,122 @@ class BudgetSession:
         if self._call_log:
             print(self._format_summary())
 
-    # ── Core ─────────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
-    def call(self, tool_name: str, parameters: dict = None) -> dict:
+    def estimate(self, tool_name: str) -> str:
         """
-        Call a paid tool within budget. Raises BudgetExceeded if over cap.
+        Query gateway for tool price.
+        Returns formatted string like "$0.003", or "unknown".
+        """
+        info = self._fetch_tool_info(tool_name)
+        if info:
+            return _fmt(info["price_usdc"])
+        return "unknown"
+
+    def remaining(self) -> str:
+        """Remaining budget as formatted string, e.g. '$0.097'."""
+        rem = max(self.max_spend - self._spent, Decimal("0"))
+        return _fmt(rem)
+
+    def spent(self) -> str:
+        """Total spent so far as formatted string."""
+        return _fmt(self._spent)
+
+    def would_exceed(self, amount_usdc: str) -> bool:
+        """True if adding this cost would exceed the budget."""
+        return (self._spent + Decimal(amount_usdc)) > self.max_spend
+
+    def call(self, tool_name: str, params: dict = None) -> dict:
+        """
+        Call a paid tool within budget.
+
+        - Pre-checks the price against remaining budget.
+        - If budget would be exceeded, looks for the next-cheapest tool in the
+          same category that fits, and uses it as a fallback.
+        - If the tool is unavailable after payment attempt, also falls back.
+        - Raises BudgetExceeded if no affordable option exists.
+        - Records actual spend from the x402 payment receipt.
         """
         from agent.agent import AgentPayClient
 
-        # Pre-flight budget check using cached/fetched price
-        estimated = self._get_price(tool_name)
-        if estimated and (self._spent + Decimal(estimated)) > self.max_spend:
-            raise BudgetExceeded(
-                f"'{tool_name}' costs ~{estimated} USDC but only "
-                f"{self.remaining()} USDC remains (budget: {self.max_spend})"
-            )
+        params = params or {}
 
+        # ── Resolve which tool to actually call ───────────────────────────────
+        tool_info = self._fetch_tool_info(tool_name)
+        if tool_info is None:
+            fallback = self._find_fallback(category="data", exclude=tool_name)
+            if fallback and not self.would_exceed(fallback["price_usdc"]):
+                logger.warning(f"'{tool_name}' not found — falling back to '{fallback['name']}'")
+                tool_info = fallback
+                tool_name = fallback["name"]
+            else:
+                raise BudgetExceeded(f"Tool '{tool_name}' not found on gateway")
+
+        price = tool_info["price_usdc"]
+        target = tool_name
+
+        if self.would_exceed(price):
+            category = tool_info.get("category", "data")
+            fallback = self._find_fallback(category=category, exclude=target)
+            if fallback and not self.would_exceed(fallback["price_usdc"]):
+                logger.info(
+                    f"  [budget] '{target}' costs {_fmt(price)}, "
+                    f"remaining {self.remaining()} — "
+                    f"falling back to '{fallback['name']}' ({_fmt(fallback['price_usdc'])})"
+                )
+                target = fallback["name"]
+                price = fallback["price_usdc"]
+            else:
+                raise BudgetExceeded(
+                    f"'{tool_name}' costs {_fmt(price)} but only "
+                    f"{self.remaining()} remains (budget: {_fmt(self.max_spend)})"
+                )
+
+        # ── Execute via x402 flow ─────────────────────────────────────────────
         client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
-        result = client.call_tool(tool_name, parameters or {})
+        try:
+            result = client.call_tool(target, params)
+        except Exception as exc:
+            # Tool call itself failed (e.g., tool server down post-payment)
+            if target == tool_name:
+                category = tool_info.get("category", "data")
+                fallback = self._find_fallback(category=category, exclude=target)
+                if fallback and not self.would_exceed(fallback["price_usdc"]):
+                    logger.warning(f"  '{target}' failed ({exc}) — trying '{fallback['name']}'")
+                    client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
+                    result = client.call_tool(fallback["name"], params)
+                    target = fallback["name"]
+                else:
+                    raise
+            else:
+                raise
 
-        # Record actual spend
+        # ── Record actual spend from payment receipt ───────────────────────────
         if client.call_log:
             last = client.call_log[-1]
             cost = Decimal(last.get("amount_usdc", "0"))
             self._spent += cost
-            self._price_cache[tool_name] = str(cost)
-            self._call_log.append({
-                "tool": tool_name,
+            self._tool_cache.setdefault(target, {})["price_usdc"] = str(cost)
+
+            entry: dict = {
+                "tool": target,
                 "amount_usdc": str(cost),
                 "tx_hash": last.get("tx_hash", ""),
                 "success": True,
-            })
+            }
+            if target != tool_name:
+                entry["fallback_for"] = tool_name
+            self._call_log.append(entry)
 
         return result
-
-    # ── Budget introspection ──────────────────────────────────────────────────
-
-    def estimate(self, tool_name: str) -> str:
-        """Price of a tool in USDC (fetched from gateway)."""
-        return self._get_price(tool_name) or "unknown"
-
-    def spent(self) -> str:
-        return str(self._spent)
-
-    def remaining(self) -> str:
-        return str(max(self.max_spend - self._spent, Decimal("0")))
-
-    def would_exceed(self, amount_usdc: str) -> bool:
-        return (self._spent + Decimal(amount_usdc)) > self.max_spend
 
     def summary(self) -> dict:
         return {
             "calls": len(self._call_log),
-            "spent_usdc": self.spent(),
-            "remaining_usdc": self.remaining(),
+            "spent_usdc": str(self._spent),
+            "spent_fmt": self.spent(),
+            "remaining_usdc": str(max(self.max_spend - self._spent, Decimal("0"))),
+            "remaining_fmt": self.remaining(),
             "max_spend_usdc": str(self.max_spend),
             "breakdown": self._call_log,
         }
@@ -199,38 +280,77 @@ class BudgetSession:
     def print_summary(self):
         print(self._format_summary())
 
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _fetch_tool_info(self, tool_name: str) -> dict | None:
+        """Fetch and cache tool metadata from gateway."""
+        if tool_name in self._tool_cache:
+            return self._tool_cache[tool_name]
+        try:
+            resp = httpx.get(f"{self.gateway_url}/tools/{tool_name}", timeout=5.0)
+            if resp.status_code == 200:
+                info = resp.json()
+                self._tool_cache[tool_name] = info
+                return info
+        except Exception:
+            pass
+        return None
+
+    def _all_tools(self) -> list[dict]:
+        """Fetch and cache the full tool list from gateway."""
+        if self._all_tools_cache is not None:
+            return self._all_tools_cache
+        try:
+            resp = httpx.get(f"{self.gateway_url}/tools", timeout=5.0)
+            if resp.status_code == 200:
+                self._all_tools_cache = resp.json().get("tools", [])
+                return self._all_tools_cache
+        except Exception:
+            pass
+        return []
+
+    def _find_fallback(self, category: str, exclude: str) -> dict | None:
+        """
+        Find the cheapest available tool in `category` within remaining budget,
+        excluding `exclude`. Returns tool dict or None.
+        """
+        remaining = self.max_spend - self._spent
+        candidates = [
+            t for t in self._all_tools()
+            if t.get("category") == category
+            and t.get("name") != exclude
+            and t.get("active", True)
+            and Decimal(t.get("price_usdc", "999")) <= remaining
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda t: Decimal(t["price_usdc"]))
+
     def _format_summary(self) -> str:
+        width = 58
         lines = [
             "",
-            "─" * 52,
+            "─" * width,
             "  AgentPay Session Summary",
-            "─" * 52,
-            f"  Calls made:   {len(self._call_log)}",
-            f"  Total spent:  {self.spent()} USDC",
-            f"  Remaining:    {self.remaining()} USDC  (budget: {self.max_spend})",
+            "─" * width,
+            f"  Calls made:  {len(self._call_log)}",
+            f"  Spent:       {self.spent()}  (budget: {_fmt(self.max_spend)})",
+            f"  Remaining:   {self.remaining()}",
             "",
             "  Breakdown:",
         ]
         for entry in self._call_log:
-            tx = (entry.get("tx_hash") or "")[:14]
+            tx = (entry.get("tx_hash") or "")[:16]
+            label = entry["tool"]
+            if "fallback_for" in entry:
+                label += f"  (fallback for {entry['fallback_for']})"
             lines.append(
-                f"    {entry['tool']:<22} {entry['amount_usdc']} USDC"
-                + (f"  |  tx: {tx}..." if tx else "")
+                f"    {label:<30} {_fmt(entry['amount_usdc'])}"
+                + (f"  |  {tx}..." if tx else "")
             )
-        lines.append("─" * 52)
+        lines.append("─" * width)
         return "\n".join(lines)
 
-    def _get_price(self, tool_name: str) -> str | None:
-        if tool_name in self._price_cache:
-            return self._price_cache[tool_name]
-        try:
-            import httpx
-            resp = httpx.get(f"{self.gateway_url}/tools/{tool_name}", timeout=5.0)
-            if resp.status_code == 200:
-                price = resp.json().get("price_usdc")
-                if price:
-                    self._price_cache[tool_name] = price
-                    return price
-        except Exception:
-            pass
-        return None
+
+# Backwards-compatible alias
+BudgetSession = Session
