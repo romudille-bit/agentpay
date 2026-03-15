@@ -484,8 +484,7 @@ async def faucet_ui():
       </div>
 
       <div class="warning">
-        ⚠️ This is a <strong>testnet</strong> wallet. Never send real funds to it.
-        Save your secret key — it won't be shown again.
+        ⚠️ Testnet only. Never share your secret key on mainnet. This wallet is for testing AgentPay only.
       </div>
     </div>
 
