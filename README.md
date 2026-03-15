@@ -1,8 +1,21 @@
-# AgentPay
+# AgentPay — your agent is only as smart as its data.
 
-**Paid data tools for AI agents — pay-per-call with USDC on Stellar.**
+AgentPay is an open x402 payment gateway that lets AI agents autonomously access real crypto data tools using USDC on Stellar.
 
-AgentPay implements the [x402 protocol](https://x402.org): your agent calls a tool endpoint, receives an HTTP 402 with a USDC price, pays on Stellar, and gets real data back. No subscriptions, no API key management — just micro-payments per call.
+No subscriptions. No API keys. No human in the loop.
+Agents discover tools, pay per call ($0.001–$0.005), and get real data back — all within a hard budget cap.
+
+→ **9 live tools**: token prices, whale activity, gas tracker, DeFi TVL, Fear & Greed, Dune queries and more
+→ **Budget-aware Session**: agents estimate costs, track spend, never exceed budget
+→ **x402 protocol**: works with any x402-compatible agent
+→ **Stellar settlement**: 5-second finality, $0.00001 fees
+
+**Try it in 60 seconds:**
+```bash
+curl https://gateway-production-2cc2.up.railway.app/faucet
+```
+
+Or open the browser faucet: `https://gateway-production-2cc2.up.railway.app/faucet/ui`
 
 **Live gateway**: `https://gateway-production-2cc2.up.railway.app`
 
@@ -10,19 +23,15 @@ AgentPay implements the [x402 protocol](https://x402.org): your agent calls a to
 
 ## Quickstart — 3 steps
 
-### Step 1: Fund an agent wallet
+### Step 1: Get a funded test wallet
 
-Create a Stellar testnet wallet and load it with test USDC.
+One call gives you a ready-to-use Stellar testnet wallet with 5 USDC pre-loaded:
 
-```python
-from stellar_sdk import Keypair
-
-keypair = Keypair.random()
-print(f"Public key:  {keypair.public_key}")
-print(f"Secret key:  {keypair.secret}")
+```bash
+curl https://gateway-production-2cc2.up.railway.app/faucet
 ```
 
-Fund it at [Stellar Friendbot](https://friendbot.stellar.org/?addr=YOUR_PUBLIC_KEY) for XLM gas, then grab testnet USDC from the [Stellar testnet anchor](https://testanchor.stellar.org/sep24/interactive/deposit).
+Or use the [browser faucet](https://gateway-production-2cc2.up.railway.app/faucet/ui) — click "Get Test Wallet", copy the snippet, run it.
 
 ---
 
