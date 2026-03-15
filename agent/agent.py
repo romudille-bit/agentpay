@@ -21,6 +21,7 @@ import sys
 import json
 import httpx
 import logging
+from decimal import Decimal
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
@@ -81,7 +82,7 @@ class AgentPayClient:
             logger.info(f"  402 — pay {amount_usdc} USDC to {pay_to[:12]}...")
 
             # Optional per-call spend cap
-            if max_spend and float(amount_usdc) > float(max_spend):
+            if max_spend and Decimal(str(amount_usdc)) > Decimal(str(max_spend)):
                 raise ValueError(
                     f"Tool '{tool_name}' costs {amount_usdc} USDC "
                     f"which exceeds max_spend={max_spend}"
@@ -134,7 +135,7 @@ class AgentPayClient:
 
 # ── Demo: Token Analysis Task ─────────────────────────────────────────────────
 
-def _bar(spent: float, budget: float, width: int = 30) -> str:
+def _bar(spent: Decimal, budget: Decimal, width: int = 30) -> str:
     """Render a simple ASCII spend bar."""
     filled = int(round((spent / budget) * width)) if budget > 0 else 0
     filled = min(filled, width)
@@ -146,7 +147,7 @@ def analyze_token(token: str, wallet: AgentWallet, max_budget: str = "0.05"):
     Analyze a crypto token using paid tools, with live budget tracking.
     Uses Session for automatic budget enforcement and fallback routing.
     """
-    budget_f = float(max_budget)
+    budget_d = Decimal(str(max_budget))
 
     print(f"\n{'═'*58}")
     print(f"  AgentPay — Token Analysis")
@@ -163,10 +164,10 @@ def analyze_token(token: str, wallet: AgentWallet, max_budget: str = "0.05"):
         # Pre-flight: show estimated costs for all planned tools
         planned = ["token_price", "gas_tracker", "dex_liquidity", "whale_activity"]
         print("  Estimated costs:")
-        total_est = 0.0
+        total_est = Decimal("0")
         for tool in planned:
             est = session.estimate(tool)
-            val = float(est.lstrip("$")) if est != "unknown" else 0
+            val = Decimal(est.lstrip("$")) if est != "unknown" else Decimal("0")
             total_est += val
             print(f"    {tool:<22} {est}")
         print(f"    {'─'*30}")
@@ -174,10 +175,8 @@ def analyze_token(token: str, wallet: AgentWallet, max_budget: str = "0.05"):
         print()
 
         def _print_budget(label: str, cost: str):
-            spent_f  = float(session._spent)
-            rem      = session.remaining()
-            bar      = _bar(spent_f, budget_f)
-            print(f"  {bar}  spent {session.spent()}  remaining {rem}  [{label} cost {cost}]")
+            bar = _bar(session._spent, budget_d)
+            print(f"  {bar}  spent {session.spent()}  remaining {session.remaining()}  [{label} cost {cost}]")
 
         # ── Step 1: Token price ───────────────────────────────────────────
         print(f"  Step 1/4 — token_price ({token.upper()})")
@@ -255,7 +254,7 @@ def main():
     balance = wallet.get_usdc_balance()
     print(f"USDC balance: {balance} USDC")
 
-    if float(balance) < 0.01:
+    if Decimal(str(balance)) < Decimal("0.01"):
         print("\nWARNING: Low USDC balance.")
         return
 

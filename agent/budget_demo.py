@@ -44,13 +44,13 @@ MAX_BUDGET   = "0.10"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _bar(spent: float, budget: float, width: int = 36) -> str:
-    pct = min(spent / budget, 1.0) if budget > 0 else 0
+def _bar(spent: Decimal, budget: Decimal, width: int = 36) -> str:
+    pct = min(spent / budget, Decimal("1")) if budget > 0 else Decimal("0")
     filled = int(round(pct * width))
     color_on = color_off = ""
-    if pct > 0.85:
+    if pct > Decimal("0.85"):
         color_on, color_off = "\033[91m", "\033[0m"   # red
-    elif pct > 0.60:
+    elif pct > Decimal("0.60"):
         color_on, color_off = "\033[93m", "\033[0m"   # yellow
     else:
         color_on, color_off = "\033[92m", "\033[0m"   # green
@@ -59,9 +59,7 @@ def _bar(spent: float, budget: float, width: int = 36) -> str:
 
 
 def _print_live(session: Session, tool_name: str, cost: str):
-    spent_f  = float(session._spent)
-    budget_f = float(session.max_spend)
-    bar      = _bar(spent_f, budget_f)
+    bar      = _bar(session._spent, session.max_spend)
     print(f"\n  Budget {bar}")
     print(f"  Spent: {session.spent()}   Remaining: {session.remaining()}   [{tool_name}: {_fmt(cost)}]\n")
 
@@ -135,7 +133,7 @@ def main():
     print(f"  Budget:  ${MAX_BUDGET} USDC (hard cap)")
     print(f"{'═'*58}")
 
-    if float(balance) < float(MAX_BUDGET):
+    if Decimal(str(balance)) < Decimal(MAX_BUDGET):
         print(f"\n  WARNING: Balance ({balance}) below demo budget ({MAX_BUDGET}). Continuing anyway.\n")
 
     # ── Step 1: Discover available tools ─────────────────────────────────────
@@ -257,12 +255,12 @@ def main():
     whale_data = results.get("whale_activity", {})
     dune_data  = results.get("dune_query", {})
 
-    eth_price     = float(price_data.get("price_usd", 0) or 0)
-    eth_change    = float(price_data.get("change_24h_pct", 0) or 0)
-    volume        = float(liq_data.get("volume_24h_usd", 0) or 0)
+    eth_price     = Decimal(str(price_data.get("price_usd", 0) or 0))
+    eth_change    = Decimal(str(price_data.get("change_24h_pct", 0) or 0))
+    volume        = Decimal(str(liq_data.get("volume_24h_usd", 0) or 0))
     gas_fast      = gas_data.get("fast_gwei", "?")
     whale_count   = len(whale_data.get("large_transfers", []))
-    whale_vol     = float(whale_data.get("total_volume_usd", 0) or 0)
+    whale_vol     = Decimal(str(whale_data.get("total_volume_usd", 0) or 0))
     dune_rows     = dune_data.get("row_count", "n/a")
 
     print(f"""
@@ -273,7 +271,7 @@ def main():
     Large whale moves   {whale_count} transfers  |  ${whale_vol:>12,.0f} total
 
   Network:
-    Ethereum gas (fast) {gas_fast} gwei  — network {"congested" if float(gas_fast or 0) > 50 else "normal"}
+    Ethereum gas (fast) {gas_fast} gwei  — network {"congested" if Decimal(str(gas_fast or 0)) > 50 else "normal"}
 
   Onchain (Dune):
     Query 3810512 returned {dune_rows} rows of live data
@@ -290,7 +288,7 @@ def main():
             label += f" ← {entry['fallback_for']}"
         print(f"  {label:<30} {_fmt(entry['amount_usdc']):>8}   {tx}...")
 
-    budget_used_pct = float(summary["spent_usdc"]) / float(MAX_BUDGET) * 100
+    budget_used_pct = Decimal(summary["spent_usdc"]) / Decimal(MAX_BUDGET) * 100
     print(f"\n  {'─'*58}")
     print(f"  Tools called:    {summary['calls']}")
     print(f"  Total spent:     {summary['spent_fmt']}  ({budget_used_pct:.1f}% of ${MAX_BUDGET} budget)")
