@@ -22,10 +22,11 @@ import logging
 import httpx
 from fastapi import FastAPI, Request, Response, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
+import textwrap
 
 from x402 import (
     issue_payment_challenge,
@@ -254,6 +255,291 @@ async def stats():
         "pending_payments": get_pending_count(),
         "network": settings.STELLAR_NETWORK,
     }
+
+
+# ── Faucet ────────────────────────────────────────────────────────────────────
+
+async def _provision_wallet() -> dict:
+    """
+    Create and fund a fresh Stellar testnet wallet with XLM + 5 USDC.
+
+    Steps:
+      1. Generate keypair
+      2. Fund with XLM via Friendbot
+      3. Add USDC trustline (signed by new keypair)
+      4. Send 5 USDC from gateway wallet
+      5. Return balances + ready-to-use code snippet
+    """
+    from stellar_sdk import Keypair, TransactionBuilder
+    from stellar import get_server, get_network_passphrase, get_usdc_asset
+
+    server             = get_server()
+    network_passphrase = get_network_passphrase()
+    usdc               = get_usdc_asset()
+
+    if not settings.GATEWAY_SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Gateway wallet not configured")
+
+    # ── 1. Generate keypair ───────────────────────────────────────────────────
+    keypair    = Keypair.random()
+    public_key = keypair.public_key
+    secret_key = keypair.secret
+
+    # ── 2. Fund with XLM via Friendbot ───────────────────────────────────────
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        fb = await client.get(
+            "https://friendbot.stellar.org/",
+            params={"addr": public_key},
+        )
+    if fb.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Friendbot failed: {fb.text[:200]}",
+        )
+
+    # ── 3. Add USDC trustline (signed by new wallet) ──────────────────────────
+    new_account = server.load_account(public_key)
+    trust_tx = (
+        TransactionBuilder(
+            source_account=new_account,
+            network_passphrase=network_passphrase,
+            base_fee=100,
+        )
+        .append_change_trust_op(asset=usdc)
+        .set_timeout(30)
+        .build()
+    )
+    trust_tx.sign(keypair)
+    server.submit_transaction(trust_tx)
+
+    # ── 4. Send 5 USDC from gateway ───────────────────────────────────────────
+    gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
+    gateway_account = server.load_account(gateway_keypair.public_key)
+    pay_tx = (
+        TransactionBuilder(
+            source_account=gateway_account,
+            network_passphrase=network_passphrase,
+            base_fee=100,
+        )
+        .append_payment_op(
+            destination=public_key,
+            asset=usdc,
+            amount="5",
+        )
+        .set_timeout(30)
+        .build()
+    )
+    pay_tx.sign(gateway_keypair)
+    server.submit_transaction(pay_tx)
+
+    # ── 5. Read balances ──────────────────────────────────────────────────────
+    funded = server.load_account(public_key)
+    xlm_balance  = "0"
+    usdc_balance = "0"
+    for b in funded.raw_data.get("balances", []):
+        if b.get("asset_type") == "native":
+            xlm_balance = b["balance"]
+        elif b.get("asset_code") == "USDC":
+            usdc_balance = b["balance"]
+
+    # ── 6. Python code snippet ────────────────────────────────────────────────
+    gateway_url = "https://gateway-production-2cc2.up.railway.app"
+    snippet = textwrap.dedent(f"""\
+        from agent.wallet import AgentWallet, Session
+
+        wallet = AgentWallet(
+            secret_key="{secret_key}",
+            network="testnet",
+        )
+
+        GATEWAY = "{gateway_url}"
+
+        with Session(wallet=wallet, gateway_url=GATEWAY, max_spend="0.05") as session:
+            r = session.call("token_price", {{"symbol": "ETH"}})
+            print(f"ETH: ${{r['result']['price_usd']:,.2f}}")
+
+            r = session.call("gas_tracker", {{}})
+            print(f"Gas: {{r['result']['fast_gwei']}} gwei")
+
+            print(f"Spent: {{session.spent()}}  Remaining: {{session.remaining()}}")
+    """)
+
+    return {
+        "public_key":   public_key,
+        "secret_key":   secret_key,
+        "usdc_balance": usdc_balance,
+        "xlm_balance":  xlm_balance,
+        "network":      "testnet",
+        "gateway_url":  gateway_url,
+        "snippet":      snippet,
+    }
+
+
+@app.get("/faucet")
+async def faucet_json():
+    """Generate a funded testnet wallet — returns JSON."""
+    return await _provision_wallet()
+
+
+@app.get("/faucet/ui", response_class=HTMLResponse)
+async def faucet_ui():
+    """Browser-friendly faucet page."""
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentPay Faucet — Get a Test Wallet</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      background: #0d0d0d; color: #e8e8e8; min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 3rem 1rem;
+    }
+    h1 { font-size: 2rem; font-weight: 700; margin-bottom: .4rem; }
+    .subtitle { color: #888; margin-bottom: 2.5rem; font-size: 1rem; }
+    .card {
+      background: #181818; border: 1px solid #2a2a2a; border-radius: 12px;
+      padding: 2rem; max-width: 640px; width: 100%;
+    }
+    button {
+      width: 100%; padding: 1rem; font-size: 1.1rem; font-weight: 600;
+      background: #7c3aed; color: #fff; border: none; border-radius: 8px;
+      cursor: pointer; transition: background .2s;
+    }
+    button:hover:not(:disabled) { background: #6d28d9; }
+    button:disabled { background: #3a3a3a; cursor: not-allowed; }
+    .spinner {
+      display: none; text-align: center; color: #888;
+      margin-top: 1.5rem; font-size: .9rem;
+    }
+    .result { display: none; margin-top: 1.8rem; }
+    .field { margin-bottom: 1.2rem; }
+    .label { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em;
+             color: #888; margin-bottom: .35rem; }
+    .value {
+      font-family: "SF Mono", "Fira Code", monospace; font-size: .85rem;
+      background: #111; border: 1px solid #2a2a2a; border-radius: 6px;
+      padding: .6rem .8rem; word-break: break-all; position: relative;
+    }
+    .balances { display: flex; gap: 1rem; }
+    .balance-box {
+      flex: 1; background: #111; border: 1px solid #2a2a2a; border-radius: 8px;
+      padding: 1rem; text-align: center;
+    }
+    .balance-amount { font-size: 1.5rem; font-weight: 700; color: #a78bfa; }
+    .balance-token  { font-size: .8rem; color: #888; margin-top: .2rem; }
+    .snippet-wrap {
+      background: #111; border: 1px solid #2a2a2a; border-radius: 6px;
+      padding: 1rem; overflow-x: auto;
+    }
+    pre { font-size: .8rem; line-height: 1.6; color: #c4b5fd; }
+    .copy-btn {
+      width: auto; padding: .35rem .8rem; font-size: .8rem;
+      background: #2a2a2a; border-radius: 4px; margin-top: .5rem;
+    }
+    .copy-btn:hover { background: #3a3a3a; }
+    .warning {
+      margin-top: 1.5rem; padding: .75rem 1rem;
+      background: #1c1200; border: 1px solid #4a3000; border-radius: 6px;
+      font-size: .82rem; color: #f59e0b;
+    }
+    .error {
+      margin-top: 1.5rem; padding: .75rem 1rem;
+      background: #1c0000; border: 1px solid #4a0000; border-radius: 6px;
+      color: #f87171;
+    }
+  </style>
+</head>
+<body>
+  <h1>AgentPay Faucet</h1>
+  <p class="subtitle">Get a funded Stellar testnet wallet — ready to call paid tools in seconds.</p>
+
+  <div class="card">
+    <button id="btn" onclick="getWallet()">Get Test Wallet</button>
+    <div class="spinner" id="spinner">
+      ⏳ Creating wallet, adding trustline, sending USDC… (~5–10s)
+    </div>
+
+    <div class="result" id="result">
+      <div class="balances" id="balances"></div>
+
+      <div class="field" style="margin-top:1.2rem">
+        <div class="label">Public Key</div>
+        <div class="value" id="pub"></div>
+      </div>
+
+      <div class="field">
+        <div class="label">Secret Key — keep this private!</div>
+        <div class="value" id="sec" style="color:#f87171"></div>
+      </div>
+
+      <div class="field">
+        <div class="label">Ready-to-use Python snippet</div>
+        <div class="snippet-wrap"><pre id="snip"></pre></div>
+        <button class="copy-btn" onclick="copySnippet()">Copy snippet</button>
+      </div>
+
+      <div class="warning">
+        ⚠️ This is a <strong>testnet</strong> wallet. Never send real funds to it.
+        Save your secret key — it won't be shown again.
+      </div>
+    </div>
+
+    <div class="error" id="error" style="display:none"></div>
+  </div>
+
+  <script>
+    async function getWallet() {
+      const btn     = document.getElementById('btn');
+      const spinner = document.getElementById('spinner');
+      const result  = document.getElementById('result');
+      const errBox  = document.getElementById('error');
+
+      btn.disabled      = true;
+      spinner.style.display = 'block';
+      result.style.display  = 'none';
+      errBox.style.display  = 'none';
+
+      try {
+        const res  = await fetch('/faucet');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+
+        document.getElementById('pub').textContent  = data.public_key;
+        document.getElementById('sec').textContent  = data.secret_key;
+        document.getElementById('snip').textContent = data.snippet;
+
+        document.getElementById('balances').innerHTML = `
+          <div class="balance-box">
+            <div class="balance-amount">${parseFloat(data.usdc_balance).toFixed(2)}</div>
+            <div class="balance-token">USDC</div>
+          </div>
+          <div class="balance-box">
+            <div class="balance-amount">${parseFloat(data.xlm_balance).toFixed(2)}</div>
+            <div class="balance-token">XLM (gas)</div>
+          </div>
+        `;
+
+        result.style.display = 'block';
+      } catch (e) {
+        errBox.textContent   = '❌ ' + e.message;
+        errBox.style.display = 'block';
+        btn.disabled = false;
+      } finally {
+        spinner.style.display = 'none';
+      }
+    }
+
+    function copySnippet() {
+      navigator.clipboard.writeText(document.getElementById('snip').textContent);
+    }
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 # ── Real API implementations ──────────────────────────────────────────────────
