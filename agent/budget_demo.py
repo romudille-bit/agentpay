@@ -257,12 +257,12 @@ def main():
     whale_data = results.get("whale_activity", {})
     dune_data  = results.get("dune_query", {})
 
-    eth_price     = price_data.get("price_usd", "?")
-    eth_change    = price_data.get("change_24h_pct", "?")
-    volume        = liq_data.get("volume_24h_usd", "?")
+    eth_price     = float(price_data.get("price_usd", 0) or 0)
+    eth_change    = float(price_data.get("change_24h_pct", 0) or 0)
+    volume        = float(liq_data.get("volume_24h_usd", 0) or 0)
     gas_fast      = gas_data.get("fast_gwei", "?")
     whale_count   = len(whale_data.get("large_transfers", []))
-    whale_vol     = whale_data.get("total_volume_usd", 0)
+    whale_vol     = float(whale_data.get("total_volume_usd", 0) or 0)
     dune_rows     = dune_data.get("row_count", "n/a")
 
     print(f"""
