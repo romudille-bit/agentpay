@@ -372,6 +372,7 @@ async def _provision_wallet() -> dict:
         "network":      "testnet",
         "gateway_url":  gateway_url,
         "snippet":      snippet,
+        "warning":      "⚠️ Testnet only. Never share your secret key on mainnet. This wallet is for testing AgentPay only.",
     }
 
 
