@@ -119,7 +119,7 @@ class AgentWallet:
 
 def _fmt(amount) -> str:
     """Format a Decimal/str/float as '$0.0030' with clean trailing-zero stripping."""
-    s = f"{float(amount):.7f}".rstrip("0").rstrip(".")
+    s = f"{Decimal(str(amount)):.7f}".rstrip("0").rstrip(".")
     return f"${s}"
 
 
