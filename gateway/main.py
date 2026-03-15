@@ -295,6 +295,14 @@ async def _real_tool_response(tool_name: str, params: dict) -> dict:
                 return await _fetch_dex_liquidity(client, params)
             elif tool_name == "whale_activity":
                 return await _fetch_whale_activity(client, params)
+            elif tool_name == "dune_query":
+                return await _fetch_dune_query(client, params)
+            elif tool_name == "fear_greed_index":
+                return await _fetch_fear_greed_index(client, params)
+            elif tool_name == "crypto_news":
+                return await _fetch_crypto_news(client, params)
+            elif tool_name == "defi_tvl":
+                return await _fetch_defi_tvl(client, params)
             else:
                 return {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
@@ -509,6 +517,207 @@ async def _fetch_whale_activity(client: httpx.AsyncClient, params: dict) -> dict
         "large_transfers": large_moves[:15],
         "total_volume_usd": round(total_volume, 2),
         "source": "etherscan",
+    }
+
+
+async def _fetch_dune_query(client: httpx.AsyncClient, params: dict) -> dict:
+    if not settings.DUNE_API_KEY:
+        return {"error": "DUNE_API_KEY not configured"}
+
+    query_id = params.get("query_id")
+    if not query_id:
+        return {"error": "query_id is required"}
+
+    query_parameters = params.get("query_parameters", {})
+    limit = int(params.get("limit", 25))
+    headers = {"X-Dune-API-Key": settings.DUNE_API_KEY}
+    dune_base = "https://api.dune.com/api/v1"
+
+    # Fast-path: try cached results first
+    if not query_parameters:
+        cached = await client.get(
+            f"{dune_base}/query/{query_id}/results",
+            headers=headers,
+            params={"limit": limit},
+            timeout=15.0,
+        )
+        if cached.status_code == 200:
+            data = cached.json()
+            if data.get("is_execution_finished") and data.get("state") == "QUERY_STATE_COMPLETED":
+                rows = data.get("result", {}).get("rows", [])
+                cols = list(rows[0].keys()) if rows else []
+                return {
+                    "query_id": query_id,
+                    "execution_id": data.get("execution_id"),
+                    "row_count": len(rows),
+                    "columns": cols,
+                    "rows": rows[:limit],
+                    "generated_at": data.get("execution_ended_at", ""),
+                    "source": "cached",
+                }
+
+    # Execute fresh query
+    exec_resp = await client.post(
+        f"{dune_base}/query/{query_id}/execute",
+        headers=headers,
+        json={"query_parameters": query_parameters},
+        timeout=15.0,
+    )
+    if exec_resp.status_code != 200:
+        return {"error": f"Dune execute failed: {exec_resp.text}"}
+
+    execution_id = exec_resp.json().get("execution_id")
+
+    # Poll up to 90s
+    poll_client = httpx.AsyncClient(timeout=15.0)
+    async with poll_client:
+        for _ in range(45):
+            await asyncio.sleep(2)
+            poll = await poll_client.get(
+                f"{dune_base}/execution/{execution_id}/results",
+                headers=headers,
+                params={"limit": limit},
+            )
+            if poll.status_code != 200:
+                continue
+            pdata = poll.json()
+            state = pdata.get("state", "")
+            if state == "QUERY_STATE_COMPLETED":
+                rows = pdata.get("result", {}).get("rows", [])
+                cols = list(rows[0].keys()) if rows else []
+                return {
+                    "query_id": query_id,
+                    "execution_id": execution_id,
+                    "row_count": len(rows),
+                    "columns": cols,
+                    "rows": rows[:limit],
+                    "generated_at": pdata.get("execution_ended_at", ""),
+                    "source": "executed",
+                }
+            if state in ("QUERY_STATE_FAILED", "QUERY_STATE_CANCELLED"):
+                return {"error": f"Dune query {state}: {pdata.get('error', '')}"}
+
+    return {"error": "Dune query timed out after 90s"}
+
+
+async def _fetch_fear_greed_index(client: httpx.AsyncClient, params: dict) -> dict:
+    limit = max(1, min(int(params.get("limit", 1)), 30))
+    resp = await client.get(
+        "https://api.alternative.me/fng/",
+        params={"limit": limit, "format": "json"},
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    entries = data.get("data", [])
+    if not entries:
+        return {"error": "No data returned from Fear & Greed API"}
+
+    current = entries[0]
+    result = {
+        "value": int(current["value"]),
+        "value_classification": current["value_classification"],
+        "timestamp": int(current["timestamp"]),
+        "source": "alternative.me",
+    }
+    if limit > 1:
+        result["history"] = [
+            {
+                "value": int(e["value"]),
+                "value_classification": e["value_classification"],
+                "timestamp": int(e["timestamp"]),
+            }
+            for e in entries
+        ]
+    return result
+
+
+async def _fetch_crypto_news(client: httpx.AsyncClient, params: dict) -> dict:
+    currencies = params.get("currencies", "BTC,ETH")
+    filter_type = params.get("filter", "hot")
+    sort = filter_type if filter_type in ("hot", "new", "rising", "top") else "hot"
+
+    # One subreddit query per currency token, merged and sorted by score
+    tokens = [t.strip().lower() for t in currencies.split(",") if t.strip()]
+    query = " OR ".join(tokens) if tokens else currencies
+
+    resp = await client.get(
+        "https://www.reddit.com/r/CryptoCurrency/search.json",
+        params={"q": query, "sort": sort, "restrict_sr": "1", "limit": "10", "t": "week"},
+        headers={"User-Agent": "AgentPay/1.0"},
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    posts = resp.json().get("data", {}).get("children", [])
+
+    headlines = []
+    for p in posts[:5]:
+        d = p["data"]
+        sentiment = "bullish" if d.get("upvote_ratio", 0.5) >= 0.65 else (
+            "bearish" if d.get("upvote_ratio", 0.5) <= 0.35 else "neutral"
+        )
+        headlines.append({
+            "title": d.get("title", ""),
+            "url": d.get("url", ""),
+            "source": d.get("domain", "reddit.com"),
+            "sentiment": sentiment,
+            "score": d.get("score", 0),
+            "comments": d.get("num_comments", 0),
+            "published_at": d.get("created_utc", 0),
+        })
+
+    return {
+        "currencies": currencies,
+        "filter": sort,
+        "count": len(headlines),
+        "headlines": headlines,
+        "source": "reddit/r/CryptoCurrency",
+    }
+
+
+async def _fetch_defi_tvl(client: httpx.AsyncClient, params: dict) -> dict:
+    protocol = params.get("protocol", "").strip().lower()
+
+    resp = await client.get("https://api.llama.fi/protocols", timeout=15.0)
+    resp.raise_for_status()
+    protocols = resp.json()
+
+    if protocol:
+        matches = [
+            p for p in protocols
+            if protocol in p.get("slug", "").lower()
+            or protocol in p.get("name", "").lower()
+        ]
+        if not matches:
+            return {"error": f"Protocol '{protocol}' not found. Try 'uniswap', 'aave', 'lido', etc."}
+        p = matches[0]
+        return {
+            "name": p.get("name"),
+            "slug": p.get("slug"),
+            "tvl": round(p.get("tvl") or 0, 2),
+            "change_1h": p.get("change_1h"),
+            "change_1d": p.get("change_1d"),
+            "change_7d": p.get("change_7d"),
+            "chains": p.get("chains", []),
+            "category": p.get("category"),
+            "source": "defillama",
+        }
+
+    # Top 10 by TVL
+    top = sorted(protocols, key=lambda x: x.get("tvl") or 0, reverse=True)[:10]
+    return {
+        "top_protocols": [
+            {
+                "name": p.get("name"),
+                "tvl": round(p.get("tvl") or 0, 2),
+                "change_1d": p.get("change_1d"),
+                "change_7d": p.get("change_7d"),
+                "chain": p.get("chain"),
+                "category": p.get("category"),
+            }
+            for p in top
+        ],
+        "source": "defillama",
     }
 
 

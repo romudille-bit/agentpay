@@ -33,9 +33,9 @@ _TOOLS: dict[str, Tool] = {
     "token_price": Tool(
         name="token_price",
         description="Get the current USD price of any cryptocurrency token",
-        endpoint="http://localhost:8001/tools/token_price",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/token_price",
         price_usdc="0.001",
-        developer_address="PLACEHOLDER_DEV_WALLET_1",  # Replace with real address
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
         parameters={
             "type": "object",
             "properties": {
@@ -51,9 +51,9 @@ _TOOLS: dict[str, Tool] = {
     "wallet_balance": Tool(
         name="wallet_balance",
         description="Get the token balances for any Ethereum or Stellar wallet address",
-        endpoint="http://localhost:8001/tools/wallet_balance",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/wallet_balance",
         price_usdc="0.002",
-        developer_address="PLACEHOLDER_DEV_WALLET_1",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
         parameters={
             "type": "object",
             "properties": {
@@ -74,9 +74,9 @@ _TOOLS: dict[str, Tool] = {
     "dex_liquidity": Tool(
         name="dex_liquidity",
         description="Get liquidity depth and volume for a token pair on DEXs",
-        endpoint="http://localhost:8001/tools/dex_liquidity",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/dex_liquidity",
         price_usdc="0.003",
-        developer_address="PLACEHOLDER_DEV_WALLET_2",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
         parameters={
             "type": "object",
             "properties": {
@@ -90,9 +90,9 @@ _TOOLS: dict[str, Tool] = {
     "gas_tracker": Tool(
         name="gas_tracker",
         description="Get current Ethereum gas prices (slow, standard, fast)",
-        endpoint="http://localhost:8001/tools/gas_tracker",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/gas_tracker",
         price_usdc="0.001",
-        developer_address="PLACEHOLDER_DEV_WALLET_2",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
         parameters={
             "type": "object",
             "properties": {},
@@ -102,9 +102,9 @@ _TOOLS: dict[str, Tool] = {
     "dune_query": Tool(
         name="dune_query",
         description="Run any Dune Analytics query and return live onchain results by query ID",
-        endpoint="http://localhost:8002/",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/dune_query",
         price_usdc="0.005",
-        developer_address="PLACEHOLDER_DEV_WALLET_1",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
         parameters={
             "type": "object",
             "properties": {
@@ -127,12 +127,72 @@ _TOOLS: dict[str, Tool] = {
         },
         category="data",
     ),
+    "fear_greed_index": Tool(
+        name="fear_greed_index",
+        description="Crypto Fear & Greed Index (0=extreme fear, 100=extreme greed) with optional history",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/fear_greed_index",
+        price_usdc="0.001",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of days of history to return (default 1, max 30)",
+                    "default": 1,
+                },
+            },
+        },
+        category="data",
+    ),
+    "crypto_news": Tool(
+        name="crypto_news",
+        description="Latest crypto news and community sentiment from r/CryptoCurrency for any token",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/crypto_news",
+        price_usdc="0.003",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        parameters={
+            "type": "object",
+            "properties": {
+                "currencies": {
+                    "type": "string",
+                    "description": "Comma-separated token symbols, e.g. 'BTC,ETH'",
+                    "default": "BTC,ETH",
+                },
+                "filter": {
+                    "type": "string",
+                    "enum": ["hot", "new", "rising", "top"],
+                    "description": "Feed sort order (default: hot)",
+                    "default": "hot",
+                },
+            },
+        },
+        category="data",
+    ),
+    "defi_tvl": Tool(
+        name="defi_tvl",
+        description="DeFi protocol Total Value Locked from DeFiLlama. Returns top 10 or a specific protocol.",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/defi_tvl",
+        price_usdc="0.002",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        parameters={
+            "type": "object",
+            "properties": {
+                "protocol": {
+                    "type": "string",
+                    "description": "Protocol name or slug, e.g. 'uniswap', 'aave', 'lido'. Leave empty for top 10.",
+                    "default": "",
+                },
+            },
+        },
+        category="defi",
+    ),
     "whale_activity": Tool(
         name="whale_activity",
         description="Detect recent large wallet movements for a token (whale tracking)",
-        endpoint="http://localhost:8001/tools/whale_activity",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/whale_activity",
         price_usdc="0.002",
-        developer_address="PLACEHOLDER_DEV_WALLET_3",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
         parameters={
             "type": "object",
             "properties": {
