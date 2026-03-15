@@ -1,0 +1,49 @@
+{
+  "token": "ETH",
+  "results": {
+    "price": {
+      "detail": "Method Not Allowed"
+    },
+    "liquidity": {
+      "detail": "Method Not Allowed"
+    },
+    "whales": {
+      "detail": "Method Not Allowed"
+    },
+    "gas": {
+      "detail": "Method Not Allowed"
+    }
+  },
+  "session": {
+    "calls": 4,
+    "spent_usdc": "0.007",
+    "remaining_usdc": "0.043",
+    "max_spend_usdc": "0.05",
+    "breakdown": [
+      {
+        "tool": "token_price",
+        "amount_usdc": "0.001",
+        "tx_hash": "d0a87de0b4f573038c2083baef62e69aeb3ea0f6a7bd25f8c6c66fc955ee9e72",
+        "success": true
+      },
+      {
+        "tool": "dex_liquidity",
+        "amount_usdc": "0.003",
+        "tx_hash": "ce4e83f5f3c62df662b99c81d9df2d69ae08d3b8f96d78b9b9f4257bfde8031e",
+        "success": true
+      },
+      {
+        "tool": "whale_activity",
+        "amount_usdc": "0.002",
+        "tx_hash": "46282dd999396faa5388fe40b01604165bf07bc42f244706637a783b1bc9a1fd",
+        "success": true
+      },
+      {
+        "tool": "gas_tracker",
+        "amount_usdc": "0.001",
+        "tx_hash": "7cf289f3ce7135ba0a50b52f343824c4370cd5289947fa44817d52121841cb36",
+        "success": true
+      }
+    ]
+  }
+}
