@@ -1,0 +1,23 @@
+# Secrets — never commit
+.env
+wallets.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+/tmp/
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
