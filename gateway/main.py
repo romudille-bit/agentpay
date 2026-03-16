@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 import logging
 import httpx
+from decimal import Decimal
 from fastapi import FastAPI, Request, Response, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -290,7 +291,7 @@ async def _provision_wallet() -> dict:
       1. Generate keypair
       2. Fund with XLM via Friendbot
       3. Add USDC trustline (signed by new keypair)
-      4. Send 5 USDC from gateway wallet
+      4. Send 1 USDC from gateway wallet (checks balance ≥ 10 USDC first)
       5. Return balances + ready-to-use code snippet
     """
     from stellar_sdk import Keypair, TransactionBuilder
@@ -335,8 +336,18 @@ async def _provision_wallet() -> dict:
     trust_tx.sign(keypair)
     server.submit_transaction(trust_tx)
 
-    # ── 4. Send 5 USDC from gateway ───────────────────────────────────────────
+    # ── 4. Send 1 USDC from gateway (with balance guard) ─────────────────────
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
+    from stellar import get_usdc_balance
+    gateway_usdc = Decimal(get_usdc_balance(gateway_keypair.public_key))
+    if gateway_usdc < Decimal("10"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Faucet is temporarily empty (balance: {gateway_usdc} USDC). "
+                "Please try again later or reach out on GitHub."
+            ),
+        )
     gateway_account = server.load_account(gateway_keypair.public_key)
     pay_tx = (
         TransactionBuilder(
@@ -347,7 +358,7 @@ async def _provision_wallet() -> dict:
         .append_payment_op(
             destination=public_key,
             asset=usdc,
-            amount="5",
+            amount="1",
         )
         .set_timeout(30)
         .build()
