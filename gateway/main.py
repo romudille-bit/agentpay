@@ -110,6 +110,29 @@ async def get_tool(tool_name: str):
     return registry.tool_to_dict(tool)
 
 
+@app.head("/tools/{tool_name}/call")
+async def head_tool(tool_name: str):
+    """
+    HEAD pre-flight for x402 discovery.
+    Returns pricing headers with no body so callers can check cost before committing.
+    """
+    tool = registry.get_tool(tool_name)
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    return Response(
+        status_code=200,
+        headers={
+            "X-Price-USDC":        tool.price_usdc,
+            "X-Asset":             "USDC",
+            "X-Network":           settings.STELLAR_NETWORK,
+            "X-Pay-To":            settings.GATEWAY_PUBLIC_KEY,
+            "X-Payment-Required":  "true",
+            "X-Tool-Name":         tool_name,
+            "X-Tool-Category":     tool.category,
+        },
+    )
+
+
 @app.post("/tools/{tool_name}/call")
 async def call_tool(
     tool_name: str,
