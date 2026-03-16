@@ -101,7 +101,7 @@ async def list_tools(category: Optional[str] = None):
     }
 
 
-@app.get("/tools/{tool_name}")
+@app.api_route("/tools/{tool_name}", methods=["GET", "HEAD"])
 async def get_tool(tool_name: str):
     """Get details for a specific tool."""
     tool = registry.get_tool(tool_name)
