@@ -161,6 +161,8 @@ async def call_tool(
 
     # ── Step 1: No payment header → issue 402 challenge ───────────────────────
     if not x_payment:
+        agent_short = (agent_address or "unknown")[:8]
+        logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=402_challenge")
         challenge = issue_payment_challenge(
             tool_name=tool_name,
             price_usdc=tool.price_usdc,
@@ -234,7 +236,8 @@ async def call_tool(
         "success": True,
     }
     _transaction_log.append(tx_record)
-    logger.info(f"Tool call complete: {tool_name} | agent: {agent_address[:8]}...")
+    tx_hash = auth.get("tx_hash", "")
+    logger.info(f"[CALL] tool={tool_name} agent={agent_address[:8]}... status=completed tx={tx_hash}")
 
     return {
         "tool": tool_name,
