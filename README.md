@@ -233,6 +233,8 @@ gateway (FastAPI on Railway)
 
 **Fee model**: Gateway charges 15% (`GATEWAY_FEE_PERCENT=0.15`), forwards the rest to each tool developer's Stellar wallet. All payments settle on-chain in ~5 seconds.
 
+> **Note:** AgentPay currently uses the x402 pay-first pattern with classic Stellar PAYMENT ops. OZ Facilitator (verify-first, Soroban SAC) migration planned for v2.
+
 ---
 
 ## Discovery
