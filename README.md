@@ -237,6 +237,13 @@ gateway (FastAPI on Railway)
 
 ---
 
-## Discovery
+## Agent Discovery
 
-All 9 AgentPay tools are indexed on [x402scout](https://x402scout.com) under `network: stellar-testnet`. Any agent that queries the x402 discovery catalog can find and call these tools without prior configuration.
+AgentPay is discoverable by autonomous agents at standard discovery paths:
+
+- **AgentPay manifest**: `https://gateway-production-2cc2.up.railway.app/.well-known/agentpay.json`
+- **A2A agent card**: `https://gateway-production-2cc2.up.railway.app/.well-known/agent.json`
+
+Any x402-compatible agent can discover and use AgentPay tools without human setup.
+
+All 9 AgentPay tools are also indexed on [x402scout](https://x402scout.com) under `network: stellar-testnet`.
