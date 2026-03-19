@@ -193,7 +193,7 @@ async def call_tool(
     if not agent_address:
         raise HTTPException(
             status_code=400,
-            detail="X-Agent-Address header required when providing payment proof"
+            detail="agent_address required (body or X-Agent-Address header)"
         )
 
     auth = await verify_and_fulfill(
