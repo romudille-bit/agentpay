@@ -32,6 +32,7 @@ import textwrap
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from supabase import create_client, Client as SupabaseClient
 
 from x402 import (
     issue_payment_challenge,
@@ -40,6 +41,7 @@ from x402 import (
     get_pending_count,
 )
 import registry
+from registry import reload_tools
 from config import settings
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -89,6 +91,84 @@ def _cache_get(key: str) -> dict | None:
 
 def _cache_set(key: str, value: dict, ttl: int) -> None:
     _cache[key] = (_time.monotonic() + ttl, value)
+
+
+# ── Supabase client (optional — gateway falls back to in-memory if unavailable) ─
+_supabase: SupabaseClient | None = None
+
+
+def _get_supabase() -> SupabaseClient | None:
+    return _supabase
+
+
+async def _run_sync(fn):
+    """Run a blocking supabase call in a thread-pool so we don't block the event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, fn)
+
+
+@app.on_event("startup")
+async def _startup():
+    global _supabase
+    if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+        logger.info("Supabase not configured — using in-memory registry")
+        return
+    try:
+        _supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        resp = await _run_sync(
+            lambda: _supabase.table("tools").select("*").eq("active", True).execute()
+        )
+        rows = resp.data or []
+        if rows:
+            from registry.registry import Tool
+            tools = [
+                Tool(
+                    name=r["name"],
+                    description=r.get("description", ""),
+                    endpoint=r.get("endpoint", ""),
+                    price_usdc=r.get("price_usdc", "0"),
+                    developer_address=r.get("developer_address", ""),
+                    parameters=r.get("parameters", {}),
+                    category=r.get("category", "data"),
+                    active=r.get("active", True),
+                    uptime_pct=r.get("uptime_pct", 100.0),
+                    total_calls=r.get("total_calls", 0),
+                    triggers=r.get("triggers", []),
+                    use_when=r.get("use_when", ""),
+                    returns=r.get("returns", ""),
+                )
+                for r in rows
+            ]
+            reload_tools(tools)
+            logger.info(f"Loaded {len(tools)} tools from Supabase")
+        else:
+            logger.warning("Supabase tools table empty — using in-memory registry")
+    except Exception as e:
+        logger.warning(f"Supabase unavailable ({e}) — using in-memory registry")
+        _supabase = None
+
+
+async def _log_payment(
+    payment_id: str,
+    tool_name: str,
+    agent_address: str,
+    amount_usdc: str,
+    tx_hash: str,
+) -> None:
+    """Fire-and-forget: log a completed payment to Supabase."""
+    if not _supabase:
+        return
+    try:
+        await _run_sync(lambda: _supabase.table("payment_logs").insert({
+            "payment_id":    payment_id,
+            "tool_name":     tool_name,
+            "agent_address": agent_address,
+            "amount_usdc":   amount_usdc,
+            "tx_hash":       tx_hash,
+            "status":        "completed",
+        }).execute())
+    except Exception as e:
+        logger.warning(f"Payment log to Supabase failed: {e}")
 
 # ── Transaction log (in-memory for MVP, use Supabase in prod) ────────────────
 _transaction_log: list[dict] = []
@@ -270,6 +350,16 @@ async def call_tool(
     _transaction_log.append(tx_record)
     tx_hash = auth.get("tx_hash", "")
     logger.info(f"[CALL] tool={tool_name} agent={agent_address[:8]}... status=completed tx={tx_hash}")
+
+    # Log to Supabase (non-blocking — failure is silently warned, not fatal)
+    payment_id = x_payment.split("id=")[-1] if x_payment and "id=" in x_payment else ""
+    asyncio.create_task(_log_payment(
+        payment_id=payment_id,
+        tool_name=tool_name,
+        agent_address=agent_address,
+        amount_usdc=tool.price_usdc,
+        tx_hash=tx_hash,
+    ))
 
     return {
         "tool": tool_name,
