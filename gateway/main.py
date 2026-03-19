@@ -374,7 +374,7 @@ async def stats():
 
 # ── Faucet ────────────────────────────────────────────────────────────────────
 
-async def _provision_wallet() -> dict:
+async def _provision_wallet(base_url: str) -> dict:
     """
     Create and fund a fresh Stellar testnet wallet with XLM + 5 USDC.
 
@@ -468,7 +468,7 @@ async def _provision_wallet() -> dict:
             usdc_balance = b["balance"]
 
     # ── 6. Python code snippet ────────────────────────────────────────────────
-    gateway_url = "https://gateway-production-2cc2.up.railway.app"
+    gateway_url = base_url
     snippet = textwrap.dedent(f"""\
         from agent.wallet import AgentWallet, Session
 
@@ -502,9 +502,10 @@ async def _provision_wallet() -> dict:
 
 
 @app.get("/faucet")
-async def faucet_json():
+async def faucet_json(request: Request):
     """Generate a funded testnet wallet — returns JSON."""
-    return await _provision_wallet()
+    base_url = str(request.base_url).rstrip("/")
+    return await _provision_wallet(base_url)
 
 
 @app.get("/faucet/ui", response_class=HTMLResponse)
