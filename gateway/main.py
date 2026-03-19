@@ -299,6 +299,9 @@ async def well_known_agentpay():
                 "category": t.category,
                 "parameters": t.parameters,
                 "endpoint": f"{GATEWAY_URL}/tools/{t.name}/call",
+                "triggers": t.triggers,
+                "use_when": t.use_when,
+                "returns": t.returns,
             }
             for t in tools
         ],
@@ -327,6 +330,9 @@ async def well_known_agent():
                 "price_usdc": t.price_usdc,
                 "category": t.category,
                 "call_endpoint": f"{GATEWAY_URL}/tools/{t.name}/call",
+                "triggers": t.triggers,
+                "use_when": t.use_when,
+                "returns": t.returns,
             }
             for t in tools
         ],
