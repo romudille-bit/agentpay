@@ -339,6 +339,25 @@ async def well_known_agent():
     }
 
 
+@app.get("/sitemap.xml", response_class=Response)
+async def sitemap():
+    tools = registry.list_tools()
+    urls = [
+        f"{GATEWAY_URL}/",
+        f"{GATEWAY_URL}/tools",
+        f"{GATEWAY_URL}/.well-known/agentpay.json",
+        f"{GATEWAY_URL}/.well-known/agent.json",
+        f"{GATEWAY_URL}/faucet/ui",
+    ] + [f"{GATEWAY_URL}/tools/{t.name}" for t in tools]
+
+    loc_tags = "\n".join(f"  <url><loc>{u}</loc></url>" for u in urls)
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{loc_tags}
+</urlset>"""
+    return Response(content=xml, media_type="application/xml")
+
+
 @app.get("/stats")
 async def stats():
     """Gateway statistics."""
