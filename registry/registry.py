@@ -267,5 +267,12 @@ def increment_call_count(tool_name: str):
         _TOOLS[tool_name].total_calls += 1
 
 
+def reload_tools(tools: list) -> None:
+    """Replace the in-memory registry with a fresh list (e.g. loaded from database)."""
+    global _TOOLS
+    _TOOLS = {t.name: t for t in tools}
+    logger.info(f"Registry reloaded with {len(_TOOLS)} tools from database")
+
+
 def tool_to_dict(tool: Tool) -> dict:
     return asdict(tool)
