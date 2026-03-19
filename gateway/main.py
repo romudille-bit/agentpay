@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'registry'))
 
 import logging
+import time as _time
 import httpx
 from decimal import Decimal
 from fastapi import FastAPI, Request, Response, HTTPException, Header
@@ -28,6 +29,9 @@ from pydantic import BaseModel
 from typing import Optional
 import asyncio
 import textwrap
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from x402 import (
     issue_payment_challenge,
@@ -45,12 +49,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── Rate limiter ──────────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="AgentPay Gateway",
     description="x402 payment gateway for MCP tools on Stellar",
     version="0.1.0",
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,6 +67,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── In-memory response cache ──────────────────────────────────────────────────
+# key → (expires_at_monotonic, data)
+_cache: dict[str, tuple[float, dict]] = {}
+
+_CACHE_TTL: dict[str, int] = {
+    "token_price":      60,   # 60 seconds
+    "gas_tracker":      30,   # 30 seconds
+    "fear_greed_index": 300,  # 5 minutes
+    "defi_tvl":         300,  # 5 minutes
+}
+
+
+def _cache_get(key: str) -> dict | None:
+    entry = _cache.get(key)
+    if entry and _time.monotonic() < entry[0]:
+        return entry[1]
+    return None
+
+
+def _cache_set(key: str, value: dict, ttl: int) -> None:
+    _cache[key] = (_time.monotonic() + ttl, value)
 
 # ── Transaction log (in-memory for MVP, use Supabase in prod) ────────────────
 _transaction_log: list[dict] = []
@@ -135,6 +166,7 @@ async def head_tool(tool_name: str):
 
 
 @app.post("/tools/{tool_name}/call")
+@limiter.limit("100/minute")
 async def call_tool(
     tool_name: str,
     body: ToolCallRequest,
@@ -502,6 +534,7 @@ async def _provision_wallet(base_url: str) -> dict:
 
 
 @app.get("/faucet")
+@limiter.limit("5/hour")
 async def faucet_json(request: Request):
     """Generate a funded testnet wallet — returns JSON."""
     base_url = settings.AGENTPAY_GATEWAY_URL or GATEWAY_URL
@@ -695,31 +728,46 @@ _ERC20_CONTRACTS: dict[str, str] = {
 
 
 async def _real_tool_response(tool_name: str, params: dict) -> dict:
+    # Build cache key (include params for tools where they matter)
+    if tool_name in _CACHE_TTL:
+        cache_key = f"{tool_name}:{sorted(params.items())}"
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            logger.debug(f"[CACHE] hit for {tool_name}")
+            return cached
+    else:
+        cache_key = None
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
             if tool_name == "token_price":
-                return await _fetch_token_price(client, params)
+                result = await _fetch_token_price(client, params)
             elif tool_name == "wallet_balance":
-                return await _fetch_wallet_balance(client, params)
+                result = await _fetch_wallet_balance(client, params)
             elif tool_name == "gas_tracker":
-                return await _fetch_gas_tracker(client)
+                result = await _fetch_gas_tracker(client)
             elif tool_name == "dex_liquidity":
-                return await _fetch_dex_liquidity(client, params)
+                result = await _fetch_dex_liquidity(client, params)
             elif tool_name == "whale_activity":
-                return await _fetch_whale_activity(client, params)
+                result = await _fetch_whale_activity(client, params)
             elif tool_name == "dune_query":
-                return await _fetch_dune_query(client, params)
+                result = await _fetch_dune_query(client, params)
             elif tool_name == "fear_greed_index":
-                return await _fetch_fear_greed_index(client, params)
+                result = await _fetch_fear_greed_index(client, params)
             elif tool_name == "crypto_news":
-                return await _fetch_crypto_news(client, params)
+                result = await _fetch_crypto_news(client, params)
             elif tool_name == "defi_tvl":
-                return await _fetch_defi_tvl(client, params)
+                result = await _fetch_defi_tvl(client, params)
             else:
-                return {"error": f"No real API implementation for tool: {tool_name}"}
+                result = {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
             logger.error(f"Real API error for {tool_name}: {e}")
-            return {"error": str(e)}
+            result = {"error": str(e)}
+
+    if cache_key and "error" not in result:
+        _cache_set(cache_key, result, _CACHE_TTL[tool_name])
+
+    return result
 
 
 async def _fetch_token_price(client: httpx.AsyncClient, params: dict) -> dict:
