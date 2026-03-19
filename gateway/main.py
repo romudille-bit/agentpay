@@ -504,7 +504,7 @@ async def _provision_wallet(base_url: str) -> dict:
 @app.get("/faucet")
 async def faucet_json(request: Request):
     """Generate a funded testnet wallet — returns JSON."""
-    base_url = str(request.base_url).rstrip("/")
+    base_url = settings.AGENTPAY_GATEWAY_URL or GATEWAY_URL
     return await _provision_wallet(base_url)
 
 

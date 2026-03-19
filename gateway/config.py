@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Dune Analytics
     DUNE_API_KEY: str = ""
 
+    # Public gateway URL (used in faucet snippets, discovery endpoints)
+    AGENTPAY_GATEWAY_URL: str = ""
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
