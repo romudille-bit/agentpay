@@ -24,6 +24,9 @@ class Tool:
     uptime_pct: float = 100.0   # Running uptime percentage
     total_calls: int = 0        # Lifetime call count
     active: bool = True
+    triggers: list = field(default_factory=list)   # Keywords that should cause an agent to consider this tool
+    use_when: str = ""                              # Plain English: when to call this tool
+    returns: str = ""                              # What the tool gives back
 
 
 # ── Seed Data (MVP hardcoded tools) ──────────────────────────────────────────
@@ -47,6 +50,9 @@ _TOOLS: dict[str, Tool] = {
             "required": ["symbol"],
         },
         category="data",
+        triggers=["price", "how much is", "what is btc", "token value", "crypto price", "usd", "market price", "worth"],
+        use_when="You need the current USD price, 24h change, or market cap of any cryptocurrency.",
+        returns="price_usd, change_24h_pct, market_cap_usd, coin_id",
     ),
     "wallet_balance": Tool(
         name="wallet_balance",
@@ -70,6 +76,9 @@ _TOOLS: dict[str, Tool] = {
             "required": ["address", "chain"],
         },
         category="data",
+        triggers=["wallet", "balance", "holdings", "portfolio", "address", "how much does", "tokens in wallet"],
+        use_when="You need to look up the token holdings of an Ethereum or Stellar wallet address.",
+        returns="list of token balances (symbol, amount) for the given address",
     ),
     "dex_liquidity": Tool(
         name="dex_liquidity",
@@ -86,6 +95,9 @@ _TOOLS: dict[str, Tool] = {
             "required": ["token_a", "token_b"],
         },
         category="defi",
+        triggers=["liquidity", "volume", "dex", "trading volume", "slippage", "market depth", "uniswap", "all-time high", "ath"],
+        use_when="You need 24h trading volume, market cap, or all-time high for a token pair on decentralized exchanges.",
+        returns="volume_24h_usd, market_cap_usd, price_usd, ath_usd, price_change_24h_pct",
     ),
     "gas_tracker": Tool(
         name="gas_tracker",
@@ -98,6 +110,9 @@ _TOOLS: dict[str, Tool] = {
             "properties": {},
         },
         category="data",
+        triggers=["gas", "gwei", "transaction fee", "ethereum fee", "network congestion", "gas price", "eth fee"],
+        use_when="You need to know current Ethereum gas prices before submitting a transaction or estimating costs.",
+        returns="slow_gwei, standard_gwei, fast_gwei, base_fee_gwei, estimated confirmation times",
     ),
     "dune_query": Tool(
         name="dune_query",
@@ -126,6 +141,9 @@ _TOOLS: dict[str, Tool] = {
             "required": ["query_id"],
         },
         category="data",
+        triggers=["dune", "onchain", "sql", "analytics", "custom query", "blockchain data", "onchain metrics", "protocol stats"],
+        use_when="You need deep onchain analytics from a specific Dune query — protocol revenue, user counts, custom metrics.",
+        returns="rows[], columns[], row_count, generated_at from the Dune Analytics query result",
     ),
     "fear_greed_index": Tool(
         name="fear_greed_index",
@@ -144,6 +162,9 @@ _TOOLS: dict[str, Tool] = {
             },
         },
         category="data",
+        triggers=["fear", "greed", "sentiment", "market mood", "investor sentiment", "bullish", "bearish", "panic", "fomo"],
+        use_when="You need to gauge overall crypto market sentiment or mood — whether the market is fearful or greedy.",
+        returns="value (0–100), value_classification (e.g. 'Greed'), optional history[]",
     ),
     "crypto_news": Tool(
         name="crypto_news",
@@ -168,6 +189,9 @@ _TOOLS: dict[str, Tool] = {
             },
         },
         category="data",
+        triggers=["news", "headlines", "what's happening", "latest", "trending", "community", "reddit", "narrative", "buzz"],
+        use_when="You need recent news headlines or community sentiment for one or more crypto tokens.",
+        returns="headlines[] with title, url, sentiment (bullish/neutral/bearish), score, published_at",
     ),
     "defi_tvl": Tool(
         name="defi_tvl",
@@ -186,6 +210,9 @@ _TOOLS: dict[str, Tool] = {
             },
         },
         category="defi",
+        triggers=["tvl", "total value locked", "defi", "protocol", "aave", "uniswap", "lido", "compound", "locked funds"],
+        use_when="You need the Total Value Locked in a specific DeFi protocol or want to compare the top protocols by TVL.",
+        returns="tvl, change_1h, change_1d, change_7d, chains[], category for the protocol (or top 10 list)",
     ),
     "whale_activity": Tool(
         name="whale_activity",
@@ -206,6 +233,9 @@ _TOOLS: dict[str, Tool] = {
             "required": ["token"],
         },
         category="monitoring",
+        triggers=["whale", "large transfer", "big move", "institutional", "smart money", "accumulation", "dump", "sell-off"],
+        use_when="You need to detect large token transfers that may signal institutional moves, accumulation, or sell-offs.",
+        returns="large_transfers[] with from, to, amount, usd_value, minutes_ago; total_volume_usd",
     ),
 }
 
