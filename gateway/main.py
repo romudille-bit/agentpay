@@ -801,6 +801,13 @@ async def _fetch_wallet_balance(client: httpx.AsyncClient, params: dict) -> dict
             if sym and sym not in seen_tokens:
                 seen_tokens[sym] = tx.get("contractAddress", "")
 
+    # Hardcoded decimals for common ERC-20 tokens; fall back to 18
+    _ERC20_DECIMALS: dict[str, int] = {
+        "USDC": 6, "USDT": 6, "WBTC": 8, "DAI": 18, "WETH": 18,
+        "LINK": 18, "UNI": 18, "AAVE": 18, "SHIB": 18, "MATIC": 18,
+        "CRV": 18, "MKR": 18, "SNX": 18, "COMP": 18, "LDO": 18,
+    }
+
     # Fetch actual balance for each detected ERC-20 contract
     balances = [{"token": "ETH", "amount": str(round(eth_amount, 6))}]
     for sym, contract in list(seen_tokens.items())[:8]:
@@ -813,8 +820,8 @@ async def _fetch_wallet_balance(client: httpx.AsyncClient, params: dict) -> dict
         if bal_resp.status_code == 200:
             raw = bal_resp.json().get("result", "0")
             try:
-                # ERC-20 balances are in the token's smallest unit; use 18 decimals as default
-                amount = str(round(int(raw) / 1e18, 6))
+                decimals = _ERC20_DECIMALS.get(sym.upper(), 18)
+                amount = str(round(int(raw) / (10 ** decimals), 6))
             except (ValueError, TypeError):
                 amount = None
         balances.append({"token": sym, "contract": contract, "amount": amount})
