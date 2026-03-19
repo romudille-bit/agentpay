@@ -905,9 +905,12 @@ async def _fetch_whale_activity(client: httpx.AsyncClient, params: dict) -> dict
         try:
             decimals = int(tx.get("tokenDecimal", "18") or "18")
             amount = int(tx.get("value", "0")) / (10 ** decimals)
-            usd_value = amount * price_usd if price_usd else None
-            if usd_value is not None and usd_value < min_usd:
-                continue
+            if price_usd:
+                usd_value = amount * price_usd
+                if usd_value < min_usd:
+                    continue  # reliably below threshold — skip
+            else:
+                usd_value = None  # price unavailable — include with null
             total_volume += usd_value or 0
             large_moves.append({
                 "from": tx.get("from", "")[:10] + "...",
