@@ -270,6 +270,69 @@ async def register_tool(body: RegisterToolRequest):
         raise HTTPException(status_code=409, detail=str(e))
 
 
+GATEWAY_URL = "https://gateway-production-2cc2.up.railway.app"
+
+
+@app.get("/.well-known/agentpay.json")
+async def well_known_agentpay():
+    """AgentPay manifest — discoverable by x402-aware agents."""
+    tools = registry.list_tools()
+    return {
+        "name": "AgentPay",
+        "version": "1.0",
+        "tagline": "Your agent is only as smart as its data",
+        "description": "Real-time crypto data for AI agents. Pay per call in USDC on Stellar. No API keys, no subscriptions.",
+        "url": GATEWAY_URL,
+        "payment_protocol": "x402",
+        "payment_network": f"stellar-{settings.STELLAR_NETWORK}",
+        "payment_asset": "USDC",
+        "pricing_model": "per-call",
+        "budget_aware": True,
+        "faucet": f"{GATEWAY_URL}/faucet",
+        "tools_endpoint": f"{GATEWAY_URL}/tools",
+        "capabilities": ["market-data", "onchain-analytics", "defi", "sentiment", "whale-tracking"],
+        "tools": [
+            {
+                "name": t.name,
+                "description": t.description,
+                "price_usdc": t.price_usdc,
+                "category": t.category,
+                "parameters": t.parameters,
+                "endpoint": f"{GATEWAY_URL}/tools/{t.name}/call",
+            }
+            for t in tools
+        ],
+    }
+
+
+@app.get("/.well-known/agent.json")
+async def well_known_agent():
+    """A2A protocol card — agent-to-agent discovery."""
+    tools = registry.list_tools()
+    return {
+        "name": "AgentPay Data Gateway",
+        "description": "Autonomous crypto data tools for AI agents",
+        "url": GATEWAY_URL,
+        "version": "1.0",
+        "capabilities": {
+            "tools": True,
+            "payments": "x402/stellar",
+            "budget_sessions": True,
+        },
+        "contact": "https://github.com/romudille-bit/agentpay",
+        "tools": [
+            {
+                "name": t.name,
+                "description": t.description,
+                "price_usdc": t.price_usdc,
+                "category": t.category,
+                "call_endpoint": f"{GATEWAY_URL}/tools/{t.name}/call",
+            }
+            for t in tools
+        ],
+    }
+
+
 @app.get("/stats")
 async def stats():
     """Gateway statistics."""
