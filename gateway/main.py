@@ -788,22 +788,36 @@ async def _fetch_wallet_balance(client: httpx.AsyncClient, params: dict) -> dict
     eth_wei = int(eth_resp.json().get("result", "0"))
     eth_amount = eth_wei / 1e18
 
-    # Fetch recent ERC-20 token balances via token transfer history
+    # Discover ERC-20 tokens via recent transfer history
     tok_resp = await client.get(base, params={
         "chainid": "1", "module": "account", "action": "tokentx",
         "address": address, "sort": "desc", "page": 1, "offset": 50,
         "apikey": api_key,
     })
-    seen_tokens: dict[str, str] = {}
+    seen_tokens: dict[str, str] = {}  # symbol → contract
     if tok_resp.status_code == 200:
         for tx in tok_resp.json().get("result", []):
             sym = tx.get("tokenSymbol", "")
             if sym and sym not in seen_tokens:
                 seen_tokens[sym] = tx.get("contractAddress", "")
 
+    # Fetch actual balance for each detected ERC-20 contract
     balances = [{"token": "ETH", "amount": str(round(eth_amount, 6))}]
-    for sym in list(seen_tokens)[:8]:
-        balances.append({"token": sym, "contract": seen_tokens[sym]})
+    for sym, contract in list(seen_tokens.items())[:8]:
+        bal_resp = await client.get(base, params={
+            "chainid": "1", "module": "account", "action": "tokenbalance",
+            "contractaddress": contract, "address": address,
+            "tag": "latest", "apikey": api_key,
+        })
+        amount = None
+        if bal_resp.status_code == 200:
+            raw = bal_resp.json().get("result", "0")
+            try:
+                # ERC-20 balances are in the token's smallest unit; use 18 decimals as default
+                amount = str(round(int(raw) / 1e18, 6))
+            except (ValueError, TypeError):
+                amount = None
+        balances.append({"token": sym, "contract": contract, "amount": amount})
 
     return {
         "address": address,
