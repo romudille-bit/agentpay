@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agentpay": {
+      "command": "python",
+      "args": ["/path/to/agentpay/gateway/mcp_server.py"],
+      "env": {
+        "STELLAR_SECRET_KEY": "your_stellar_secret_key",
+        "AGENTPAY_GATEWAY_URL": "https://gateway-production-2cc2.up.railway.app"
+      }
+    }
+  }
+}
