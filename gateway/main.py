@@ -69,6 +69,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Faucet abuse-prevention ───────────────────────────────────────────────────
+# Maps IP → epoch timestamp of last successful faucet request.
+# Requests within 24 hours of a prior grant are rejected.
+_FAUCET_IP_LOG: dict[str, float] = {}
+_FAUCET_COOLDOWN_SECS = 86_400  # 24 hours
+
 # ── In-memory response cache ──────────────────────────────────────────────────
 # key → (expires_at_monotonic, data)
 _cache: dict[str, tuple[float, dict]] = {}
@@ -564,7 +570,7 @@ async def _provision_wallet(base_url: str) -> dict:
     logger.info(f"[FAUCET] step=3/5 trustline submitted")
 
     # ── 4. Send 1 USDC from gateway (with balance guard) ─────────────────────
-    logger.info(f"[FAUCET] step=4/5 checking gateway balance and sending 1 USDC")
+    logger.info(f"[FAUCET] step=4/5 checking gateway balance and sending 0.05 USDC")
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
     from stellar import get_usdc_balance
     gateway_usdc = Decimal(get_usdc_balance(gateway_keypair.public_key))
@@ -586,7 +592,7 @@ async def _provision_wallet(base_url: str) -> dict:
         .append_payment_op(
             destination=public_key,
             asset=usdc,
-            amount="1",
+            amount="0.05",
         )
         .set_timeout(30)
         .build()
@@ -642,11 +648,29 @@ async def _provision_wallet(base_url: str) -> dict:
 
 
 @app.get("/faucet")
-@limiter.limit("5/hour")
+@limiter.limit("2/hour")
 async def faucet_json(request: Request):
     """Generate a funded testnet wallet — returns JSON."""
+    # ── IP cooldown: one wallet per IP per 24 hours ───────────────────────────
+    client_ip = request.client.host if request.client else "unknown"
+    now = _time.time()
+    last = _FAUCET_IP_LOG.get(client_ip, 0)
+    if now - last < _FAUCET_COOLDOWN_SECS:
+        wait_h = int((_FAUCET_COOLDOWN_SECS - (now - last)) / 3600) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"This IP already received a test wallet. Try again in ~{wait_h}h.",
+        )
+
+    # ── Anti-script delay (3 seconds) ─────────────────────────────────────────
+    await asyncio.sleep(3)
+
     base_url = settings.AGENTPAY_GATEWAY_URL or GATEWAY_URL
-    return await _provision_wallet(base_url)
+    result = await _provision_wallet(base_url)
+
+    # Record IP only after successful wallet creation
+    _FAUCET_IP_LOG[client_ip] = _time.time()
+    return result
 
 
 @app.get("/faucet/ui", response_class=HTMLResponse)
