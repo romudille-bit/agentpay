@@ -890,6 +890,8 @@ async def _real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_crypto_news(client, params)
             elif tool_name == "defi_tvl":
                 result = await _fetch_defi_tvl(client, params)
+            elif tool_name == "token_security":
+                result = await _fetch_token_security(client, params)
             else:
                 result = {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
@@ -1334,6 +1336,80 @@ async def _fetch_defi_tvl(client: httpx.AsyncClient, params: dict) -> dict:
             for p in top
         ],
         "source": "defillama",
+    }
+
+
+async def _fetch_token_security(client: httpx.AsyncClient, params: dict) -> dict:
+    address = params.get("contract_address", "").strip().lower()
+    chain   = params.get("chain", "ethereum").lower()
+
+    chain_id = "56" if chain == "bsc" else "1"
+
+    resp = await client.get(
+        f"https://api.gopluslabs.io/api/v1/token_security/{chain_id}",
+        params={"contract_addresses": address},
+        timeout=15.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    if data.get("code") != 1:
+        return {"error": f"GoPlus API error: {data.get('message', 'unknown')}"}
+
+    result = data.get("result", {}).get(address) or data.get("result", {}).get(address.lower())
+    if not result:
+        return {"error": f"No security data found for contract {address} on {chain}"}
+
+    def _int(val, default=0) -> int:
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return default
+
+    def _float(val, default=0.0) -> float:
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return default
+
+    is_honeypot             = _int(result.get("is_honeypot"))
+    is_mintable             = _int(result.get("is_mintable"))
+    is_proxy                = _int(result.get("is_proxy"))
+    can_take_back_ownership = _int(result.get("can_take_back_ownership"))
+    is_blacklisted          = _int(result.get("is_blacklisted"))
+    is_whitelisted          = _int(result.get("is_whitelisted"))
+    holder_count            = _int(result.get("holder_count"))
+    lp_holders              = result.get("lp_holders", [])
+
+    # GoPlus returns tax as decimal fraction: 0.05 = 5%
+    buy_tax_pct  = round(_float(result.get("buy_tax"))  * 100, 2)
+    sell_tax_pct = round(_float(result.get("sell_tax")) * 100, 2)
+
+    # ── Risk level ────────────────────────────────────────────────────────────
+    if is_honeypot or buy_tax_pct > 10 or sell_tax_pct > 10 or can_take_back_ownership:
+        risk_level = "danger"
+    elif is_mintable or is_proxy or buy_tax_pct > 5 or sell_tax_pct > 5 or is_blacklisted:
+        risk_level = "caution"
+    else:
+        risk_level = "safe"
+
+    return {
+        "contract_address":        address,
+        "chain":                   chain,
+        "risk_level":              risk_level,
+        "is_honeypot":             is_honeypot,
+        "is_mintable":             is_mintable,
+        "is_proxy":                is_proxy,
+        "can_take_back_ownership": can_take_back_ownership,
+        "is_blacklisted":          is_blacklisted,
+        "is_whitelisted":          is_whitelisted,
+        "buy_tax":                 buy_tax_pct,
+        "sell_tax":                sell_tax_pct,
+        "holder_count":            holder_count,
+        "lp_holder_count":         len(lp_holders),
+        "owner_address":           result.get("owner_address", ""),
+        "creator_address":         result.get("creator_address", ""),
+        "source":                  "gopluslabs",
     }
 
 
