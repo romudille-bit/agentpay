@@ -42,6 +42,7 @@ from x402 import (
 import registry
 from registry import reload_tools
 from config import settings
+import base as base_pay
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -268,71 +269,143 @@ async def call_tool(
     request: Request,
     x_payment: Optional[str] = Header(None),
     x_agent_address: Optional[str] = Header(None),
+    payment_signature: Optional[str] = Header(None),   # x402 v2 Base/EVM
 ):
     """
     Main endpoint — call a paid MCP tool.
-    
+
+    Supports two payment paths:
+      Stellar — X-Payment: tx_hash=<hash>,from=<addr>,id=<payment_id>
+      Base    — PAYMENT-SIGNATURE: <base64(PaymentPayload JSON)>
+
     Flow:
-      1. No X-Payment header → return 402 with challenge
-      2. X-Payment present → verify → execute tool → return result
+      1. Neither header → return 402 advertising both options
+      2. X-Payment → verify Stellar tx, execute tool
+      3. PAYMENT-SIGNATURE → settle via CDP facilitator, execute tool
     """
-    # Look up tool
     tool = registry.get_tool(tool_name)
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    
     if not tool.active:
         raise HTTPException(status_code=503, detail=f"Tool '{tool_name}' is currently unavailable")
 
     agent_address = x_agent_address or body.agent_address
+    resource_url  = f"{GATEWAY_URL}/tools/{tool_name}/call"
 
-    # ── Step 1: No payment header → issue 402 challenge ───────────────────────
-    if not x_payment:
+    # ── Step 1: No payment → 402 with both Stellar + Base options ────────────
+    if not x_payment and not payment_signature:
         agent_short = (agent_address or "unknown")[:8]
         logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=402_challenge")
+
         challenge = issue_payment_challenge(
             tool_name=tool_name,
             price_usdc=tool.price_usdc,
             developer_address=tool.developer_address,
             request_data={"parameters": body.parameters},
         )
-        
-        headers = build_402_headers(challenge)
-        return JSONResponse(
-            status_code=402,
-            content={
-                "error": "Payment required",
-                "payment_id": challenge.payment_id,
-                "amount_usdc": challenge.amount_usdc,
-                "pay_to": challenge.gateway_address,
-                "asset": "USDC",
-                "network": settings.STELLAR_NETWORK,
+
+        # Build Base payment requirements (if configured)
+        base_option = None
+        payment_required_header = None
+        if settings.BASE_GATEWAY_ADDRESS:
+            base_req = base_pay.build_payment_requirements(
+                amount_usdc=tool.price_usdc,
+                pay_to=settings.BASE_GATEWAY_ADDRESS,
+                resource_url=resource_url,
+                network=settings.BASE_NETWORK,
+            )
+            base_option = {
+                "scheme":            base_req["scheme"],
+                "network":           base_req["network"],
+                "amount_atomic":     base_req["amount"],
+                "amount_usdc":       tool.price_usdc,
+                "asset":             base_req["asset"],
+                "pay_to":            settings.BASE_GATEWAY_ADDRESS,
+                "maxTimeoutSeconds": base_req["maxTimeoutSeconds"],
                 "instructions": (
-                    f"Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
-                    f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
-                    f"Then retry with header X-Payment: tx_hash=<hash>,from=<your_address>,id={challenge.payment_id}"
+                    "Sign an EIP-3009 transferWithAuthorization for the amount above, "
+                    "encode as base64 JSON PaymentPayload, and retry with header "
+                    "PAYMENT-SIGNATURE: <base64_payload>"
                 ),
+            }
+            payment_required_header = base_pay.build_payment_required_header(
+                requirements=base_req,
+                resource_url=resource_url,
+                tool_description=tool.description,
+            )
+
+        headers = build_402_headers(challenge)
+        if payment_required_header:
+            headers["PAYMENT-REQUIRED"] = payment_required_header
+
+        body_content = {
+            "error":       "Payment required",
+            "x402Version": 2,
+            # ── Stellar option (backward-compatible) ──────────────────────────
+            "payment_id":  challenge.payment_id,
+            "amount_usdc": challenge.amount_usdc,
+            "pay_to":      challenge.gateway_address,
+            "asset":       "USDC",
+            "network":     settings.STELLAR_NETWORK,
+            "instructions": (
+                f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
+                f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
+                f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}"
+            ),
+            # ── Structured options for multi-chain clients ────────────────────
+            "payment_options": {
+                "stellar": {
+                    "payment_id":  challenge.payment_id,
+                    "amount_usdc": challenge.amount_usdc,
+                    "pay_to":      challenge.gateway_address,
+                    "network":     settings.STELLAR_NETWORK,
+                    "asset":       "USDC",
+                    "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
+                },
+                **({"base": base_option} if base_option else {}),
             },
-            headers=headers,
-        )
+        }
 
-    # ── Step 2: Payment header present → verify ───────────────────────────────
-    if not agent_address:
-        raise HTTPException(
-            status_code=400,
-            detail="agent_address required (body or X-Agent-Address header)"
-        )
+        return JSONResponse(status_code=402, content=body_content, headers=headers)
 
-    auth = await verify_and_fulfill(
-        payment_header=x_payment,
-        agent_address=agent_address,
-    )
+    # ── Step 2a: Stellar payment ───────────────────────────────────────────────
+    if x_payment:
+        if not agent_address:
+            raise HTTPException(status_code=400, detail="agent_address required (body or X-Agent-Address header)")
 
-    if not auth["authorized"]:
-        return JSONResponse(
-            status_code=402,
-            content={"error": "Payment verification failed", "reason": auth["reason"]},
+        auth = await verify_and_fulfill(payment_header=x_payment, agent_address=agent_address)
+        if not auth["authorized"]:
+            return JSONResponse(
+                status_code=402,
+                content={"error": "Payment verification failed", "reason": auth["reason"]},
+            )
+
+    # ── Step 2b: Base/EVM payment via CDP facilitator ─────────────────────────
+    elif payment_signature:
+        if not settings.BASE_GATEWAY_ADDRESS:
+            raise HTTPException(status_code=503, detail="Base payment not configured on this gateway")
+
+        base_req = base_pay.build_payment_requirements(
+            amount_usdc=tool.price_usdc,
+            pay_to=settings.BASE_GATEWAY_ADDRESS,
+            resource_url=resource_url,
+            network=settings.BASE_NETWORK,
         )
+        result = await base_pay.settle_base_payment(payment_signature, base_req)
+        if not result["success"]:
+            return JSONResponse(
+                status_code=402,
+                content={"error": "Base payment settlement failed", "reason": result["reason"]},
+            )
+        logger.info(f"[CALL] tool={tool_name} agent={result['payer'][:8]}... status=base_settled tx={result['tx_hash'][:16]}")
+        auth = {
+            "authorized": True,
+            "tx_hash":    result["tx_hash"],
+            "payer":      result["payer"],
+            "network":    result["network"],
+        }
+        # Use EVM payer address as agent_address for logging
+        agent_address = agent_address or result["payer"]
 
     # ── Step 3: Payment verified → call the real tool ─────────────────────────
     registry.increment_call_count(tool_name)
@@ -363,15 +436,19 @@ async def call_tool(
         "success": True,
     }
     _transaction_log.append(tx_record)
-    tx_hash = auth.get("tx_hash", "")
-    logger.info(f"[CALL] tool={tool_name} agent={agent_address[:8]}... status=completed tx={tx_hash}")
+    tx_hash    = auth.get("tx_hash", "")
+    agent_log  = (agent_address or "unknown")[:8]
+    logger.info(f"[CALL] tool={tool_name} agent={agent_log}... status=completed tx={tx_hash}")
 
     # Log to Supabase (non-blocking — failure is silently warned, not fatal)
-    payment_id = x_payment.split("id=")[-1] if x_payment and "id=" in x_payment else ""
+    if x_payment and "id=" in x_payment:
+        payment_id = x_payment.split("id=")[-1]
+    else:
+        payment_id = tx_hash  # Base: use tx hash as dedup key
     asyncio.create_task(_log_payment(
         payment_id=payment_id,
         tool_name=tool_name,
-        agent_address=agent_address,
+        agent_address=agent_address or "",
         amount_usdc=tool.price_usdc,
         tx_hash=tx_hash,
     ))

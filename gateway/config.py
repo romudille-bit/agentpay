@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # Public gateway URL (used in faucet snippets, discovery endpoints)
     AGENTPAY_GATEWAY_URL: str = ""
 
+    # Base / EVM payment option (via Coinbase CDP x402 facilitator)
+    BASE_GATEWAY_ADDRESS: str = ""           # 0x... recipient on Base
+    BASE_NETWORK: str = "base-sepolia"       # "base-sepolia" or "base"
+    BASE_RPC_URL: str = "https://mainnet.base.org"
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
