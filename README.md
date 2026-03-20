@@ -1,14 +1,14 @@
 # AgentPay — your agent is only as smart as its data.
 
-AgentPay is an open x402 payment gateway that lets AI agents autonomously access real crypto data tools using USDC on Stellar.
+AgentPay is an open x402 payment gateway that lets AI agents autonomously access real crypto data tools using USDC on Stellar or Base.
 
 No subscriptions. No API keys. No human in the loop.
 Agents discover tools, pay per call ($0.001–$0.005), and get real data back — all within a hard budget cap.
 
-→ **9 live tools**: token prices, whale activity, gas tracker, DeFi TVL, Fear & Greed, Dune queries and more
+→ **10 live tools**: token prices, whale activity, gas tracker, DeFi TVL, Fear & Greed, token security, Dune queries and more
 → **Budget-aware Session**: agents estimate costs, track spend, never exceed budget
 → **x402 protocol**: works with any x402-compatible agent
-→ **Stellar settlement**: 5-second finality, $0.00001 fees
+→ **Two payment networks**: Stellar (5s, $0.00001 fee) or Base mainnet USDC (2s, $0.0001 fee)
 
 **Try it in 60 seconds:**
 ```bash
@@ -102,6 +102,7 @@ Each `session.call()` handles the full x402 flow internally:
 | `wallet_balance` | $0.002 | `address`, `chain` (ethereum/stellar) | token balances |
 | `whale_activity` | $0.002 | `token`, `min_usd` (default 100k) | large_transfers[ ], total_volume_usd |
 | `defi_tvl` | $0.002 | `protocol` (optional, e.g. "uniswap") | tvl, change_1d, change_7d, chains[ ] |
+| `token_security` | $0.002 | `contract_address`, `chain` (ethereum/bsc) | risk_level, is_honeypot, buy_tax, sell_tax, holder_count |
 | `dex_liquidity` | $0.003 | `token_a`, `token_b` | volume_24h_usd, market_cap_usd, ath_usd |
 | `crypto_news` | $0.003 | `currencies` (e.g. "ETH,BTC"), `filter` (hot/new/rising) | headlines[ ] with title, url, sentiment, score |
 | `dune_query` | $0.005 | `query_id`, `limit` (default 25) | rows[ ], columns[ ], row_count from Dune Analytics |
@@ -113,6 +114,52 @@ import httpx
 tools = httpx.get(f"{GATEWAY}/tools").json()["tools"]
 for t in tools:
     print(f"{t['name']:<22} ${t['price_usdc']}  — {t['description']}")
+```
+
+---
+
+## Payment Options
+
+AgentPay accepts USDC payments on two networks:
+
+- **Stellar** — $0.00001 per tx, 5-second settlement (recommended for agents using the Python SDK)
+- **Base** — $0.0001 per tx, 2-second settlement (EIP-3009 `transferWithAuthorization` on Base mainnet)
+
+The gateway's `402` response advertises both options simultaneously. Clients pick the network that suits them — no configuration required on the tool side.
+
+```json
+{
+  "payment_options": {
+    "stellar": { "pay_to": "G...", "amount_usdc": "0.001", ... },
+    "base":    { "network": "eip155:8453", "asset": "0x833589f...", "amount_usdc": "0.001", ... }
+  }
+}
+```
+
+Base payments use Mode B direct on-chain settlement: the client calls `transferWithAuthorization` on the USDC contract and sends the `tx_hash` in the `PAYMENT-SIGNATURE` header. The gateway verifies the receipt via JSON-RPC.
+
+---
+
+## MCP Server
+
+AgentPay ships a Model Context Protocol server that gives Claude Desktop direct access to all 10 tools. Payments happen automatically in the background using Stellar USDC.
+
+See **[README_MCP.md](README_MCP.md)** for setup instructions.
+
+**Quick config** (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "agentpay": {
+      "command": "python",
+      "args": ["/path/to/agentpay/gateway/mcp_server.py"],
+      "env": {
+        "STELLAR_SECRET_KEY": "S...",
+        "AGENTPAY_GATEWAY_URL": "https://gateway-production-2cc2.up.railway.app"
+      }
+    }
+  }
+}
 ```
 
 ---
@@ -213,25 +260,27 @@ Expected output: ETH price, gas, DEX liquidity, whale moves, and Dune onchain da
 agent (Python SDK)
     │
     │  POST /tools/{name}/call
-    │  ← 402 {payment_id, amount_usdc, pay_to}
-    │  → Stellar USDC payment (~3s)
-    │  → retry with X-Payment header
+    │  ← 402 {payment_options: {stellar: {...}, base: {...}}}
+    │  → Stellar USDC payment (~3s)  OR  Base transferWithAuthorization (~2s)
+    │  → retry with X-Payment or PAYMENT-SIGNATURE header
     │  ← 200 {result: ...}
     ▼
 gateway (FastAPI on Railway)
     │
-    ├── registry/registry.py   — 9-tool catalog with prices & dev wallets
-    ├── gateway/stellar.py     — payment verification via Stellar Horizon
+    ├── registry/registry.py   — 10-tool catalog with prices & dev wallets
+    ├── gateway/stellar.py     — Stellar payment verification via Horizon
+    ├── gateway/base.py        — Base payment verification via JSON-RPC
     └── gateway/main.py        — real API dispatchers
             ├── CoinGecko      token_price, dex_liquidity
             ├── Etherscan V2   gas_tracker, whale_activity, wallet_balance
             ├── DeFiLlama      defi_tvl
             ├── alternative.me fear_greed_index
             ├── Reddit         crypto_news
-            └── Dune Analytics dune_query
+            ├── Dune Analytics dune_query
+            └── GoPlus         token_security
 ```
 
-**Fee model**: Gateway charges 15% (`GATEWAY_FEE_PERCENT=0.15`), forwards the rest to each tool developer's Stellar wallet. All payments settle on-chain in ~5 seconds.
+**Fee model**: Gateway charges 15% (`GATEWAY_FEE_PERCENT=0.15`), forwards the rest to each tool developer's Stellar wallet. All payments settle on-chain in ~2–5 seconds.
 
 > **Note:** AgentPay currently uses the x402 pay-first pattern with classic Stellar PAYMENT ops. OZ Facilitator (verify-first, Soroban SAC) migration planned for v2.
 
@@ -246,4 +295,4 @@ AgentPay is discoverable by autonomous agents at standard discovery paths:
 
 Any x402-compatible agent can discover and use AgentPay tools without human setup.
 
-All 9 AgentPay tools are also indexed on [x402scout](https://x402scout.com) under `network: stellar-testnet`.
+All 10 AgentPay tools are also indexed on [x402scout](https://x402scout.com) under `network: stellar-testnet`.
