@@ -380,7 +380,7 @@ async def call_tool(
                 content={"error": "Payment verification failed", "reason": auth["reason"]},
             )
 
-    # ── Step 2b: Base/EVM payment via CDP facilitator ─────────────────────────
+    # ── Step 2b: Base/EVM payment (Mode A: CDP facilitator, Mode B: on-chain tx) ─
     elif payment_signature:
         if not settings.BASE_GATEWAY_ADDRESS:
             raise HTTPException(status_code=503, detail="Base payment not configured on this gateway")
@@ -391,7 +391,9 @@ async def call_tool(
             resource_url=resource_url,
             network=settings.BASE_NETWORK,
         )
-        result = await base_pay.settle_base_payment(payment_signature, base_req)
+        result = await base_pay.settle_base_payment(
+            payment_signature, base_req, rpc_url=settings.BASE_RPC_URL
+        )
         if not result["success"]:
             return JSONResponse(
                 status_code=402,

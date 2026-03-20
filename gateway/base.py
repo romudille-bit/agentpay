@@ -1,13 +1,21 @@
 """
-base.py — Base/EVM payment verification via Coinbase CDP x402 facilitator.
+base.py — Base/EVM payment verification for AgentPay.
 
-Flow:
-  1. Gateway issues 402 with PaymentRequirements (Base option)
-  2. Client signs EIP-3009 transferWithAuthorization off-chain
-  3. Client sends signed payload in PAYMENT-SIGNATURE header (base64 JSON)
-  4. Gateway calls POST https://x402.coinbase.com/settle
-     → CDP submits on-chain tx, returns tx hash
-  5. Gateway executes tool, returns result
+Two settlement modes (detected automatically from PAYMENT-SIGNATURE content):
+
+  Mode A — CDP facilitator (when CDP is live):
+    Client signs EIP-3009 off-chain → sends payload in PAYMENT-SIGNATURE
+    → gateway calls POST https://x402.coinbase.com/settle
+    → CDP submits on-chain tx
+
+  Mode B — Direct on-chain (current default; no CDP dependency):
+    Client calls transferWithAuthorization on USDC contract directly
+    → sends {"tx_hash": "0x...", "payer": "0x..."} in PAYMENT-SIGNATURE
+    → gateway verifies the tx receipt via JSON-RPC
+    → checks Transfer event: from=payer, to=gateway, value>=required
+
+The gateway auto-detects the mode: if payload contains "tx_hash" → Mode B,
+if it contains "payload" with an EIP-3009 signature → Mode A (CDP).
 """
 
 import base64
@@ -109,15 +117,86 @@ def _decode_payment_signature(header: str) -> tuple[dict | None, str]:
         return None, f"Invalid PAYMENT-SIGNATURE encoding: {e}"
 
 
+async def verify_base_tx(
+    tx_hash: str,
+    payer: str,
+    required_amount_atomic: int,
+    pay_to: str,
+    rpc_url: str,
+) -> dict:
+    """
+    Mode B settlement: verify an already-broadcast USDC transferWithAuthorization.
+
+    Calls eth_getTransactionReceipt via JSON-RPC and checks that:
+      - tx succeeded (status == 0x1)
+      - USDC contract emitted a Transfer(from=payer, to=pay_to, value>=required)
+
+    Returns same shape as settle_base_payment():
+        {"success": bool, "tx_hash": str, "payer": str, "network": str, "reason": str}
+    """
+    # ERC-20 Transfer(address indexed from, address indexed to, uint256 value)
+    TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                rpc_url,
+                json={"jsonrpc": "2.0", "id": 1, "method": "eth_getTransactionReceipt", "params": [tx_hash]},
+                headers={"Content-Type": "application/json"},
+            )
+    except Exception as e:
+        return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": f"rpc_unreachable: {e}"}
+
+    if resp.status_code != 200:
+        return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": f"rpc_http_{resp.status_code}"}
+
+    data = resp.json()
+    receipt = data.get("result")
+    if receipt is None:
+        return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "tx_not_found_or_pending"}
+
+    if receipt.get("status") != "0x1":
+        return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "tx_reverted"}
+
+    # Scan logs for USDC Transfer event matching our requirements
+    payer_padded   = "0x" + payer.lower().lstrip("0x").zfill(64)
+    pay_to_padded  = "0x" + pay_to.lower().lstrip("0x").zfill(64)
+
+    for log in receipt.get("logs", []):
+        topics = log.get("topics", [])
+        if len(topics) < 3:
+            continue
+        if topics[0].lower() != TRANSFER_SIG:
+            continue
+        if topics[1].lower() != payer_padded:
+            continue
+        if topics[2].lower() != pay_to_padded:
+            continue
+        # Decode value from data field (uint256, 32 bytes = 64 hex chars)
+        raw_data = log.get("data", "0x").lstrip("0x")
+        transferred = int(raw_data.zfill(64), 16)
+        if transferred < required_amount_atomic:
+            return {
+                "success": False, "tx_hash": tx_hash, "payer": payer, "network": "",
+                "reason": f"insufficient_transfer: got {transferred}, need {required_amount_atomic}",
+            }
+        logger.info(f"[BASE] On-chain tx verified: {tx_hash[:20]}... transferred={transferred}")
+        return {"success": True, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "ok"}
+
+    return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "no_matching_transfer_event"}
+
+
 async def settle_base_payment(
     payment_signature_header: str,
     payment_requirements: dict,
+    rpc_url: str = "",
 ) -> dict:
     """
-    Verify and settle a Base/EVM payment via the CDP x402 facilitator.
+    Verify and settle a Base/EVM payment.
 
-    The CDP /settle endpoint atomically verifies the EIP-3009 authorization
-    and submits the on-chain transferWithAuthorization transaction.
+    Auto-detects settlement mode from PAYMENT-SIGNATURE content:
+      - Mode B (direct): payload has "tx_hash" → verify on-chain via JSON-RPC
+      - Mode A (CDP):    payload has "payload"  → call CDP /settle
 
     Returns:
         {
@@ -131,6 +210,21 @@ async def settle_base_payment(
     payload, err = _decode_payment_signature(payment_signature_header)
     if err:
         return {"success": False, "tx_hash": "", "payer": "", "network": "", "reason": err}
+
+    # ── Mode B: direct on-chain tx ────────────────────────────────────────────
+    if "tx_hash" in payload:
+        tx_hash = payload.get("tx_hash", "")
+        payer   = payload.get("payer", "")
+        if not tx_hash or not payer:
+            return {"success": False, "tx_hash": "", "payer": "", "network": "", "reason": "tx_hash_or_payer_missing"}
+        rpc = rpc_url or "https://sepolia.base.org"
+        return await verify_base_tx(
+            tx_hash              = tx_hash,
+            payer                = payer,
+            required_amount_atomic = int(payment_requirements.get("amount", "0")),
+            pay_to               = payment_requirements.get("payTo", ""),
+            rpc_url              = rpc,
+        )
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:

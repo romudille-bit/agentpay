@@ -6,3 +6,5 @@ python-dotenv==1.0.0
 pydantic==2.7.0
 pydantic-settings==2.4.0
 slowapi==0.1.9
+# test script only — not needed by gateway
+# web3>=6.0
