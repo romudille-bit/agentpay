@@ -133,7 +133,7 @@ async def _startup():
         if not rows:
             logger.warning("Supabase tools table empty — using in-memory registry")
             return
-        from registry.registry import Tool
+        from registry import Tool
         tools = [
             Tool(
                 name=r["name"],
@@ -390,7 +390,7 @@ async def call_tool(
 @app.post("/tools/register")
 async def register_tool(body: RegisterToolRequest):
     """Register a new MCP tool in the marketplace."""
-    from registry.registry import Tool
+    from registry import Tool
     try:
         tool = Tool(
             name=body.name,
