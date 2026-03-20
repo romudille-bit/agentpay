@@ -971,6 +971,10 @@ async def _real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_defi_tvl(client, params)
             elif tool_name == "token_security":
                 result = await _fetch_token_security(client, params)
+            elif tool_name == "yield_scanner":
+                result = await _fetch_yield_scanner(client, params)
+            elif tool_name == "funding_rates":
+                result = await _fetch_funding_rates(client, params)
             else:
                 result = {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
@@ -1489,6 +1493,179 @@ async def _fetch_token_security(client: httpx.AsyncClient, params: dict) -> dict
         "owner_address":           result.get("owner_address", ""),
         "creator_address":         result.get("creator_address", ""),
         "source":                  "gopluslabs",
+    }
+
+
+async def _fetch_yield_scanner(client: httpx.AsyncClient, params: dict) -> dict:
+    token   = params.get("token", "").strip().upper()
+    chain   = params.get("chain", "").strip().lower()
+    min_tvl = float(params.get("min_tvl", 1_000_000))
+
+    if not token:
+        return {"error": "token parameter is required (e.g. 'ETH', 'USDC')"}
+
+    resp = await client.get("https://yields.llama.fi/pools", timeout=20.0)
+    resp.raise_for_status()
+    pools = resp.json().get("data", [])
+
+    # Filter: symbol contains token, TVL >= min_tvl, apy > 0, not outlier
+    matched = [
+        p for p in pools
+        if token in p.get("symbol", "").upper()
+        and (p.get("tvlUsd") or 0) >= min_tvl
+        and (p.get("apy") or 0) > 0
+        and not p.get("outlier", False)
+    ]
+
+    if chain:
+        matched = [p for p in matched if p.get("chain", "").lower() == chain]
+
+    if not matched:
+        return {"error": f"No yield pools found for {token}" + (f" on {chain}" if chain else "") + f" with TVL >= ${min_tvl:,.0f}"}
+
+    # Sort by APY descending, take top 10
+    matched.sort(key=lambda p: p.get("apy") or 0, reverse=True)
+    top = matched[:10]
+
+    def risk(tvl: float) -> str:
+        if tvl >= 100_000_000:
+            return "low"
+        if tvl >= 10_000_000:
+            return "medium"
+        return "high"
+
+    return {
+        "token":      token,
+        "chain":      chain or "all",
+        "min_tvl":    min_tvl,
+        "pool_count": len(matched),
+        "pools": [
+            {
+                "protocol":   p.get("project"),
+                "chain":      p.get("chain"),
+                "symbol":     p.get("symbol"),
+                "apy":        round(p.get("apy") or 0, 4),
+                "apy_base":   round(p.get("apyBase") or 0, 4),
+                "apy_reward": round(p.get("apyReward") or 0, 4),
+                "tvl_usd":    round(p.get("tvlUsd") or 0, 2),
+                "pool_id":    p.get("pool"),
+                "il_risk":    p.get("ilRisk"),
+                "risk_level": risk(p.get("tvlUsd") or 0),
+            }
+            for p in top
+        ],
+        "source": "defillama-yields",
+    }
+
+
+async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
+    asset = params.get("asset", "").strip().upper()
+
+    # Fetch from Binance, Bybit, OKX in parallel
+    async def _binance() -> list[dict]:
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+        p   = {"symbol": f"{asset}USDT"} if asset else {}
+        r   = await client.get(url, params=p, timeout=10.0)
+        r.raise_for_status()
+        data = r.json()
+        rows = data if isinstance(data, list) else [data]
+        results = []
+        for item in rows:
+            sym = item.get("symbol", "")
+            if not sym.endswith("USDT"):
+                continue
+            ticker = sym[:-4]
+            if asset and ticker != asset:
+                continue
+            rate = float(item.get("lastFundingRate") or 0)
+            results.append({
+                "asset":    ticker,
+                "exchange": "Binance",
+                "funding_rate_pct":    round(rate * 100, 6),
+                "annualized_rate_pct": round(rate * 100 * 3 * 365, 2),
+                "next_funding_time":   item.get("nextFundingTime"),
+            })
+        return results
+
+    async def _bybit() -> list[dict]:
+        sym = f"{asset}USDT" if asset else None
+        p   = {"category": "linear", **({"symbol": sym} if sym else {})}
+        r   = await client.get("https://api.bybit.com/v5/market/tickers", params=p, timeout=10.0)
+        r.raise_for_status()
+        items = r.json().get("result", {}).get("list", [])
+        results = []
+        for item in items:
+            s = item.get("symbol", "")
+            if not s.endswith("USDT"):
+                continue
+            ticker = s[:-4]
+            rate   = float(item.get("fundingRate") or 0)
+            results.append({
+                "asset":    ticker,
+                "exchange": "Bybit",
+                "funding_rate_pct":    round(rate * 100, 6),
+                "annualized_rate_pct": round(rate * 100 * 3 * 365, 2),
+                "next_funding_time":   int(item.get("nextFundingTime") or 0),
+            })
+        return results
+
+    async def _okx() -> list[dict]:
+        # OKX requires a specific instId — only query if asset is given
+        if not asset:
+            return []
+        inst_id = f"{asset}-USD-SWAP"
+        r = await client.get(
+            "https://www.okx.com/api/v5/public/funding-rate",
+            params={"instId": inst_id},
+            timeout=10.0,
+        )
+        r.raise_for_status()
+        items = r.json().get("data", [])
+        results = []
+        for item in items:
+            rate = float(item.get("fundingRate") or 0)
+            results.append({
+                "asset":    asset,
+                "exchange": "OKX",
+                "funding_rate_pct":    round(rate * 100, 6),
+                "annualized_rate_pct": round(rate * 100 * 3 * 365, 2),
+                "next_funding_time":   int(item.get("nextFundingTime") or 0),
+            })
+        return results
+
+    # Run all three in parallel; ignore individual failures
+    results_nested = await asyncio.gather(_binance(), _bybit(), _okx(), return_exceptions=True)
+    rows: list[dict] = []
+    for r in results_nested:
+        if isinstance(r, list):
+            rows.extend(r)
+
+    if not rows:
+        return {"error": f"Could not fetch funding rates" + (f" for {asset}" if asset else "")}
+
+    # Keep top assets by absolute funding rate; limit to 30 rows when no asset specified
+    if not asset:
+        # Show major assets only
+        major = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "ARB", "OP", "MATIC"}
+        rows  = [r for r in rows if r["asset"] in major]
+
+    rows.sort(key=lambda r: abs(r["funding_rate_pct"]), reverse=True)
+
+    def sentiment(rate_pct: float) -> str:
+        if rate_pct < -0.01:
+            return "bullish"   # shorts pay longs → market leans long
+        if rate_pct > 0.05:
+            return "bearish"   # longs pay shorts → overcrowded longs
+        return "neutral"
+
+    for r in rows:
+        r["sentiment"] = sentiment(r["funding_rate_pct"])
+
+    return {
+        "asset":    asset or "major",
+        "rates":    rows,
+        "count":    len(rows),
+        "sources":  ["Binance", "Bybit", "OKX"],
     }
 
 

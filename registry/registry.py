@@ -237,6 +237,58 @@ _TOOLS: dict[str, Tool] = {
         use_when="You need to detect large token transfers that may signal institutional moves, accumulation, or sell-offs.",
         returns="large_transfers[] with from, to, amount, usd_value, minutes_ago; total_volume_usd",
     ),
+    "yield_scanner": Tool(
+        name="yield_scanner",
+        description="Find best DeFi yield opportunities across protocols for a given token",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/yield_scanner",
+        price_usdc="0.004",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        parameters={
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "description": "Token symbol to find yields for, e.g. 'ETH', 'USDC', 'BTC'",
+                },
+                "chain": {
+                    "type": "string",
+                    "description": "Filter by chain: 'ethereum', 'base', 'arbitrum', 'polygon'. Leave empty for all chains.",
+                    "default": "",
+                },
+                "min_tvl": {
+                    "type": "number",
+                    "description": "Minimum pool TVL in USD (default 1,000,000)",
+                    "default": 1000000,
+                },
+            },
+            "required": ["token"],
+        },
+        category="defi",
+        triggers=["yield", "apy", "earn", "interest", "lending", "staking", "defi returns", "best rate"],
+        use_when="You need to find the best yield/APY for a token across DeFi protocols.",
+        returns="list of pools with protocol, apy, tvl_usd, chain, risk_level sorted by APY descending",
+    ),
+    "funding_rates": Tool(
+        name="funding_rates",
+        description="Get perpetual futures funding rates across Binance, Bybit, and OKX",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/funding_rates",
+        price_usdc="0.003",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        parameters={
+            "type": "object",
+            "properties": {
+                "asset": {
+                    "type": "string",
+                    "description": "Token symbol, e.g. 'BTC', 'ETH'. Leave empty for all major assets.",
+                    "default": "",
+                },
+            },
+        },
+        category="defi",
+        triggers=["funding rate", "perp", "perpetual", "long", "short", "futures", "leverage sentiment"],
+        use_when="You need funding rates to gauge leveraged market sentiment or cost of holding a perp position.",
+        returns="funding_rate_pct, annualized_rate_pct, sentiment (bullish/neutral/bearish) per exchange",
+    ),
     "token_security": Tool(
         name="token_security",
         description="Scan any token contract for honeypot, rug pull, and security risks",
