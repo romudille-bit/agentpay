@@ -32,7 +32,6 @@ import textwrap
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from supabase import create_client, Client as SupabaseClient
 
 from x402 import (
     issue_payment_challenge,
@@ -93,59 +92,64 @@ def _cache_set(key: str, value: dict, ttl: int) -> None:
     _cache[key] = (_time.monotonic() + ttl, value)
 
 
-# ── Supabase client (optional — gateway falls back to in-memory if unavailable) ─
-_supabase: SupabaseClient | None = None
+# ── Supabase helpers (raw httpx — works with sb_publishable_ key format) ──────
+
+def _sb_headers() -> dict:
+    """Headers for Supabase REST API calls."""
+    return {
+        "apikey":        settings.SUPABASE_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        "Content-Type":  "application/json",
+        "Prefer":        "return=minimal",
+    }
 
 
-def _get_supabase() -> SupabaseClient | None:
-    return _supabase
-
-
-async def _run_sync(fn):
-    """Run a blocking supabase call in a thread-pool so we don't block the event loop."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, fn)
+def _sb_enabled() -> bool:
+    return bool(settings.SUPABASE_URL and settings.SUPABASE_KEY)
 
 
 @app.on_event("startup")
 async def _startup():
-    global _supabase
-    if not (settings.SUPABASE_URL and settings.SUPABASE_KEY):
+    if not _sb_enabled():
         logger.info("Supabase not configured — using in-memory registry")
         return
     try:
-        _supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        resp = await _run_sync(
-            lambda: _supabase.table("tools").select("*").eq("active", True).execute()
-        )
-        rows = resp.data or []
-        if rows:
-            from registry.registry import Tool
-            tools = [
-                Tool(
-                    name=r["name"],
-                    description=r.get("description", ""),
-                    endpoint=r.get("endpoint", ""),
-                    price_usdc=r.get("price_usdc", "0"),
-                    developer_address=r.get("developer_address", ""),
-                    parameters=r.get("parameters", {}),
-                    category=r.get("category", "data"),
-                    active=r.get("active", True),
-                    uptime_pct=r.get("uptime_pct", 100.0),
-                    total_calls=r.get("total_calls", 0),
-                    triggers=r.get("triggers", []),
-                    use_when=r.get("use_when", ""),
-                    returns=r.get("returns", ""),
-                )
-                for r in rows
-            ]
-            reload_tools(tools)
-            logger.info(f"Loaded {len(tools)} tools from Supabase")
-        else:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/tools",
+                headers=_sb_headers(),
+                params={"select": "*", "active": "eq.true"},
+            )
+        if resp.status_code != 200:
+            logger.warning(f"Supabase tools fetch failed ({resp.status_code}) — using in-memory registry")
+            return
+        rows = resp.json()
+        if not rows:
             logger.warning("Supabase tools table empty — using in-memory registry")
+            return
+        from registry.registry import Tool
+        tools = [
+            Tool(
+                name=r["name"],
+                description=r.get("description", ""),
+                endpoint=r.get("endpoint", ""),
+                price_usdc=r.get("price_usdc", "0"),
+                developer_address=r.get("developer_address", ""),
+                parameters=r.get("parameters", {}),
+                category=r.get("category", "data"),
+                active=r.get("active", True),
+                uptime_pct=r.get("uptime_pct", 100.0),
+                total_calls=r.get("total_calls", 0),
+                triggers=r.get("triggers", []),
+                use_when=r.get("use_when", ""),
+                returns=r.get("returns", ""),
+            )
+            for r in rows
+        ]
+        reload_tools(tools)
+        logger.info(f"Loaded {len(tools)} tools from Supabase")
     except Exception as e:
         logger.warning(f"Supabase unavailable ({e}) — using in-memory registry")
-        _supabase = None
 
 
 async def _log_payment(
@@ -156,17 +160,22 @@ async def _log_payment(
     tx_hash: str,
 ) -> None:
     """Fire-and-forget: log a completed payment to Supabase."""
-    if not _supabase:
+    if not _sb_enabled():
         return
     try:
-        await _run_sync(lambda: _supabase.table("payment_logs").insert({
-            "payment_id":    payment_id,
-            "tool_name":     tool_name,
-            "agent_address": agent_address,
-            "amount_usdc":   amount_usdc,
-            "tx_hash":       tx_hash,
-            "status":        "completed",
-        }).execute())
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=_sb_headers(),
+                json={
+                    "payment_id":    payment_id,
+                    "tool_name":     tool_name,
+                    "agent_address": agent_address,
+                    "amount_usdc":   amount_usdc,
+                    "tx_hash":       tx_hash,
+                    "status":        "completed",
+                },
+            )
     except Exception as e:
         logger.warning(f"Payment log to Supabase failed: {e}")
 
@@ -521,9 +530,11 @@ async def _provision_wallet(base_url: str) -> dict:
     keypair    = Keypair.random()
     public_key = keypair.public_key
     secret_key = keypair.secret
+    logger.info(f"[FAUCET] step=1/5 generated keypair {public_key[:8]}...")
 
     # ── 2. Fund with XLM via Friendbot ───────────────────────────────────────
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    logger.info(f"[FAUCET] step=2/5 calling Friendbot")
+    async with httpx.AsyncClient(timeout=60.0) as client:
         fb = await client.get(
             "https://friendbot.stellar.org/",
             params={"addr": public_key},
@@ -533,8 +544,10 @@ async def _provision_wallet(base_url: str) -> dict:
             status_code=502,
             detail=f"Friendbot failed: {fb.text[:200]}",
         )
+    logger.info(f"[FAUCET] step=2/5 Friendbot OK")
 
     # ── 3. Add USDC trustline (signed by new wallet) ──────────────────────────
+    logger.info(f"[FAUCET] step=3/5 adding USDC trustline")
     new_account = server.load_account(public_key)
     trust_tx = (
         TransactionBuilder(
@@ -548,8 +561,10 @@ async def _provision_wallet(base_url: str) -> dict:
     )
     trust_tx.sign(keypair)
     server.submit_transaction(trust_tx)
+    logger.info(f"[FAUCET] step=3/5 trustline submitted")
 
     # ── 4. Send 1 USDC from gateway (with balance guard) ─────────────────────
+    logger.info(f"[FAUCET] step=4/5 checking gateway balance and sending 1 USDC")
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
     from stellar import get_usdc_balance
     gateway_usdc = Decimal(get_usdc_balance(gateway_keypair.public_key))
@@ -578,8 +593,10 @@ async def _provision_wallet(base_url: str) -> dict:
     )
     pay_tx.sign(gateway_keypair)
     server.submit_transaction(pay_tx)
+    logger.info(f"[FAUCET] step=4/5 USDC sent")
 
     # ── 5. Read balances ──────────────────────────────────────────────────────
+    logger.info(f"[FAUCET] step=5/5 reading final balances")
     funded = server.load_account(public_key)
     xlm_balance  = "0"
     usdc_balance = "0"
@@ -611,6 +628,7 @@ async def _provision_wallet(base_url: str) -> dict:
             print(f"Spent: {{session.spent()}}  Remaining: {{session.remaining()}}")
     """)
 
+    logger.info(f"[FAUCET] done — wallet {public_key[:8]}... usdc={usdc_balance} xlm={xlm_balance}")
     return {
         "public_key":   public_key,
         "secret_key":   secret_key,
