@@ -237,6 +237,33 @@ _TOOLS: dict[str, Tool] = {
         use_when="You need to detect large token transfers that may signal institutional moves, accumulation, or sell-offs.",
         returns="large_transfers[] with from, to, amount, usd_value, minutes_ago; total_volume_usd",
     ),
+    "token_security": Tool(
+        name="token_security",
+        description="Scan any token contract for honeypot, rug pull, and security risks",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/token_security",
+        price_usdc="0.002",
+        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        parameters={
+            "type": "object",
+            "properties": {
+                "contract_address": {
+                    "type": "string",
+                    "description": "Token contract address (0x...)",
+                },
+                "chain": {
+                    "type": "string",
+                    "enum": ["ethereum", "bsc"],
+                    "description": "Blockchain to query (default: ethereum)",
+                    "default": "ethereum",
+                },
+            },
+            "required": ["contract_address"],
+        },
+        category="security",
+        triggers=["rug", "honeypot", "safe", "scam", "contract risk", "token security", "is this safe", "audit"],
+        use_when="You need to check if a token contract is safe before trading or investing.",
+        returns="risk_level, is_honeypot, buy_tax, sell_tax, holder_count, owner_address, is_mintable, can_take_back_ownership",
+    ),
 }
 
 
