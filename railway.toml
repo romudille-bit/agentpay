@@ -2,6 +2,9 @@
 builder = "nixpacks"
 
 [deploy]
+# sh -c wrapper is required: Nixpacks generates CMD in exec form when a Dockerfile
+# is present in the repo, which prevents shell variable expansion of $PORT.
+# Keeping the wrapper here ensures $PORT is always expanded regardless of build context.
 startCommand = "sh -c 'uvicorn gateway.main:app --host 0.0.0.0 --port $PORT'"
 healthcheckPath = "/health"
 healthcheckTimeout = 120
