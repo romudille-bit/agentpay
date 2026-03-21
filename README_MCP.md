@@ -2,7 +2,7 @@
 
 Give Claude Desktop direct access to live crypto data — prices, gas, whale activity, DeFi TVL, and more. Payments happen automatically in USDC on Stellar.
 
-**9 tools. $0.001–$0.005 per call. No API keys needed.**
+**12 tools. $0.001–$0.005 per call. No API keys needed.**
 
 ---
 
@@ -71,7 +71,10 @@ The AgentPay tools will appear in the tools panel. Try asking:
 | `wallet_balance` | $0.002 | Token balances for any Ethereum or Stellar address |
 | `whale_activity` | $0.002 | Large transfers for a token (≥$100k by default) |
 | `defi_tvl` | $0.002 | DeFi protocol TVL from DeFiLlama |
+| `token_security` | $0.002 | Honeypot, rug pull, and security scan for any token contract |
+| `yield_scanner` | $0.004 | Best DeFi yield opportunities for a token across protocols |
 | `dex_liquidity` | $0.003 | 24h volume, market cap, ATH for a token pair |
+| `funding_rates` | $0.003 | Perp funding rates across Binance, Bybit, and OKX |
 | `crypto_news` | $0.003 | Latest headlines and community sentiment |
 | `dune_query` | $0.005 | Run any Dune Analytics query by ID |
 
