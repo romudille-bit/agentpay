@@ -5,7 +5,7 @@ AgentPay is an open x402 payment gateway that lets AI agents autonomously access
 No subscriptions. No API keys. No human in the loop.
 Agents discover tools, pay per call ($0.001–$0.005), and get real data back — all within a hard budget cap.
 
-→ **10 live tools**: token prices, whale activity, gas tracker, DeFi TVL, Fear & Greed, token security, Dune queries and more
+→ **12 live tools**: token prices, whale activity, gas tracker, DeFi TVL, Fear & Greed, yield scanner, funding rates, token security, Dune queries and more
 → **Budget-aware Session**: agents estimate costs, track spend, never exceed budget
 → **x402 protocol**: works with any x402-compatible agent
 → **Two payment networks**: Stellar (5s, $0.00001 fee) or Base mainnet USDC (2s, $0.0001 fee)
@@ -103,7 +103,9 @@ Each `session.call()` handles the full x402 flow internally:
 | `whale_activity` | $0.002 | `token`, `min_usd` (default 100k) | large_transfers[ ], total_volume_usd |
 | `defi_tvl` | $0.002 | `protocol` (optional, e.g. "uniswap") | tvl, change_1d, change_7d, chains[ ] |
 | `token_security` | $0.002 | `contract_address`, `chain` (ethereum/bsc) | risk_level, is_honeypot, buy_tax, sell_tax, holder_count |
+| `yield_scanner` | $0.004 | `token`, `chain` (optional), `min_tvl` (default $1M) | top 10 pools by APY with protocol, tvl_usd, risk_level |
 | `dex_liquidity` | $0.003 | `token_a`, `token_b` | volume_24h_usd, market_cap_usd, ath_usd |
+| `funding_rates` | $0.003 | `asset` (optional, e.g. "BTC") | funding_rate_pct, annualized_rate_pct, sentiment per exchange |
 | `crypto_news` | $0.003 | `currencies` (e.g. "ETH,BTC"), `filter` (hot/new/rising) | headlines[ ] with title, url, sentiment, score |
 | `dune_query` | $0.005 | `query_id`, `limit` (default 25) | rows[ ], columns[ ], row_count from Dune Analytics |
 
@@ -142,7 +144,7 @@ Base payments use Mode B direct on-chain settlement: the client calls `transferW
 
 ## MCP Server
 
-AgentPay ships a Model Context Protocol server that gives Claude Desktop direct access to all 10 tools. Payments happen automatically in the background using Stellar USDC.
+AgentPay ships a Model Context Protocol server that gives Claude Desktop direct access to all 12 tools. Payments happen automatically in the background using Stellar USDC.
 
 See **[README_MCP.md](README_MCP.md)** for setup instructions.
 
@@ -267,7 +269,7 @@ agent (Python SDK)
     ▼
 gateway (FastAPI on Railway)
     │
-    ├── registry/registry.py   — 10-tool catalog with prices & dev wallets
+    ├── registry/registry.py   — 12-tool catalog with prices & dev wallets
     ├── gateway/stellar.py     — Stellar payment verification via Horizon
     ├── gateway/base.py        — Base payment verification via JSON-RPC
     └── gateway/main.py        — real API dispatchers
@@ -277,7 +279,9 @@ gateway (FastAPI on Railway)
             ├── alternative.me fear_greed_index
             ├── Reddit         crypto_news
             ├── Dune Analytics dune_query
-            └── GoPlus         token_security
+            ├── GoPlus         token_security
+            ├── DeFiLlama      yield_scanner
+            └── Binance/Bybit/OKX funding_rates
 ```
 
 **Fee model**: Gateway charges 15% (`GATEWAY_FEE_PERCENT=0.15`), forwards the rest to each tool developer's Stellar wallet. All payments settle on-chain in ~2–5 seconds.
@@ -295,4 +299,4 @@ AgentPay is discoverable by autonomous agents at standard discovery paths:
 
 Any x402-compatible agent can discover and use AgentPay tools without human setup.
 
-All 10 AgentPay tools are also indexed on [x402scout](https://x402scout.com) under `network: stellar-testnet`.
+All 12 AgentPay tools are also indexed on [x402scout](https://x402scout.com) under `network: stellar-testnet`.
