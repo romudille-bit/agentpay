@@ -207,7 +207,7 @@ class RegisterToolRequest(BaseModel):
     category: str = "data"
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
