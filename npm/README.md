@@ -1,4 +1,4 @@
-# agentpay-mcp
+# @romudille/agentpay-mcp
 
 AgentPay MCP server — 12 crypto data tools for AI agents.
 Pay per call in USDC on Stellar or Base. No API keys.
@@ -12,7 +12,7 @@ Add to Claude Desktop config:
   "mcpServers": {
     "agentpay": {
       "command": "npx",
-      "args": ["agentpay-mcp"]
+      "args": ["@romudille/agentpay-mcp"]
     }
   }
 }
