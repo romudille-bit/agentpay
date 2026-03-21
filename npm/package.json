@@ -1,16 +1,26 @@
 {
   "name": "@romudille/agentpay-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AgentPay MCP server — 12 crypto data tools for AI agents, pay per call in USDC on Stellar or Base",
   "bin": {
-    "agentpay-mcp": "./bin/agentpay-mcp.js"
+    "agentpay-mcp": "bin/agentpay-mcp.js"
   },
-  "keywords": ["mcp", "x402", "crypto", "stellar", "base", "ai-agents", "defi"],
+  "keywords": [
+    "mcp",
+    "x402",
+    "crypto",
+    "stellar",
+    "base",
+    "ai-agents",
+    "defi"
+  ],
   "author": "romudille",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/romudille-bit/agentpay"
+    "url": "git+https://github.com/romudille-bit/agentpay.git"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }
