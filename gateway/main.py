@@ -209,6 +209,21 @@ class RegisterToolRequest(BaseModel):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+@app.get("/")
+async def root():
+    return {
+        "name":             "AgentPay",
+        "tagline":          "Your agent is only as smart as its data",
+        "version":          "1.0",
+        "tools":            12,
+        "docs":             "https://github.com/romudille-bit/agentpay",
+        "tools_endpoint":   "https://gateway-production-2cc2.up.railway.app/tools",
+        "faucet":           "https://gateway-production-2cc2.up.railway.app/faucet",
+        "discovery":        "https://gateway-production-2cc2.up.railway.app/.well-known/agentpay.json",
+        "payment_networks": ["stellar", "base"],
+    }
+
+
 @app.get("/health")
 async def health():
     return {
