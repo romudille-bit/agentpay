@@ -231,6 +231,7 @@ async def health():
         "network": settings.STELLAR_NETWORK,
         "gateway_address": settings.GATEWAY_PUBLIC_KEY or "NOT_CONFIGURED",
         "pending_payments": get_pending_count(),
+        "code_version": "v12-with-root",
     }
 
 
