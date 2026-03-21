@@ -570,6 +570,51 @@ async def well_known_agent():
     }
 
 
+@app.get("/.well-known/l402-services")
+async def well_known_l402_services():
+    """402index.io discovery document — lists all paid endpoints with pricing and request schemas."""
+    tools = registry.list_tools()
+
+    def _request_body(tool) -> dict:
+        """Convert JSON-Schema parameters to 402index request_body format."""
+        props = tool.parameters.get("properties", {})
+        required = tool.parameters.get("required", [])
+        return {
+            field: {
+                **spec,
+                "required": field in required,
+            }
+            for field, spec in props.items()
+        }
+
+    return {
+        "version": "0.2.0",
+        "name": "AgentPay",
+        "description": "Real-time crypto data for AI agents. Pay per call in USDC on Stellar or Base. No API keys.",
+        "homepage": GATEWAY_URL,
+        "protocol": "x402",
+        "protocols": ["x402"],
+        "payment_network": "stellar",
+        "services": [
+            {
+                "id": t.name,
+                "name": t.name.replace("_", " ").title(),
+                "description": t.description,
+                "endpoint": f"{GATEWAY_URL}/tools/{t.name}/call",
+                "method": "POST",
+                "content_type": "application/json",
+                "pricing": {
+                    "amount": float(t.price_usdc),
+                    "currency": "USD",
+                    "type": "fixed",
+                },
+                "request_body": _request_body(t),
+            }
+            for t in tools
+        ],
+    }
+
+
 @app.get("/sitemap.xml", response_class=Response)
 async def sitemap():
     tools = registry.list_tools()
