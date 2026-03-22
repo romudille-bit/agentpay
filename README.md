@@ -8,7 +8,7 @@ Agents discover tools, pay per call ($0.001–$0.005), and get real data back �
 → **12 live tools**: token prices, whale activity, gas tracker, DeFi TVL, Fear & Greed, yield scanner, funding rates, token security, Dune queries and more
 → **Budget-aware Session**: agents estimate costs, track spend, never exceed budget
 → **x402 protocol**: works with any x402-compatible agent
-→ **Two payment networks**: Stellar (5s, $0.00001 fee) or Base mainnet USDC (2s, $0.0001 fee)
+→ **Stellar + Base**: pay with USDC on either network — Stellar (5s, $0.00001 fee) or Base mainnet (2s, $0.0001 fee)
 
 **Try it in 60 seconds:**
 ```bash
