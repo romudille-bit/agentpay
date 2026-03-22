@@ -408,12 +408,16 @@ async def call_tool(
         if not agent_address:
             raise HTTPException(status_code=400, detail="agent_address required (body or X-Agent-Address header)")
 
+        agent_short = (agent_address or "unknown")[:8]
+        logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... verifying X-Payment header")
         auth = await verify_and_fulfill(payment_header=x_payment, agent_address=agent_address)
         if not auth["authorized"]:
+            logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=FAILED reason={auth['reason']}")
             return JSONResponse(
                 status_code=402,
                 content={"error": "Payment verification failed", "reason": auth["reason"]},
             )
+        logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=OK tx={auth.get('tx_hash','')[:16]}")
 
     # ── Step 2b: Base/EVM payment (Mode A: CDP facilitator, Mode B: on-chain tx) ─
     elif payment_signature:
@@ -426,15 +430,17 @@ async def call_tool(
             resource_url=resource_url,
             network=settings.BASE_NETWORK,
         )
+        logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
         result = await base_pay.settle_base_payment(
             payment_signature, base_req, rpc_url=settings.BASE_RPC_URL
         )
         if not result["success"]:
+            logger.info(f"[PAYMENT] tool={tool_name} network=base status=FAILED reason={result['reason']}")
             return JSONResponse(
                 status_code=402,
                 content={"error": "Base payment settlement failed", "reason": result["reason"]},
             )
-        logger.info(f"[CALL] tool={tool_name} agent={result['payer'][:8]}... status=base_settled tx={result['tx_hash'][:16]}")
+        logger.info(f"[PAYMENT] tool={tool_name} network=base agent={result['payer'][:8]}... status=OK tx={result['tx_hash'][:16]}")
         auth = {
             "authorized": True,
             "tx_hash":    result["tx_hash"],
