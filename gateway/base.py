@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 FACILITATOR_URL = "https://x402.coinbase.com"
 
+# In-memory replay protection for Base tx hashes
+_used_base_tx_hashes: set[str] = set()
+
 # USDC contract addresses
 USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
 USDC_BASE_MAINNET = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -217,14 +220,18 @@ async def settle_base_payment(
         payer   = payload.get("payer", "")
         if not tx_hash or not payer:
             return {"success": False, "tx_hash": "", "payer": "", "network": "", "reason": "tx_hash_or_payer_missing"}
-        rpc = rpc_url or "https://sepolia.base.org"
-        return await verify_base_tx(
+        if tx_hash in _used_base_tx_hashes:
+            return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "replay_attack"}
+        result = await verify_base_tx(
             tx_hash              = tx_hash,
             payer                = payer,
             required_amount_atomic = int(payment_requirements.get("amount", "0")),
             pay_to               = payment_requirements.get("payTo", ""),
             rpc_url              = rpc,
         )
+        if result["success"]:
+            _used_base_tx_hashes.add(tx_hash)
+        return result
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
