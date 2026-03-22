@@ -163,9 +163,15 @@ async def _startup():
                 triggers=r.get("triggers", []),
                 use_when=r.get("use_when", ""),
                 returns=r.get("returns", ""),
+                response_example=r.get("response_example"),
             )
             for r in rows
         ]
+        # Merge response_example from seed registry for any tools missing it in Supabase
+        from registry import _TOOLS as _SEED
+        for t in tools:
+            if t.response_example is None and t.name in _SEED:
+                t.response_example = _SEED[t.name].response_example
         reload_tools(tools)
         logger.info(f"Loaded {len(tools)} tools from Supabase")
     except Exception as e:
