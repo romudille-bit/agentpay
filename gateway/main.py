@@ -365,7 +365,8 @@ async def call_tool(
             "instructions": (
                 f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
                 f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
-                f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}"
+                f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}. "
+                f"No Stellar wallet? Get a free funded testnet wallet instantly: {GATEWAY_URL}/faucet"
             ),
             # ── Structured options for multi-chain clients ────────────────────
             "payment_options": {
