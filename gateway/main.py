@@ -642,6 +642,18 @@ async def well_known_l402_services():
     }
 
 
+@app.get("/robots.txt", response_class=Response)
+async def robots():
+    return Response(
+        content=(
+            "User-agent: *\n"
+            "Allow: /\n"
+            f"Sitemap: {GATEWAY_URL}/sitemap.xml\n"
+        ),
+        media_type="text/plain",
+    )
+
+
 @app.get("/sitemap.xml", response_class=Response)
 async def sitemap():
     tools = registry.list_tools()
