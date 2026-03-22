@@ -115,8 +115,21 @@ def _sb_enabled() -> bool:
     return bool(settings.SUPABASE_URL and settings.SUPABASE_KEY)
 
 
+async def _keepalive_loop():
+    """Ping /health every 5 minutes to prevent Railway cold-start."""
+    await asyncio.sleep(60)  # wait for full startup before first ping
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.get(f"{GATEWAY_URL}/health")
+        except Exception:
+            pass  # silent — keepalive is best-effort
+        await asyncio.sleep(300)  # 5 minutes
+
+
 @app.on_event("startup")
 async def _startup():
+    asyncio.create_task(_keepalive_loop())
     if not _sb_enabled():
         logger.info("Supabase not configured — using in-memory registry")
         return
