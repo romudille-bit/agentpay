@@ -6,7 +6,7 @@ MVP uses in-memory dict. Swap for Supabase in production.
 """
 
 from dataclasses import dataclass, asdict, field
-from typing import Optional
+from typing import Optional, Any
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ class Tool:
     triggers: list = field(default_factory=list)   # Keywords that should cause an agent to consider this tool
     use_when: str = ""                              # Plain English: when to call this tool
     returns: str = ""                              # What the tool gives back
+    response_example: Any = field(default=None)    # Real example of the response shape
 
 
 # ── Seed Data (MVP hardcoded tools) ──────────────────────────────────────────
@@ -53,6 +54,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["price", "how much is", "what is btc", "token value", "crypto price", "usd", "market price", "worth"],
         use_when="You need the current USD price, 24h change, or market cap of any cryptocurrency.",
         returns="price_usd, change_24h_pct, market_cap_usd, coin_id",
+        response_example={"symbol": "ETH", "price_usd": 2069.73, "change_24h_pct": -4.04, "market_cap_usd": 250330787714.19, "source": "coingecko"},
     ),
     "wallet_balance": Tool(
         name="wallet_balance",
@@ -79,6 +81,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["wallet", "balance", "holdings", "portfolio", "address", "how much does", "tokens in wallet"],
         use_when="You need to look up the token holdings of an Ethereum or Stellar wallet address.",
         returns="list of token balances (symbol, amount) for the given address",
+        response_example={"address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", "chain": "ethereum", "balances": [{"token": "ETH", "amount": "1.234"}, {"token": "USDC", "contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "amount": "500.00"}]},
     ),
     "dex_liquidity": Tool(
         name="dex_liquidity",
@@ -98,6 +101,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["liquidity", "volume", "dex", "trading volume", "slippage", "market depth", "uniswap", "all-time high", "ath"],
         use_when="You need 24h trading volume, market cap, or all-time high for a token pair on decentralized exchanges.",
         returns="volume_24h_usd, market_cap_usd, price_usd, ath_usd, price_change_24h_pct",
+        response_example={"token_a": "ETH", "token_b": "USDC", "price_usd": 2071.45, "volume_24h_usd": 312847293.0, "market_cap_usd": 249800000000.0, "ath_usd": 4878.26, "price_change_24h_pct": -3.91, "source": "coingecko"},
     ),
     "gas_tracker": Tool(
         name="gas_tracker",
@@ -113,6 +117,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["gas", "gwei", "transaction fee", "ethereum fee", "network congestion", "gas price", "eth fee"],
         use_when="You need to know current Ethereum gas prices before submitting a transaction or estimating costs.",
         returns="slow_gwei, standard_gwei, fast_gwei, base_fee_gwei, estimated confirmation times",
+        response_example={"slow_gwei": 1.5, "standard_gwei": 2.0, "fast_gwei": 3.0, "base_fee_gwei": 1.2, "source": "etherscan"},
     ),
     "dune_query": Tool(
         name="dune_query",
@@ -144,6 +149,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["dune", "onchain", "sql", "analytics", "custom query", "blockchain data", "onchain metrics", "protocol stats"],
         use_when="You need deep onchain analytics from a specific Dune query — protocol revenue, user counts, custom metrics.",
         returns="rows[], columns[], row_count, generated_at from the Dune Analytics query result",
+        response_example={"query_id": 3810512, "row_count": 2, "columns": ["protocol", "revenue_usd"], "rows": [{"protocol": "Uniswap V3", "revenue_usd": 1243800.0}, {"protocol": "Aave V3", "revenue_usd": 987200.0}], "generated_at": "2026-03-22T00:00:00Z", "source": "dune"},
     ),
     "fear_greed_index": Tool(
         name="fear_greed_index",
@@ -165,6 +171,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["fear", "greed", "sentiment", "market mood", "investor sentiment", "bullish", "bearish", "panic", "fomo"],
         use_when="You need to gauge overall crypto market sentiment or mood — whether the market is fearful or greedy.",
         returns="value (0–100), value_classification (e.g. 'Greed'), optional history[]",
+        response_example={"value": 10, "value_classification": "Extreme Fear", "timestamp": 1774137600, "source": "alternative.me"},
     ),
     "crypto_news": Tool(
         name="crypto_news",
@@ -192,6 +199,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["news", "headlines", "what's happening", "latest", "trending", "community", "reddit", "narrative", "buzz"],
         use_when="You need recent news headlines or community sentiment for one or more crypto tokens.",
         returns="headlines[] with title, url, sentiment (bullish/neutral/bearish), score, published_at",
+        response_example={"currencies": "ETH", "headlines": [{"title": "Ethereum devs confirm Pectra upgrade timeline", "url": "https://reddit.com/r/CryptoCurrency/...", "sentiment": "bullish", "score": 1842, "published_at": "2026-03-22T08:14:00Z"}, {"title": "ETH gas fees drop to yearly lows", "url": "https://reddit.com/r/CryptoCurrency/...", "sentiment": "bullish", "score": 934, "published_at": "2026-03-22T06:31:00Z"}], "source": "reddit"},
     ),
     "defi_tvl": Tool(
         name="defi_tvl",
@@ -213,6 +221,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["tvl", "total value locked", "defi", "protocol", "aave", "uniswap", "lido", "compound", "locked funds"],
         use_when="You need the Total Value Locked in a specific DeFi protocol or want to compare the top protocols by TVL.",
         returns="tvl, change_1h, change_1d, change_7d, chains[], category for the protocol (or top 10 list)",
+        response_example={"protocol": "aave", "tvl": 23800000000.0, "change_1h": 0.12, "change_1d": -1.43, "change_7d": 3.21, "chains": ["Ethereum", "Polygon", "Avalanche", "Base"], "category": "Lending", "source": "defillama"},
     ),
     "whale_activity": Tool(
         name="whale_activity",
@@ -236,6 +245,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["whale", "large transfer", "big move", "institutional", "smart money", "accumulation", "dump", "sell-off"],
         use_when="You need to detect large token transfers that may signal institutional moves, accumulation, or sell-offs.",
         returns="large_transfers[] with from, to, amount, usd_value, minutes_ago; total_volume_usd",
+        response_example={"token": "USDC", "large_transfers": [{"from": "0xabc...1234", "to": "0xdef...5678", "amount": 5000000.0, "usd_value": 5000000.0, "minutes_ago": 12}, {"from": "0x111...aaaa", "to": "0x222...bbbb", "amount": 2500000.0, "usd_value": 2500000.0, "minutes_ago": 34}], "total_volume_usd": 7500000.0, "source": "etherscan"},
     ),
     "yield_scanner": Tool(
         name="yield_scanner",
@@ -267,6 +277,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["yield", "apy", "earn", "interest", "lending", "staking", "defi returns", "best rate"],
         use_when="You need to find the best yield/APY for a token across DeFi protocols.",
         returns="list of pools with protocol, apy, tvl_usd, chain, risk_level sorted by APY descending",
+        response_example={"token": "USDC", "pools": [{"protocol": "morpho", "apy": 8.74, "tvl_usd": 312000000.0, "chain": "Ethereum", "risk_level": "low"}, {"protocol": "aave-v3", "apy": 5.21, "tvl_usd": 1840000000.0, "chain": "Ethereum", "risk_level": "low"}, {"protocol": "compound-v3", "apy": 4.87, "tvl_usd": 920000000.0, "chain": "Ethereum", "risk_level": "low"}], "source": "defillama"},
     ),
     "funding_rates": Tool(
         name="funding_rates",
@@ -288,6 +299,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["funding rate", "perp", "perpetual", "long", "short", "futures", "leverage sentiment"],
         use_when="You need funding rates to gauge leveraged market sentiment or cost of holding a perp position.",
         returns="funding_rate_pct, annualized_rate_pct, sentiment (bullish/neutral/bearish) per exchange",
+        response_example={"asset": "BTC", "rates": [{"exchange": "binance", "funding_rate_pct": 0.012, "annualized_rate_pct": 13.14, "sentiment": "bullish"}, {"exchange": "bybit", "funding_rate_pct": 0.011, "annualized_rate_pct": 12.04, "sentiment": "bullish"}, {"exchange": "okx", "funding_rate_pct": 0.009, "annualized_rate_pct": 9.85, "sentiment": "neutral"}], "source": "binance/bybit/okx"},
     ),
     "token_security": Tool(
         name="token_security",
@@ -315,6 +327,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["rug", "honeypot", "safe", "scam", "contract risk", "token security", "is this safe", "audit"],
         use_when="You need to check if a token contract is safe before trading or investing.",
         returns="risk_level, is_honeypot, buy_tax, sell_tax, holder_count, owner_address, is_mintable, can_take_back_ownership",
+        response_example={"contract_address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "chain": "ethereum", "risk_level": "low", "is_honeypot": False, "buy_tax": 0.0, "sell_tax": 0.0, "holder_count": 842341, "is_mintable": False, "can_take_back_ownership": False, "source": "goplus"},
     ),
 }
 

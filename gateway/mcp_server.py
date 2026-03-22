@@ -178,6 +178,9 @@ async def list_tools() -> list[types.Tool]:
             desc += f"\n\nUse when: {t['use_when']}"
         if t.get("returns"):
             desc += f"\nReturns: {t['returns']}"
+        if t.get("response_example"):
+            import json as _json
+            desc += f"\nExample response: {_json.dumps(t['response_example'])}"
         desc += f"\n\nPrice: ${t['price_usdc']} USDC per call"
 
         input_schema = t.get("parameters") or {"type": "object", "properties": {}}
