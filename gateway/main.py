@@ -547,6 +547,7 @@ async def well_known_agentpay():
                 "triggers": t.triggers,
                 "use_when": t.use_when,
                 "returns": t.returns,
+                "response_example": t.response_example,
             }
             for t in tools
         ],
