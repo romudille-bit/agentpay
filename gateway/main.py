@@ -412,7 +412,8 @@ async def call_tool(
         logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... verifying X-Payment header")
         auth = await verify_and_fulfill(payment_header=x_payment, agent_address=agent_address)
         if not auth["authorized"]:
-            logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=FAILED reason={auth['reason']}")
+            status = "REPLAY_ATTACK" if "replay" in auth["reason"].lower() else "FAILED"
+            logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status={status} reason={auth['reason']}")
             return JSONResponse(
                 status_code=402,
                 content={"error": "Payment verification failed", "reason": auth["reason"]},
@@ -435,7 +436,8 @@ async def call_tool(
             payment_signature, base_req, rpc_url=settings.BASE_RPC_URL
         )
         if not result["success"]:
-            logger.info(f"[PAYMENT] tool={tool_name} network=base status=FAILED reason={result['reason']}")
+            status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"
+            logger.info(f"[PAYMENT] tool={tool_name} network=base status={status} reason={result['reason']}")
             return JSONResponse(
                 status_code=402,
                 content={"error": "Base payment settlement failed", "reason": result["reason"]},
