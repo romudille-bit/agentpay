@@ -58,7 +58,24 @@ function findMcpServer() {
   process.exit(1);
 }
 
-// ── 4. Call faucet to create a new testnet wallet ────
+// ── 4. Check gateway network ──────────────────────────
+function checkGatewayNetwork() {
+  return new Promise((resolve, reject) => {
+    https.get(`${GATEWAY_URL}/health`, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          reject(new Error('Failed to parse /health response'));
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
+// ── 5. Call faucet to create a new testnet wallet ────
 function createTestnetWallet() {
   return new Promise((resolve, reject) => {
     https.get(`${GATEWAY_URL}/faucet`, (res) => {
@@ -96,6 +113,25 @@ async function main() {
     console.log('✓ Using Base mainnet wallet');
 
   } else {
+    console.log('🔍 Checking gateway network...');
+    try {
+      const health = await checkGatewayNetwork();
+      if (health.network === 'mainnet') {
+        console.log('');
+        console.log('⚠️  This gateway is running on mainnet.');
+        console.log('   The faucet is not available on mainnet.');
+        console.log('');
+        console.log('   To use AgentPay on mainnet, fund a Stellar wallet');
+        console.log('   with USDC and set your secret key:');
+        console.log('');
+        console.log('     STELLAR_SECRET_KEY=<your-secret-key> npx agentpay-mcp');
+        console.log('');
+        console.log('   Docs: https://github.com/romudille-bit/agentpay');
+        process.exit(0);
+      }
+    } catch (err) {
+      console.error('⚠️  Could not reach gateway /health:', err.message);
+    }
     console.log('🪙 No wallet configured — creating a free testnet wallet...');
     try {
       const wallet = await createTestnetWallet();

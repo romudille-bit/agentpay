@@ -39,7 +39,7 @@ _TOOLS: dict[str, Tool] = {
         description="Get the current USD price of any cryptocurrency token",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/token_price",
         price_usdc="0.001",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -61,7 +61,7 @@ _TOOLS: dict[str, Tool] = {
         description="Get the token balances for any Ethereum or Stellar wallet address",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/wallet_balance",
         price_usdc="0.002",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -88,7 +88,7 @@ _TOOLS: dict[str, Tool] = {
         description="Get liquidity depth and volume for a token pair on DEXs",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/dex_liquidity",
         price_usdc="0.003",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -108,7 +108,7 @@ _TOOLS: dict[str, Tool] = {
         description="Get current Ethereum gas prices (slow, standard, fast)",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/gas_tracker",
         price_usdc="0.001",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {},
@@ -124,7 +124,7 @@ _TOOLS: dict[str, Tool] = {
         description="Run any Dune Analytics query and return live onchain results by query ID",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/dune_query",
         price_usdc="0.005",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -156,7 +156,7 @@ _TOOLS: dict[str, Tool] = {
         description="Crypto Fear & Greed Index (0=extreme fear, 100=extreme greed) with optional history",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/fear_greed_index",
         price_usdc="0.001",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -178,7 +178,7 @@ _TOOLS: dict[str, Tool] = {
         description="Latest crypto news and community sentiment from r/CryptoCurrency for any token",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/crypto_news",
         price_usdc="0.003",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -206,7 +206,7 @@ _TOOLS: dict[str, Tool] = {
         description="DeFi protocol Total Value Locked from DeFiLlama. Returns top 10 or a specific protocol.",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/defi_tvl",
         price_usdc="0.002",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -228,7 +228,7 @@ _TOOLS: dict[str, Tool] = {
         description="Detect recent large wallet movements for a token (whale tracking)",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/whale_activity",
         price_usdc="0.002",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -252,7 +252,7 @@ _TOOLS: dict[str, Tool] = {
         description="Find best DeFi yield opportunities across protocols for a given token",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/yield_scanner",
         price_usdc="0.004",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -284,7 +284,7 @@ _TOOLS: dict[str, Tool] = {
         description="Get perpetual futures funding rates across Binance, Bybit, and OKX",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/funding_rates",
         price_usdc="0.003",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
@@ -306,7 +306,7 @@ _TOOLS: dict[str, Tool] = {
         description="Scan any token contract for honeypot, rug pull, and security risks",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/token_security",
         price_usdc="0.002",
-        developer_address="GBI6GZW2MDSZ6N5BN7JSDCTQQ6NEOC6PSDAVYTMYXWXOPUVWQ3O5E67S",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
             "properties": {
