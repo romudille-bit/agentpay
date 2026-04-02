@@ -10,28 +10,34 @@ Agents discover tools, pay per call ($0.001–$0.005), and get real data back �
 → **x402 protocol**: works with any x402-compatible agent
 → **Stellar + Base**: pay with USDC on either network — Stellar (5s, $0.00001 fee) or Base mainnet (2s, $0.0001 fee)
 
-**Try it in 60 seconds:**
+**Live gateway (mainnet)**: `https://gateway-production-2cc2.up.railway.app`
+
+**Try on testnet first (free):**
 ```bash
-curl https://gateway-production-2cc2.up.railway.app/faucet
+curl https://gateway-testnet-production.up.railway.app/faucet
 ```
-
-Or open the browser faucet: `https://gateway-production-2cc2.up.railway.app/faucet/ui`
-
-**Live gateway**: `https://gateway-production-2cc2.up.railway.app`
 
 ---
 
 ## Quickstart — 3 steps
 
-### Step 1: Get a funded test wallet
+### Step 1: Get a wallet with USDC
+
+**Option A — Testnet (free, instant):**
 
 One call gives you a ready-to-use Stellar testnet wallet with 5 USDC pre-loaded:
 
 ```bash
-curl https://gateway-production-2cc2.up.railway.app/faucet
+curl https://gateway-testnet-production.up.railway.app/faucet
 ```
 
-Or use the [browser faucet](https://gateway-production-2cc2.up.railway.app/faucet/ui) — click "Get Test Wallet", copy the snippet, run it.
+Use `gateway_url="https://gateway-testnet-production.up.railway.app"` and `network="testnet"` in your Session.
+
+**Option B — Mainnet (real USDC):**
+
+Fund a Stellar mainnet wallet with USDC (via [Coinbase](https://coinbase.com), [Lobstr](https://lobstr.co), or any Stellar DEX) then use your secret key directly.
+
+USDC issuer on Stellar mainnet: `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`
 
 ---
 
@@ -42,9 +48,13 @@ from agent.wallet import AgentWallet, Session, BudgetExceeded
 
 wallet = AgentWallet(
     secret_key="S...",       # your Stellar secret key
-    network="testnet",       # or "mainnet"
+    network="testnet",       # "testnet" for faucet wallets, "mainnet" for real USDC
 )
 
+# Testnet gateway (use with faucet wallets):
+# GATEWAY = "https://gateway-testnet-production.up.railway.app"
+
+# Mainnet gateway (real USDC payments):
 GATEWAY = "https://gateway-production-2cc2.up.railway.app"
 
 with Session(wallet=wallet, gateway_url=GATEWAY, max_spend="0.05") as session:

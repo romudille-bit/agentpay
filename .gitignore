@@ -22,3 +22,10 @@ build/
 .idea/
 .vscode/
 agent/budget_demo_result.json
+
+# Claude internal (skills, content drafts — not for public repo)
+.claude/settings.local.json
+.claude/content/
+.claude/skills/cmo-agent/
+.claude/skills/code-reviewer/
+.claude/skills/session-tips/

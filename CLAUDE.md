@@ -133,7 +133,9 @@ MCP listed on Glama: https://glama.ai/mcp/servers/romudille-bit/agentpay
 - `/.well-known/agentpay.json` — AgentPay manifest
 - `/.well-known/agent.json` — A2A agent card
 - `/.well-known/l402-services` — 402index.io discovery format
-- `/sitemap.xml` — 14-URL sitemap
+- `/sitemap.xml` — 17-URL sitemap
+- `/llms.txt` — LLM-readable service description (tools + integration guide)
+- `/llms.txt` — LLM-readable service description (tools + integration guide)
 
 ## Hackathon
 

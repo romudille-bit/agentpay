@@ -55,7 +55,7 @@ agentpay/
 │       └── agentpay-mcp.js  # npm MCP wrapper, checks /health before faucet
 ├── railway.toml         # Railway deploy config
 ├── requirements.txt
-├── CLAUDE.md            # Quick reference
+├── CLAUDE.md            # Quick reference (keep in sync with this file)
 └── .env                 # All secrets (gitignored, never committed)
 ```
 
@@ -98,6 +98,77 @@ USDC Base contract: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
 
 ---
 
+## Agent Session API
+
+```python
+from agent.wallet import AgentWallet, Session, BudgetExceeded
+
+wallet = AgentWallet(secret_key=SECRET, network="mainnet")
+with Session(wallet, gateway_url=GATEWAY, max_spend="0.10") as session:
+    result = session.call("token_price", {"symbol": "ETH"})
+    price = result["result"]["price_usd"]  # Note: data is in result["result"]
+    print(session.spent(), session.remaining())
+```
+
+Session helper methods:
+- `session.estimate("tool_name")` — pre-check price, no payment
+- `session.would_exceed("0.005")` — check budget headroom
+- `session.summary()` — full breakdown after session closes
+
+---
+
+## How to Run
+
+```bash
+cd /Users/velvetvau/Downloads/agentpay
+source venv/bin/activate
+
+# Gateway local (port 8001)
+uvicorn gateway.main:app --port 8001 --reload
+
+# Agent demo against production mainnet
+python3 agent/budget_demo.py
+```
+
+## Deploy
+
+```bash
+railway up --service gateway        # Production (mainnet)
+railway up --service gateway-testnet  # Testnet
+```
+
+---
+
+## Discovery & Listing Status
+
+| Directory | Status |
+|-----------|--------|
+| x402scout | ✅ indexed, health-checked every 15min |
+| Glama MCP | ✅ listed at https://glama.ai/mcp/servers/romudille-bit/agentpay |
+| 402index.io | ✅ 12 tools registered |
+| awesome-x402 | ✅ PR submitted |
+| npm | ✅ @romudille/agentpay-mcp v1.0.3 |
+
+npm usage: `npx @romudille/agentpay-mcp` — auto-checks network, no faucet on mainnet
+
+---
+
+## Well-Known Endpoints
+
+- `/.well-known/agentpay.json` — AgentPay manifest
+- `/.well-known/agent.json` — A2A agent card
+- `/.well-known/l402-services` — 402index.io discovery format
+- `/sitemap.xml` — 17-URL sitemap
+- `/llms.txt` — LLM-readable service description (tools + integration guide)
+
+---
+
+## Revenue Split
+
+Gateway takes 15% (`GATEWAY_FEE_PERCENT=0.15`). 85% auto-splits to `developer_address` per tool on every payment. Currently all 12 tools point to the mainnet gateway wallet.
+
+---
+
 ## Known Issues & Fixes
 
 | Problem | Fix |
@@ -107,7 +178,7 @@ USDC Base contract: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
 | Etherscan V1 deprecated | Use V2 API + chainid=1 |
 | Railway cold start | Background keepalive ping every 5min |
 | HEAD / returning 405 | Added HEAD method to root endpoint |
-| Faucet breaks on mainnet | Gated: if mainnet return 404 |
+| Faucet breaks on mainnet | Gated: if mainnet return 404 — faucet is testnet-only at `https://gateway-testnet-production.up.railway.app/faucet` |
 | Supabase RLS disabled | RLS enabled, public SELECT only |
 | developer_address pointed to testnet | Updated all 12 rows in Supabase + registry.py |
 | npm auto-wallet on mainnet | Checks /health before /faucet |
@@ -121,3 +192,13 @@ Submitted to Stellar Hacks (DoraHacks) — deadline April 13, 2026.
 URL: https://dorahacks.io/hackathon/stellar-agents-x402-stripe-mpp/detail
 Covers 7 hackathon use cases: financial market data, trading signals, security scanning,
 real-time news, blockchain indexing, agent service discovery, Bazaar-style discoverability.
+
+---
+
+## Session Memory Notes (for Claude Code)
+
+- Always check CLAUDE.md first when resuming — it mirrors this file's key facts
+- When adding new tools: update registry/registry.py AND Supabase AND this SKILL.md AND CLAUDE.md
+- Test payments always use testnet; never spend mainnet USDC in tests
+- The MCP server (gateway/mcp_server.py) auto-exposes all tools from the registry — no manual wiring needed
+- Budget demo at agent/budget_demo.py is the canonical E2E test

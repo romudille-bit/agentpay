@@ -656,6 +656,48 @@ async def robots():
     )
 
 
+@app.get("/llms.txt", response_class=Response)
+async def llms_txt():
+    tools = registry.list_tools()
+    tool_lines = "\n".join(
+        f"- {t.name} (${t.price_usdc}): {t.description}"
+        for t in sorted(tools, key=lambda t: t.price_usdc)
+    )
+    content = f"""\
+# AgentPay
+
+> x402 payment gateway for AI agents. Agents pay micro-amounts of USDC on Stellar or Base to call real crypto data tools — no API keys, no subscriptions, pay-per-call.
+
+AgentPay implements the x402 protocol: agents receive an HTTP 402 challenge, pay on-chain in USDC, then retry with an X-Payment header to receive data. All payments are verified on-chain. The gateway takes 15% and auto-splits 85% to the tool developer's Stellar wallet.
+
+## Gateway
+
+- Production (mainnet): {GATEWAY_URL}
+- Network: Stellar mainnet + Base mainnet
+- Tools: {len(tools)} live crypto data tools
+- Protocol: x402 (HTTP 402 → pay → retry)
+
+## Tools
+
+{tool_lines}
+
+## Integration
+
+POST /tools/{{name}}/call with {{parameters, agent_address}}
+On 402: pay USDC to the given Stellar or Base address, retry with X-Payment header.
+Response: data is in result["result"]
+
+## Docs
+
+- README: {GATEWAY_URL}/
+- MCP server: npx @romudille/agentpay-mcp
+- npm: https://www.npmjs.com/package/@romudille/agentpay-mcp
+- GitHub: https://github.com/romudille-bit/agentpay
+- Glama MCP: https://glama.ai/mcp/servers/romudille-bit/agentpay
+"""
+    return Response(content=content, media_type="text/plain")
+
+
 @app.get("/sitemap.xml", response_class=Response)
 async def sitemap():
     tools = registry.list_tools()
@@ -754,7 +796,7 @@ async def _provision_wallet(base_url: str) -> dict:
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
     from stellar import get_usdc_balance
     gateway_usdc = Decimal(get_usdc_balance(gateway_keypair.public_key))
-    if gateway_usdc < Decimal("10"):
+    if gateway_usdc < Decimal("1"):
         raise HTTPException(
             status_code=503,
             detail=(
@@ -831,6 +873,15 @@ async def _provision_wallet(base_url: str) -> dict:
 @limiter.limit("2/hour")
 async def faucet_json(request: Request):
     """Generate a funded testnet wallet — returns JSON."""
+    if settings.STELLAR_NETWORK == "mainnet":
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Faucet not available on mainnet.",
+                "message": "Fund your Stellar mainnet wallet with USDC to use AgentPay.",
+                "docs": "https://github.com/romudille-bit/agentpay",
+            },
+        )
     # ── IP cooldown: one wallet per IP per 24 hours ───────────────────────────
     client_ip = request.client.host if request.client else "unknown"
     now = _time.time()
@@ -856,6 +907,15 @@ async def faucet_json(request: Request):
 @app.get("/faucet/ui", response_class=HTMLResponse)
 async def faucet_ui():
     """Browser-friendly faucet page."""
+    if settings.STELLAR_NETWORK == "mainnet":
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Faucet not available on mainnet.",
+                "message": "Fund your Stellar mainnet wallet with USDC to use AgentPay.",
+                "docs": "https://github.com/romudille-bit/agentpay",
+            },
+        )
     html = """<!DOCTYPE html>
 <html lang="en">
 <head>

@@ -11,9 +11,10 @@ The agent:
 Usage (from project root):
     python agent/budget_demo.py
 
-Required in .env:
-    TEST_AGENT_SECRET_KEY=S...
-    AGENTPAY_GATEWAY_URL=http://localhost:8001
+Required in .env (or environment):
+    STELLAR_SECRET_KEY=S...        # mainnet test agent (preferred)
+    TEST_AGENT_SECRET_KEY=S...     # fallback
+    AGENTPAY_GATEWAY_URL=...       # defaults to production mainnet
 """
 
 import os
@@ -27,6 +28,9 @@ from decimal import Decimal
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_here, ".."))
 
+# Capture STELLAR_NETWORK before load_dotenv can overwrite it with .env value
+_env_network = os.environ.get("STELLAR_NETWORK")
+
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_here, "..", ".env"))
 
@@ -37,8 +41,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
-GATEWAY_URL  = os.getenv("AGENTPAY_GATEWAY_URL", "http://localhost:8001")
-AGENT_SECRET = os.getenv("TEST_AGENT_SECRET_KEY", "")
+GATEWAY_URL  = os.getenv("AGENTPAY_GATEWAY_URL", "https://gateway-production-2cc2.up.railway.app")
+AGENT_SECRET = os.getenv("STELLAR_SECRET_KEY") or os.getenv("TEST_AGENT_SECRET_KEY", "")
 MAX_BUDGET   = "0.10"
 
 
@@ -114,12 +118,12 @@ def plan_eth_analysis(tools: list[dict], budget: str) -> list[dict]:
 
 def main():
     if not AGENT_SECRET:
-        print("ERROR: TEST_AGENT_SECRET_KEY not set in .env")
+        print("ERROR: Set STELLAR_SECRET_KEY (or TEST_AGENT_SECRET_KEY) in .env")
         sys.exit(1)
 
     wallet = AgentWallet(
         secret_key=AGENT_SECRET,
-        network=os.getenv("STELLAR_NETWORK", "testnet"),
+        network=_env_network or "mainnet",
     )
 
     balance = wallet.get_usdc_balance()
@@ -163,7 +167,7 @@ def main():
     print(f"\n  Estimated spend: {_fmt(total_est)}   |   Headroom: {_fmt(Decimal(MAX_BUDGET) - total_est)}")
 
     # ── Step 3: Execute with live budget tracking ─────────────────────────────
-    _section("Step 3 — Execute (paying per tool on Stellar testnet)")
+    _section(f"Step 3 — Execute (paying per tool on Stellar {wallet.network})")
     print()
 
     results = {}

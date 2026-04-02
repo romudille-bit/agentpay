@@ -8,13 +8,20 @@ Give Claude Desktop direct access to live crypto data — prices, gas, whale act
 
 ## Quickstart
 
-### 1. Get a funded test wallet (one command)
+### 1. Get a wallet with USDC
+
+**Option A — Testnet (free, instant):**
 
 ```bash
-curl https://gateway-production-2cc2.up.railway.app/faucet
+curl https://gateway-testnet-production.up.railway.app/faucet
 ```
 
 Save the `secret_key` from the response — you'll use it in step 3.
+Set `AGENTPAY_GATEWAY_URL` to `https://gateway-testnet-production.up.railway.app` for testnet.
+
+**Option B — Mainnet (real USDC):**
+
+Fund a Stellar mainnet wallet via [Coinbase](https://coinbase.com) or [Lobstr](https://lobstr.co) and use your mainnet secret key with `AGENTPAY_GATEWAY_URL=https://gateway-production-2cc2.up.railway.app`.
 
 ---
 
@@ -115,7 +122,7 @@ Change `STELLAR_NETWORK` to `mainnet` (the gateway detects this from the challen
 
 **"STELLAR_SECRET_KEY is not set"** — Add your key to the `env` block in `claude_desktop_config.json`.
 
-**"InsufficientFunds"** — Your testnet wallet is empty. Run `curl .../faucet` again or send USDC from another wallet.
+**"InsufficientFunds"** — Your wallet is empty. For testnet: run `curl https://gateway-testnet-production.up.railway.app/faucet` again. For mainnet: fund your Stellar wallet with USDC via Coinbase or Lobstr.
 
 **Tools don't appear in Claude** — Restart Claude Desktop after editing the config. Check the MCP logs in `~/Library/Logs/Claude/`.
 
