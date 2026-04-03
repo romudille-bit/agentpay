@@ -125,7 +125,8 @@ MCP listed on Glama: https://glama.ai/mcp/servers/romudille-bit/agentpay
 | x402scout | ✅ indexed, health-checked every 15min |
 | Glama MCP | ✅ listed |
 | 402index.io | ✅ 12 tools registered |
-| awesome-x402 | ✅ PR submitted |
+| awesome-x402 | ✅ listed |
+| xpay.tools | 🔜 submission in progress |
 | npm | ✅ @romudille/agentpay-mcp v1.0.3 |
 
 ## Well-Known Endpoints
@@ -134,7 +135,6 @@ MCP listed on Glama: https://glama.ai/mcp/servers/romudille-bit/agentpay
 - `/.well-known/agent.json` — A2A agent card
 - `/.well-known/l402-services` — 402index.io discovery format
 - `/sitemap.xml` — 17-URL sitemap
-- `/llms.txt` — LLM-readable service description (tools + integration guide)
 - `/llms.txt` — LLM-readable service description (tools + integration guide)
 
 ## Hackathon

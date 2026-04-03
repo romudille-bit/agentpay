@@ -300,13 +300,29 @@ gateway (FastAPI on Railway)
 
 ---
 
-## Agent Discovery
+## Discovery
 
-AgentPay is discoverable by autonomous agents at standard discovery paths:
+### Directories & Listings
 
-- **AgentPay manifest**: `https://gateway-production-2cc2.up.railway.app/.well-known/agentpay.json`
-- **A2A agent card**: `https://gateway-production-2cc2.up.railway.app/.well-known/agent.json`
+| Directory | Status |
+|-----------|--------|
+| [x402scout](https://x402scout.com) | ✅ indexed, health-checked every 15min |
+| [Glama MCP](https://glama.ai/mcp/servers/romudille-bit/agentpay) | ✅ listed |
+| [402index.io](https://402index.io) | ✅ 12 tools registered |
+| [awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed |
+| [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp v1.0.3 |
+| [xpay.tools](https://xpay.tools) | 🔜 submission in progress |
+
+### Agent-Readable Endpoints
+
+AgentPay is discoverable by autonomous agents at standard well-known paths:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/.well-known/agentpay.json` | AgentPay manifest |
+| `/.well-known/agent.json` | A2A agent card |
+| `/.well-known/l402-services` | 402index.io discovery format |
+| `/llms.txt` | LLM-readable service description (tools + integration guide) |
+| `/sitemap.xml` | 17-URL sitemap |
 
 Any x402-compatible agent can discover and use AgentPay tools without human setup.
-
-All 12 AgentPay tools are also indexed on [x402scout](https://x402scout.com) under `network: stellar-testnet`.

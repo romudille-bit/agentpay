@@ -146,8 +146,9 @@ railway up --service gateway-testnet  # Testnet
 | x402scout | ✅ indexed, health-checked every 15min |
 | Glama MCP | ✅ listed at https://glama.ai/mcp/servers/romudille-bit/agentpay |
 | 402index.io | ✅ 12 tools registered |
-| awesome-x402 | ✅ PR submitted |
+| awesome-x402 | ✅ listed |
 | npm | ✅ @romudille/agentpay-mcp v1.0.3 |
+| xpay.tools | 🔜 submission in progress |
 
 npm usage: `npx @romudille/agentpay-mcp` — auto-checks network, no faucet on mainnet
 
