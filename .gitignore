@@ -30,3 +30,4 @@ CONTEXT.md
 # Spec docs (kept locally in docs/specs/, not committed to public repo)
 docs/specs/*.docx
 docs/specs/*.pdf
+CLAUDE.md
