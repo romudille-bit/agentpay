@@ -29,3 +29,7 @@ agent/budget_demo_result.json
 .claude/skills/cmo-agent/
 .claude/skills/code-reviewer/
 .claude/skills/session-tips/
+
+# Spec docs (kept locally in docs/specs/, not committed to public repo)
+docs/specs/*.docx
+docs/specs/*.pdf
