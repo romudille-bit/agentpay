@@ -1,8 +1,8 @@
-# AgentPay — your agent is only as smart as its data.
+# AgentPay — Ditch those API keys.
 
-AgentPay is an open x402 payment gateway that lets AI agents autonomously access real crypto data tools using USDC on Stellar or Base.
+Pay per call. No subscriptions. No human in the loop.
 
-No subscriptions. No API keys. No human in the loop.
+AgentPay is an x402 payment gateway for AI agents. Access 12 crypto data tools using USDC on Stellar or Base — agents discover, pay, and get data back autonomously.
 Agents discover tools, pay per call ($0.001–$0.005), and get real data back — all within a hard budget cap.
 
 → **12 live tools**: token prices, whale activity, gas tracker, DeFi TVL, Fear & Greed, yield scanner, funding rates, token security, Dune queries and more
