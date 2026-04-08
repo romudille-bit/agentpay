@@ -8,6 +8,7 @@ Handles:
 """
 
 import asyncio
+import httpx
 from decimal import Decimal
 from stellar_sdk import (
     Keypair, Network, Server, Asset, TransactionBuilder,
@@ -49,61 +50,48 @@ async def verify_payment(
     max_age_seconds: int = 60
 ) -> dict:
     """
-    Verify that a USDC payment was made on Stellar.
-    
+    Verify a USDC payment via the OpenZeppelin x402 facilitator.
+
+    The OZ facilitator covers XLM network fees — agents only need USDC,
+    no XLM required. Exposes standard /verify, /settle, /supported endpoints.
+
+    Facilitator endpoints:
+      mainnet: https://channels.openzeppelin.com/x402
+      testnet: https://channels.openzeppelin.com/x402/testnet
+
     Returns:
         {"verified": True, "tx_hash": "..."} on success
         {"verified": False, "reason": "..."} on failure
     """
-    server = get_server()
-    usdc = get_usdc_asset()
-    
+    facilitator_url = settings.STELLAR_FACILITATOR_URL
+
+    payload = {
+        "x402Version": 1,
+        "payload": {
+            "from": from_address,
+            "to": to_address,
+            "amount": amount_usdc,
+            "paymentId": payment_id,
+        }
+    }
+
     try:
-        # Fetch recent payments TO our gateway address
-        payments = (
-            server.payments()
-            .for_account(to_address)
-            .order(desc=True)
-            .limit(20)
-            .call()
-        )
-        
-        records = payments.get("_embedded", {}).get("records", [])
-        
-        for record in records:
-            # Only care about payment operations
-            if record.get("type") != "payment":
-                continue
-            
-            # Check it's from the right sender
-            if record.get("from") != from_address:
-                continue
-            
-            # Check it's USDC
-            if record.get("asset_code") != "USDC":
-                continue
-            
-            # Check amount is sufficient (allow small rounding)
-            paid = Decimal(record.get("amount", "0"))
-            required = Decimal(amount_usdc)
-            if paid < required * Decimal("0.99"):
-                continue
-            
-            # Check memo matches payment_id (if present)
-            tx_hash = record.get("transaction_hash", "")
-            if payment_id:
-                tx = server.transactions().transaction(tx_hash).call()
-                memo = tx.get("memo", "")
-                if memo and not (payment_id.startswith(memo) or memo.startswith(payment_id)):
-                    continue
-            
-            logger.info(f"Payment verified: {tx_hash}")
-            return {"verified": True, "tx_hash": tx_hash, "amount": str(paid)}
-        
-        return {"verified": False, "reason": "Payment not found on-chain"}
-    
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{facilitator_url}/verify",
+                json=payload
+            )
+            data = resp.json()
+            if data.get("isValid"):
+                tx_hash = data.get("txHash", "")
+                logger.info(f"Payment verified via OZ facilitator: {tx_hash}")
+                return {"verified": True, "tx_hash": tx_hash}
+            reason = data.get("invalidReason", "Facilitator rejected payment")
+            logger.warning(f"Facilitator rejected: {reason}")
+            return {"verified": False, "reason": reason}
+
     except Exception as e:
-        logger.error(f"Payment verification error: {e}")
+        logger.error(f"Facilitator verify error: {e}")
         return {"verified": False, "reason": str(e)}
 
 

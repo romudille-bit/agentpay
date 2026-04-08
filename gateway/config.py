@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Public gateway URL (used in faucet snippets, discovery endpoints)
     AGENTPAY_GATEWAY_URL: str = ""
 
+    # OpenZeppelin x402 Facilitator (covers XLM gas fees — agents only need USDC)
+    STELLAR_FACILITATOR_URL: str = "https://channels.openzeppelin.com/x402"
+
     # Base / EVM payment option (via Coinbase CDP x402 facilitator)
     BASE_GATEWAY_ADDRESS: str = ""           # 0x... recipient on Base
     BASE_NETWORK: str = "base-sepolia"       # "base-sepolia" or "base"
