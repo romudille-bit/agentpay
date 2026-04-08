@@ -9,6 +9,7 @@ Agents discover tools, pay per call ($0.001–$0.005), and get real data back �
 → **Budget-aware Session**: agents estimate costs, track spend, never exceed budget
 → **x402 protocol**: works with any x402-compatible agent
 → **Stellar + Base**: pay with USDC on either network — Stellar (5s, $0.00001 fee) or Base mainnet (2s, $0.0001 fee)
+→ **No XLM needed**: Stellar gas fees are sponsored by the [OpenZeppelin x402 Facilitator](https://channels.openzeppelin.com/x402) — agents only need USDC
 
 **Live gateway (mainnet)**: `https://gateway-production-2cc2.up.railway.app`
 
@@ -138,6 +139,17 @@ AgentPay accepts USDC payments on two networks:
 - **Base** — $0.0001 per tx, 2-second settlement (EIP-3009 `transferWithAuthorization` on Base mainnet)
 
 The gateway's `402` response advertises both options simultaneously. Clients pick the network that suits them — no configuration required on the tool side.
+
+### OpenZeppelin x402 Facilitator (Stellar)
+
+Stellar payments are verified through the [OpenZeppelin x402 Facilitator](https://channels.openzeppelin.com/x402), which sponsors XLM gas fees on behalf of agent wallets. This means **agents only need USDC** — no need to separately acquire XLM to pay for transaction fees.
+
+| Endpoint | URL |
+|----------|-----|
+| Mainnet  | `https://channels.openzeppelin.com/x402` |
+| Testnet  | `https://channels.openzeppelin.com/x402/testnet` |
+
+The facilitator exposes `/verify` and `/settle` — the gateway calls `/verify` with the payment details and receives `{"isValid": true, "txHash": "..."}` in return. This replaces the previous approach of polling Stellar Horizon directly.
 
 ```json
 {
@@ -280,7 +292,7 @@ agent (Python SDK)
 gateway (FastAPI on Railway)
     │
     ├── registry/registry.py   — 12-tool catalog with prices & dev wallets
-    ├── gateway/stellar.py     — Stellar payment verification via Horizon
+    ├── gateway/stellar.py     — Stellar payment verification via OZ x402 Facilitator (no XLM for gas)
     ├── gateway/base.py        — Base payment verification via JSON-RPC
     └── gateway/main.py        — real API dispatchers
             ├── CoinGecko      token_price, dex_liquidity
@@ -296,7 +308,7 @@ gateway (FastAPI on Railway)
 
 **Fee model**: Gateway charges 15% (`GATEWAY_FEE_PERCENT=0.15`), forwards the rest to each tool developer's Stellar wallet. All payments settle on-chain in ~2–5 seconds.
 
-> **Note:** AgentPay currently uses the x402 pay-first pattern with classic Stellar PAYMENT ops. OZ Facilitator (verify-first, Soroban SAC) migration planned for v2.
+> **Note:** Stellar verification uses the OpenZeppelin x402 Facilitator (deployed April 2026). Agents need USDC only — XLM gas fees are sponsored by the facilitator.
 
 ---
 
