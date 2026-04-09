@@ -77,18 +77,39 @@ async def verify_payment(
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
+            # Step 1: verify the payment exists and is valid
             resp = await client.post(
                 f"{facilitator_url}/verify",
                 json=payload
             )
             data = resp.json()
-            if data.get("isValid"):
-                tx_hash = data.get("txHash", "")
-                logger.info(f"Payment verified via OZ facilitator: {tx_hash}")
-                return {"verified": True, "tx_hash": tx_hash}
-            reason = data.get("invalidReason", "Facilitator rejected payment")
-            logger.warning(f"Facilitator rejected: {reason}")
-            return {"verified": False, "reason": reason}
+            if not data.get("isValid"):
+                reason = data.get("invalidReason", "Facilitator rejected payment")
+                logger.warning(f"Facilitator rejected: {reason}")
+                return {"verified": False, "reason": reason}
+
+            tx_hash = data.get("txHash", "")
+            logger.info(f"Payment verified via OZ facilitator: {tx_hash}")
+
+            # Step 2: settle — marks the payment as fulfilled on the facilitator's side.
+            # This closes the channel and prevents replay even if our in-memory
+            # _completed_payments set is cleared on redeploy.
+            try:
+                settle_resp = await client.post(
+                    f"{facilitator_url}/settle",
+                    json=payload
+                )
+                settle_data = settle_resp.json()
+                if not settle_data.get("success", True):  # treat missing key as ok
+                    logger.warning(f"Facilitator settle returned non-success: {settle_data}")
+                else:
+                    logger.info(f"Payment settled via OZ facilitator: {tx_hash}")
+            except Exception as settle_err:
+                # Non-fatal — payment is verified and USDC is on-chain.
+                # Log the error but do not block data delivery.
+                logger.error(f"Facilitator settle error (non-fatal): {settle_err}")
+
+            return {"verified": True, "tx_hash": tx_hash}
 
     except Exception as e:
         logger.error(f"Facilitator verify error: {e}")
