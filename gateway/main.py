@@ -644,6 +644,49 @@ async def well_known_l402_services():
     }
 
 
+@app.get("/.well-known/x402")
+async def well_known_x402():
+    """
+    x402 protocol discovery manifest.
+    Scanners and agents probing /.well-known/x402 find supported networks,
+    assets, pricing range, and facilitator info here.
+    """
+    tools = registry.list_tools()
+    prices = [float(t.price_usdc) for t in tools]
+    return {
+        "x402Version": 1,
+        "gateway": GATEWAY_URL,
+        "name": "AgentPay",
+        "description": "Real-time crypto data for AI agents. Pay per call in USDC on Stellar or Base.",
+        "accepts": [
+            {
+                "scheme": "exact",
+                "network": "stellar-mainnet",
+                "asset": "USDC",
+                "assetIssuer": settings.USDC_ISSUER_MAINNET,
+                "minAmount": str(min(prices)),
+                "maxAmount": str(max(prices)),
+                "facilitator": settings.STELLAR_FACILITATOR_URL,
+            },
+            {
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC on Base mainnet
+                "minAmount": str(min(prices)),
+                "maxAmount": str(max(prices)),
+            },
+        ],
+        "endpoints": [
+            {
+                "path": f"/tools/{t.name}/call",
+                "method": "POST",
+                "amountRequired": t.price_usdc,
+            }
+            for t in tools
+        ],
+    }
+
+
 @app.get("/robots.txt", response_class=Response)
 async def robots():
     return Response(
@@ -706,6 +749,7 @@ async def sitemap():
         f"{GATEWAY_URL}/tools",
         f"{GATEWAY_URL}/.well-known/agentpay.json",
         f"{GATEWAY_URL}/.well-known/agent.json",
+        f"{GATEWAY_URL}/.well-known/x402",
         f"{GATEWAY_URL}/faucet/ui",
     ] + [f"{GATEWAY_URL}/tools/{t.name}" for t in tools]
 
