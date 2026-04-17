@@ -154,6 +154,7 @@ async def verify_and_fulfill(
         to_address=challenge_data["gateway_address"],
         amount_usdc=challenge_data["amount_usdc"],
         payment_id=payment_id,
+        tx_hash=tx_hash or "",
     )
 
     if not result["verified"]:

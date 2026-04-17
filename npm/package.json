@@ -1,7 +1,7 @@
 {
   "name": "@romudille/agentpay-mcp",
-  "version": "1.0.3",
-  "description": "AgentPay MCP server — 12 crypto data tools for AI agents, pay per call in USDC on Stellar or Base",
+  "version": "1.1.0",
+  "description": "AgentPay MCP server — 14 crypto data tools for AI agents, pay per call in USDC on Stellar or Base",
   "bin": {
     "agentpay-mcp": "bin/agentpay-mcp.js"
   },

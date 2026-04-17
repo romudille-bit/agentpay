@@ -42,12 +42,80 @@ def get_usdc_asset() -> Asset:
 
 # ── Payment Verification ──────────────────────────────────────────────────────
 
+async def _verify_payment_horizon(
+    tx_hash: str,
+    from_address: str,
+    to_address: str,
+    amount_usdc: str,
+) -> dict:
+    """
+    Direct Horizon verification — used on testnet where the OZ facilitator
+    returns 401. Queries Horizon for the transaction and checks:
+      - transaction exists and was successful
+      - contains a USDC payment from `from_address` to `to_address`
+      - amount paid >= amount_usdc required
+    """
+    horizon_url = (
+        "https://horizon-testnet.stellar.org"
+        if settings.STELLAR_NETWORK == "testnet"
+        else "https://horizon.stellar.org"
+    )
+    usdc_issuer = (
+        settings.USDC_ISSUER_TESTNET
+        if settings.STELLAR_NETWORK == "testnet"
+        else settings.USDC_ISSUER_MAINNET
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Fetch transaction
+            resp = await client.get(f"{horizon_url}/transactions/{tx_hash}")
+            if resp.status_code == 404:
+                return {"verified": False, "reason": "Transaction not found on Horizon"}
+            if resp.status_code != 200:
+                return {"verified": False, "reason": f"Horizon returned {resp.status_code}"}
+            tx_data = resp.json()
+            if not tx_data.get("successful", False):
+                return {"verified": False, "reason": "Transaction was not successful"}
+
+            # Fetch operations for this transaction
+            ops_resp = await client.get(f"{horizon_url}/transactions/{tx_hash}/operations")
+            if ops_resp.status_code != 200:
+                return {"verified": False, "reason": "Could not fetch transaction operations"}
+            ops = ops_resp.json().get("_embedded", {}).get("records", [])
+
+            required = Decimal(amount_usdc)
+            for op in ops:
+                if op.get("type") != "payment":
+                    continue
+                if op.get("asset_code") != "USDC":
+                    continue
+                if op.get("asset_issuer") != usdc_issuer:
+                    continue
+                if op.get("to") != to_address:
+                    continue
+                if op.get("from") != from_address:
+                    continue
+                paid = Decimal(op.get("amount", "0"))
+                if paid < required:
+                    return {"verified": False, "reason": f"Paid {paid} USDC but {required} required"}
+                logger.info(f"Payment verified via Horizon (testnet fallback): {tx_hash}")
+                return {"verified": True, "tx_hash": tx_hash}
+
+            return {"verified": False, "reason": "No matching USDC payment found in transaction"}
+
+    except Exception as e:
+        logger.error(f"Horizon direct verify error: {e}")
+        return {"verified": False, "reason": str(e)}
+
+
 async def verify_payment(
     from_address: str,
     to_address: str,
     amount_usdc: str,
     payment_id: str,
-    max_age_seconds: int = 60
+    max_age_seconds: int = 60,
+    tx_hash: str = "",
 ) -> dict:
     """
     Verify a USDC payment via the OpenZeppelin x402 facilitator.
@@ -82,10 +150,25 @@ async def verify_payment(
                 f"{facilitator_url}/verify",
                 json=payload
             )
+            # 401 = facilitator requires auth — fall back immediately
+            if resp.status_code == 401:
+                logger.warning("OZ facilitator returned 401 — falling back to Horizon verification")
+                if tx_hash:
+                    return await _verify_payment_horizon(
+                        tx_hash, from_address, to_address, amount_usdc
+                    )
+                return {"verified": False, "reason": "Facilitator unavailable and no tx_hash provided"}
             data = resp.json()
             if not data.get("isValid"):
                 reason = data.get("invalidReason", "Facilitator rejected payment")
                 logger.warning(f"Facilitator rejected: {reason}")
+                # OZ facilitator now requires auth on both mainnet and testnet (returns 401).
+                # Fall back to direct Horizon verification for all networks.
+                if tx_hash:
+                    logger.info(f"Falling back to direct Horizon verification for {tx_hash[:16]}...")
+                    return await _verify_payment_horizon(
+                        tx_hash, from_address, to_address, amount_usdc
+                    )
                 return {"verified": False, "reason": reason}
 
             tx_hash = data.get("txHash", "")

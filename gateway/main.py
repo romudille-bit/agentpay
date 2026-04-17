@@ -81,10 +81,12 @@ _FAUCET_COOLDOWN_SECS = 86_400  # 24 hours
 _cache: dict[str, tuple[float, dict]] = {}
 
 _CACHE_TTL: dict[str, int] = {
-    "token_price":      60,   # 60 seconds
-    "gas_tracker":      30,   # 30 seconds
-    "fear_greed_index": 300,  # 5 minutes
-    "defi_tvl":         300,  # 5 minutes
+    "token_price":        60,   # 60 seconds
+    "gas_tracker":        30,   # 30 seconds
+    "fear_greed_index":   300,  # 5 minutes
+    "defi_tvl":           300,  # 5 minutes
+    "token_market_data":  120,  # 2 minutes
+    "dex_liquidity":      120,  # legacy alias — same TTL
 }
 
 
@@ -263,10 +265,15 @@ async def list_tools(category: Optional[str] = None):
     }
 
 
+_TOOL_ALIASES = {
+    "dex_liquidity": "token_market_data",
+}
+
 @app.api_route("/tools/{tool_name}", methods=["GET", "HEAD"])
 async def get_tool(tool_name: str):
-    """Get details for a specific tool."""
-    tool = registry.get_tool(tool_name)
+    """Get details for a specific tool. Supports legacy aliases."""
+    resolved = _TOOL_ALIASES.get(tool_name, tool_name)
+    tool = registry.get_tool(resolved)
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
     return registry.tool_to_dict(tool)
@@ -455,22 +462,26 @@ async def call_tool(
     # ── Step 3: Payment verified → call the real tool ─────────────────────────
     registry.increment_call_count(tool_name)
     
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                tool.endpoint,
-                json={"parameters": body.parameters},
-                headers={"Content-Type": "application/json"},
-            )
-            if response.status_code != 200:
-                raise httpx.ConnectError("Tool server returned non-200")
-            tool_result = response.json()
-    except httpx.ConnectError:
-        logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
+    if not tool.endpoint:
+        # No proxy endpoint configured — call real APIs directly
         tool_result = await _real_tool_response(tool_name, body.parameters)
-    except Exception as e:
-        logger.error(f"Tool execution error: {e}")
-        raise HTTPException(status_code=502, detail=f"Tool execution failed: {str(e)}")
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    tool.endpoint,
+                    json={"parameters": body.parameters},
+                    headers={"Content-Type": "application/json"},
+                )
+                if response.status_code != 200:
+                    raise httpx.ConnectError("Tool server returned non-200")
+                tool_result = response.json()
+        except httpx.ConnectError:
+            logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
+            tool_result = await _real_tool_response(tool_name, body.parameters)
+        except Exception as e:
+            logger.error(f"Tool execution error: {e}")
+            raise HTTPException(status_code=502, detail=f"Tool execution failed: {str(e)}")
 
     # ── Step 4: Log transaction ───────────────────────────────────────────────
     tx_record = {
@@ -1142,6 +1153,65 @@ _ERC20_CONTRACTS: dict[str, str] = {
     "SHIB": "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce",
 }
 
+# Known exchange hot wallet addresses (lowercase) → exchange name
+# Sources: Etherscan labels, publicly documented exchange addresses
+_EXCHANGE_WALLETS: dict[str, str] = {
+    # Binance
+    "0x28c6c06298d514db089934071355e5743bf21d60": "Binance",
+    "0x21a31ee1afc51d94c2efccaa2092ad1028285549": "Binance",
+    "0xdfd5293d8e347dfe59e90efd55b2956a1343963d": "Binance",
+    "0x56eddb7aa87536c09ccc2793473599fd21a8b17f": "Binance",
+    "0x9696f59e4d72e237be84ffd425dcad154bf96976": "Binance",
+    "0x4976a4a02f38326660d17bf34b431dc6e2eb2327": "Binance",
+    # Coinbase
+    "0x71660c4005ba85c37ccec55d0c4493e66fe775d3": "Coinbase",
+    "0x503828976d22510aad0201ac7ec88293211d23da": "Coinbase",
+    "0xddfabcdc4d8ffc6d5beaf154f18b778f892a0740": "Coinbase",
+    "0x3cd751e6b0078be393132286c442345e5dc49699": "Coinbase",
+    "0xb5d85cbf7cb3ee0d56b3bb207d5fc4b82f43f511": "Coinbase",
+    "0xa090e606e30bd747d4e6245a1517ebe430f0057e": "Coinbase",
+    # Kraken
+    "0x2910543af39aba0cd09dbb2d50200b3e800a63d2": "Kraken",
+    "0x0a869d79a7052c7f1b55a8ebabbea3420f0d1e13": "Kraken",
+    "0xe853c56864a2ebe4576a807d26fdc4a0ada51919": "Kraken",
+    "0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0": "Kraken",
+    # OKX
+    "0x6cc5f688a315f3dc28a7781717a9a798a59fda7b": "OKX",
+    "0x236f9f97e0e62388479bf9e5ba4889e46b0273c3": "OKX",
+    "0xa7efae728d2936e78bda97dc267687568dd593f3": "OKX",
+    # Bybit
+    "0xf89d7b9c864f589bbf53a82105107622b35eaa40": "Bybit",
+    "0x2b5634c42055806a59e9107ed44d43c426e58258": "Bybit",
+    # Bitfinex
+    "0x77134cbc06cb00b66f4c7e623d5fdbf6777635ec": "Bitfinex",
+    "0x742d35cc6634c0532925a3b844bc454e4438f44e": "Bitfinex",
+    # Gemini
+    "0xd24400ae8bfebb18ca49be86258a3c749cf46853": "Gemini",
+    "0x07ee55aa48bb72dcc6e9d78256648910de513eca": "Gemini",
+    # Huobi
+    "0xab5c66752a9e8167967685f1450532fb96d5d24f": "Huobi",
+    "0x6748f50f686bfbca6fe8ad62b22228b87f31ff2b": "Huobi",
+    # Gate.io
+    "0x0d0707963952f2fba59dd06f2b425ace40b492fe": "Gate.io",
+}
+
+
+def _classify_transfer_direction(from_addr: str, to_addr: str) -> tuple[str, str | None]:
+    """Return (direction, exchange_name) for a transfer.
+
+    Direction is one of: 'exchange_inflow', 'exchange_outflow', 'wallet_to_wallet'.
+    exchange_name is the matched exchange or None.
+    """
+    from_lower = from_addr.lower()
+    to_lower = to_addr.lower()
+    to_exchange = _EXCHANGE_WALLETS.get(to_lower)
+    from_exchange = _EXCHANGE_WALLETS.get(from_lower)
+    if to_exchange:
+        return "exchange_inflow", to_exchange
+    if from_exchange:
+        return "exchange_outflow", from_exchange
+    return "wallet_to_wallet", None
+
 
 async def _real_tool_response(tool_name: str, params: dict) -> dict:
     # Build cache key (include params for tools where they matter)
@@ -1162,7 +1232,7 @@ async def _real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_wallet_balance(client, params)
             elif tool_name == "gas_tracker":
                 result = await _fetch_gas_tracker(client)
-            elif tool_name == "dex_liquidity":
+            elif tool_name in ("dex_liquidity", "token_market_data"):
                 result = await _fetch_dex_liquidity(client, params)
             elif tool_name == "whale_activity":
                 result = await _fetch_whale_activity(client, params)
@@ -1180,6 +1250,10 @@ async def _real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_yield_scanner(client, params)
             elif tool_name == "funding_rates":
                 result = await _fetch_funding_rates(client, params)
+            elif tool_name == "open_interest":
+                result = await _fetch_open_interest(client, params)
+            elif tool_name == "orderbook_depth":
+                result = await _fetch_orderbook_depth(client, params)
             else:
                 result = {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
@@ -1327,6 +1401,7 @@ async def _fetch_gas_tracker(client: httpx.AsyncClient) -> dict:
 
 
 async def _fetch_dex_liquidity(client: httpx.AsyncClient, params: dict) -> dict:
+    """Handles both legacy 'dex_liquidity' and renamed 'token_market_data' calls."""
     token_a = params.get("token_a", "ETH").lower()
     token_b = params.get("token_b", "USDC").upper()
     coin_id = _COINGECKO_IDS.get(token_a, token_a)
@@ -1341,9 +1416,11 @@ async def _fetch_dex_liquidity(client: httpx.AsyncClient, params: dict) -> dict:
     market = data.get("market_data", {})
 
     return {
-        "pair": f"{token_a.upper()}/{token_b}",
+        "token_a": token_a.upper(),
+        "token_b": token_b,
         "price_usd": market.get("current_price", {}).get("usd", 0),
         "volume_24h_usd": market.get("total_volume", {}).get("usd", 0),
+        "volume_change_24h_pct": round(market.get("total_volume_change_24h", 0) or 0, 2),
         "market_cap_usd": market.get("market_cap", {}).get("usd", 0),
         "price_change_24h_pct": round(market.get("price_change_percentage_24h", 0), 4),
         "ath_usd": market.get("ath", {}).get("usd", 0),
@@ -1392,6 +1469,7 @@ async def _fetch_whale_activity(client: httpx.AsyncClient, params: dict) -> dict
     now = time.time()
     large_moves = []
     total_volume = 0.0
+    direction_counts: dict[str, int] = {"exchange_inflow": 0, "exchange_outflow": 0, "wallet_to_wallet": 0}
 
     for tx in txs:
         try:
@@ -1404,12 +1482,21 @@ async def _fetch_whale_activity(client: httpx.AsyncClient, params: dict) -> dict
             else:
                 usd_value = None  # price unavailable — include with null
             total_volume += usd_value or 0
+
+            # Classify direction using full addresses before truncating
+            from_addr = tx.get("from", "")
+            to_addr = tx.get("to", "")
+            direction, exchange_name = _classify_transfer_direction(from_addr, to_addr)
+            direction_counts[direction] = direction_counts.get(direction, 0) + 1
+
             large_moves.append({
-                "from": tx.get("from", "")[:10] + "...",
-                "to": tx.get("to", "")[:10] + "...",
+                "from": from_addr[:10] + "..." if len(from_addr) > 10 else from_addr,
+                "to": to_addr[:10] + "..." if len(to_addr) > 10 else to_addr,
                 "amount": round(amount, 4),
                 "token": tx.get("tokenSymbol", token),
                 "usd_value": round(usd_value, 2) if usd_value else None,
+                "direction": direction,
+                "exchange_name": exchange_name,
                 "minutes_ago": round((now - int(tx.get("timeStamp", now))) / 60),
                 "tx_hash": tx.get("hash", "")[:18] + "...",
             })
@@ -1422,6 +1509,7 @@ async def _fetch_whale_activity(client: httpx.AsyncClient, params: dict) -> dict
         "price_usd": price_usd,
         "large_transfers": large_moves[:15],
         "total_volume_usd": round(total_volume, 2),
+        "direction_summary": direction_counts,
         "source": "etherscan",
     }
 
@@ -1436,33 +1524,42 @@ async def _fetch_dune_query(client: httpx.AsyncClient, params: dict) -> dict:
 
     query_parameters = params.get("query_parameters", {})
     limit = int(params.get("limit", 25))
+    fast_only = bool(params.get("fast_only", False))
     headers = {"X-Dune-API-Key": settings.DUNE_API_KEY}
     dune_base = "https://api.dune.com/api/v1"
 
-    # Fast-path: try cached results first
-    if not query_parameters:
-        cached = await client.get(
-            f"{dune_base}/query/{query_id}/results",
-            headers=headers,
-            params={"limit": limit},
-            timeout=15.0,
-        )
-        if cached.status_code == 200:
-            data = cached.json()
-            if data.get("is_execution_finished") and data.get("state") == "QUERY_STATE_COMPLETED":
-                rows = data.get("result", {}).get("rows", [])
-                cols = list(rows[0].keys()) if rows else []
-                return {
-                    "query_id": query_id,
-                    "execution_id": data.get("execution_id"),
-                    "row_count": len(rows),
-                    "columns": cols,
-                    "rows": rows[:limit],
-                    "generated_at": data.get("execution_ended_at", ""),
-                    "source": "cached",
-                }
+    # Always try cached results first (fast path for live bots)
+    cached = await client.get(
+        f"{dune_base}/query/{query_id}/results",
+        headers=headers,
+        params={"limit": limit},
+        timeout=15.0,
+    )
+    if cached.status_code == 200:
+        data = cached.json()
+        if data.get("is_execution_finished") and data.get("state") == "QUERY_STATE_COMPLETED":
+            rows = data.get("result", {}).get("rows", [])
+            cols = list(rows[0].keys()) if rows else []
+            return {
+                "query_id": query_id,
+                "execution_id": data.get("execution_id"),
+                "row_count": len(rows),
+                "columns": cols,
+                "rows": rows[:limit],
+                "generated_at": data.get("execution_ended_at", ""),
+                "source": "cached",
+                "fast_only": fast_only,
+            }
 
-    # Execute fresh query
+    # fast_only=True: never execute a fresh query — return immediately if no cache
+    if fast_only:
+        return {
+            "error": "No cached results available for this query. Run without fast_only=True to execute fresh (may take up to 90s).",
+            "query_id": query_id,
+            "fast_only": True,
+        }
+
+    # fast_only=False (default): execute fresh query and poll up to 90s
     exec_resp = await client.post(
         f"{dune_base}/query/{query_id}/execute",
         headers=headers,
@@ -1499,6 +1596,7 @@ async def _fetch_dune_query(client: httpx.AsyncClient, params: dict) -> dict:
                     "rows": rows[:limit],
                     "generated_at": pdata.get("execution_ended_at", ""),
                     "source": "executed",
+                    "fast_only": False,
                 }
             if state in ("QUERY_STATE_FAILED", "QUERY_STATE_CANCELLED"):
                 return {"error": f"Dune query {state}: {pdata.get('error', '')}"}
@@ -1871,6 +1969,250 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
         "rates":    rows,
         "count":    len(rows),
         "sources":  ["Binance", "Bybit", "OKX"],
+    }
+
+
+async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
+    """Total open interest + 1h/24h change across Binance and Bybit. Free public APIs."""
+    # Registry schema uses "symbol" (e.g. "ETH" or "BTC"); fall back to "asset" for compat
+    raw = params.get("symbol", params.get("asset", "BTC")).strip().upper()
+    # Strip trailing USDT/BUSD if caller passed the full pair
+    asset = raw.replace("USDT", "").replace("BUSD", "") or raw
+    symbol_binance = f"{asset}USDT"
+    symbol_bybit   = f"{asset}USDT"
+
+    async def _binance_oi() -> dict | None:
+        try:
+            # Spot OI
+            r = await client.get(
+                "https://fapi.binance.com/fapi/v1/openInterest",
+                params={"symbol": symbol_binance},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            spot = r.json()
+            oi_now = float(spot.get("openInterest", 0))
+
+            # Historical OI for 1h change (5m intervals, last 13 candles = ~1h)
+            hist = await client.get(
+                "https://fapi.binance.com/futures/data/openInterestHist",
+                params={"symbol": symbol_binance, "period": "5m", "limit": 13},
+                timeout=10.0,
+            )
+            hist.raise_for_status()
+            hist_data = hist.json()
+            oi_1h_ago = float(hist_data[0]["sumOpenInterest"]) if hist_data else None
+
+            # 24h change via 1h intervals
+            hist_24h = await client.get(
+                "https://fapi.binance.com/futures/data/openInterestHist",
+                params={"symbol": symbol_binance, "period": "1h", "limit": 25},
+                timeout=10.0,
+            )
+            hist_24h.raise_for_status()
+            hist_24h_data = hist_24h.json()
+            oi_24h_ago = float(hist_24h_data[0]["sumOpenInterest"]) if hist_24h_data else None
+
+            # Long/short ratio
+            ls = await client.get(
+                "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+                params={"symbol": symbol_binance, "period": "5m", "limit": 1},
+                timeout=10.0,
+            )
+            ls_ratio = None
+            if ls.status_code == 200:
+                ls_data = ls.json()
+                if ls_data:
+                    ls_ratio = round(float(ls_data[-1].get("longShortRatio", 0)), 3)
+
+            return {
+                "exchange":        "Binance",
+                "oi_contracts":    round(oi_now, 2),
+                "oi_change_1h_pct":  round((oi_now - oi_1h_ago) / oi_1h_ago * 100, 2) if oi_1h_ago else None,
+                "oi_change_24h_pct": round((oi_now - oi_24h_ago) / oi_24h_ago * 100, 2) if oi_24h_ago else None,
+                "long_short_ratio":  ls_ratio,
+            }
+        except Exception as e:
+            logger.warning(f"open_interest Binance error: {e}")
+            return None
+
+    async def _bybit_oi() -> dict | None:
+        try:
+            r = await client.get(
+                "https://api.bybit.com/v5/market/open-interest",
+                params={"category": "linear", "symbol": symbol_bybit,
+                        "intervalTime": "5min", "limit": 2},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            items = r.json().get("result", {}).get("list", [])
+            if not items:
+                return None
+            oi_now    = float(items[0].get("openInterest", 0))
+            oi_prev   = float(items[1].get("openInterest", 0)) if len(items) > 1 else None
+            return {
+                "exchange":           "Bybit",
+                "oi_contracts":       round(oi_now, 2),
+                "oi_change_5m_pct":   round((oi_now - oi_prev) / oi_prev * 100, 2) if oi_prev else None,
+            }
+        except Exception as e:
+            logger.warning(f"open_interest Bybit error: {e}")
+            return None
+
+    # Fetch price to convert contracts → USD
+    async def _price_usd() -> float:
+        try:
+            r = await client.get(
+                f"{settings.COINGECKO_API_URL}/simple/price",
+                params={"ids": _COINGECKO_IDS.get(asset.lower(), asset.lower()),
+                        "vs_currencies": "usd"},
+                timeout=8.0,
+            )
+            r.raise_for_status()
+            coin_id = _COINGECKO_IDS.get(asset.lower(), asset.lower())
+            return float(r.json().get(coin_id, {}).get("usd", 0))
+        except Exception:
+            return 0.0
+
+    binance_res, bybit_res, price = await asyncio.gather(
+        _binance_oi(), _bybit_oi(), _price_usd()
+    )
+
+    exchanges = [e for e in [binance_res, bybit_res] if e]
+    if not exchanges:
+        return {"error": f"Could not fetch open interest for {asset}"}
+
+    # Aggregate total OI in USD using Binance as primary (contracts × price)
+    total_oi_usd = None
+    if binance_res and price:
+        total_oi_usd = round(binance_res["oi_contracts"] * price, 0)
+
+    return {
+        "asset":              asset,
+        "price_usd":          price or None,
+        "total_oi_usd":       total_oi_usd,
+        "oi_change_1h_pct":   binance_res.get("oi_change_1h_pct") if binance_res else None,
+        "oi_change_24h_pct":  binance_res.get("oi_change_24h_pct") if binance_res else None,
+        "long_short_ratio":   binance_res.get("long_short_ratio") if binance_res else None,
+        "exchanges":          exchanges,
+        "source":             "binance/bybit",
+    }
+
+
+async def _fetch_orderbook_depth(client: httpx.AsyncClient, params: dict) -> dict:
+    """Real bid/ask depth + slippage at $10k, $50k, $250k notional. Free public APIs."""
+    # Registry schema uses "symbol" = full pair e.g. "ETHUSDT"; accept bare asset too
+    raw    = params.get("symbol", params.get("asset", "ETHUSDT")).strip().upper()
+    symbol = raw if raw.endswith("USDT") else f"{raw}USDT"
+    asset  = symbol.replace("USDT", "")
+    exchange_pref = params.get("exchange", "binance").lower()
+
+    async def _binance_book() -> list[dict] | None:
+        try:
+            r = await client.get(
+                "https://api.binance.com/api/v3/depth",
+                params={"symbol": symbol, "limit": 100},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return {
+                "exchange": "Binance",
+                "bids": [[float(p), float(q)] for p, q in data.get("bids", [])],
+                "asks": [[float(p), float(q)] for p, q in data.get("asks", [])],
+            }
+        except Exception as e:
+            logger.warning(f"orderbook Binance error: {e}")
+            return None
+
+    async def _bybit_book() -> dict | None:
+        try:
+            r = await client.get(
+                "https://api.bybit.com/v5/market/orderbook",
+                params={"category": "spot", "symbol": symbol, "limit": 50},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            result = r.json().get("result", {})
+            return {
+                "exchange": "Bybit",
+                "bids": [[float(p), float(q)] for p, q in result.get("b", [])],
+                "asks": [[float(p), float(q)] for p, q in result.get("a", [])],
+            }
+        except Exception as e:
+            logger.warning(f"orderbook Bybit error: {e}")
+            return None
+
+    def _calc_slippage(asks: list, notional_usd: float) -> float | None:
+        """Walk the ask side to estimate avg fill price vs best ask."""
+        if not asks:
+            return None
+        best_ask  = asks[0][0]
+        remaining = notional_usd
+        total_cost = 0.0
+        total_qty  = 0.0
+        for price, qty in asks:
+            cost = price * qty
+            if cost >= remaining:
+                fill_qty   = remaining / price
+                total_cost += remaining
+                total_qty  += fill_qty
+                remaining   = 0
+                break
+            total_cost += cost
+            total_qty  += qty
+            remaining  -= cost
+        if remaining > 0:
+            return None  # not enough liquidity
+        avg_fill = total_cost / total_qty
+        return round((avg_fill - best_ask) / best_ask * 100, 4)
+
+    binance_book, bybit_book = await asyncio.gather(_binance_book(), _bybit_book())
+
+    # Prefer exchange requested by caller; fall back to whichever is available
+    if exchange_pref == "bybit":
+        book = bybit_book or binance_book
+    else:
+        book = binance_book or bybit_book
+    if not book:
+        return {"error": f"Could not fetch orderbook for {asset}"}
+
+    asks = book["asks"]
+    bids = book["bids"]
+    best_ask = asks[0][0] if asks else None
+    best_bid = bids[0][0] if bids else None
+    spread_pct = round((best_ask - best_bid) / best_ask * 100, 4) if best_ask and best_bid else None
+
+    notionals = [10_000, 50_000, 250_000]
+    depth = []
+    for n in notionals:
+        slip = _calc_slippage(asks, n)
+        depth.append({
+            "notional_usd":  n,
+            "slippage_pct":  slip,
+            "executable":    slip is not None,
+        })
+
+    # Also aggregate both exchanges for best_bid/ask comparison
+    exchange_summary = []
+    for b in [binance_book, bybit_book]:
+        if b and b.get("asks") and b.get("bids"):
+            exchange_summary.append({
+                "exchange":  b["exchange"],
+                "best_ask":  b["asks"][0][0],
+                "best_bid":  b["bids"][0][0],
+            })
+
+    return {
+        "asset":       asset,
+        "pair":        f"{asset}/USDT",
+        "exchange":    book["exchange"],
+        "best_ask":    best_ask,
+        "best_bid":    best_bid,
+        "spread_pct":  spread_pct,
+        "depth":       depth,
+        "exchanges":   exchange_summary,
+        "source":      "binance/bybit",
     }
 
 

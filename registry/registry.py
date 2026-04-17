@@ -83,11 +83,11 @@ _TOOLS: dict[str, Tool] = {
         returns="list of token balances (symbol, amount) for the given address",
         response_example={"address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", "chain": "ethereum", "balances": [{"token": "ETH", "amount": "1.234"}, {"token": "USDC", "contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "amount": "500.00"}]},
     ),
-    "dex_liquidity": Tool(
-        name="dex_liquidity",
-        description="Get liquidity depth and volume for a token pair on DEXs",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/dex_liquidity",
-        price_usdc="0.003",
+    "token_market_data": Tool(
+        name="token_market_data",
+        description="Get market cap, 24h volume, ATH, and price change for any token. Note: does NOT return pool depth or slippage — for pre-trade liquidity estimates, use a dedicated orderbook tool.",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/token_market_data",
+        price_usdc="0.001",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -97,11 +97,11 @@ _TOOLS: dict[str, Tool] = {
             },
             "required": ["token_a", "token_b"],
         },
-        category="defi",
-        triggers=["liquidity", "volume", "dex", "trading volume", "slippage", "market depth", "uniswap", "all-time high", "ath"],
-        use_when="You need 24h trading volume, market cap, or all-time high for a token pair on decentralized exchanges.",
-        returns="volume_24h_usd, market_cap_usd, price_usd, ath_usd, price_change_24h_pct",
-        response_example={"token_a": "ETH", "token_b": "USDC", "price_usd": 2071.45, "volume_24h_usd": 312847293.0, "market_cap_usd": 249800000000.0, "ath_usd": 4878.26, "price_change_24h_pct": -3.91, "source": "coingecko"},
+        category="data",
+        triggers=["market cap", "volume", "trading volume", "all-time high", "ath", "market data", "24h volume", "price change"],
+        use_when="You need 24h trading volume, market cap, ATH, or price change for a token. Not for DEX pool depth or slippage.",
+        returns="volume_24h_usd, volume_change_24h_pct, market_cap_usd, price_usd, ath_usd, price_change_24h_pct",
+        response_example={"token_a": "ETH", "token_b": "USDC", "price_usd": 2071.45, "volume_24h_usd": 312847293.0, "volume_change_24h_pct": -8.3, "market_cap_usd": 249800000000.0, "ath_usd": 4878.26, "price_change_24h_pct": -3.91, "source": "coingecko"},
     ),
     "gas_tracker": Tool(
         name="gas_tracker",
@@ -121,7 +121,7 @@ _TOOLS: dict[str, Tool] = {
     ),
     "dune_query": Tool(
         name="dune_query",
-        description="Run any Dune Analytics query and return live onchain results by query ID",
+        description="Run any Dune Analytics query and return live onchain results by query ID. Use fast_only=True for live bots — returns cached result instantly or raises immediately, never blocks.",
         endpoint="https://gateway-production-2cc2.up.railway.app/tools/dune_query",
         price_usdc="0.005",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
@@ -141,6 +141,11 @@ _TOOLS: dict[str, Tool] = {
                     "type": "integer",
                     "description": "Maximum rows to return (default 25)",
                     "default": 25,
+                },
+                "fast_only": {
+                    "type": "boolean",
+                    "description": "If True, return cached result immediately or raise — never execute a fresh query. Use for live bots where latency matters. Default: False.",
+                    "default": False,
                 },
             },
             "required": ["query_id"],
@@ -328,6 +333,51 @@ _TOOLS: dict[str, Tool] = {
         use_when="You need to check if a token contract is safe before trading or investing.",
         returns="risk_level, is_honeypot, buy_tax, sell_tax, holder_count, owner_address, is_mintable, can_take_back_ownership",
         response_example={"contract_address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "chain": "ethereum", "risk_level": "low", "is_honeypot": False, "buy_tax": 0.0, "sell_tax": 0.0, "holder_count": 842341, "is_mintable": False, "can_take_back_ownership": False, "source": "goplus"},
+    ),
+    "open_interest": Tool(
+        name="open_interest",
+        description="Get total open interest in perpetual futures for any asset, with 1h and 24h change rates. Pairs with funding_rates to complete the derivatives picture — rising OI with high funding = overcrowded position.",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/open_interest",
+        price_usdc="0.002",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {
+                "asset": {
+                    "type": "string",
+                    "description": "Token symbol, e.g. 'BTC', 'ETH', 'SOL'",
+                    "default": "BTC",
+                },
+            },
+        },
+        category="defi",
+        triggers=["open interest", "oi", "long short ratio", "futures positioning", "perp oi", "market positioning", "leverage"],
+        use_when="You need to know total open interest in perpetual futures and whether it's rising or falling. Combine with funding_rates for a full derivatives picture.",
+        returns="total_oi_usd, oi_change_1h_pct, oi_change_24h_pct, long_short_ratio, per-exchange breakdown",
+        response_example={"asset": "ETH", "price_usd": 2069.73, "total_oi_usd": 8420000000.0, "oi_change_1h_pct": 1.2, "oi_change_24h_pct": 12.4, "long_short_ratio": 1.08, "exchanges": [{"exchange": "Binance", "oi_contracts": 4066123.5, "oi_change_1h_pct": 1.2, "oi_change_24h_pct": 12.4, "long_short_ratio": 1.08}], "source": "binance/bybit"},
+    ),
+    "orderbook_depth": Tool(
+        name="orderbook_depth",
+        description="Get real bid/ask depth and slippage estimates at $10k, $50k, and $250k notional from Binance and Bybit. Use before sizing a position to know if you can execute without moving the market.",
+        endpoint="https://gateway-production-2cc2.up.railway.app/tools/orderbook_depth",
+        price_usdc="0.002",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {
+                "asset": {
+                    "type": "string",
+                    "description": "Token symbol, e.g. 'BTC', 'ETH', 'SOL'",
+                    "default": "ETH",
+                },
+            },
+            "required": ["asset"],
+        },
+        category="data",
+        triggers=["slippage", "orderbook", "market depth", "liquidity", "can i sell", "execution cost", "bid ask", "spread", "fill price"],
+        use_when="You need to estimate slippage before executing a large trade. Tells you how much a $10k, $50k, or $250k order will move the market.",
+        returns="best_bid, best_ask, spread_pct, depth with slippage_pct at $10k/$50k/$250k notional, per-exchange best prices",
+        response_example={"asset": "ETH", "pair": "ETH/USDT", "best_ask": 2071.5, "best_bid": 2071.2, "spread_pct": 0.0145, "depth": [{"notional_usd": 10000, "slippage_pct": 0.002, "executable": True}, {"notional_usd": 50000, "slippage_pct": 0.008, "executable": True}, {"notional_usd": 250000, "slippage_pct": 0.031, "executable": True}], "exchanges": [{"exchange": "Binance", "best_ask": 2071.5, "best_bid": 2071.2}, {"exchange": "Bybit", "best_ask": 2071.6, "best_bid": 2071.1}], "source": "binance/bybit"},
     ),
 }
 
