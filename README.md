@@ -54,30 +54,36 @@ Gateway: `https://gateway-production-2cc2.up.railway.app` — use `network="base
 
 **Option C — Testnet (free, no wallet needed)**
 
-One command gives you a Stellar testnet wallet pre-loaded with 5 USDC:
+Use `faucet_wallet()` from the SDK — one line, instant wallet with 5 USDC:
+
+```python
+from agentpay import faucet_wallet
+wallet = faucet_wallet()   # prints public key + balance
+```
+
+Or via curl:
 
 ```bash
 curl https://gateway-testnet-production.up.railway.app/faucet
 ```
-
-Use `network="testnet"` and `gateway_url="https://gateway-testnet-production.up.railway.app"` in your Session.
 
 ---
 
 ### Step 2: Create a Session with a budget
 
 ```python
-from agent.wallet import AgentWallet, Session, BudgetExceeded
+from agentpay import AgentWallet, Session, BudgetExceeded
 
 # Option A — Stellar mainnet
 wallet = AgentWallet(secret_key="S...", network="mainnet")
-GATEWAY = "https://gateway-production-2cc2.up.railway.app"
+
+# Option B — Base mainnet
+# wallet = AgentWallet(secret_key="0x...", network="base")
 
 # Option C — Testnet (faucet wallet)
 # wallet = AgentWallet(secret_key="S...", network="testnet")
-# GATEWAY = "https://gateway-testnet-production.up.railway.app"
 
-with Session(wallet=wallet, gateway_url=GATEWAY, max_spend="0.05") as session:
+with Session(wallet, max_spend="0.05") as session:
     print(f"Balance:  {wallet.get_usdc_balance()} USDC")
     print(f"Budget:   {session.remaining()} remaining")
 ```
@@ -89,24 +95,24 @@ The `Session` enforces a hard USDC cap across all calls. It raises `BudgetExceed
 ### Step 3: Call tools — payment is automatic
 
 ```python
-with Session(wallet=wallet, gateway_url=GATEWAY, max_spend="0.05") as session:
+with Session(wallet, max_spend="0.05") as session:
 
     # Token price — $0.001
     r = session.call("token_price", {"symbol": "ETH"})
-    print(f"ETH: ${r['price_usd']:,.2f}  ({r['change_24h_pct']:+.2f}% 24h)")
+    print(f"ETH: ${r['result']['price_usd']:,.2f}  ({r['result']['change_24h_pct']:+.2f}% 24h)")
 
     # Open interest — $0.002
     r = session.call("open_interest", {"symbol": "ETH"})
-    print(f"ETH OI: ${r['total_oi_usd']/1e9:.2f}B  ({r['oi_change_24h_pct']:+.2f}% 24h)")
+    print(f"ETH OI: ${r['result']['total_oi_usd']/1e9:.2f}B  ({r['result']['oi_change_24h_pct']:+.2f}% 24h)")
 
     # Orderbook depth — $0.002
     r = session.call("orderbook_depth", {"symbol": "ETHUSDT"})
-    slip = next(d['slippage_pct'] for d in r['depth'] if d['notional_usd'] == 250_000)
+    slip = next(d['slippage_pct'] for d in r['result']['depth'] if d['notional_usd'] == 250_000)
     print(f"ETH $250k slippage: {slip:.3f}%")
 
     # Funding rates — $0.003
     r = session.call("funding_rates", {"asset": "ETH"})
-    for ex in r.get("exchanges", [])[:2]:
+    for ex in r['result'].get("rates", [])[:2]:
         print(f"  {ex['exchange']}: {ex['funding_rate_pct']:+.4f}%/8h")
 
     print(f"\nTotal spent: {session.spent()}")
@@ -117,8 +123,8 @@ Each `session.call()` handles the full x402 flow internally:
 
 1. Checks your remaining budget against the tool's price (pre-flight, no payment yet)
 2. POSTs to the gateway, receives a `402` with `{payment_id, amount_usdc, pay_to}`
-3. Sends USDC on Stellar — confirmed in ~3–5 seconds
-4. Retries the request with `X-Payment: tx_hash=<hash>,from=<addr>,id=<payment_id>`
+3. Sends USDC on Stellar (~3–5s) or Base (~2s) — your wallet picks the network
+4. Retries the request with the payment proof header
 5. Returns the data
 
 ---
@@ -153,25 +159,31 @@ for t in tools:
 
 ---
 
-## The derivatives demo
+## Pre-trade signal check
 
-> "My bot read funding rates (+0.08%/8h on ETH), confirmed rising open interest (+12% in 24h), checked orderbook depth ($0.31% slippage on a $250k sell), and decided not to open the short. Total data cost: $0.007."
+Pull the market context your agent needs right before a decision — funding regime, OI momentum, sentiment, and whale activity — in one call, $0.008.
 
 ```python
-with Session(wallet=wallet, gateway_url=GATEWAY, max_spend="0.05") as session:
+from agentpay import faucet_wallet, Session
 
-    rates = session.call("funding_rates", {"asset": "ETH"})
-    oi    = session.call("open_interest", {"symbol": "ETH"})
-    depth = session.call("orderbook_depth", {"symbol": "ETHUSDT"})
+wallet = faucet_wallet()
+with Session(wallet, testnet=True) as session:
 
-    top_rate   = max(rates["exchanges"], key=lambda x: x["funding_rate_pct"])
-    oi_24h     = oi["oi_change_24h_pct"]
-    slip_250k  = next(d["slippage_pct"] for d in depth["depth"] if d["notional_usd"] == 250_000)
+    rates  = session.call("funding_rates",   {"asset": "ETH"})
+    oi     = session.call("open_interest",   {"symbol": "ETH"})
+    fg     = session.call("fear_greed_index", {})
+    whales = session.call("whale_activity",  {"token": "ETH", "min_usd": 500000})
 
-    print(f"Funding:  {top_rate['funding_rate_pct']:+.4f}%/8h on {top_rate['exchange']}")
-    print(f"OI 24h:   {oi_24h:+.2f}%")
-    print(f"Slippage: {slip_250k:.3f}% on a $250k sell")
-    print(f"Cost:     {session.spent()}")
+    avg_rate  = sum(e["funding_rate_pct"] for e in rates["result"]["rates"]) / len(rates["result"]["rates"])
+    oi_24h    = oi["result"]["oi_change_24h_pct"]
+    sentiment = fg["result"]["value_classification"]
+    whale_vol = whales["result"]["total_volume_usd"]
+
+    print(f"Funding:   {avg_rate:+.4f}%/8h  (~{avg_rate * 3 * 365:.0f}% APY if carried)")
+    print(f"OI 24h:    {oi_24h:+.2f}%")
+    print(f"Sentiment: {sentiment}")
+    print(f"Whale vol: ${whale_vol:,.0f}")
+    print(f"Cost:      {session.spent()}")
 ```
 
 ---
@@ -294,22 +306,26 @@ summary = session.summary()
 
 ---
 
-## Run the demo
+## Run a demo
 
 ```bash
-git clone https://github.com/romudille-bit/agentpay && cd agentpay
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install agentpay-x402
+```
 
-# Copy env and add your Stellar secret key
-cp .env.example .env
+```python
+from agentpay import faucet_wallet, Session
 
-# Week 2 demo — open_interest + orderbook_depth on mainnet ($0.004)
-WEEK2_NETWORK=mainnet STELLAR_SECRET_KEY=S... python agent/week2_test.py
+# Free testnet wallet — no setup
+wallet = faucet_wallet()
 
-# Full 5-tool ETH analysis (~$0.012)
-AGENTPAY_GATEWAY_URL=https://gateway-production-2cc2.up.railway.app \
-  python agent/budget_demo.py
+with Session(wallet, testnet=True) as s:
+    r = s.call("fear_greed_index", {})
+    print(f"Fear & Greed: {r['result']['value']} ({r['result']['value_classification']})")
+
+    r = s.call("token_price", {"symbol": "ETH"})
+    print(f"ETH: ${r['result']['price_usd']:,.2f}")
+
+    print(f"Total cost: {s.spent()}")
 ```
 
 ---
@@ -351,11 +367,12 @@ gateway (FastAPI on Railway)
 
 | Directory | Status |
 |-----------|--------|
+| [PyPI](https://pypi.org/project/agentpay-x402/) | ✅ agentpay-x402 v0.1.0 |
 | [x402scout](https://x402scout.com) | ✅ indexed, health-checked every 15min |
 | [Glama MCP](https://glama.ai/mcp/servers/romudille-bit/agentpay) | ✅ listed |
-| [402index.io](https://402index.io) | 🔜 needs update — 14 tools |
 | [awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed |
-| [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | 🔜 v1.1.0 pending publish |
+| [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
+| [402index.io](https://402index.io) | 🔜 needs update — 14 tools |
 | [xpay.tools](https://xpay.tools) | 🔜 submission in progress |
 
 ### Agent-Readable Endpoints
