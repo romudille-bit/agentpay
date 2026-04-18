@@ -13,7 +13,28 @@ AgentPay is an x402 payment gateway for AI agents. Access 14 crypto data tools u
 
 ---
 
-## Quickstart — 3 steps
+## Install
+
+```bash
+pip install agentpay-x402
+```
+
+## Quickstart — try it free in 30 seconds (testnet)
+
+```python
+from agentpay import faucet_wallet, Session
+
+wallet = faucet_wallet()          # instant testnet wallet, 5 USDC — no setup
+with Session(wallet, testnet=True) as s:
+    r = s.call("token_price", {"symbol": "ETH"})
+    print(r["result"]["price_usd"])
+```
+
+That's it. No API keys, no accounts, no config.
+
+---
+
+## Quickstart — mainnet
 
 ### Step 1: Get a wallet with USDC
 
