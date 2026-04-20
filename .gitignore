@@ -1,5 +1,6 @@
 # Secrets — never commit
 .env
+.env.local
 wallets.json
 
 # Python
