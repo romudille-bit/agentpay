@@ -164,16 +164,28 @@ async def verify_and_fulfill(
     _completed_payments.add(tx_hash)
     del _pending_challenges[payment_id]
 
-    # Trigger revenue split (async, non-blocking)
-    # In production: queue this as a background job
-    import asyncio
-    asyncio.create_task(
-        split_payment(
-            tool_developer_address=challenge_data["developer_address"],
-            total_amount_usdc=challenge_data["amount_usdc"],
-            gateway_fee_percent=settings.GATEWAY_FEE_PERCENT,
+    # Trigger revenue split (async, non-blocking).
+    # In production: queue this as a background job.
+    #
+    # Skip the split when developer_address == gateway wallet. For
+    # AgentPay-owned tools this is always the case, and a self-send would
+    # only burn a tx fee. On testnet the mainnet dev address also doesn't
+    # exist, so the split would fail every time and spam the logs.
+    developer_address = challenge_data.get("developer_address") or ""
+    if developer_address and developer_address != settings.GATEWAY_PUBLIC_KEY:
+        import asyncio
+        asyncio.create_task(
+            split_payment(
+                tool_developer_address=developer_address,
+                total_amount_usdc=challenge_data["amount_usdc"],
+                gateway_fee_percent=settings.GATEWAY_FEE_PERCENT,
+            )
         )
-    )
+    else:
+        logger.info(
+            f"Skipping revenue split — developer == gateway "
+            f"({developer_address[:10] + '...' if developer_address else 'unset'})"
+        )
 
     logger.info(f"Payment {payment_id} verified. Tool: {challenge_data['tool_name']}")
     return {
