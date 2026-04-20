@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     BASE_NETWORK: str = "base-sepolia"       # "base-sepolia" or "base"
     BASE_RPC_URL: str = "https://mainnet.base.org"
 
+    # 402index.io domain verification — public sha256 hash served at
+    # /.well-known/402index-verify.txt. Leave blank to serve 404.
+    INDEX402_VERIFY_HASH: str = ""
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"

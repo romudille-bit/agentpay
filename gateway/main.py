@@ -698,6 +698,22 @@ async def well_known_x402():
     }
 
 
+@app.get("/.well-known/402index-verify.txt", response_class=Response)
+async def well_known_402index_verify():
+    """
+    Domain-verification file for 402index.io.
+
+    Serves the SHA-256 hash from INDEX402_VERIFY_HASH as plain text. Returns
+    404 when the env var is empty so the endpoint is harmless until claimed.
+    """
+    if not settings.INDEX402_VERIFY_HASH:
+        raise HTTPException(status_code=404, detail="Not configured")
+    return Response(
+        content=settings.INDEX402_VERIFY_HASH + "\n",
+        media_type="text/plain",
+    )
+
+
 @app.get("/robots.txt", response_class=Response)
 async def robots():
     return Response(
