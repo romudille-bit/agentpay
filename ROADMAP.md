@@ -1,6 +1,6 @@
 # AgentPay Roadmap
 
-Last updated: April 16, 2026
+Last updated: April 21, 2026
 
 ---
 
@@ -50,15 +50,15 @@ Last updated: April 16, 2026
 
 Free public APIs, no new keys needed.
 
-**NEW `open_interest`** — ✅ Done
+**NEW `open_interest`** — ✅ Live on mainnet
 - Total OI + 1h/24h change across Binance + Bybit
 - Long/short ratio from Binance globalLongShortAccountRatio
-- Testnet verified April 16, 2026 — mainnet deploy pending
+- Testnet verified April 16, 2026 — mainnet deploy confirmed live April 21, 2026
 
-**NEW `orderbook_depth`** — ✅ Done
+**NEW `orderbook_depth`** — ✅ Live on mainnet
 - Real bid/ask depth + slippage at $10k / $50k / $250k notional
 - Binance primary, Bybit fallback; `exchange` param to override
-- Testnet verified April 16, 2026 — mainnet deploy pending
+- Testnet verified April 16, 2026 — mainnet deploy confirmed live April 21, 2026
 
 **FIX `token_price`** — batch + volume 🔜
 - Add `volume_24h` to single-token response (already in CoinGecko payload)
@@ -120,12 +120,14 @@ Lower urgency. Revisit when revenue supports API costs or specific user demand a
 
 ## Infrastructure
 
-**Custom domain** — `agentpay.tools` (available as of April 15, 2026)
+**Custom domain** — `agentpay.tools` 🔜 still pending as of April 21, 2026
+- Domain was available April 15 — still not resolving (ECONNREFUSED on agentpay.tools)
 - Railway subdomain explicitly penalises quality score in Bazaar's ranking algorithm
 - ~$10-15/year. Point CNAME to Railway service URL, add domain in Railway settings.
 - Do before Bazaar registration
 
-**Bazaar / x402 discovery indexing**
+**Bazaar / x402 discovery indexing** 🔜 still pending as of April 21, 2026
+- Verified: `outputSchema` is NOT yet in `base.py:build_payment_required_header`
 - Coinbase's CDP facilitator already handles Base payments (Mode A) — plumbing is there
 - Missing: `outputSchema` in the `accepts` array of the `PAYMENT-REQUIRED` header
 - Fix: update `base.py:build_payment_required_header` to embed tool `parameters` + `response_example` as `outputSchema`

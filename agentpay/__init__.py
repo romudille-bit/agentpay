@@ -7,11 +7,11 @@ orderbook depth, DeFi TVL, gas tracker, Fear & Greed, and more.
 
 Quickstart (testnet — free, no wallet needed):
 ----------------------------------------------
-    pip install agentpay
+    pip install agentpay-x402
 
     from agentpay import faucet_wallet, Session
 
-    wallet = faucet_wallet()          # instant testnet wallet with 5 USDC
+    wallet = faucet_wallet()          # instant testnet wallet with 0.05 USDC
     with Session(wallet, testnet=True) as s:
         r = s.call("token_price", {"symbol": "ETH"})
         print(r["result"]["price_usd"])   # e.g. 1812.34
@@ -39,7 +39,7 @@ from agentpay.client import (
     MAINNET_GATEWAY,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "AgentWallet",
     "Session",

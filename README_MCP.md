@@ -2,7 +2,7 @@
 
 Give Claude Desktop direct access to live crypto data — prices, gas, whale activity, DeFi TVL, and more. Payments happen automatically in USDC on Stellar.
 
-**12 tools. $0.001–$0.005 per call. No API keys needed.**
+**14 tools. $0.001–$0.005 per call. No API keys needed.**
 
 ---
 
@@ -75,14 +75,16 @@ The AgentPay tools will appear in the tools panel. Try asking:
 | `token_price` | $0.001 | Current USD price, 24h change, market cap |
 | `gas_tracker` | $0.001 | Ethereum gas prices (slow/standard/fast gwei) |
 | `fear_greed_index` | $0.001 | Crypto Fear & Greed Index (0–100) with history |
+| `token_market_data` | $0.001 | 24h volume, market cap, ATH for a token pair |
 | `wallet_balance` | $0.002 | Token balances for any Ethereum or Stellar address |
-| `whale_activity` | $0.002 | Large transfers for a token (≥$100k by default) |
+| `whale_activity` | $0.002 | Large transfers for a token (≥$100k by default), with exchange inflow/outflow direction |
 | `defi_tvl` | $0.002 | DeFi protocol TVL from DeFiLlama |
 | `token_security` | $0.002 | Honeypot, rug pull, and security scan for any token contract |
-| `yield_scanner` | $0.004 | Best DeFi yield opportunities for a token across protocols |
-| `dex_liquidity` | $0.003 | 24h volume, market cap, ATH for a token pair |
+| `open_interest` | $0.002 | Total OI + 1h/24h change + long/short ratio across Binance + Bybit |
+| `orderbook_depth` | $0.002 | Best bid/ask + slippage at $10k/$50k/$250k notional |
 | `funding_rates` | $0.003 | Perp funding rates across Binance, Bybit, and OKX |
 | `crypto_news` | $0.003 | Latest headlines and community sentiment |
+| `yield_scanner` | $0.004 | Best DeFi yield opportunities for a token across protocols |
 | `dune_query` | $0.005 | Run any Dune Analytics query by ID |
 
 ---

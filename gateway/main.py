@@ -236,7 +236,7 @@ async def root():
         "name":             "AgentPay",
         "tagline":          "Your agent is only as smart as its data",
         "version":          "1.0",
-        "tools":            12,
+        "tools":            len(registry.list_tools()),
         "docs":             "https://github.com/romudille-bit/agentpay",
         "tools_endpoint":   "https://gateway-production-2cc2.up.railway.app/tools",
         "faucet":           "https://gateway-production-2cc2.up.railway.app/faucet",
@@ -862,7 +862,7 @@ async def _provision_wallet(base_url: str) -> dict:
     server.submit_transaction(trust_tx)
     logger.info(f"[FAUCET] step=3/5 trustline submitted")
 
-    # ── 4. Send 1 USDC from gateway (with balance guard) ─────────────────────
+    # ── 4. Send 0.05 USDC from gateway (with balance guard) ──────────────────
     logger.info(f"[FAUCET] step=4/5 checking gateway balance and sending 0.05 USDC")
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
     from stellar import get_usdc_balance

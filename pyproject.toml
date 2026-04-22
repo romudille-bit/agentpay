@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentpay-x402"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pay-per-call crypto data for AI agents — x402 + USDC on Stellar or Base"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -25,11 +25,6 @@ dependencies = [
     "stellar-sdk>=10.0.0",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
-]
-
-[project.optional-dependencies]
-routines = [
-    "agentpay-x402",   # routines depend on the core package
 ]
 
 [project.urls]

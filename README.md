@@ -24,7 +24,7 @@ pip install agentpay-x402
 ```python
 from agentpay import faucet_wallet, Session
 
-wallet = faucet_wallet()          # instant testnet wallet, 5 USDC — no setup
+wallet = faucet_wallet()          # instant testnet wallet, 0.05 USDC — no setup
 with Session(wallet, testnet=True) as s:
     r = s.call("token_price", {"symbol": "ETH"})
     print(r["result"]["price_usd"])
@@ -54,7 +54,7 @@ Gateway: `https://gateway-production-2cc2.up.railway.app` — use `network="base
 
 **Option C — Testnet (free, no wallet needed)**
 
-Use `faucet_wallet()` from the SDK — one line, instant wallet with 5 USDC:
+Use `faucet_wallet()` from the SDK — one line, instant wallet with 0.05 USDC:
 
 ```python
 from agentpay import faucet_wallet
@@ -372,7 +372,7 @@ gateway (FastAPI on Railway)
 | [Glama MCP](https://glama.ai/mcp/servers/romudille-bit/agentpay) | ✅ listed |
 | [awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed |
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
-| [402index.io](https://402index.io) | 🔜 needs update — 14 tools |
+| [402index.io](https://402index.io) | ✅ domain verified, 14 tools synced |
 | [xpay.tools](https://xpay.tools) | 🔜 submission in progress |
 
 ### Agent-Readable Endpoints

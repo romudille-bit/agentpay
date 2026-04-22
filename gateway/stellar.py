@@ -49,10 +49,14 @@ async def _verify_payment_horizon(
     amount_usdc: str,
 ) -> dict:
     """
-    Direct Horizon verification — used on testnet where the OZ facilitator
-    returns 401. Queries Horizon for the transaction and checks:
+    Direct Horizon verification — the actual production path on both mainnet
+    and testnet. The OZ facilitator has returned 401 since early 2026, so
+    verify_payment() always falls through to this function.
+
+    Queries Horizon for the transaction and checks:
       - transaction exists and was successful
       - contains a USDC payment from `from_address` to `to_address`
+      - asset code is USDC with the correct issuer for this network
       - amount paid >= amount_usdc required
     """
     horizon_url = (
@@ -118,14 +122,18 @@ async def verify_payment(
     tx_hash: str = "",
 ) -> dict:
     """
-    Verify a USDC payment via the OpenZeppelin x402 facilitator.
+    Verify a USDC payment on Stellar.
 
-    The OZ facilitator covers XLM network fees — agents only need USDC,
-    no XLM required. Exposes standard /verify, /settle, /supported endpoints.
-
-    Facilitator endpoints:
-      mainnet: https://channels.openzeppelin.com/x402
-      testnet: https://channels.openzeppelin.com/x402/testnet
+    Flow:
+      1. Attempt the OpenZeppelin x402 facilitator (`STELLAR_FACILITATOR_URL`).
+         Historically this would also sponsor XLM network fees, but as of
+         early 2026 the facilitator returns 401 on both mainnet and testnet
+         for all requests — the branch is kept so we pick up free sponsorship
+         again if/when auth is relaxed or we wire up credentials.
+      2. On 401 (or any rejection), fall through to direct Horizon
+         verification via `_verify_payment_horizon()`, which is the de facto
+         production path. Agents must therefore hold a trivial XLM balance
+         to cover the Stellar base fee on their own payment.
 
     Returns:
         {"verified": True, "tx_hash": "..."} on success
