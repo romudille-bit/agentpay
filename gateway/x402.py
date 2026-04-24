@@ -103,6 +103,10 @@ def parse_payment_header(header_value: str) -> Optional[dict]:
     Parse the X-Payment header sent by the agent after paying.
 
     Format: tx_hash=abc123,from=GABC...,id=uuid
+
+    Both tx_hash and id must be present and non-empty for the parse to
+    succeed — empty values previously slipped through and got added to
+    _completed_payments as the empty string.
     """
     if not header_value:
         return None
@@ -111,7 +115,7 @@ def parse_payment_header(header_value: str) -> Optional[dict]:
         for part in header_value.split(","):
             key, _, val = part.partition("=")
             result[key.strip()] = val.strip()
-        return result if "tx_hash" in result and "id" in result else None
+        return result if result.get("tx_hash") and result.get("id") else None
     except Exception:
         return None
 

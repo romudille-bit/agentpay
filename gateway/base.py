@@ -227,10 +227,12 @@ async def settle_base_payment(
             payer                = payer,
             required_amount_atomic = int(payment_requirements.get("amount", "0")),
             pay_to               = payment_requirements.get("payTo", ""),
-            rpc_url              = rpc,
+            rpc_url              = rpc_url,
         )
         if result["success"]:
             _used_base_tx_hashes.add(tx_hash)
+        # Inject CAIP-2 network from requirements so callers don't see ""
+        result["network"] = payment_requirements.get("network", "")
         return result
 
     try:

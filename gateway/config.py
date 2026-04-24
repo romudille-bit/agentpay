@@ -41,8 +41,12 @@ class Settings(BaseSettings):
     STELLAR_FACILITATOR_URL: str = "https://channels.openzeppelin.com/x402"
 
     # Base / EVM payment option (via Coinbase CDP x402 facilitator)
+    # Default network is mainnet ("base") to match BASE_RPC_URL below — using
+    # "base-sepolia" with a mainnet RPC produced silent verification failures
+    # because the gateway looked for a sepolia USDC transfer event on a mainnet
+    # receipt. Override BASE_NETWORK + BASE_RPC_URL together for testnet.
     BASE_GATEWAY_ADDRESS: str = ""           # 0x... recipient on Base
-    BASE_NETWORK: str = "base-sepolia"       # "base-sepolia" or "base"
+    BASE_NETWORK: str = "base"               # "base" (mainnet) or "base-sepolia"
     BASE_RPC_URL: str = "https://mainnet.base.org"
 
     # 402index.io domain verification — public sha256 hash served at

@@ -38,6 +38,7 @@ from x402 import (
     build_402_headers,
     verify_and_fulfill,
     get_pending_count,
+    parse_payment_header,
 )
 import registry
 from registry import reload_tools
@@ -72,9 +73,11 @@ app.add_middleware(
 
 # ── Faucet abuse-prevention ───────────────────────────────────────────────────
 # Maps IP → epoch timestamp of last successful faucet request.
-# Requests within 24 hours of a prior grant are rejected.
+# Requests within the cooldown window of a prior grant are rejected.
+# Testnet USDC has no dollar cost — the limit exists only to stop script farms.
+# Normal onboarding (dev iterates, demo, tries again) should not be blocked.
 _FAUCET_IP_LOG: dict[str, float] = {}
-_FAUCET_COOLDOWN_SECS = 86_400  # 24 hours
+_FAUCET_COOLDOWN_SECS = 600  # 10 minutes — lets devs iterate, still stops farms
 
 # ── In-memory response cache ──────────────────────────────────────────────────
 # key → (expires_at_monotonic, data)
@@ -284,22 +287,25 @@ async def head_tool(tool_name: str):
     """
     HEAD pre-flight for x402 discovery.
     Returns pricing headers with no body so callers can check cost before committing.
+    Also advertises the Base/EVM payment option when BASE_GATEWAY_ADDRESS is set.
     """
-    tool = registry.get_tool(tool_name)
+    resolved = _TOOL_ALIASES.get(tool_name, tool_name)
+    tool = registry.get_tool(resolved)
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    return Response(
-        status_code=200,
-        headers={
-            "X-Price-USDC":        tool.price_usdc,
-            "X-Asset":             "USDC",
-            "X-Network":           settings.STELLAR_NETWORK,
-            "X-Pay-To":            settings.GATEWAY_PUBLIC_KEY,
-            "X-Payment-Required":  "true",
-            "X-Tool-Name":         tool_name,
-            "X-Tool-Category":     tool.category,
-        },
-    )
+    headers = {
+        "X-Price-USDC":        tool.price_usdc,
+        "X-Asset":             "USDC",
+        "X-Network":           f"stellar-{settings.STELLAR_NETWORK}",
+        "X-Pay-To":            settings.GATEWAY_PUBLIC_KEY,
+        "X-Payment-Required":  "true",
+        "X-Tool-Name":         tool_name,
+        "X-Tool-Category":     tool.category,
+    }
+    if settings.BASE_GATEWAY_ADDRESS:
+        headers["X-Base-Network"] = settings.BASE_NETWORK
+        headers["X-Base-Pay-To"]  = settings.BASE_GATEWAY_ADDRESS
+    return Response(status_code=200, headers=headers)
 
 
 @app.post("/tools/{tool_name}/call")
@@ -324,7 +330,12 @@ async def call_tool(
       2. X-Payment → verify Stellar tx, execute tool
       3. PAYMENT-SIGNATURE → settle via CDP facilitator, execute tool
     """
-    tool = registry.get_tool(tool_name)
+    # Resolve legacy aliases (e.g. dex_liquidity → token_market_data) so POST
+    # honours the same alias map as GET /tools/{name}. Without this, agents
+    # calling the legacy name hit a 404 even though the alias resolver works
+    # for tool metadata.
+    resolved = _TOOL_ALIASES.get(tool_name, tool_name)
+    tool = registry.get_tool(resolved)
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
     if not tool.active:
@@ -460,11 +471,15 @@ async def call_tool(
         agent_address = agent_address or result["payer"]
 
     # ── Step 3: Payment verified → call the real tool ─────────────────────────
-    registry.increment_call_count(tool_name)
-    
+    # Use the resolved name for registry book-keeping so legacy aliases
+    # (e.g. dex_liquidity) credit the canonical tool. Pass `resolved` to the
+    # real-tool dispatcher too — _real_tool_response handles both names but
+    # using the canonical one keeps the cache key and metrics consistent.
+    registry.increment_call_count(resolved)
+
     if not tool.endpoint:
         # No proxy endpoint configured — call real APIs directly
-        tool_result = await _real_tool_response(tool_name, body.parameters)
+        tool_result = await _real_tool_response(resolved, body.parameters)
     else:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -478,7 +493,7 @@ async def call_tool(
                 tool_result = response.json()
         except httpx.ConnectError:
             logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
-            tool_result = await _real_tool_response(tool_name, body.parameters)
+            tool_result = await _real_tool_response(resolved, body.parameters)
         except Exception as e:
             logger.error(f"Tool execution error: {e}")
             raise HTTPException(status_code=502, detail=f"Tool execution failed: {str(e)}")
@@ -496,18 +511,25 @@ async def call_tool(
     agent_log  = (agent_address or "unknown")[:8]
     logger.info(f"[CALL] tool={tool_name} agent={agent_log}... status=completed tx={tx_hash}")
 
-    # Log to Supabase (non-blocking — failure is silently warned, not fatal)
-    if x_payment and "id=" in x_payment:
-        payment_id = x_payment.split("id=")[-1]
+    # Log to Supabase (non-blocking — failure is silently warned, not fatal).
+    # Use the proper x402 header parser instead of fragile string-split, which
+    # would capture the wrong substring whenever id= wasn't the final field.
+    if x_payment:
+        parsed = parse_payment_header(x_payment) or {}
+        payment_id = parsed.get("id") or tx_hash
     else:
         payment_id = tx_hash  # Base: use tx hash as dedup key
     asyncio.create_task(_log_payment(
         payment_id=payment_id,
-        tool_name=tool_name,
+        tool_name=resolved,
         agent_address=agent_address or "",
         amount_usdc=tool.price_usdc,
         tx_hash=tx_hash,
     ))
+
+    # Report the actual settlement network — Base payments were previously
+    # mislabelled as STELLAR_NETWORK in the receipt.
+    receipt_network = auth.get("network") or f"stellar-{settings.STELLAR_NETWORK}"
 
     return {
         "tool": tool_name,
@@ -515,7 +537,7 @@ async def call_tool(
         "payment": {
             "amount_usdc": tool.price_usdc,
             "tx_hash": auth.get("tx_hash"),
-            "network": settings.STELLAR_NETWORK,
+            "network": receipt_network,
         },
     }
 
@@ -941,7 +963,7 @@ async def _provision_wallet(base_url: str) -> dict:
 
 
 @app.get("/faucet")
-@limiter.limit("2/hour")
+@limiter.limit("30/hour")
 async def faucet_json(request: Request):
     """Generate a funded testnet wallet — returns JSON."""
     if settings.STELLAR_NETWORK == "mainnet":
@@ -958,10 +980,14 @@ async def faucet_json(request: Request):
     now = _time.time()
     last = _FAUCET_IP_LOG.get(client_ip, 0)
     if now - last < _FAUCET_COOLDOWN_SECS:
-        wait_h = int((_FAUCET_COOLDOWN_SECS - (now - last)) / 3600) + 1
+        wait_s = int(_FAUCET_COOLDOWN_SECS - (now - last))
+        wait_label = f"{wait_s}s" if wait_s < 120 else f"~{wait_s // 60}min"
         raise HTTPException(
             status_code=429,
-            detail=f"This IP already received a test wallet. Try again in ~{wait_h}h.",
+            detail=(
+                f"This IP just received a test wallet. Try again in {wait_label}. "
+                f"Or switch to mainnet — each tool call costs ~$0.001–$0.005 USDC."
+            ),
         )
 
     # ── Anti-script delay (3 seconds) ─────────────────────────────────────────
