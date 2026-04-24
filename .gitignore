@@ -1,7 +1,10 @@
 # Secrets — never commit
 .env
 .env.local
+.env.*
+!.env.example
 wallets.json
+*.secret
 
 # Python
 __pycache__/
@@ -10,25 +13,36 @@ __pycache__/
 *.pyd
 .Python
 venv/
+.venv/
 *.egg-info/
 dist/
 build/
 
-# Logs
+# Logs + runtime artifacts
 *.log
-/tmp/
+paper_trade_log.txt
+agent/*_result.json
 
-# Editor
+# Editor / OS
 .DS_Store
 .idea/
 .vscode/
-agent/budget_demo_result.json
 
-# Claude internal — all local workflow files, never in public repo
+# Local tool config (editor + AI assistant scratch dirs)
 .claude/
-CONTEXT.md
+.cursor/
+.aider/
+.copilot/
 
-# Spec docs (kept locally in docs/specs/, not committed to public repo)
-docs/specs/*.docx
-docs/specs/*.pdf
+# Local-only docs (drafts, strategy notes, internal context)
+CONTEXT.md
 CLAUDE.md
+/*.docx
+/*.pdf
+/notes/
+/drafts/
+docs/specs/
+
+# Outreach drafts and private correspondence
+tools/*_email.txt
+tools/*_draft.txt
