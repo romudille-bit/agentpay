@@ -36,13 +36,13 @@ _FAUCET_COOLDOWN_SECS = 600  # 10 minutes — lets devs iterate, still stops far
 
 async def _provision_wallet(base_url: str) -> dict:
     """
-    Create and fund a fresh Stellar testnet wallet with XLM + 5 USDC.
+    Create and fund a fresh Stellar testnet wallet with XLM + 0.05 USDC.
 
     Steps:
       1. Generate keypair
       2. Fund with XLM via Friendbot
       3. Add USDC trustline (signed by new keypair)
-      4. Send 1 USDC from gateway wallet (checks balance ≥ 10 USDC first)
+      4. Send 0.05 USDC from gateway wallet (checks balance ≥ 1 USDC first)
       5. Return balances + ready-to-use code snippet
     """
     from stellar_sdk import Keypair, TransactionBuilder

@@ -15,6 +15,7 @@ Run with:
 
 import asyncio
 import logging
+import os
 
 import httpx
 from fastapi import FastAPI
@@ -77,7 +78,19 @@ async def _keepalive_loop():
 
 @app.on_event("startup")
 async def _startup():
-    asyncio.create_task(_keepalive_loop())
+    # Scheduling the keepalive task can be disabled (e.g. by the test suite)
+    # so the background ping doesn't fire at the production URL during
+    # local imports. Default behaviour is unchanged. Accepts the common
+    # boolean idioms — "1", "true", "yes", "on" (case-insensitive) — so
+    # nobody gets surprised by a literal-string mismatch.
+    #
+    # TODO(tier-2): the keepalive currently pings GATEWAY_URL — a hardcoded
+    # production URL — even when the gateway is running locally or on
+    # gateway-testnet, which is a wasteful round-trip through Railway's edge
+    # back to the same worker. Switch to f"http://localhost:{settings.PORT}"
+    # once we add a settings.LOCAL_KEEPALIVE flag.
+    if os.environ.get("KEEPALIVE_DISABLED", "").lower() not in {"1", "true", "yes", "on"}:
+        asyncio.create_task(_keepalive_loop())
     if not sb_enabled():
         logger.info("Supabase not configured — using in-memory registry")
         return
