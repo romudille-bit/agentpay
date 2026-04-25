@@ -13,11 +13,6 @@ Endpoints:
     GET  /stats                  Gateway stats
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'registry'))
-
 import logging
 import time as _time
 import httpx
@@ -33,7 +28,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from x402 import (
+from gateway.x402 import (
     issue_payment_challenge,
     build_402_headers,
     verify_and_fulfill,
@@ -42,8 +37,8 @@ from x402 import (
 )
 import registry
 from registry import reload_tools
-from config import settings
-import base as base_pay
+from gateway.config import settings
+from gateway import base as base_pay
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(

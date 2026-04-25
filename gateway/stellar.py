@@ -14,7 +14,7 @@ from stellar_sdk import (
     Keypair, Network, Server, Asset, TransactionBuilder,
     exceptions as stellar_exceptions
 )
-from config import settings
+from gateway.config import settings
 import logging
 
 logger = logging.getLogger(__name__)

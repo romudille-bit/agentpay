@@ -24,8 +24,8 @@ import json
 from typing import Optional
 from dataclasses import dataclass, asdict
 
-from stellar import verify_payment, split_payment
-from config import settings
+from gateway.stellar import verify_payment, split_payment
+from gateway.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
