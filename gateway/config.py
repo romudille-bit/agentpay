@@ -65,3 +65,10 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+# Public-facing gateway URL used in discovery responses, faucet snippets,
+# 402 challenge instructions, and the keepalive ping. Settings exposes
+# AGENTPAY_GATEWAY_URL as an override; this constant is the stable fallback
+# pointing at the production deploy.
+GATEWAY_URL = "https://gateway-production-2cc2.up.railway.app"
