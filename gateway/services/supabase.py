@@ -55,4 +55,11 @@ async def log_payment(
                 },
             )
     except Exception as e:
-        logger.warning(f"Payment log to Supabase failed: {e}")
+        # Use error-level so failures actually surface in Railway logs.
+        # Previously this was warning-level, which buried RLS / auth /
+        # network failures under httpx access logs and let writes silently
+        # fail for 25 days (March 31 → April 28) before anyone noticed.
+        logger.error(
+            f"Payment log to Supabase FAILED — paid call NOT recorded "
+            f"(payment_id={payment_id}, tool={tool_name}). Error: {e}"
+        )

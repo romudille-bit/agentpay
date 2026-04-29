@@ -129,7 +129,12 @@ async def _startup():
             for r in rows
         ]
         # Merge response_example from seed registry for any tools missing it in Supabase
-        from registry import _TOOLS as _SEED
+        # _TOOLS isn't re-exported from registry/__init__.py — import it
+        # directly from the submodule. Previously this raised ImportError
+        # on every Railway deploy and got caught by the broad except below,
+        # which logged the misleading "Supabase unavailable" warning even
+        # though Supabase had just returned 200.
+        from registry.registry import _TOOLS as _SEED
         for t in tools:
             if t.response_example is None and t.name in _SEED:
                 t.response_example = _SEED[t.name].response_example
