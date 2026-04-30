@@ -135,9 +135,25 @@ async def _startup():
         # which logged the misleading "Supabase unavailable" warning even
         # though Supabase had just returned 200.
         from registry.registry import _TOOLS as _SEED
+        # Supabase rows can be partial (4 newer tools — yield_scanner,
+        # funding_rates, open_interest, orderbook_depth — were inserted
+        # without triggers/use_when/returns and never backfilled). Fall
+        # back to the in-memory seed for any discovery field the Supabase
+        # row left empty. This makes registry.py the source of truth for
+        # discovery hints; Supabase becomes an override layer.
+        #
+        # NOTE: this means an *intentionally* empty value in Supabase
+        # (e.g. triggers=[]) gets shadowed by the seed. We've never used
+        # Supabase to deliberately clear fields, so this is fine in
+        # practice — but worth knowing if that ever changes.
         for t in tools:
-            if t.response_example is None and t.name in _SEED:
-                t.response_example = _SEED[t.name].response_example
+            if t.name not in _SEED:
+                continue
+            seed = _SEED[t.name]
+            if t.response_example is None: t.response_example = seed.response_example
+            if not t.triggers:              t.triggers = seed.triggers
+            if not t.use_when:              t.use_when = seed.use_when
+            if not t.returns:               t.returns = seed.returns
         reload_tools(tools)
         logger.info(f"Loaded {len(tools)} tools from Supabase")
     except Exception as e:
