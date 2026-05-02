@@ -1,0 +1,22 @@
+# Dev-only dependencies for running the test suite.
+# Install: pip install -r requirements-dev.txt
+#
+# Kept as a standalone file so it doesn't conflict with the in-progress
+# agentpay SDK pyproject.toml work. Once that lands, this can move into
+# [project.optional-dependencies] dev = [...] in pyproject.toml and this
+# file can be deleted.
+
+pytest>=8.0
+pytest-asyncio>=0.23
+
+# Runtime deps the gateway needs to import during tests (TestClient
+# loads gateway.main, which transitively imports these). Already in
+# pyproject.toml's [project] dependencies — duplicated here so a fresh
+# checkout that does `pip install -r requirements-dev.txt` is enough
+# to run the suite without also installing the SDK package.
+fastapi>=0.110
+httpx>=0.27
+slowapi>=0.1.9
+uvicorn>=0.30
+pydantic-settings>=2.0
+stellar-sdk>=10.0.0
