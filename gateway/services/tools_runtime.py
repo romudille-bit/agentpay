@@ -73,18 +73,34 @@ _EXCHANGE_WALLETS: dict[str, str] = {
     "0xa7efae728d2936e78bda97dc267687568dd593f3": "OKX",
     # Bybit
     "0xf89d7b9c864f589bbf53a82105107622b35eaa40": "Bybit",
-    "0x2b5634c42055806a59e9107ed44d43c426e58258": "Bybit",
+    "0x2b5634c42055806a59e9107ed44d43c426e58258": "KuCoin",  # was "Bybit" — Etherscan labels this "KuCoin 1"
     # Bitfinex
     "0x77134cbc06cb00b66f4c7e623d5fdbf6777635ec": "Bitfinex",
     "0x742d35cc6634c0532925a3b844bc454e4438f44e": "Bitfinex",
     # Gemini
     "0xd24400ae8bfebb18ca49be86258a3c749cf46853": "Gemini",
     "0x07ee55aa48bb72dcc6e9d78256648910de513eca": "Gemini",
-    # Huobi
-    "0xab5c66752a9e8167967685f1450532fb96d5d24f": "Huobi",
-    "0x6748f50f686bfbca6fe8ad62b22228b87f31ff2b": "Huobi",
+    # HTX (formerly Huobi — rebranded Sept 2023)
+    "0xab5c66752a9e8167967685f1450532fb96d5d24f": "HTX",
+    "0x6748f50f686bfbca6fe8ad62b22228b87f31ff2b": "HTX",
+    "0x1062a747393198f70f71ec65a582423dba7e5ab3": "HTX",   # HTX 80 — 1.9M+ txs
+    "0xfdb16996831753d5331ff813c29a93c76834a0ad": "HTX",   # HTX 23 — 1.8M+ txs
     # Gate.io
     "0x0d0707963952f2fba59dd06f2b425ace40b492fe": "Gate.io",
+    # KuCoin
+    "0x2933782b5a8d72f2754103d1489614f29bfa4625": "KuCoin",  # KuCoin: Wallet — $48M, active Feb 2026
+    "0xd6216fc19db775df9774a6e33526131da7d19a2c": "KuCoin",  # KuCoin 6 — $1.2B, active Sep 2025
+    "0xf16e9b0d03470827a95cdfd0cb8a8a3b46969b91": "KuCoin",  # KuCoin 9 — $521K, active Apr 2026
+    # Bitget
+    "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23": "Bitget",  # Bitget 6 — $377M, active Oct 2025
+    "0x0639556f03714a74a5feeaf5736a4a64ff70d206": "Bitget",  # Bitget 4 — $63M, active Jan 2026
+    # MEXC
+    "0x3cc936b795a188f0e246cbb2d74c5bd190aecf18": "MEXC",    # MEXC 3 — $595M, active 2025
+    # Crypto.com
+    "0xa023f08c70a23abc7edfc5b6b5e171d78dfc947e": "Crypto.com",  # Crypto.com 22 — $1.6B, active Oct 2025
+    "0x72a53cdbbcc1b9efa39c834a540550e23463aacb": "Crypto.com",  # Crypto.com 14 — $5.7M, active Oct 2025
+    # Bithumb
+    "0x17e5545b11b468072283cee1f066a059fb0dbf24": "Bithumb",  # Bithumb: Hot Wallet — $443M, active Dec 2025
 }
 
 
