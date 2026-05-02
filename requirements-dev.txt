@@ -8,6 +8,7 @@
 
 pytest>=8.0
 pytest-asyncio>=0.23
+respx>=0.21
 
 # Runtime deps the gateway needs to import during tests (TestClient
 # loads gateway.main, which transitively imports these). Already in
