@@ -46,3 +46,7 @@ docs/specs/
 # Outreach drafts and private correspondence
 tools/*_email.txt
 tools/*_draft.txt
+
+# Internal research notes and runtime reports — never commit
+exchange_wallet_audit.md
+usage_reports/
