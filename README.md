@@ -1,4 +1,4 @@
-# AgentPay — Ditch those API keys.
+# AgentPay — ![tests](https://github.com/romudille-bit/agentpay/actions/workflows/test.yml/badge.svg) Ditch those API keys.
 
 Pay per call. No subscriptions. No human in the loop.
 
