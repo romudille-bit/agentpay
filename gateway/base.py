@@ -263,11 +263,41 @@ async def settle_base_payment(
     logger.info(f"[BASE] Settle response: success={data.get('success')} tx={data.get('transaction','')[:20]}...")
 
     if data.get("success"):
+        # Schema-validate the CDP response before trusting it (Tier 2 #19).
+        # CDP has occasionally returned {"success": True} with missing or
+        # malformed transaction/payer/network fields — silently propagating
+        # empty values produced misleading downstream receipts (paid call
+        # appears successful but the on-chain proof is unrecoverable).
+        # Validate explicit shape before declaring victory.
+        tx      = data.get("transaction", "")
+        payer   = data.get("payer", "")
+        network = data.get("network", "")
+
+        # EVM tx hash: 0x-prefixed, 66-char (0x + 64 hex)
+        if not (isinstance(tx, str) and tx.startswith("0x") and len(tx) == 66):
+            logger.warning(f"[BASE] CDP success=true but malformed transaction: {tx!r}")
+            return {
+                "success": False, "tx_hash": tx, "payer": payer, "network": network,
+                "reason": "cdp_malformed_transaction",
+            }
+        # EVM address: 0x-prefixed, 42-char (0x + 40 hex)
+        if not (isinstance(payer, str) and payer.startswith("0x") and len(payer) == 42):
+            logger.warning(f"[BASE] CDP success=true but malformed payer: {payer!r}")
+            return {
+                "success": False, "tx_hash": tx, "payer": payer, "network": network,
+                "reason": "cdp_malformed_payer",
+            }
+        # CAIP-2 network identifier (e.g. "eip155:8453") — required, non-empty
+        if not (isinstance(network, str) and network):
+            logger.warning(f"[BASE] CDP success=true but missing network field")
+            return {
+                "success": False, "tx_hash": tx, "payer": payer, "network": "",
+                "reason": "cdp_missing_network",
+            }
+
         return {
             "success": True,
-            "tx_hash": data.get("transaction", ""),
-            "payer":   data.get("payer", ""),
-            "network": data.get("network", ""),
+            "tx_hash": tx, "payer": payer, "network": network,
             "reason":  "ok",
         }
 
