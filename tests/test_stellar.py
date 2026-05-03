@@ -363,8 +363,31 @@ class TestVerifyPayment:
         assert result["verified"] is True
 
     @pytest.mark.asyncio
-    async def test_facilitator_unreachable_returns_error(self, mock_settings):
-        # Network failure on the facilitator post — exception path.
+    async def test_facilitator_unreachable_falls_back_to_horizon(self, mock_settings):
+        # Network failure on the facilitator post should fall back to Horizon
+        # if a tx_hash is provided. Added by #17 — was previously a hard fail.
+        with respx.mock:
+            respx.post(f"{FACILITATOR}/verify").mock(
+                side_effect=httpx.ConnectError("facilitator down")
+            )
+            respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
+                return_value=httpx.Response(200, json=_tx_response())
+            )
+            respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
+                return_value=httpx.Response(200, json=_ops_response(_payment_op()))
+            )
+            result = await verify_payment(
+                from_address=AGENT_ADDR,
+                to_address=GATEWAY_ADDR,
+                amount_usdc="0.001",
+                payment_id="some-payment-id",
+                tx_hash=TX_HASH,
+            )
+        assert result == {"verified": True, "tx_hash": TX_HASH}
+
+    @pytest.mark.asyncio
+    async def test_facilitator_unreachable_no_tx_hash_fails_closed(self, mock_settings):
+        # Network failure + no tx_hash to fall back on → fail closed.
         with respx.mock:
             respx.post(f"{FACILITATOR}/verify").mock(
                 side_effect=httpx.ConnectError("facilitator down")
@@ -374,9 +397,33 @@ class TestVerifyPayment:
                 to_address=GATEWAY_ADDR,
                 amount_usdc="0.001",
                 payment_id="some-payment-id",
-                tx_hash=TX_HASH,
+                # tx_hash deliberately omitted
             )
-        # Note: this currently returns failure with the error string instead
-        # of falling back to Horizon. Tier 2 #17 (Stellar facilitator fallback
-        # covers all non-200 cases) will broaden the fallback to include this.
         assert result["verified"] is False
+        assert "facilitator" in result["reason"].lower()
+
+    @pytest.mark.asyncio
+    async def test_facilitator_5xx_falls_back_to_horizon(self, mock_settings):
+        # A 5xx from the facilitator should also trigger fallback, not just
+        # 401. This is the headline #17 fix — previously the gateway would
+        # return spurious payment-verification failures during facilitator
+        # outages even when the on-chain settlement was successful.
+        for code in (500, 502, 503, 504):
+            with respx.mock:
+                respx.post(f"{FACILITATOR}/verify").mock(
+                    return_value=httpx.Response(code)
+                )
+                respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
+                    return_value=httpx.Response(200, json=_tx_response())
+                )
+                respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
+                    return_value=httpx.Response(200, json=_ops_response(_payment_op()))
+                )
+                result = await verify_payment(
+                    from_address=AGENT_ADDR,
+                    to_address=GATEWAY_ADDR,
+                    amount_usdc="0.001",
+                    payment_id="some-payment-id",
+                    tx_hash=TX_HASH,
+                )
+            assert result["verified"] is True, f"5xx code {code} should fall back to Horizon"

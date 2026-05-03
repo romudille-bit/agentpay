@@ -130,10 +130,16 @@ async def verify_payment(
          early 2026 the facilitator returns 401 on both mainnet and testnet
          for all requests — the branch is kept so we pick up free sponsorship
          again if/when auth is relaxed or we wire up credentials.
-      2. On 401 (or any rejection), fall through to direct Horizon
-         verification via `_verify_payment_horizon()`, which is the de facto
-         production path. Agents must therefore hold a trivial XLM balance
-         to cover the Stellar base fee on their own payment.
+      2. On *any* non-200 response (401, 5xx, network errors, timeouts) or
+         on `isValid: false`, fall through to direct Horizon verification
+         via `_verify_payment_horizon()`, which is the de facto production
+         path. Agents must therefore hold a trivial XLM balance to cover
+         the Stellar base fee on their own payment.
+
+    Tier 2 #17 broadened the fallback from 401-only to all-non-200 + all
+    exceptions. Previously, a 502 from the facilitator (or a network
+    timeout) would skip the Horizon fallback and return failure, even
+    though the payment may have been valid on-chain.
 
     Returns:
         {"verified": True, "tx_hash": "..."} on success
@@ -158,14 +164,23 @@ async def verify_payment(
                 f"{facilitator_url}/verify",
                 json=payload
             )
-            # 401 = facilitator requires auth — fall back immediately
-            if resp.status_code == 401:
-                logger.warning("OZ facilitator returned 401 — falling back to Horizon verification")
+            # ANY non-200: fall back immediately to Horizon. Was 401-only;
+            # broadened in #17 because the facilitator returns 5xx during
+            # outages and other transient failures, all of which previously
+            # produced spurious payment-verification failures even when the
+            # tx was valid on-chain.
+            if resp.status_code != 200:
+                logger.warning(
+                    f"OZ facilitator returned {resp.status_code} — falling back to Horizon verification"
+                )
                 if tx_hash:
                     return await _verify_payment_horizon(
                         tx_hash, from_address, to_address, amount_usdc
                     )
-                return {"verified": False, "reason": "Facilitator unavailable and no tx_hash provided"}
+                return {
+                    "verified": False,
+                    "reason": f"Facilitator returned {resp.status_code} and no tx_hash provided",
+                }
             data = resp.json()
             if not data.get("isValid"):
                 reason = data.get("invalidReason", "Facilitator rejected payment")
@@ -203,8 +218,16 @@ async def verify_payment(
             return {"verified": True, "tx_hash": tx_hash}
 
     except Exception as e:
-        logger.error(f"Facilitator verify error: {e}")
-        return {"verified": False, "reason": str(e)}
+        # Connection errors, timeouts, malformed JSON, etc. — same fallback
+        # as a non-200 status. Without this branch (added in #17), a
+        # transient network blip on the facilitator host would fail the
+        # payment even when on-chain settlement was successful.
+        logger.warning(f"Facilitator unreachable ({e}) — falling back to Horizon verification")
+        if tx_hash:
+            return await _verify_payment_horizon(
+                tx_hash, from_address, to_address, amount_usdc
+            )
+        return {"verified": False, "reason": f"Facilitator error: {e}"}
 
 
 # ── Revenue Split ─────────────────────────────────────────────────────────────
