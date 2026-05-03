@@ -76,8 +76,11 @@ async def _provision_wallet(base_url: str) -> dict:
     logger.info(f"[FAUCET] step=2/5 Friendbot OK")
 
     # ── 3. Add USDC trustline (signed by new wallet) ──────────────────────────
+    # asyncio.to_thread offloads the synchronous stellar_sdk calls to a worker
+    # thread so the FastAPI event loop stays free for other requests during the
+    # ~5-10s of Horizon round-trips a faucet provision involves.
     logger.info(f"[FAUCET] step=3/5 adding USDC trustline")
-    new_account = server.load_account(public_key)
+    new_account = await asyncio.to_thread(server.load_account, public_key)
     trust_tx = (
         TransactionBuilder(
             source_account=new_account,
@@ -89,14 +92,14 @@ async def _provision_wallet(base_url: str) -> dict:
         .build()
     )
     trust_tx.sign(keypair)
-    server.submit_transaction(trust_tx)
+    await asyncio.to_thread(server.submit_transaction, trust_tx)
     logger.info(f"[FAUCET] step=3/5 trustline submitted")
 
     # ── 4. Send 0.05 USDC from gateway (with balance guard) ──────────────────
     logger.info(f"[FAUCET] step=4/5 checking gateway balance and sending 0.05 USDC")
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
     from gateway.stellar import get_usdc_balance
-    gateway_usdc = Decimal(get_usdc_balance(gateway_keypair.public_key))
+    gateway_usdc = Decimal(await get_usdc_balance(gateway_keypair.public_key))
     if gateway_usdc < Decimal("1"):
         raise HTTPException(
             status_code=503,
@@ -105,7 +108,9 @@ async def _provision_wallet(base_url: str) -> dict:
                 "Please try again later or reach out on GitHub."
             ),
         )
-    gateway_account = server.load_account(gateway_keypair.public_key)
+    gateway_account = await asyncio.to_thread(
+        server.load_account, gateway_keypair.public_key
+    )
     pay_tx = (
         TransactionBuilder(
             source_account=gateway_account,
@@ -121,12 +126,12 @@ async def _provision_wallet(base_url: str) -> dict:
         .build()
     )
     pay_tx.sign(gateway_keypair)
-    server.submit_transaction(pay_tx)
+    await asyncio.to_thread(server.submit_transaction, pay_tx)
     logger.info(f"[FAUCET] step=4/5 USDC sent")
 
     # ── 5. Read balances ──────────────────────────────────────────────────────
     logger.info(f"[FAUCET] step=5/5 reading final balances")
-    funded = server.load_account(public_key)
+    funded = await asyncio.to_thread(server.load_account, public_key)
     xlm_balance  = "0"
     usdc_balance = "0"
     for b in funded.raw_data.get("balances", []):

@@ -229,8 +229,14 @@ async def split_payment(
     developer_share = developer_share.quantize(Decimal("0.0000001"))
     
     try:
-        gateway_account = server.load_account(gateway_keypair.public_key)
-        
+        # asyncio.to_thread keeps the event loop free while stellar_sdk's
+        # synchronous Horizon call runs on a worker thread. Without this,
+        # split_payment blocks the entire FastAPI worker for the 200-2000ms
+        # of network round-trip — every concurrent call freezes during a split.
+        gateway_account = await asyncio.to_thread(
+            server.load_account, gateway_keypair.public_key
+        )
+
         tx = (
             TransactionBuilder(
                 source_account=gateway_account,
@@ -245,9 +251,9 @@ async def split_payment(
             .set_timeout(30)
             .build()
         )
-        
+
         tx.sign(gateway_keypair)
-        response = server.submit_transaction(tx)
+        response = await asyncio.to_thread(server.submit_transaction, tx)
         
         logger.info(f"Split sent {developer_share} USDC to {tool_developer_address}")
         return {
@@ -263,11 +269,16 @@ async def split_payment(
 
 # ── Balance Check ─────────────────────────────────────────────────────────────
 
-def get_usdc_balance(public_key: str) -> str:
-    """Return USDC balance for a Stellar address."""
+async def get_usdc_balance(public_key: str) -> str:
+    """Return USDC balance for a Stellar address.
+
+    Async because stellar_sdk's Server.load_account is synchronous and would
+    otherwise block the event loop for 200-2000ms per call. Wrapping in
+    asyncio.to_thread offloads to a worker thread. Callers must `await`.
+    """
     server = get_server()
     try:
-        account = server.load_account(public_key)
+        account = await asyncio.to_thread(server.load_account, public_key)
         for balance in account.raw_data.get("balances", []):
             if (
                 balance.get("asset_code") == "USDC"
