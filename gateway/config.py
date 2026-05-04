@@ -38,7 +38,13 @@ class Settings(BaseSettings):
     AGENTPAY_GATEWAY_URL: str = ""
 
     # OpenZeppelin x402 Facilitator (covers XLM gas fees — agents only need USDC)
+    # Disabled by default since early 2026 — the OZ x402 channel returns 401
+    # in production for all requests until credentials are wired up. With #18
+    # the gateway no longer wastes a 15-second POST → 401 round-trip on every
+    # verification and goes straight to Horizon. Set to True once OZ auth is
+    # configured (or if testing the facilitator flow specifically).
     STELLAR_FACILITATOR_URL: str = "https://channels.openzeppelin.com/x402"
+    STELLAR_FACILITATOR_ENABLED: bool = False
 
     # Base / EVM payment option (via Coinbase CDP x402 facilitator)
     # Default network is mainnet ("base") to match BASE_RPC_URL below — using

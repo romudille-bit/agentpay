@@ -427,3 +427,59 @@ class TestVerifyPayment:
                     tx_hash=TX_HASH,
                 )
             assert result["verified"] is True, f"5xx code {code} should fall back to Horizon"
+
+
+# ── #18 — facilitator flag-gating (default disabled) ────────────────────────
+
+class TestFacilitatorDisabled:
+    """When STELLAR_FACILITATOR_ENABLED is False (the new default after #18),
+    verify_payment skips the OZ POST entirely and goes straight to Horizon.
+    Saves ~15s of wasted timeout per call in production where OZ has been
+    returning 401 for months."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_skips_oz_and_uses_horizon(self, mock_settings, monkeypatch):
+        # Override the mock_settings default (which sets ENABLED=true for the
+        # OZ-flow tests) — this class tests the disabled path explicitly.
+        import gateway.stellar
+        mock_settings.STELLAR_FACILITATOR_ENABLED = False
+        monkeypatch.setattr(gateway.stellar, "settings", mock_settings)
+
+        with respx.mock:
+            # Note: NO mock for the facilitator POST — if the code tries to
+            # call it, respx will raise an unmatched-request error and the
+            # test will fail. That's the assertion: with ENABLED=False we
+            # should never hit the OZ endpoint.
+            respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
+                return_value=httpx.Response(200, json=_tx_response())
+            )
+            respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
+                return_value=httpx.Response(200, json=_ops_response(_payment_op()))
+            )
+            result = await verify_payment(
+                from_address=AGENT_ADDR,
+                to_address=GATEWAY_ADDR,
+                amount_usdc="0.001",
+                payment_id="some-payment-id",
+                tx_hash=TX_HASH,
+            )
+        assert result == {"verified": True, "tx_hash": TX_HASH}
+
+    @pytest.mark.asyncio
+    async def test_disabled_no_tx_hash_fails_closed(self, mock_settings, monkeypatch):
+        # Disabled + no tx_hash → cannot verify → fail closed with a
+        # descriptive reason. No respx mocks needed since we never make
+        # any HTTP calls.
+        import gateway.stellar
+        mock_settings.STELLAR_FACILITATOR_ENABLED = False
+        monkeypatch.setattr(gateway.stellar, "settings", mock_settings)
+
+        result = await verify_payment(
+            from_address=AGENT_ADDR,
+            to_address=GATEWAY_ADDR,
+            amount_usdc="0.001",
+            payment_id="some-payment-id",
+            # tx_hash deliberately omitted
+        )
+        assert result["verified"] is False
+        assert "disabled" in result["reason"].lower()

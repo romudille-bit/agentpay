@@ -141,10 +141,29 @@ async def verify_payment(
     timeout) would skip the Horizon fallback and return failure, even
     though the payment may have been valid on-chain.
 
+    Tier 2 #18 added the STELLAR_FACILITATOR_ENABLED flag (default False).
+    When disabled, the OZ POST is skipped entirely and we go straight to
+    Horizon — saves ~15s of wasted timeout per verification in the common
+    case where OZ returns 401.
+
     Returns:
         {"verified": True, "tx_hash": "..."} on success
         {"verified": False, "reason": "..."} on failure
     """
+    # Tier 2 #18: skip the OZ POST entirely when disabled. Saves a wasted
+    # round-trip in production where OZ has been returning 401 since early
+    # 2026. The Horizon fallback (now bulletproof after #17) runs identically
+    # whether we got there via OZ-401 or via this short-circuit.
+    if not settings.STELLAR_FACILITATOR_ENABLED:
+        if tx_hash:
+            return await _verify_payment_horizon(
+                tx_hash, from_address, to_address, amount_usdc
+            )
+        return {
+            "verified": False,
+            "reason": "Facilitator disabled and no tx_hash provided",
+        }
+
     facilitator_url = settings.STELLAR_FACILITATOR_URL
 
     payload = {

@@ -57,6 +57,10 @@ def mock_settings(monkeypatch):
     monkeypatch.setenv("KEEPALIVE_DISABLED", "1")
     monkeypatch.setenv("SUPABASE_URL", "")
     monkeypatch.setenv("SUPABASE_KEY", "")
+    # Tier 2 #18 changed STELLAR_FACILITATOR_ENABLED to default False.
+    # Force-enable for existing OZ-flow tests; the disabled path has its own
+    # dedicated test class (TestFacilitatorDisabled) which overrides this.
+    monkeypatch.setenv("STELLAR_FACILITATOR_ENABLED", "true")
 
     # Reload settings so the new env values take effect. settings is
     # cached via @lru_cache in gateway.config, so we must reach in and
