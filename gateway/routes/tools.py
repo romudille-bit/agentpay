@@ -26,10 +26,12 @@ from pydantic import BaseModel
 
 import registry
 
+from decimal import Decimal
+
 from gateway import base as base_pay
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
-from gateway.services.supabase import log_payment
+from gateway.services.supabase import log_payment, update_payment_log_state
 from gateway.services.tools_runtime import real_tool_response
 from gateway.services.transaction_log import append_transaction
 from gateway.x402 import (
@@ -326,17 +328,52 @@ async def call_tool(
         payment_id = parsed.get("id") or tx_hash
     else:
         payment_id = tx_hash  # Base: use tx hash as dedup key
-    asyncio.create_task(log_payment(
-        payment_id=payment_id,
-        tool_name=resolved,
-        agent_address=agent_address or "",
-        amount_usdc=tool.price_usdc,
-        tx_hash=tx_hash,
-    ))
 
     # Report the actual settlement network — Base payments were previously
     # mislabelled as STELLAR_NETWORK in the receipt.
     receipt_network = auth.get("network") or f"stellar-{settings.STELLAR_NETWORK}"
+
+    # ── Supabase dual-write: INSERT then PATCH ────────────────────────────────
+    # PR #13 wires the payment_logs lifecycle. The INSERT (log_payment)
+    # writes the legacy columns; the follow-up PATCH (update_payment_log_state)
+    # populates the new state-machine columns introduced in PR #13's schema:
+    # state='payment_done', plus network / client_ip / user_agent /
+    # gateway_fee_usdc / developer_address.
+    #
+    # In-memory state remains source of truth in this PR — these writes just
+    # shadow it so the data survives a Railway redeploy. The PATCH MUST run
+    # after the INSERT or it would update zero rows; we chain them in a
+    # single fire-and-forget coroutine to make ordering deterministic.
+    client_ip  = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    try:
+        gateway_fee = str(
+            Decimal(tool.price_usdc) * Decimal(str(settings.GATEWAY_FEE_PERCENT))
+        )
+    except Exception:
+        gateway_fee = None
+
+    async def _persist_payment_log():
+        await log_payment(
+            payment_id=payment_id,
+            tool_name=resolved,
+            agent_address=agent_address or "",
+            amount_usdc=tool.price_usdc,
+            tx_hash=tx_hash,
+        )
+        await update_payment_log_state(
+            payment_id,
+            "payment_done",
+            network=receipt_network,
+            agent_address=agent_address,
+            tx_hash=tx_hash,
+            developer_address=tool.developer_address or None,
+            gateway_fee_usdc=gateway_fee,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+
+    asyncio.create_task(_persist_payment_log())
 
     return {
         "tool": tool_name,

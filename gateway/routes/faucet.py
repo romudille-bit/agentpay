@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse
 
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
+from gateway.services import supabase as sb
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,10 @@ async def faucet_json(request: Request):
 
     # Record IP only after successful wallet creation
     _FAUCET_IP_LOG[client_ip] = _time.time()
+    # Dual-write to Supabase (fire-and-forget). In-memory _FAUCET_IP_LOG is
+    # still primary in this PR; Supabase becomes authoritative at #13
+    # cutover so the cooldown survives Railway redeploys.
+    asyncio.create_task(sb.record_faucet_ip(client_ip))
     return result
 
 

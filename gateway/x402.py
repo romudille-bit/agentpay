@@ -17,6 +17,7 @@ Client sends payment proof as:
   X-Payment: tx_hash=...,from=G...,id=uuid
 """
 
+import asyncio
 import uuid
 import time
 import hashlib
@@ -26,9 +27,29 @@ from dataclasses import dataclass, asdict
 
 from gateway.stellar import verify_payment, split_payment
 from gateway.config import settings
+from gateway.services import supabase as sb
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _fire_and_forget(coro) -> None:
+    """Schedule an async coroutine without awaiting it, no-op if no event loop.
+
+    Used for fire-and-forget Supabase dual-writes. issue_payment_challenge is
+    synchronous but called from inside async FastAPI handlers in production,
+    so a running event loop is normally available. In test contexts (e.g.
+    test_x402.py calls issue_payment_challenge synchronously) there's no
+    loop — `RuntimeError: no running event loop` is the expected signal to
+    skip the dual-write. The coroutine is closed to suppress the
+    "coroutine was never awaited" warning.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        coro.close()
+        return
+    loop.create_task(coro)
 
 # In-memory store of pending payment challenges
 # In production: use Redis or Supabase
@@ -76,6 +97,20 @@ def issue_payment_challenge(
 
     _pending_challenges[payment_id] = asdict(challenge)
     logger.info(f"Issued challenge {payment_id} for {tool_name} @ {price_usdc} USDC")
+
+    # Dual-write to Supabase (fire-and-forget). In-memory dict is still
+    # source of truth in this PR; Supabase becomes primary at #13 cutover.
+    _fire_and_forget(
+        sb.store_pending_challenge(
+            payment_id=payment_id,
+            tool_name=tool_name,
+            amount_usdc=price_usdc,
+            gateway_address=settings.GATEWAY_PUBLIC_KEY,
+            developer_address=developer_address,
+            expires_at=challenge.expires_at,
+            request_data=request_data,
+        )
+    )
     return challenge
 
 
@@ -167,6 +202,17 @@ async def verify_and_fulfill(
     # Mark as used
     _completed_payments.add(tx_hash)
     del _pending_challenges[payment_id]
+
+    # Dual-write replay state to Supabase (fire-and-forget). The in-memory
+    # set + dict are still primary; these calls just shadow them so they
+    # survive a Railway redeploy. record_tx_hash uses the composite PK
+    # (tx_hash, network) to keep stellar-mainnet and stellar-testnet
+    # independent. delete_pending_challenge removes the row we just
+    # consumed so cleanup_expired_challenges() doesn't have to.
+    network_label = f"stellar-{settings.STELLAR_NETWORK}"
+    asyncio.create_task(sb.record_payment_id(payment_id))
+    asyncio.create_task(sb.record_tx_hash(tx_hash, network_label))
+    asyncio.create_task(sb.delete_pending_challenge(payment_id))
 
     # Trigger revenue split (async, non-blocking).
     # In production: queue this as a background job.

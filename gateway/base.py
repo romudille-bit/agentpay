@@ -18,12 +18,15 @@ The gateway auto-detects the mode: if payload contains "tx_hash" → Mode B,
 if it contains "payload" with an EIP-3009 signature → Mode A (CDP).
 """
 
+import asyncio
 import base64
 import json
 import logging
 from decimal import Decimal
 
 import httpx
+
+from gateway.services import supabase as sb
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,26 @@ USDC_BASE_MAINNET = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 # CAIP-2 chain identifiers
 CAIP2_BASE_SEPOLIA = "eip155:84532"
 CAIP2_BASE_MAINNET = "eip155:8453"
+
+
+# Maps a CAIP-2 network id to the canonical short label that Supabase's
+# replay_tx_hashes table uses (composite PK on (tx_hash, network)). The
+# plan settled on these four constants — keep them in sync if a new chain
+# is added.
+_CAIP2_TO_NETWORK_LABEL = {
+    CAIP2_BASE_MAINNET: "base-mainnet",
+    CAIP2_BASE_SEPOLIA: "base-sepolia",
+}
+
+
+def _network_label(caip2: str) -> str:
+    """Translate a CAIP-2 chain id to the short label used in Supabase.
+
+    Falls back to the CAIP-2 string itself if unknown so we never drop a
+    record_tx_hash call due to a missing mapping — better to have a row
+    keyed on "eip155:1234" than no row at all.
+    """
+    return _CAIP2_TO_NETWORK_LABEL.get(caip2, caip2)
 
 
 def get_chain_config(network: str) -> tuple[str, str]:
@@ -231,6 +254,13 @@ async def settle_base_payment(
         )
         if result["success"]:
             _used_base_tx_hashes.add(tx_hash)
+            # Dual-write replay state to Supabase (fire-and-forget). In-memory
+            # _used_base_tx_hashes is still source of truth in this PR;
+            # Supabase becomes primary at #13 cutover. Composite PK
+            # (tx_hash, network) keeps base-mainnet and base-sepolia hashes
+            # independent.
+            caip2 = payment_requirements.get("network", "")
+            asyncio.create_task(sb.record_tx_hash(tx_hash, _network_label(caip2)))
         # Inject CAIP-2 network from requirements so callers don't see ""
         result["network"] = payment_requirements.get("network", "")
         return result

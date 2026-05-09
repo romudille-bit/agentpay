@@ -16,6 +16,7 @@ Run with:
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
@@ -41,28 +42,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="AgentPay Gateway",
-    description="x402 payment gateway for MCP tools on Stellar",
-    version="0.1.0",
-)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ── Mount routers ─────────────────────────────────────────────────────────────
-app.include_router(infra_router)
-app.include_router(tools_router)
-app.include_router(discovery_router)
-app.include_router(faucet_router)
-
 
 async def _keepalive_loop():
     """Ping /health every 5 minutes to prevent Railway cold-start."""
@@ -76,24 +55,14 @@ async def _keepalive_loop():
         await asyncio.sleep(300)  # 5 minutes
 
 
-@app.on_event("startup")
-async def _startup():
-    # Scheduling the keepalive task can be disabled (e.g. by the test suite)
-    # so the background ping doesn't fire at the production URL during
-    # local imports. Default behaviour is unchanged. Accepts the common
-    # boolean idioms — "1", "true", "yes", "on" (case-insensitive) — so
-    # nobody gets surprised by a literal-string mismatch.
-    #
-    # TODO(tier-2): the keepalive currently pings GATEWAY_URL — a hardcoded
-    # production URL — even when the gateway is running locally or on
-    # gateway-testnet, which is a wasteful round-trip through Railway's edge
-    # back to the same worker. Switch to f"http://localhost:{settings.PORT}"
-    # once we add a settings.LOCAL_KEEPALIVE flag.
-    if os.environ.get("KEEPALIVE_DISABLED", "").lower() not in {"1", "true", "yes", "on"}:
-        asyncio.create_task(_keepalive_loop())
-    if not sb_enabled():
-        logger.info("Supabase not configured — using in-memory registry")
-        return
+async def _hydrate_tools_from_supabase() -> None:
+    """Pull active tool rows from Supabase and merge them onto the seed
+    registry. Called from the lifespan startup hook.
+
+    Falls back silently to the in-memory registry if Supabase is unreachable
+    or returns an empty result — the gateway must always boot, even if the
+    metadata source is down.
+    """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
@@ -158,6 +127,74 @@ async def _startup():
         logger.info(f"Loaded {len(tools)} tools from Supabase")
     except Exception as e:
         logger.warning(f"Supabase unavailable ({e}) — using in-memory registry")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan handler — replaces the deprecated
+    @app.on_event("startup") / "shutdown" callbacks (PR #16 surfaced the
+    deprecation warning). Same logic as before, just packaged in a single
+    asynccontextmanager so we can hang shutdown drains off the post-yield
+    half later (currently a no-op).
+
+    Startup hooks (in order):
+      1. Background keepalive ping (skipped if KEEPALIVE_DISABLED is set).
+      2. Hydrate tool registry from Supabase (skipped if not configured).
+
+    Shutdown hooks: none yet. Background tasks (#13 cutover row 7) will
+    drain here so cleanup_expired_challenges() finishes before the worker
+    exits.
+    """
+    # ── startup ──────────────────────────────────────────────────────────────
+    # Scheduling the keepalive task can be disabled (e.g. by the test suite)
+    # so the background ping doesn't fire at the production URL during
+    # local imports. Default behaviour is unchanged. Accepts the common
+    # boolean idioms — "1", "true", "yes", "on" (case-insensitive) — so
+    # nobody gets surprised by a literal-string mismatch.
+    #
+    # TODO(tier-2): the keepalive currently pings GATEWAY_URL — a hardcoded
+    # production URL — even when the gateway is running locally or on
+    # gateway-testnet, which is a wasteful round-trip through Railway's edge
+    # back to the same worker. Switch to f"http://localhost:{settings.PORT}"
+    # once we add a settings.LOCAL_KEEPALIVE flag.
+    if os.environ.get("KEEPALIVE_DISABLED", "").lower() not in {"1", "true", "yes", "on"}:
+        asyncio.create_task(_keepalive_loop())
+
+    if not sb_enabled():
+        logger.info("Supabase not configured — using in-memory registry")
+    else:
+        await _hydrate_tools_from_supabase()
+
+    yield
+
+    # ── shutdown ─────────────────────────────────────────────────────────────
+    # Future home of background-task drain (cleanup_expired_challenges,
+    # split_payment retries, etc). Currently nothing — keepalive is a
+    # daemon-style task and lets the runtime cancel it on shutdown.
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="AgentPay Gateway",
+    description="x402 payment gateway for MCP tools on Stellar",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Mount routers ─────────────────────────────────────────────────────────────
+app.include_router(infra_router)
+app.include_router(tools_router)
+app.include_router(discovery_router)
+app.include_router(faucet_router)
 
 
 if __name__ == "__main__":
