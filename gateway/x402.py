@@ -223,7 +223,12 @@ async def verify_and_fulfill(
     # exist, so the split would fail every time and spam the logs.
     developer_address = challenge_data.get("developer_address") or ""
     if developer_address and developer_address != settings.GATEWAY_PUBLIC_KEY:
-        import asyncio
+        # asyncio is imported at module level; do NOT add a local `import
+        # asyncio` here. Doing so binds `asyncio` as a function-local for
+        # the entire function body, which shadows the module import and
+        # raises UnboundLocalError at the earlier asyncio.create_task lines
+        # above (replay dual-writes). The deploy of PR #13b crashed every
+        # paid call until this was fixed.
         asyncio.create_task(
             split_payment(
                 tool_developer_address=developer_address,
