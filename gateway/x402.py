@@ -228,7 +228,8 @@ async def verify_and_fulfill(
         # the entire function body, which shadows the module import and
         # raises UnboundLocalError at the earlier asyncio.create_task lines
         # above (replay dual-writes). The deploy of PR #13b crashed every
-        # paid call until this was fixed.
+        # paid call until this was fixed. The TestVerifyAndFulfill class
+        # in tests/test_x402.py is the regression guard.
         asyncio.create_task(
             split_payment(
                 tool_developer_address=developer_address,
