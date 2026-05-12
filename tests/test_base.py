@@ -218,3 +218,93 @@ class TestModeAFailurePath:
             )
         assert result["success"] is False
         assert "facilitator_http_502" in result["reason"]
+
+
+# ── Mode B replay-check cutover (PR #13e) ─────────────────────────────────────
+#
+# After cutover, the replay check on Base Mode B reads from Supabase first
+# (composite PK on tx_hash, network) and falls back to the in-memory set if
+# Supabase says "not consumed" or is unreachable. These tests pin both
+# paths.
+
+def _mode_b_signature_header(tx_hash: str, payer: str) -> str:
+    """Mode B PAYMENT-SIGNATURE: base64-encoded JSON with tx_hash key.
+
+    The presence of `tx_hash` is what tells settle_base_payment to take
+    the direct-on-chain Mode B path instead of routing through CDP.
+    """
+    payload = {"tx_hash": tx_hash, "payer": payer}
+    return base64.b64encode(json.dumps(payload).encode()).decode()
+
+
+class TestModeBReplayCutover:
+
+    @pytest.mark.asyncio
+    async def test_supabase_says_replay_rejects_before_rpc(self, monkeypatch):
+        """If Supabase reports the tx_hash as already consumed on this
+        network, Mode B must reject as replay BEFORE making the JSON-RPC
+        eth_getTransactionReceipt call. Cheaper, and means a Railway
+        redeploy that wipes _used_base_tx_hashes can still catch replays.
+        """
+        import gateway.base as base_mod
+        monkeypatch.setattr(base_mod.sb, "sb_enabled", lambda: True)
+
+        rpc_calls = []
+        async def fake_rpc(*args, **kwargs):
+            rpc_calls.append(1)
+            raise AssertionError("verify_base_tx should not have been called")
+        monkeypatch.setattr(base_mod, "verify_base_tx", fake_rpc)
+
+        async def supabase_says_consumed(tx, net):
+            assert net == "base-mainnet"
+            return True
+        monkeypatch.setattr(
+            base_mod.sb, "is_tx_hash_consumed", supabase_says_consumed
+        )
+
+        result = await settle_base_payment(
+            _mode_b_signature_header(VALID_TX_HASH, VALID_PAYER),
+            _payment_requirements(),
+        )
+        assert result["success"] is False
+        assert result["reason"] == "replay_attack"
+        assert rpc_calls == []  # short-circuited before RPC
+
+    @pytest.mark.asyncio
+    async def test_supabase_clean_falls_through_to_rpc(self, monkeypatch):
+        """When Supabase says not-consumed and in-memory has no record,
+        Mode B proceeds with the JSON-RPC receipt check normally.
+        """
+        import gateway.base as base_mod
+        monkeypatch.setattr(base_mod.sb, "sb_enabled", lambda: True)
+
+        # Make sure in-memory set is empty so we're testing the
+        # Supabase-clean-AND-memory-clean path
+        base_mod._used_base_tx_hashes.discard(VALID_TX_HASH)
+
+        async def supabase_says_clean(tx, net):
+            return False
+        async def supabase_record(tx, net):
+            return True
+        monkeypatch.setattr(
+            base_mod.sb, "is_tx_hash_consumed", supabase_says_clean
+        )
+        monkeypatch.setattr(
+            base_mod.sb, "record_tx_hash", supabase_record
+        )
+
+        async def fake_verify(**kwargs):
+            return {
+                "success": True, "tx_hash": kwargs["tx_hash"],
+                "payer": kwargs["payer"], "network": "", "reason": "ok",
+            }
+        monkeypatch.setattr(base_mod, "verify_base_tx", fake_verify)
+
+        result = await settle_base_payment(
+            _mode_b_signature_header(VALID_TX_HASH, VALID_PAYER),
+            _payment_requirements(),
+        )
+        assert result["success"] is True
+        assert result["tx_hash"] == VALID_TX_HASH
+        # In-memory set was updated as a cache for graceful degradation
+        assert VALID_TX_HASH in base_mod._used_base_tx_hashes

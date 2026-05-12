@@ -431,6 +431,120 @@ class TestVerifyAndFulfill:
         assert patched_x402["record_tx_hash"] == 0
 
     @pytest.mark.asyncio
+    async def test_supabase_hit_for_pending_challenge(self, patched_x402, monkeypatch, mock_settings):
+        """When Supabase is enabled and has the challenge, the dual-read
+        should hit Supabase, NOT the in-memory dict.
+
+        Forces sb_enabled True + a hit on get_pending_challenge.
+        Deliberately leaves _pending_challenges empty — the only way the
+        request succeeds is if the Supabase path is actually taken.
+        """
+        import gateway.x402 as x402_mod
+
+        # Force Supabase ON for this test
+        monkeypatch.setattr(x402_mod.sb, "sb_enabled", lambda: True)
+
+        # Build a fake Supabase row matching the schema in pr-13-schema.sql
+        payment_id = "supabase-served-uuid"
+        future_iso = (
+            __import__("datetime").datetime.now(
+                tz=__import__("datetime").timezone.utc
+            ) + __import__("datetime").timedelta(seconds=60)
+        ).isoformat()
+        async def fake_get(pid):
+            assert pid == payment_id
+            return {
+                "payment_id":      payment_id,
+                "tool_name":       "token_price",
+                "amount_usdc":     "0.001",
+                "gateway_address": mock_settings.GATEWAY_PUBLIC_KEY,
+                "developer_address": None,
+                "request_data":    {},
+                "expires_at":      future_iso,
+            }
+        async def fake_not_consumed(*args, **kwargs):
+            return False
+        monkeypatch.setattr(x402_mod.sb, "get_pending_challenge", fake_get)
+        monkeypatch.setattr(x402_mod.sb, "is_payment_id_consumed", fake_not_consumed)
+        monkeypatch.setattr(x402_mod.sb, "is_tx_hash_consumed", fake_not_consumed)
+
+        # Confirm the in-memory dict is empty — this proves the Supabase
+        # path is what made the request succeed.
+        assert payment_id not in _pending_challenges
+
+        proof = f"tx_hash=hash_from_supabase,from=GAGENT,id={payment_id}"
+        result = await verify_and_fulfill(
+            payment_header=proof, agent_address="GAGENT"
+        )
+        assert result["authorized"] is True
+        assert result["challenge"]["tool_name"] == "token_price"
+
+    @pytest.mark.asyncio
+    async def test_supabase_miss_falls_through_to_in_memory(
+        self, patched_x402, monkeypatch, mock_settings
+    ):
+        """When Supabase is enabled but returns None, the dual-read must
+        fall through to the in-memory dict. This is the drain-window
+        case — challenges issued before a Supabase outage / before
+        cutover still resolve from the local cache.
+        """
+        import gateway.x402 as x402_mod
+        monkeypatch.setattr(x402_mod.sb, "sb_enabled", lambda: True)
+
+        async def fake_get_none(pid):
+            return None
+        async def fake_not_consumed(*args, **kwargs):
+            return False
+        monkeypatch.setattr(x402_mod.sb, "get_pending_challenge", fake_get_none)
+        monkeypatch.setattr(x402_mod.sb, "is_payment_id_consumed", fake_not_consumed)
+        monkeypatch.setattr(x402_mod.sb, "is_tx_hash_consumed", fake_not_consumed)
+
+        # Issue a challenge — lands in _pending_challenges (in-memory)
+        challenge = issue_payment_challenge("token_price", "0.001", "GDEV", {})
+
+        proof = f"tx_hash=fallbackhash,from=GAGENT,id={challenge.payment_id}"
+        result = await verify_and_fulfill(
+            payment_header=proof, agent_address="GAGENT"
+        )
+        assert result["authorized"] is True
+        # Confirms the fallback path served the request
+
+    @pytest.mark.asyncio
+    async def test_supabase_replay_rejects_before_horizon(
+        self, patched_x402, monkeypatch, mock_settings
+    ):
+        """If Supabase says the tx_hash or payment_id has already been
+        consumed, reject as replay BEFORE calling verify_payment. This
+        is the whole point of moving replay state to Supabase — the
+        check survives a Railway redeploy.
+        """
+        import gateway.x402 as x402_mod
+        monkeypatch.setattr(x402_mod.sb, "sb_enabled", lambda: True)
+
+        # Issue a fresh challenge so the lookup succeeds
+        challenge = issue_payment_challenge("token_price", "0.001", "GDEV", {})
+
+        async def fake_get(pid):
+            return None  # use in-memory
+        async def fake_payment_id_consumed(pid):
+            # Simulate Supabase saying "yes, this UUID was already used"
+            return True
+        async def fake_tx_hash_consumed(tx, net):
+            return False
+        monkeypatch.setattr(x402_mod.sb, "get_pending_challenge", fake_get)
+        monkeypatch.setattr(x402_mod.sb, "is_payment_id_consumed", fake_payment_id_consumed)
+        monkeypatch.setattr(x402_mod.sb, "is_tx_hash_consumed", fake_tx_hash_consumed)
+
+        proof = f"tx_hash=brandnew_hash,from=GAGENT,id={challenge.payment_id}"
+        result = await verify_and_fulfill(
+            payment_header=proof, agent_address="GAGENT"
+        )
+        assert result["authorized"] is False
+        assert "replay" in result["reason"].lower()
+        # verify_payment was NEVER called — replay check short-circuits
+        assert patched_x402["verify_payment"] == 0
+
+    @pytest.mark.asyncio
     async def test_failed_verification_skips_dual_write(self, patched_x402, mock_settings):
         """When verify_payment returns verified=False, the dual-writes
         must NOT fire. Otherwise we'd record a tx_hash for a payment that

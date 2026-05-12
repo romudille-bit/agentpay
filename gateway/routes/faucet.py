@@ -189,12 +189,30 @@ async def faucet_json(request: Request):
                 "docs": "https://github.com/romudille-bit/agentpay",
             },
         )
-    # ── IP cooldown: one wallet per IP per 24 hours ───────────────────────────
+    # ── IP cooldown — Supabase primary, in-memory fallback (PR #13e) ─────────
+    # Supabase keeps cooldown state across Railway redeploys; in-memory
+    # is a graceful-degradation cache. If Supabase says "seen recently"
+    # we 429 immediately. If not (or Supabase is unreachable),
+    # _FAUCET_IP_LOG still gates with the same window. Either store
+    # finding the IP triggers the cooldown — the OR is intentional, we
+    # err on the side of slightly tighter rate limiting.
     client_ip = request.client.host if request.client else "unknown"
     now = _time.time()
-    last = _FAUCET_IP_LOG.get(client_ip, 0)
-    if now - last < _FAUCET_COOLDOWN_SECS:
-        wait_s = int(_FAUCET_COOLDOWN_SECS - (now - last))
+
+    on_cooldown = False
+    if sb.sb_enabled():
+        on_cooldown = await sb.faucet_ip_seen_recently(client_ip, _FAUCET_COOLDOWN_SECS)
+    if not on_cooldown:
+        last = _FAUCET_IP_LOG.get(client_ip, 0)
+        on_cooldown = (now - last) < _FAUCET_COOLDOWN_SECS
+    if on_cooldown:
+        # Compute remaining time from whichever store has the most recent
+        # touch. For Supabase-served cooldowns we don't know the exact
+        # last_used (sb returns just True/False), so quote the full
+        # window as worst case. For in-memory we have the timestamp.
+        last = _FAUCET_IP_LOG.get(client_ip, 0)
+        elapsed = now - last if last else _FAUCET_COOLDOWN_SECS
+        wait_s = max(1, int(_FAUCET_COOLDOWN_SECS - elapsed))
         wait_label = f"{wait_s}s" if wait_s < 120 else f"~{wait_s // 60}min"
         raise HTTPException(
             status_code=429,
@@ -210,11 +228,10 @@ async def faucet_json(request: Request):
     base_url = settings.AGENTPAY_GATEWAY_URL or GATEWAY_URL
     result = await _provision_wallet(base_url)
 
-    # Record IP only after successful wallet creation
+    # Record IP — update both stores. Supabase is authoritative; in-memory
+    # is kept hot so a Supabase outage doesn't immediately let an IP
+    # bypass cooldown.
     _FAUCET_IP_LOG[client_ip] = _time.time()
-    # Dual-write to Supabase (fire-and-forget). In-memory _FAUCET_IP_LOG is
-    # still primary in this PR; Supabase becomes authoritative at #13
-    # cutover so the cooldown survives Railway redeploys.
     asyncio.create_task(sb.record_faucet_ip(client_ip))
     return result
 

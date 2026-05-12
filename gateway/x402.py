@@ -22,6 +22,7 @@ import uuid
 import time
 import hashlib
 import json
+from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass, asdict
 
@@ -50,6 +51,99 @@ def _fire_and_forget(coro) -> None:
         coro.close()
         return
     loop.create_task(coro)
+
+
+def _normalize_supabase_challenge(row: dict) -> dict:
+    """Convert a Supabase `pending_challenges` row to the shape that
+    verify_and_fulfill expects to read out of `_pending_challenges`.
+
+    Main translation: `expires_at` arrives from Postgres as an ISO 8601
+    timestamptz string like `'2026-05-10T15:30:00+00:00'`; the in-memory
+    dict stores Unix floats so `time.time() > challenge["expires_at"]`
+    works. Without this conversion we'd be comparing a float to a string
+    — Python 3 raises TypeError, which would crash verify_and_fulfill on
+    every Supabase-served challenge (PR #13c-class bug).
+
+    Defensive: if the timestamp is unparseable, treat as already-expired
+    (returns 0.0 → fails the time.time() check → caller returns
+    'Payment challenge expired'). Better than crashing the route.
+
+    Other fields are surfaced verbatim, with developer_address coerced to
+    empty string (matching the in-memory dataclass convention) so the
+    `developer_address != settings.GATEWAY_PUBLIC_KEY` split branch
+    doesn't trip on None.
+    """
+    expires_iso = row.get("expires_at")
+    expires_unix: float
+    if isinstance(expires_iso, str):
+        try:
+            # fromisoformat in 3.10 handles "+00:00" but not "Z"; normalize
+            # before parsing so we don't crash on a future Postgres serialize
+            # quirk.
+            expires_unix = datetime.fromisoformat(
+                expires_iso.replace("Z", "+00:00")
+            ).timestamp()
+        except ValueError:
+            logger.warning(
+                f"unparseable expires_at from Supabase: {expires_iso!r} — "
+                f"treating challenge as expired"
+            )
+            expires_unix = 0.0
+    else:
+        expires_unix = float(expires_iso or 0)
+
+    return {
+        "payment_id":        row.get("payment_id"),
+        "tool_name":         row.get("tool_name"),
+        "amount_usdc":       str(row.get("amount_usdc", "0")),
+        "gateway_address":   row.get("gateway_address", ""),
+        "developer_address": row.get("developer_address") or "",
+        "expires_at":        expires_unix,
+        "request_data":      row.get("request_data") or {},
+    }
+
+
+async def _lookup_challenge(payment_id: str) -> Optional[dict]:
+    """Dual-read challenge lookup — Supabase primary, in-memory fallback.
+
+    Per PR #13e (cutover), Supabase is the authoritative store. The
+    in-memory dict survives as a hot cache for two reasons:
+      1. Drain — challenges issued before the cutover deploy still only
+         live in the dict on long-running workers. Fall through covers
+         that without a fixed time window.
+      2. Soft fallback — if Supabase is unreachable, the dict keeps the
+         worker functional until Supabase recovers. Reads degrade
+         gracefully instead of fail-closing the gateway.
+
+    sb.get_pending_challenge() already filters server-side
+    `expires_at > now()`, so a non-None return is guaranteed live. None
+    can mean either 'not in Supabase' or 'Supabase errored' — both
+    routes fall through to the in-memory dict.
+    """
+    if sb.sb_enabled():
+        row = await sb.get_pending_challenge(payment_id)
+        if row is not None:
+            return _normalize_supabase_challenge(row)
+    return _pending_challenges.get(payment_id)
+
+
+async def _is_replay(payment_id: str, tx_hash: str, network: str) -> bool:
+    """Dual-read replay check — Supabase primary, in-memory fallback.
+
+    Returns True if either side of the replay protection has seen this
+    payment before. Checks both `replay_payment_ids` and
+    `replay_tx_hashes` (network-scoped) on the Supabase side; falls
+    back to the in-memory `_completed_payments` set. On Supabase error
+    the inner helpers return False, so the in-memory set still gets
+    consulted — replay protection is never weakened by Supabase being
+    down, only strengthened.
+    """
+    if sb.sb_enabled():
+        if await sb.is_payment_id_consumed(payment_id):
+            return True
+        if await sb.is_tx_hash_consumed(tx_hash, network):
+            return True
+    return tx_hash in _completed_payments
 
 # In-memory store of pending payment challenges
 # In production: use Redis or Supabase
@@ -172,19 +266,30 @@ async def verify_and_fulfill(
 
     payment_id = parsed.get("id")
     tx_hash = parsed.get("tx_hash")
+    network_label = f"stellar-{settings.STELLAR_NETWORK}"
 
-    # Look up challenge
-    challenge_data = _pending_challenges.get(payment_id)
+    # Look up challenge — Supabase primary, in-memory fallback (PR #13e).
+    # See _lookup_challenge for the dual-read semantics. If Supabase has
+    # the row, it wins; otherwise we drop through to the dict so in-flight
+    # challenges issued by a previous deploy still resolve.
+    challenge_data = await _lookup_challenge(payment_id)
     if not challenge_data:
         return {"authorized": False, "reason": "Payment ID not found or expired"}
 
-    # Check expiry
+    # Check expiry. We re-check here even though sb.get_pending_challenge
+    # already filters server-side, because the in-memory fallback path
+    # has no such filter — and a challenge could theoretically expire
+    # between the Supabase fetch and this line.
     if time.time() > challenge_data["expires_at"]:
-        del _pending_challenges[payment_id]
+        # Best-effort cleanup of the dict copy; Supabase row will be
+        # swept by the periodic cleanup_expired_challenges task.
+        _pending_challenges.pop(payment_id, None)
         return {"authorized": False, "reason": "Payment challenge expired"}
 
-    # Prevent replay attacks
-    if tx_hash in _completed_payments:
+    # Prevent replay attacks — Supabase primary, in-memory fallback.
+    # _is_replay checks both replay_payment_ids and replay_tx_hashes
+    # (network-scoped) before falling back to the in-memory set.
+    if await _is_replay(payment_id, tx_hash, network_label):
         return {"authorized": False, "reason": "Payment already used (replay attack)"}
 
     # Verify payment on Stellar
@@ -199,17 +304,19 @@ async def verify_and_fulfill(
     if not result["verified"]:
         return {"authorized": False, "reason": result["reason"]}
 
-    # Mark as used
+    # Mark as used — update both stores. In-memory is now a cache for
+    # graceful degradation rather than the source of truth, but we keep
+    # it hot so a Supabase outage doesn't immediately reject valid
+    # second-leg requests.
     _completed_payments.add(tx_hash)
-    del _pending_challenges[payment_id]
+    _pending_challenges.pop(payment_id, None)
 
-    # Dual-write replay state to Supabase (fire-and-forget). The in-memory
-    # set + dict are still primary; these calls just shadow them so they
-    # survive a Railway redeploy. record_tx_hash uses the composite PK
-    # (tx_hash, network) to keep stellar-mainnet and stellar-testnet
-    # independent. delete_pending_challenge removes the row we just
-    # consumed so cleanup_expired_challenges() doesn't have to.
-    network_label = f"stellar-{settings.STELLAR_NETWORK}"
+    # Persist replay state to Supabase (primary after PR #13e cutover).
+    # Still fire-and-forget — the response shouldn't wait on three round
+    # trips. Composite PK (tx_hash, network) on replay_tx_hashes keeps
+    # stellar-mainnet and stellar-testnet hashes independent.
+    # delete_pending_challenge removes the row we just consumed so the
+    # periodic cleanup sweep has less work to do.
     asyncio.create_task(sb.record_payment_id(payment_id))
     asyncio.create_task(sb.record_tx_hash(tx_hash, network_label))
     asyncio.create_task(sb.delete_pending_challenge(payment_id))

@@ -33,6 +33,7 @@ from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
 from gateway.routes.infra import router as infra_router
 from gateway.routes.tools import router as tools_router
+from gateway.services import supabase as sb
 from gateway.services.supabase import sb_enabled, sb_headers
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -53,6 +54,130 @@ async def _keepalive_loop():
         except Exception:
             pass  # silent — keepalive is best-effort
         await asyncio.sleep(300)  # 5 minutes
+
+
+# How often the cleanup task runs in the background (PR #13e cutover).
+# 10min is the sweet spot: pending_challenges have a 120s TTL, so worst-
+# case a row is ~12min stale before sweep. cleanup_expired_challenges()
+# deletes anything > 1h past expiry, so a real backlog needs the gateway
+# to be down for 50+ minutes before a row qualifies.
+_CLEANUP_INTERVAL_SECS = 600
+
+
+async def _cleanup_loop():
+    """Periodic sweep of expired pending_challenges in Supabase.
+
+    Pairs with sb.cleanup_expired_challenges (which DELETEs rows where
+    expires_at < now() - 1h). Without this loop, pending_challenges would
+    grow indefinitely from abandoned 402 calls — agents that get a
+    challenge and never pay. Cleanup runs ~every 10 minutes.
+
+    No-op if Supabase isn't configured. Errors are swallowed since this
+    is a best-effort background task; a single failed sweep doesn't
+    matter, the next one will catch up.
+    """
+    # Wait past first hydration before sweeping; no need to race startup.
+    await asyncio.sleep(_CLEANUP_INTERVAL_SECS)
+    while True:
+        try:
+            n = await sb.cleanup_expired_challenges()
+            if n:
+                logger.info(f"cleanup_expired_challenges swept {n} stale rows")
+        except Exception as e:
+            logger.warning(f"cleanup_expired_challenges failed: {e}")
+        await asyncio.sleep(_CLEANUP_INTERVAL_SECS)
+
+
+async def _hydrate_replay_state_from_supabase() -> None:
+    """Warm the in-memory replay caches from Supabase at startup.
+
+    After the PR #13e cutover Supabase is primary, but the in-memory
+    sets/dicts stay as a graceful-degradation cache: if Supabase goes
+    down mid-operation, reads fall back to these structures. Without
+    hydration the cache is cold on every redeploy — a Supabase outage
+    immediately after a deploy would mean replay protection silently
+    falls open. Hydration closes that window.
+
+    Pulls bounded recent rows (avoiding a full scan of all-time replay
+    data):
+      - replay_payment_ids: last hour, all UUIDs → _completed_payments
+        (Stellar in-memory dedupe is keyed on tx_hash but we add the
+        payment_id too as a defense in depth — won't false-positive
+        because UUIDs and Stellar tx hashes have different shapes)
+      - replay_tx_hashes: last hour → _completed_payments (Stellar)
+        and _used_base_tx_hashes (Base) keyed on network prefix
+      - pending_challenges: live (expires_at > now()) → _pending_challenges
+        with the same shape verify_and_fulfill expects
+
+    No-op if Supabase isn't configured. Errors are logged but don't
+    block startup — the gateway must always come up.
+    """
+    # Lazy imports so we don't create module-level cycles
+    from gateway.x402 import (
+        _completed_payments,
+        _pending_challenges,
+        _normalize_supabase_challenge,
+    )
+    from gateway.base import _used_base_tx_hashes
+    from datetime import datetime, timedelta, timezone
+
+    hour_ago_iso = (datetime.now(tz=timezone.utc) - timedelta(hours=1)).isoformat()
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # replay_payment_ids — last hour
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/replay_payment_ids",
+                headers=sb_headers(),
+                params={"select": "payment_id", "consumed_at": f"gt.{hour_ago_iso}"},
+            )
+            if r.status_code == 200:
+                for row in r.json():
+                    pid = row.get("payment_id")
+                    if pid:
+                        _completed_payments.add(pid)
+
+            # replay_tx_hashes — last hour, split by network prefix into
+            # the two in-memory dedupe stores
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/replay_tx_hashes",
+                headers=sb_headers(),
+                params={"select": "tx_hash,network", "consumed_at": f"gt.{hour_ago_iso}"},
+            )
+            if r.status_code == 200:
+                for row in r.json():
+                    tx = row.get("tx_hash")
+                    net = (row.get("network") or "")
+                    if not tx:
+                        continue
+                    if net.startswith("base-"):
+                        _used_base_tx_hashes.add(tx)
+                    else:
+                        # stellar-mainnet / stellar-testnet → _completed_payments
+                        # (also covers unknown prefixes defensively)
+                        _completed_payments.add(tx)
+
+            # pending_challenges — non-expired only
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/pending_challenges",
+                headers=sb_headers(),
+                params={"select": "*", "expires_at": f"gt.{now_iso}"},
+            )
+            if r.status_code == 200:
+                for row in r.json():
+                    pid = row.get("payment_id")
+                    if pid:
+                        _pending_challenges[pid] = _normalize_supabase_challenge(row)
+
+        logger.info(
+            f"Replay hydration: "
+            f"{len(_completed_payments)} payment_ids/tx_hashes, "
+            f"{len(_used_base_tx_hashes)} base tx_hashes, "
+            f"{len(_pending_challenges)} live challenges"
+        )
+    except Exception as e:
+        logger.warning(f"Replay hydration from Supabase failed: {e}")
 
 
 async def _hydrate_tools_from_supabase() -> None:
@@ -164,13 +289,19 @@ async def lifespan(app: FastAPI):
         logger.info("Supabase not configured — using in-memory registry")
     else:
         await _hydrate_tools_from_supabase()
+        # PR #13e cutover: warm the replay caches and start the periodic
+        # pending_challenges sweep. Both are best-effort and can't block
+        # startup.
+        await _hydrate_replay_state_from_supabase()
+        asyncio.create_task(_cleanup_loop())
 
     yield
 
     # ── shutdown ─────────────────────────────────────────────────────────────
-    # Future home of background-task drain (cleanup_expired_challenges,
-    # split_payment retries, etc). Currently nothing — keepalive is a
-    # daemon-style task and lets the runtime cancel it on shutdown.
+    # Background tasks (_keepalive_loop, _cleanup_loop) are daemon-style
+    # — the runtime cancels them on worker exit. If we ever add a
+    # split_payment retry queue with at-least-once semantics, this is
+    # where the drain would go.
 
 
 # ── App ───────────────────────────────────────────────────────────────────────

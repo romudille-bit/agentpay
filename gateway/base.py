@@ -243,8 +243,24 @@ async def settle_base_payment(
         payer   = payload.get("payer", "")
         if not tx_hash or not payer:
             return {"success": False, "tx_hash": "", "payer": "", "network": "", "reason": "tx_hash_or_payer_missing"}
-        if tx_hash in _used_base_tx_hashes:
+
+        # Replay check — Supabase primary, in-memory fallback (PR #13e
+        # cutover). Composite PK (tx_hash, network) means the same hash
+        # on base-mainnet vs base-sepolia is treated as independent;
+        # _used_base_tx_hashes has no network discriminator, so the
+        # in-memory fallback is slightly less precise but only matters
+        # if Supabase is unreachable AND we're switching networks
+        # mid-flight, which doesn't happen in practice.
+        caip2 = payment_requirements.get("network", "")
+        network_label = _network_label(caip2)
+        is_replay = False
+        if sb.sb_enabled():
+            is_replay = await sb.is_tx_hash_consumed(tx_hash, network_label)
+        if not is_replay and tx_hash in _used_base_tx_hashes:
+            is_replay = True
+        if is_replay:
             return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "replay_attack"}
+
         result = await verify_base_tx(
             tx_hash              = tx_hash,
             payer                = payer,
@@ -254,13 +270,10 @@ async def settle_base_payment(
         )
         if result["success"]:
             _used_base_tx_hashes.add(tx_hash)
-            # Dual-write replay state to Supabase (fire-and-forget). In-memory
-            # _used_base_tx_hashes is still source of truth in this PR;
-            # Supabase becomes primary at #13 cutover. Composite PK
-            # (tx_hash, network) keeps base-mainnet and base-sepolia hashes
-            # independent.
-            caip2 = payment_requirements.get("network", "")
-            asyncio.create_task(sb.record_tx_hash(tx_hash, _network_label(caip2)))
+            # Persist replay state to Supabase (primary after PR #13e
+            # cutover). Still fire-and-forget — response doesn't wait on
+            # the round-trip.
+            asyncio.create_task(sb.record_tx_hash(tx_hash, network_label))
         # Inject CAIP-2 network from requirements so callers don't see ""
         result["network"] = payment_requirements.get("network", "")
         return result
