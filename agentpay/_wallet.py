@@ -30,6 +30,47 @@ class BudgetExceeded(Exception):
     pass
 
 
+class PaymentFailed(Exception):
+    """
+    Raised when the on-chain payment itself fails (insufficient funds,
+    wallet not initialized, network error, etc.).
+
+    The message is a short, human-readable reason like
+    'stellar:op_underfunded' or 'stellar:tx_insufficient_fee' — NOT a raw
+    XDR dump. Catch this in routine code to gracefully SKIP on payment
+    errors without flooding logs.
+    """
+    pass
+
+
+def _extract_stellar_reason(exc) -> str:
+    """
+    Pull a short, clean reason string out of a stellar-sdk exception.
+
+    Stellar errors carry the real cause in `extras.result_codes` — the
+    str() of the exception itself can be a massive XDR dump that is
+    useless in logs. This returns 'stellar:op_underfunded' or similar.
+    """
+    try:
+        extras = getattr(exc, "extras", None) or {}
+        if isinstance(extras, dict):
+            codes = extras.get("result_codes") or {}
+            if isinstance(codes, dict):
+                ops = codes.get("operations")
+                if isinstance(ops, list) and ops:
+                    return f"stellar:{ops[0]}"
+                tx = codes.get("transaction")
+                if tx:
+                    return f"stellar:{tx}"
+        title = getattr(exc, "title", None) or getattr(exc, "message", None)
+        if title:
+            return f"stellar:{str(title)[:80]}"
+    except Exception:
+        pass
+    first = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+    return first[:200]
+
+
 # ── Stellar Wallet ────────────────────────────────────────────────────────────
 
 class AgentWallet:
@@ -107,8 +148,9 @@ class AgentWallet:
             return {"success": True, "tx_hash": tx_hash}
 
         except Exception as e:
-            logger.error(f"Payment failed: {e}")
-            return {"success": False, "reason": str(e)}
+            reason = _extract_stellar_reason(e)
+            logger.error(f"Payment failed: {reason}")
+            return {"success": False, "reason": reason}
 
     def would_exceed_budget(self, amount_usdc: str, max_budget: str) -> bool:
         """Return True if paying this amount would exceed the budget."""
@@ -193,7 +235,7 @@ class Session:
         - Raises BudgetExceeded if no affordable option exists.
         - Records actual spend from the x402 payment receipt.
         """
-        from agent.agent import AgentPayClient
+        from agentpay._client import AgentPayClient
 
         params = params or {}
 
@@ -232,6 +274,11 @@ class Session:
         client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
         try:
             result = client.call_tool(target, params)
+        except PaymentFailed:
+            # On-chain payment itself failed — a fallback tool would fail for the
+            # same reason (empty wallet, wrong network, etc.). Surface the clean
+            # reason to the caller instead of cascading into more failures.
+            raise
         except Exception as exc:
             # Tool call itself failed (e.g., tool server down post-payment)
             if target == tool_name:

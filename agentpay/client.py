@@ -3,7 +3,7 @@ client.py — Public-facing wrappers and helpers for the agentpay pip package.
 """
 
 import httpx
-from agentpay._wallet import AgentWallet, Session as _Session, BudgetExceeded
+from agentpay._wallet import AgentWallet, Session as _Session, BudgetExceeded, PaymentFailed
 
 TESTNET_GATEWAY  = "https://gateway-testnet-production.up.railway.app"
 MAINNET_GATEWAY  = "https://gateway-production-2cc2.up.railway.app"
@@ -12,7 +12,7 @@ FAUCET_URL       = f"{TESTNET_GATEWAY}/faucet"
 
 def faucet_wallet() -> AgentWallet:
     """
-    Get a testnet wallet pre-loaded with 5 USDC — no setup required.
+    Get a testnet wallet pre-loaded with 0.05 USDC — no setup required.
 
     Calls the AgentPay faucet, receives a fresh Stellar keypair with
     USDC already deposited. Use this to try AgentPay in seconds.
@@ -28,7 +28,7 @@ def faucet_wallet() -> AgentWallet:
             r = s.call("token_price", {"symbol": "ETH"})
             print(r["result"]["price_usd"])
     """
-    resp = httpx.get(FAUCET_URL, timeout=15)
+    resp = httpx.get(FAUCET_URL, timeout=60)
     resp.raise_for_status()
     data = resp.json()
 
@@ -63,5 +63,5 @@ class Session(_Session):
         super().__init__(wallet=wallet, gateway_url=gateway_url, max_spend=max_spend)
 
 
-__all__ = ["AgentWallet", "Session", "BudgetExceeded", "faucet_wallet",
-           "TESTNET_GATEWAY", "MAINNET_GATEWAY"]
+__all__ = ["AgentWallet", "Session", "BudgetExceeded", "PaymentFailed",
+           "faucet_wallet", "TESTNET_GATEWAY", "MAINNET_GATEWAY"]
