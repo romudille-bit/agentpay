@@ -312,11 +312,24 @@ async def split_payment(
         # avoid a circular import on module load (services.supabase
         # doesn't import stellar, but main.py imports both — direct
         # top-level import here would order-couple them).
+        #
+        # PR #14a fix: expected_state='verified' guards against the race
+        # where this PATCH could land AFTER the route's awaited terminal
+        # 'payment_done' PATCH and overwrite it. split_payment runs as
+        # a fire-and-forget task scheduled from verify_and_fulfill — by
+        # the time it completes (5-10s of Horizon round-trips), the
+        # route has long since written 'payment_done'. The guard makes
+        # the late split_done a silent no-op on the happy path; it
+        # only lands if the row is still in 'verified' (which it never
+        # is in current production, since the route writes payment_done
+        # before split_payment finishes). This is acceptable —
+        # split_done is informational, not load-bearing.
         if payment_id:
             try:
                 from gateway.services.supabase import update_payment_log_state
                 asyncio.create_task(update_payment_log_state(
                     payment_id, "split_done",
+                    expected_state="verified",
                     gateway_fee_usdc=str(total - developer_share),
                 ))
             except Exception as e:

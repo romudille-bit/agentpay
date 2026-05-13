@@ -347,6 +347,56 @@ class TestPaymentLogsLifecycle:
         assert "payment_id=eq.test-uuid" in captured["url"]
 
     @pytest.mark.asyncio
+    async def test_update_payment_log_state_with_expected_state_adds_filter(self):
+        """PR #14a regression: when expected_state is provided, the
+        PATCH gains a `state=eq.<expected>` filter so the update only
+        lands if the row's current state matches. This is the fix for
+        the verified-after-payment_done race observed in the first
+        post-#14 smoke test."""
+        captured = {}
+
+        def capture_request(request):
+            captured["url"] = str(request.url)
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=capture_request
+            )
+            await update_payment_log_state(
+                "test-uuid", "verified",
+                expected_state="pending",
+                agent_address="GAGENT",
+            )
+
+        # Both filters present: payment_id AND state
+        assert "payment_id=eq.test-uuid" in captured["url"]
+        assert "state=eq.pending" in captured["url"]
+
+    @pytest.mark.asyncio
+    async def test_update_payment_log_state_without_expected_state_unfiltered(self):
+        """Inverse check: when expected_state is omitted (the terminal
+        PATCH case), no state filter is added — the PATCH lands
+        unconditionally on the row matching payment_id."""
+        captured = {}
+
+        def capture_request(request):
+            captured["url"] = str(request.url)
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=capture_request
+            )
+            await update_payment_log_state(
+                "test-uuid", "payment_done",
+                agent_address="GAGENT",
+            )
+
+        assert "payment_id=eq.test-uuid" in captured["url"]
+        assert "state=" not in captured["url"]
+
+    @pytest.mark.asyncio
     async def test_update_payment_log_state_drops_None_fields(self):
         # Caller might pass field=None by mistake. We should NOT include
         # those in the PATCH body — that would null the column.

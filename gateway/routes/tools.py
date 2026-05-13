@@ -303,12 +303,18 @@ async def call_tool(
 
         # PR #14: fire-and-forget PATCH to 'verified' (intermediate state,
         # per Q3 decision in pr-14-plan.md). Captures the agent_address +
-        # tx_hash that arrived with the X-Payment header. The terminal
-        # 'payment_done' PATCH later in this handler is what's awaited.
+        # tx_hash that arrived with the X-Payment header.
+        #
+        # PR #14a fix: expected_state='pending' guards against the race
+        # where this fire-and-forget PATCH arrives AFTER the awaited
+        # terminal payment_done PATCH at the end of this handler. Without
+        # the guard, ~half of calls in production stuck at 'verified'
+        # because the racing verified write landed after payment_done.
         verified_pid = (parse_payment_header(x_payment) or {}).get("id")
         if verified_pid:
             asyncio.create_task(update_payment_log_state(
                 verified_pid, "verified",
+                expected_state="pending",
                 agent_address=agent_address,
                 tx_hash=auth.get("tx_hash"),
             ))

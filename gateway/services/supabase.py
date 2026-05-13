@@ -553,6 +553,8 @@ async def insert_pending_payment_log(
 async def update_payment_log_state(
     payment_id: str,
     state: str,
+    *,
+    expected_state: Optional[str] = None,
     **fields,
 ) -> None:
     """UPDATE payment_logs SET state = $1, [**fields] WHERE payment_id = $2.
@@ -565,6 +567,14 @@ async def update_payment_log_state(
         error_reason              — on failures
         client_ip, user_agent     — populate late if they weren't at insert time
 
+    expected_state (PR #14a): optional WHERE filter. When provided, the
+    PATCH only lands if the row's current state matches. This is the
+    fix for the race where a fire-and-forget intermediate PATCH
+    (e.g. 'verified') could arrive AFTER the awaited terminal PATCH
+    ('payment_done') and overwrite it. With expected_state='pending'
+    on the 'verified' PATCH, the racing-late case becomes a silent
+    no-op (WHERE doesn't match) instead of corrupting the row.
+
     Idempotent — calling with the same (payment_id, state) twice is safe.
     """
     if not sb_enabled():
@@ -576,12 +586,16 @@ async def update_payment_log_state(
         if val is not None:
             payload[key] = val
 
+    params = {"payment_id": f"eq.{payment_id}"}
+    if expected_state is not None:
+        params["state"] = f"eq.{expected_state}"
+
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
             resp = await client.patch(
                 f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
                 headers=sb_headers(),
-                params={"payment_id": f"eq.{payment_id}"},
+                params=params,
                 json=payload,
             )
         if resp.status_code not in (200, 204):
