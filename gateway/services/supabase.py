@@ -52,39 +52,13 @@ def sb_enabled() -> bool:
     return bool(settings.SUPABASE_URL and settings.SUPABASE_KEY)
 
 
-async def log_payment(
-    payment_id: str,
-    tool_name: str,
-    agent_address: str,
-    amount_usdc: str,
-    tx_hash: str,
-) -> None:
-    """Fire-and-forget: log a completed payment to Supabase."""
-    if not sb_enabled():
-        return
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(
-                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
-                headers=sb_headers(),
-                json={
-                    "payment_id":    payment_id,
-                    "tool_name":     tool_name,
-                    "agent_address": agent_address,
-                    "amount_usdc":   amount_usdc,
-                    "tx_hash":       tx_hash,
-                    "status":        "completed",
-                },
-            )
-    except Exception as e:
-        # Use error-level so failures actually surface in Railway logs.
-        # Previously this was warning-level, which buried RLS / auth /
-        # network failures under httpx access logs and let writes silently
-        # fail for 25 days (March 31 → April 28) before anyone noticed.
-        logger.error(
-            f"Payment log to Supabase FAILED — paid call NOT recorded "
-            f"(payment_id={payment_id}, tool={tool_name}). Error: {e}"
-        )
+# log_payment (the legacy "single INSERT at end of call_tool") was removed
+# in PR #14. The current pattern is:
+#   1. insert_pending_payment_log() at 402-issue time → state='pending' row
+#   2. update_payment_log_state() at each lifecycle transition (verified,
+#      split_done, payment_done, rejected, abandoned, refund_pending)
+# See routes/tools.py:call_tool for the integration site, and §5 of the
+# Tier 2 design doc for the state machine.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -495,23 +469,31 @@ async def insert_pending_payment_log(
     network: str,
     amount_usdc: str,
     *,
+    state: str = "pending",
     agent_address: Optional[str] = None,
     tx_hash: Optional[str] = None,
     developer_address: Optional[str] = None,
+    gateway_fee_usdc: Optional[str] = None,
     client_ip: Optional[str] = None,
     user_agent: Optional[str] = None,
 ) -> Optional[int]:
-    """INSERT a new payment_logs row with state='pending'.
+    """INSERT a new payment_logs row.
 
     Required: payment_id, tool_name, network, amount_usdc.
-    All other fields are optional at insert time — agent_address and tx_hash
-    arrive with the payment header in step 2 of the x402 flow. They get
-    populated via update_payment_log_state() at that point.
+    All other fields are optional at insert time.
+
+    `state` defaults to 'pending' — the normal pre-402 case for Stellar
+    where agent_address and tx_hash aren't known yet. PR #14 also uses
+    state='payment_done' to insert a complete row in one round trip for
+    the Base success path, where the original UUID-keyed pending row is
+    stranded (x402-v2 doesn't carry payment_id back through
+    PAYMENT-SIGNATURE) and we have to write a second row keyed on
+    tx_hash anyway.
 
     Returns the newly-inserted id (for the caller to remember and use in
-    subsequent updates), or None on error. Error path doesn't raise so
-    callers can decide whether to fail-closed or continue (in this PR
-    nothing reads the return value yet — it's wired in for #14).
+    subsequent updates), or None on error / Supabase disabled. Error
+    path doesn't raise so callers can decide whether to fail-closed
+    or continue — routes/tools.py's pre-402 hook fails closed with 503.
     """
     if not sb_enabled():
         return None
@@ -520,10 +502,11 @@ async def insert_pending_payment_log(
         "tool_name":    tool_name,
         "network":      network,
         "amount_usdc":  amount_usdc,
-        "state":        "pending",
-        # Legacy `status` column kept populated for backward compat. Once
-        # #13 cutover lands and nothing reads `status`, this can drop.
-        "status":       "pending",
+        "state":        state,
+        # Legacy `status` column kept populated for backward compat.
+        # Mirrors the state machine values so analytics queries on the
+        # old column still surface useful data.
+        "status":       state,
     }
     # Only include optional fields if non-None. Avoids overwriting Supabase
     # column defaults with explicit nulls.
@@ -531,6 +514,7 @@ async def insert_pending_payment_log(
         "agent_address":     agent_address,
         "tx_hash":           tx_hash,
         "developer_address": developer_address,
+        "gateway_fee_usdc":  gateway_fee_usdc,
         "client_ip":         client_ip,
         "user_agent":        user_agent,
     }.items():
@@ -610,3 +594,61 @@ async def update_payment_log_state(
             f"update_payment_log_state failure "
             f"(payment_id={payment_id}, state={state}): {e}"
         )
+
+
+# Abandoned-pending sweep window. A pending payment_logs row is considered
+# abandoned if it's been sitting in `pending` for longer than this without
+# ever transitioning to `verified`. Matches the design doc §5.4 spec.
+#
+# 5 min is chosen to be 2.5× the 2-min payment_challenge TTL, so a slow
+# agent that pays right at the TTL boundary doesn't get its row swept
+# before verify completes.
+_ABANDONED_AFTER_SECONDS = 5 * 60
+
+
+async def sweep_abandoned_pending() -> int:
+    """Transition stale pending payment_logs rows to state='abandoned'.
+
+    PATCH payment_logs SET state='abandoned' WHERE state='pending'
+    AND created_at < now() - interval '5 minutes'.
+
+    Returns the count of rows transitioned, or 0 on error / Supabase
+    disabled. Called from the periodic _abandoned_sweep_loop task in
+    main.py:lifespan.
+
+    Unlike cleanup_expired_challenges (which DELETEs from the transient
+    pending_challenges lookup table), this PATCHes payment_logs in
+    place — the abandoned row stays as a permanent analytics record.
+    The conversion-by-tool query in §5.5 of the design doc relies on
+    counting abandoned vs. payment_done rows per tool.
+    """
+    if not sb_enabled():
+        return 0
+    try:
+        from datetime import timedelta
+        cutoff = (
+            datetime.now(tz=timezone.utc) - timedelta(seconds=_ABANDONED_AFTER_SECONDS)
+        ).isoformat()
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.patch(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                # return=representation echoes deleted rows so we can count
+                headers={**sb_headers(), "Prefer": "return=representation"},
+                params={
+                    "state":      "eq.pending",
+                    "created_at": f"lt.{cutoff}",
+                },
+                json={"state": "abandoned"},
+            )
+        if resp.status_code not in (200, 204):
+            logger.error(
+                f"sweep_abandoned_pending error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]}"
+            )
+            return 0
+        if resp.status_code == 200:
+            return len(resp.json())
+        return 0
+    except Exception as e:
+        logger.error(f"sweep_abandoned_pending failure: {e}")
+        return 0

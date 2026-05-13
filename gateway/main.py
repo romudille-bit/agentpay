@@ -88,6 +88,39 @@ async def _cleanup_loop():
         await asyncio.sleep(_CLEANUP_INTERVAL_SECS)
 
 
+# How often the abandoned-pending sweep runs (PR #14).
+# 5 min matches the 5-min cutoff in sb.sweep_abandoned_pending, so
+# worst case a stuck pending row spends ~10 min before transitioning
+# to 'abandoned'.
+_ABANDONED_SWEEP_INTERVAL_SECS = 300
+
+
+async def _abandoned_sweep_loop():
+    """Periodic PATCH pending → abandoned on payment_logs (PR #14).
+
+    Pairs with sb.sweep_abandoned_pending (which UPDATEs rows where
+    state='pending' AND created_at < now() - interval '5 min'). Without
+    this loop, every 402 challenge that never gets paid leaves a row
+    stuck in 'pending' forever, breaking the conversion analytics query
+    in §5.5 of the design doc.
+
+    Different table from _cleanup_loop:
+      _cleanup_loop          → DELETE from pending_challenges (transient lookup)
+      _abandoned_sweep_loop  → PATCH payment_logs (permanent audit trail)
+
+    No-op if Supabase isn't configured.
+    """
+    await asyncio.sleep(_ABANDONED_SWEEP_INTERVAL_SECS)
+    while True:
+        try:
+            n = await sb.sweep_abandoned_pending()
+            if n:
+                logger.info(f"sweep_abandoned_pending: {n} rows → abandoned")
+        except Exception as e:
+            logger.warning(f"sweep_abandoned_pending failed: {e}")
+        await asyncio.sleep(_ABANDONED_SWEEP_INTERVAL_SECS)
+
+
 async def _hydrate_replay_state_from_supabase() -> None:
     """Warm the in-memory replay caches from Supabase at startup.
 
@@ -294,6 +327,10 @@ async def lifespan(app: FastAPI):
         # startup.
         await _hydrate_replay_state_from_supabase()
         asyncio.create_task(_cleanup_loop())
+        # PR #14: periodic pending → abandoned sweep on payment_logs.
+        # Distinct from _cleanup_loop (different table, different
+        # semantics — see _abandoned_sweep_loop docstring).
+        asyncio.create_task(_abandoned_sweep_loop())
 
     yield
 

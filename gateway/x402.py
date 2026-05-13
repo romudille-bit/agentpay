@@ -342,6 +342,10 @@ async def verify_and_fulfill(
                 tool_developer_address=developer_address,
                 total_amount_usdc=challenge_data["amount_usdc"],
                 gateway_fee_percent=settings.GATEWAY_FEE_PERCENT,
+                # PR #14: pass payment_id so split_payment can PATCH
+                # state='split_done' on the row once the split tx
+                # settles. Fire-and-forget all the way down.
+                payment_id=payment_id,
             )
         )
     else:

@@ -31,7 +31,11 @@ from decimal import Decimal
 from gateway import base as base_pay
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
-from gateway.services.supabase import log_payment, update_payment_log_state
+from gateway.services.supabase import (
+    insert_pending_payment_log,
+    sb_enabled,
+    update_payment_log_state,
+)
 from gateway.services.tools_runtime import real_tool_response
 from gateway.services.transaction_log import append_transaction
 from gateway.x402 import (
@@ -165,6 +169,41 @@ async def call_tool(
             request_data={"parameters": body.parameters},
         )
 
+        # ── PR #14: pre-402 payment_logs INSERT ──────────────────────────────
+        # Insert a state='pending' row BEFORE returning the 402. Awaited and
+        # fail-closed: if Supabase is enabled but the INSERT fails, return
+        # 503 — we don't issue challenges we can't track. Closes the
+        # analytics gap from §5.1 of the design doc (abandoned challenges
+        # were previously invisible).
+        #
+        # Network is set to the Stellar default (the canonical UUID-keyed
+        # row); a Base payment will produce a second row keyed on tx_hash
+        # with network='base-...' since x402-v2 doesn't carry the UUID
+        # through PAYMENT-SIGNATURE. The Stellar pending row gets swept to
+        # 'abandoned' by _abandoned_sweep_loop in that case. Acceptable
+        # for now; correlating Base back to the UUID is a future PR.
+        if sb_enabled():
+            client_ip  = request.client.host if request.client else None
+            user_agent = request.headers.get("user-agent")
+            row_id = await insert_pending_payment_log(
+                payment_id=challenge.payment_id,
+                tool_name=resolved,
+                network=f"stellar-{settings.STELLAR_NETWORK}",
+                amount_usdc=tool.price_usdc,
+                developer_address=tool.developer_address or None,
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
+            if row_id is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Supabase write failure — challenge issuance refused. "
+                        "The gateway will not issue 402 challenges it cannot persist. "
+                        "Retry shortly."
+                    ),
+                )
+
         # Build Base payment requirements (if configured)
         base_option = None
         payment_required_header = None
@@ -241,11 +280,38 @@ async def call_tool(
         if not auth["authorized"]:
             status = "REPLAY_ATTACK" if "replay" in auth["reason"].lower() else "FAILED"
             logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status={status} reason={auth['reason']}")
+
+            # PR #14: PATCH the pending row to 'rejected' with error_reason.
+            # Fire-and-forget — the agent gets the 402 immediately; the
+            # analytics write doesn't need to block. The payment_id we
+            # PATCH on comes from the X-Payment header (parsed by
+            # verify_and_fulfill); if the header was malformed there's no
+            # UUID to PATCH and the pending row eventually becomes
+            # 'abandoned' via the sweep.
+            parsed = parse_payment_header(x_payment) or {}
+            rejected_pid = parsed.get("id")
+            if rejected_pid:
+                asyncio.create_task(update_payment_log_state(
+                    rejected_pid, "rejected", error_reason=auth["reason"],
+                ))
+
             return JSONResponse(
                 status_code=402,
                 content={"error": "Payment verification failed", "reason": auth["reason"]},
             )
         logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=OK tx={auth.get('tx_hash','')[:16]}")
+
+        # PR #14: fire-and-forget PATCH to 'verified' (intermediate state,
+        # per Q3 decision in pr-14-plan.md). Captures the agent_address +
+        # tx_hash that arrived with the X-Payment header. The terminal
+        # 'payment_done' PATCH later in this handler is what's awaited.
+        verified_pid = (parse_payment_header(x_payment) or {}).get("id")
+        if verified_pid:
+            asyncio.create_task(update_payment_log_state(
+                verified_pid, "verified",
+                agent_address=agent_address,
+                tx_hash=auth.get("tx_hash"),
+            ))
 
     # ── Step 2b: Base/EVM payment (Mode A: CDP facilitator, Mode B: on-chain tx) ─
     elif payment_signature:
@@ -280,72 +346,26 @@ async def call_tool(
         agent_address = agent_address or result["payer"]
 
     # ── Step 3: Payment verified → call the real tool ─────────────────────────
-    # Use the resolved name for registry book-keeping so legacy aliases
-    # (e.g. dex_liquidity) credit the canonical tool. Pass `resolved` to the
-    # real-tool dispatcher too — real_tool_response handles both names but
-    # using the canonical one keeps the cache key and metrics consistent.
-    registry.increment_call_count(resolved)
-
-    if not tool.endpoint:
-        # No proxy endpoint configured — call real APIs directly
-        tool_result = await real_tool_response(resolved, body.parameters)
-    else:
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    tool.endpoint,
-                    json={"parameters": body.parameters},
-                    headers={"Content-Type": "application/json"},
-                )
-                if response.status_code != 200:
-                    raise httpx.ConnectError("Tool server returned non-200")
-                tool_result = response.json()
-        except httpx.ConnectError:
-            logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
-            tool_result = await real_tool_response(resolved, body.parameters)
-        except Exception as e:
-            logger.error(f"Tool execution error: {e}")
-            raise HTTPException(status_code=502, detail=f"Tool execution failed: {str(e)}")
-
-    # ── Step 4: Log transaction ───────────────────────────────────────────────
-    tx_record = {
-        "tool": tool_name,
-        "amount_usdc": tool.price_usdc,
-        "agent": agent_address,
-        "tx_hash": auth.get("tx_hash"),
-        "success": True,
-    }
-    append_transaction(tx_record)
-    tx_hash    = auth.get("tx_hash", "")
-    agent_log  = (agent_address or "unknown")[:8]
-    logger.info(f"[CALL] tool={tool_name} agent={agent_log}... status=completed tx={tx_hash}")
-
-    # Log to Supabase (non-blocking — failure is silently warned, not fatal).
-    # Use the proper x402 header parser instead of fragile string-split, which
-    # would capture the wrong substring whenever id= wasn't the final field.
+    # Compute payment_id + receipt_network once; both the tool-failure and
+    # tool-success branches need them. For Stellar the payment_id is the
+    # UUID echoed back in the X-Payment header (matches the pre-402 row).
+    # For Base, the original UUID isn't carried through PAYMENT-SIGNATURE,
+    # so we key on tx_hash and the pre-402 UUID row stays at 'pending'
+    # until the periodic sweep flips it to 'abandoned'. Acceptable
+    # noise; correlating Base back to the UUID is a future protocol change.
     if x_payment:
         parsed = parse_payment_header(x_payment) or {}
-        payment_id = parsed.get("id") or tx_hash
+        payment_id = parsed.get("id") or auth.get("tx_hash", "")
+        is_base    = False
     else:
-        payment_id = tx_hash  # Base: use tx hash as dedup key
+        payment_id = auth.get("tx_hash", "")
+        is_base    = True
 
-    # Report the actual settlement network — Base payments were previously
-    # mislabelled as STELLAR_NETWORK in the receipt.
     receipt_network = auth.get("network") or f"stellar-{settings.STELLAR_NETWORK}"
+    client_ip       = request.client.host if request.client else None
+    user_agent_str  = request.headers.get("user-agent")
+    tx_hash         = auth.get("tx_hash", "")
 
-    # ── Supabase dual-write: INSERT then PATCH ────────────────────────────────
-    # PR #13 wires the payment_logs lifecycle. The INSERT (log_payment)
-    # writes the legacy columns; the follow-up PATCH (update_payment_log_state)
-    # populates the new state-machine columns introduced in PR #13's schema:
-    # state='payment_done', plus network / client_ip / user_agent /
-    # gateway_fee_usdc / developer_address.
-    #
-    # In-memory state remains source of truth in this PR — these writes just
-    # shadow it so the data survives a Railway redeploy. The PATCH MUST run
-    # after the INSERT or it would update zero rows; we chain them in a
-    # single fire-and-forget coroutine to make ordering deterministic.
-    client_ip  = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
     try:
         gateway_fee = str(
             Decimal(tool.price_usdc) * Decimal(str(settings.GATEWAY_FEE_PERCENT))
@@ -353,27 +373,96 @@ async def call_tool(
     except Exception:
         gateway_fee = None
 
-    async def _persist_payment_log():
-        await log_payment(
+    # Use the resolved name for registry book-keeping so legacy aliases
+    # (e.g. dex_liquidity) credit the canonical tool.
+    registry.increment_call_count(resolved)
+
+    # For Base success, the original UUID-keyed pending row is stranded
+    # (x402-v2 doesn't carry the payment_id back). INSERT a second row
+    # keyed on tx_hash with state='verified' so the eventual terminal
+    # PATCH (payment_done / refund_pending) has somewhere to land. The
+    # pre-402 UUID row eventually becomes 'abandoned' via the sweep.
+    # Fire-and-forget for the same latency reasons as the Stellar
+    # 'verified' PATCH above.
+    if is_base and sb_enabled():
+        asyncio.create_task(insert_pending_payment_log(
             payment_id=payment_id,
             tool_name=resolved,
-            agent_address=agent_address or "",
-            amount_usdc=tool.price_usdc,
-            tx_hash=tx_hash,
-        )
-        await update_payment_log_state(
-            payment_id,
-            "payment_done",
             network=receipt_network,
+            amount_usdc=tool.price_usdc,
+            state="verified",
             agent_address=agent_address,
             tx_hash=tx_hash,
             developer_address=tool.developer_address or None,
             gateway_fee_usdc=gateway_fee,
             client_ip=client_ip,
-            user_agent=user_agent,
-        )
+            user_agent=user_agent_str,
+        ))
 
-    asyncio.create_task(_persist_payment_log())
+    try:
+        if not tool.endpoint:
+            # No proxy endpoint configured — call real APIs directly
+            tool_result = await real_tool_response(resolved, body.parameters)
+        else:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        tool.endpoint,
+                        json={"parameters": body.parameters},
+                        headers={"Content-Type": "application/json"},
+                    )
+                    if response.status_code != 200:
+                        raise httpx.ConnectError("Tool server returned non-200")
+                    tool_result = response.json()
+            except httpx.ConnectError:
+                logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
+                tool_result = await real_tool_response(resolved, body.parameters)
+    except Exception as e:
+        # ── PR #14: tool failure post-verify → refund_pending ───────────────
+        # The payment was accepted on-chain but the tool execution failed.
+        # PATCH the row to 'refund_pending' (awaited — terminal state in
+        # this PR; #12 will add the actual refund logic and the final
+        # refund_done/refund_failed transitions). The error_reason
+        # captures what went wrong for analytics + post-mortem.
+        logger.error(f"Tool execution error: {e}")
+        await update_payment_log_state(
+            payment_id,
+            "refund_pending",
+            error_reason=f"tool_exec_failed: {str(e)[:200]}",
+        )
+        raise HTTPException(status_code=502, detail=f"Tool execution failed: {str(e)}")
+
+    # ── Step 4: Log transaction ───────────────────────────────────────────────
+    append_transaction({
+        "tool": tool_name,
+        "amount_usdc": tool.price_usdc,
+        "agent": agent_address,
+        "tx_hash": tx_hash,
+        "success": True,
+    })
+    agent_log = (agent_address or "unknown")[:8]
+    logger.info(f"[CALL] tool={tool_name} agent={agent_log}... status=completed tx={tx_hash}")
+
+    # ── PR #14: terminal 'payment_done' PATCH ─────────────────────────────────
+    # Awaited (per Q3 decision: terminal states are awaited so analytics
+    # are guaranteed consistent at response time). Populates the
+    # state-machine columns introduced by #13a — network / client_ip /
+    # user_agent / gateway_fee_usdc / developer_address — which the
+    # pre-402 INSERT couldn't know yet at challenge-issue time.
+    #
+    # log_payment (the legacy single-INSERT helper) is gone; this PATCH
+    # is the single Supabase write on the happy path.
+    await update_payment_log_state(
+        payment_id,
+        "payment_done",
+        network=receipt_network,
+        agent_address=agent_address,
+        tx_hash=tx_hash,
+        developer_address=tool.developer_address or None,
+        gateway_fee_usdc=gateway_fee,
+        client_ip=client_ip,
+        user_agent=user_agent_str,
+    )
 
     return {
         "tool": tool_name,

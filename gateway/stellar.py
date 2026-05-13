@@ -254,22 +254,30 @@ async def verify_payment(
 async def split_payment(
     tool_developer_address: str,
     total_amount_usdc: str,
-    gateway_fee_percent: float = 0.15
+    gateway_fee_percent: float = 0.15,
+    payment_id: str | None = None,
 ) -> dict:
     """
     Split a received payment: send tool developer's share to their wallet.
     Gateway keeps its cut automatically (it's already in the gateway wallet).
-    
+
     Returns tx hash of the split payment.
+
+    PR #14: if `payment_id` is provided, fire-and-forget a PATCH on
+    `payment_logs` to mark the row as state='split_done' once the split
+    tx settles. Intermediate state — eventually-consistent per the Q3
+    decision in pr-14-plan.md. Not awaited because the caller (the
+    asyncio.create_task in verify_and_fulfill) already isn't awaiting
+    this whole function.
     """
     server = get_server()
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
     usdc = get_usdc_asset()
-    
+
     total = Decimal(total_amount_usdc)
     developer_share = total * Decimal(str(1 - gateway_fee_percent))
     developer_share = developer_share.quantize(Decimal("0.0000001"))
-    
+
     try:
         # asyncio.to_thread keeps the event loop free while stellar_sdk's
         # synchronous Horizon call runs on a worker thread. Without this,
@@ -296,14 +304,31 @@ async def split_payment(
 
         tx.sign(gateway_keypair)
         response = await asyncio.to_thread(server.submit_transaction, tx)
-        
+        split_tx_hash = response.get("hash", "")
+
         logger.info(f"Split sent {developer_share} USDC to {tool_developer_address}")
+
+        # PR #14: PATCH payment_logs.state='split_done'. Lazy import to
+        # avoid a circular import on module load (services.supabase
+        # doesn't import stellar, but main.py imports both — direct
+        # top-level import here would order-couple them).
+        if payment_id:
+            try:
+                from gateway.services.supabase import update_payment_log_state
+                asyncio.create_task(update_payment_log_state(
+                    payment_id, "split_done",
+                    gateway_fee_usdc=str(total - developer_share),
+                ))
+            except Exception as e:
+                # Don't let analytics break the split — just log
+                logger.warning(f"split_done PATCH failed to schedule: {e}")
+
         return {
             "success": True,
             "developer_share": str(developer_share),
-            "tx_hash": response.get("hash", ""),
+            "tx_hash": split_tx_hash,
         }
-    
+
     except Exception as e:
         logger.error(f"Split payment error: {e}")
         return {"success": False, "reason": str(e)}

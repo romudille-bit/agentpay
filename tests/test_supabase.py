@@ -43,6 +43,7 @@ from gateway.services.supabase import (
     record_payment_id,
     record_tx_hash,
     store_pending_challenge,
+    sweep_abandoned_pending,
     update_payment_log_state,
 )
 
@@ -370,6 +371,80 @@ class TestPaymentLogsLifecycle:
         assert captured["body"] == {"state": "verified", "agent_address": "GAGENT"}
         assert "error_reason" not in captured["body"]
         assert "refund_tx_hash" not in captured["body"]
+
+
+# ── sweep_abandoned_pending (PR #14) ────────────────────────────────────────
+
+class TestSweepAbandonedPending:
+
+    @pytest.mark.asyncio
+    async def test_sweep_returns_count_of_transitioned_rows(self):
+        # Supabase returns the patched rows when return=representation is set.
+        # The function counts those and returns the number.
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(200, json=[
+                    {"payment_id": "uuid-1", "state": "abandoned"},
+                    {"payment_id": "uuid-2", "state": "abandoned"},
+                    {"payment_id": "uuid-3", "state": "abandoned"},
+                ])
+            )
+            n = await sweep_abandoned_pending()
+        assert n == 3
+
+    @pytest.mark.asyncio
+    async def test_sweep_filters_state_eq_pending_and_old_created_at(self):
+        # The WHERE clause must target ONLY rows where state='pending'
+        # AND created_at < cutoff. If it patched any other state, a
+        # 'payment_done' row could be reverted to 'abandoned' — silent
+        # data corruption.
+        captured = {}
+
+        def capture_request(request):
+            captured["url"]    = str(request.url)
+            captured["method"] = request.method
+            import json
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(200, json=[])
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=capture_request
+            )
+            await sweep_abandoned_pending()
+
+        assert captured["method"] == "PATCH"
+        # Targets only pending rows
+        assert "state=eq.pending" in captured["url"]
+        # Time filter present (precise timestamp varies by clock)
+        assert "created_at=lt." in captured["url"]
+        # The PATCH body sets state='abandoned'
+        assert captured["body"] == {"state": "abandoned"}
+
+    @pytest.mark.asyncio
+    async def test_sweep_returns_zero_on_supabase_error(self):
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(503)
+            )
+            n = await sweep_abandoned_pending()
+        assert n == 0
+
+    @pytest.mark.asyncio
+    async def test_sweep_returns_zero_when_supabase_disabled(self, monkeypatch):
+        import gateway.services.supabase as sb_module
+        from gateway.config import get_settings
+
+        monkeypatch.setenv("SUPABASE_URL", "")
+        get_settings.cache_clear()
+        monkeypatch.setattr(sb_module, "settings", get_settings())
+
+        with respx.mock:
+            # No mocks — any HTTP call would raise. Confirms the early
+            # return at the sb_enabled() guard.
+            assert await sweep_abandoned_pending() == 0
+
+        get_settings.cache_clear()
 
 
 # ── Cross-cutting behavior ──────────────────────────────────────────────────

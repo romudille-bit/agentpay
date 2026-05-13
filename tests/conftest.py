@@ -85,6 +85,34 @@ def mock_settings(monkeypatch):
     import gateway.base
     if hasattr(gateway.base, "settings"):
         monkeypatch.setattr(gateway.base, "settings", new_settings)
+    # services.supabase also captures settings at module-load and is
+    # NOT reverted between tests by other tests' fixtures in some pytest
+    # collection orders — patch here so route tests always see
+    # SUPABASE_URL="" and sb_enabled() returns False.
+    import gateway.services.supabase
+    if hasattr(gateway.services.supabase, "settings"):
+        monkeypatch.setattr(gateway.services.supabase, "settings", new_settings)
+    # Belt-and-suspenders: force sb_enabled to return False in every
+    # module that does `from gateway.services.supabase import sb_enabled`
+    # at the top level. Each such import creates its own binding in the
+    # consumer's namespace — patching only services.supabase.sb_enabled
+    # would leave main.py and routes.tools.py with stale function refs.
+    #
+    # PR #14's pre-402 INSERT is fail-closed: when sb_enabled is True
+    # but the INSERT fails (no real Supabase to write to in tests), the
+    # route returns 503 instead of 402, breaking every TestCall402 test.
+    # test_supabase.py's TestReplayProtection and test_x402's
+    # TestVerifyAndFulfill explicitly override sb_enabled back to True
+    # for the Supabase-enabled paths they exercise, so this default is
+    # safe.
+    _disabled = lambda: False
+    monkeypatch.setattr(gateway.services.supabase, "sb_enabled", _disabled)
+    import gateway.main
+    if hasattr(gateway.main, "sb_enabled"):
+        monkeypatch.setattr(gateway.main, "sb_enabled", _disabled)
+    import gateway.routes.tools
+    if hasattr(gateway.routes.tools, "sb_enabled"):
+        monkeypatch.setattr(gateway.routes.tools, "sb_enabled", _disabled)
 
     yield new_settings
     get_settings.cache_clear()
