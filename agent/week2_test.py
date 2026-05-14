@@ -157,17 +157,26 @@ def main():
     if "open_interest" in results and "orderbook_depth" in results:
         oi  = results["open_interest"]
         ob  = results["orderbook_depth"]
-        oi_24h = oi.get("oi_change_24h_pct", 0)
+        # oi.get(key, 0) returns None if the API explicitly returned None
+        # for the key — .get's default only fires when the key is missing.
+        # Bybit's open_interest endpoint returns oi_change_24h_pct=null
+        # during low-volume hours, which crashed the demo narrative
+        # format on every smoke run with `unsupported format string
+        # passed to NoneType.__format__`. Same guard pattern as
+        # slip_250k below.
+        oi_24h = oi.get("oi_change_24h_pct")
         slip_250k = next(
             (l["slippage_pct"] for l in ob.get("depth", []) if l.get("notional_usd", 0) >= 200_000),
             None
         )
+        oi_fmt   = f"{oi_24h:+.1f}%"   if oi_24h    is not None else "N/A"
+        slip_fmt = f"{slip_250k:.3f}%" if slip_250k is not None else "N/A"
         print(f"""
   ─────────────────────────────────────────────────────
   Demo narrative:
 
-  ETH open interest is {oi_24h:+.1f}% over 24h.
-  A $250k sell on Binance would slip {f'{slip_250k:.3f}%' if slip_250k else 'N/A'}.
+  ETH open interest is {oi_fmt} over 24h.
+  A $250k sell on Binance would slip {slip_fmt}.
   Total data cost: {summary['spent_fmt']} USDC.
   ─────────────────────────────────────────────────────
 """)
