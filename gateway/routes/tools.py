@@ -424,19 +424,36 @@ async def call_tool(
                 logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
                 tool_result = await real_tool_response(resolved, body.parameters)
     except Exception as e:
-        # ── PR #14: tool failure post-verify → refund_pending ───────────────
+        # ── PR #14 + #12: tool failure post-verify → refund_pending ─────────
         # The payment was accepted on-chain but the tool execution failed.
-        # PATCH the row to 'refund_pending' (awaited — terminal state in
-        # this PR; #12 will add the actual refund logic and the final
-        # refund_done/refund_failed transitions). The error_reason
-        # captures what went wrong for analytics + post-mortem.
+        # PATCH the row to 'refund_pending' (awaited — terminal as far as
+        # the request handler is concerned; the background refund worker
+        # in main.py:lifespan picks it up from here when REFUND_ENABLED).
+        # error_reason captures what went wrong for analytics + post-mortem
+        # AND for the worker to log if the row eventually fails refund too.
         logger.error(f"Tool execution error: {e}")
         await update_payment_log_state(
             payment_id,
             "refund_pending",
             error_reason=f"tool_exec_failed: {str(e)[:200]}",
         )
-        raise HTTPException(status_code=502, detail=f"Tool execution failed: {str(e)}")
+        # PR #12: structured 502 body. Existing clients that just check
+        # response.status_code keep seeing an error. New SDK versions
+        # (v0.1.4+) read the body to surface payment_status to user code:
+        #   payment_status="refund_pending"  → refund queued, will land in ~60s
+        #   payment_status="refund_disabled" → refund flag off; manual
+        #                                     reconciliation needed
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error":               "Tool execution failed",
+                "tool":                tool_name,
+                "payment_id":          payment_id,
+                "payment_status":      "refund_pending" if settings.REFUND_ENABLED else "refund_disabled",
+                "refund_eta_seconds":  60 if settings.REFUND_ENABLED else None,
+                "error_reason":        f"tool_exec_failed: {str(e)[:200]}",
+            },
+        )
 
     # ── Step 4: Log transaction ───────────────────────────────────────────────
     append_transaction({

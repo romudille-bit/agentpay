@@ -59,6 +59,21 @@ class Settings(BaseSettings):
     # /.well-known/402index-verify.txt. Leave blank to serve 404.
     INDEX402_VERIFY_HASH: str = ""
 
+    # PR #12: Async on-chain refund worker. When False (default),
+    # tool-failure rows still get state='refund_pending' and the response
+    # body still includes payment_status — but the background worker
+    # does NOT attempt any on-chain refund. This dark-launch mode is the
+    # default so the state tracking can soak in production without
+    # committing to actual refund spend.
+    #
+    # Flip to True via Railway env var (REFUND_ENABLED=true) after a
+    # few days of soak. The worker then runs every 60s, attempts each
+    # refund on Stellar, retries up to 5 times, transitions to
+    # refund_done or refund_failed. Base refunds NOT supported yet
+    # (no outgoing Base tx machinery) — Base-paid tools that fail
+    # short-circuit to refund_failed with reason='base_refund_not_implemented'.
+    REFUND_ENABLED: bool = False
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"

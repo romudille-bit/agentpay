@@ -95,6 +95,110 @@ async def _cleanup_loop():
 _ABANDONED_SWEEP_INTERVAL_SECS = 300
 
 
+# How often the refund worker runs (PR #12).
+# 60s is a balance between: tight enough that refunds feel ~real-time
+# from the agent SDK's perspective (refund_eta_seconds=60), loose enough
+# that 5 attempts × 60s = 5 minutes total retry budget per row before
+# refund_failed — long enough for transient Horizon blips but short
+# enough that bad rows don't pile up.
+_REFUND_WORKER_INTERVAL_SECS = 60
+
+
+async def _refund_worker_loop():
+    """Periodic on-chain refund worker (PR #12 — Option C, capstone).
+
+    Gated by REFUND_ENABLED. When the flag is False the loop isn't
+    scheduled — refund_pending rows accumulate as analytics-only.
+    When True the loop runs every 60s:
+
+      1. claim_refund_pending(limit=20) — fetch oldest pending rows
+      2. for each: lazy-import stellar.send_refund, increment attempt
+         counter, send the refund, transition state.
+
+    Failure handling:
+      - send_refund returns success=False → leave row in refund_pending
+        (refund_attempts now ≥ 1), next sweep picks it up again
+      - 5th failure → mark_refund_failed with reason from last attempt
+      - Base-network rows → mark_refund_failed immediately with
+        'base_refund_not_implemented' (outgoing Base txs not built yet)
+
+    Idempotency notes:
+      - The refund is at the on-chain level (USDC transfer); duplicates
+        would mean the agent receives 2× refund. The state-guard on
+        mark_refund_done prevents the row's PATCH from running twice,
+        but doesn't prevent a duplicate Stellar tx if the worker
+        crashes after submit but before PATCH. Acceptable risk —
+        single-pod deploy, low blast radius. Multi-pod scaling would
+        need a claim/lock column.
+    """
+    # Lazy import to avoid coupling: services.supabase doesn't import
+    # stellar, but main.py imports both — direct top-level import here
+    # would order-couple them. Mirrors the lazy import in
+    # stellar.py:split_payment.
+    from gateway.services import supabase as sb
+    from gateway.stellar import send_refund
+
+    await asyncio.sleep(_REFUND_WORKER_INTERVAL_SECS)
+    while True:
+        try:
+            rows = await sb.claim_refund_pending(limit=20)
+            for row in rows:
+                payment_id    = row.get("payment_id", "")
+                agent_address = row.get("agent_address", "")
+                amount_usdc   = str(row.get("amount_usdc", "0"))
+                network       = row.get("network", "")
+                attempts_so_far = int(row.get("refund_attempts", 0))
+
+                # Defensive: skip malformed rows that survived to here
+                if not (payment_id and agent_address and amount_usdc):
+                    continue
+
+                # Base refunds aren't implemented; short-circuit to
+                # refund_failed instead of looping forever on rows
+                # that can never succeed with the current code.
+                if network.startswith("base-"):
+                    await sb.mark_refund_failed(
+                        payment_id,
+                        "base_refund_not_implemented",
+                    )
+                    continue
+
+                # Increment attempt count BEFORE the send so a worker
+                # crash mid-attempt still counts towards the cap.
+                await sb.increment_refund_attempt(payment_id)
+                this_attempt = attempts_so_far + 1
+
+                result = await send_refund(
+                    agent_address=agent_address,
+                    amount_usdc=amount_usdc,
+                    payment_id=payment_id,
+                )
+                if result.get("success"):
+                    await sb.mark_refund_done(
+                        payment_id, result.get("tx_hash", ""),
+                    )
+                    logger.info(
+                        f"[REFUND] payment_id={payment_id[:8]}... → refund_done "
+                        f"tx={result.get('tx_hash', '')[:16]}..."
+                    )
+                elif this_attempt >= sb._REFUND_ATTEMPT_CAP:
+                    reason = f"max_attempts:{result.get('reason', 'unknown')}"
+                    await sb.mark_refund_failed(payment_id, reason)
+                    logger.warning(
+                        f"[REFUND] payment_id={payment_id[:8]}... → refund_failed "
+                        f"after {this_attempt} attempts ({reason})"
+                    )
+                else:
+                    logger.info(
+                        f"[REFUND] payment_id={payment_id[:8]}... attempt "
+                        f"{this_attempt}/{sb._REFUND_ATTEMPT_CAP} failed "
+                        f"({result.get('reason', 'unknown')}); will retry"
+                    )
+        except Exception as e:
+            logger.warning(f"refund worker loop iteration failed: {e}")
+        await asyncio.sleep(_REFUND_WORKER_INTERVAL_SECS)
+
+
 async def _abandoned_sweep_loop():
     """Periodic PATCH pending → abandoned on payment_logs (PR #14).
 
@@ -331,6 +435,17 @@ async def lifespan(app: FastAPI):
         # Distinct from _cleanup_loop (different table, different
         # semantics — see _abandoned_sweep_loop docstring).
         asyncio.create_task(_abandoned_sweep_loop())
+
+        # PR #12: async on-chain refund worker, gated by REFUND_ENABLED.
+        # Picks up refund_pending rows, sends USDC back to the agent
+        # on Stellar, transitions to refund_done or refund_failed.
+        # Dark-launched at False by default so the state tracking can
+        # soak before committing to actual refund spend.
+        if settings.REFUND_ENABLED:
+            logger.info("REFUND_ENABLED=true — starting refund worker loop")
+            asyncio.create_task(_refund_worker_loop())
+        else:
+            logger.info("REFUND_ENABLED=false — refund worker disabled (dark launch)")
 
     yield
 

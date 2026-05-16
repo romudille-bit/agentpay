@@ -483,3 +483,139 @@ class TestFacilitatorDisabled:
         )
         assert result["verified"] is False
         assert "disabled" in result["reason"].lower()
+
+
+# ── send_refund (PR #12) ─────────────────────────────────────────────────────
+#
+# send_refund uses stellar_sdk's synchronous Server.load_account +
+# submit_transaction wrapped in asyncio.to_thread. Mocking respx isn't
+# enough — the SDK calls bypass it (they go through urllib3 directly).
+# We monkeypatch the underlying Server methods instead.
+
+class TestSendRefund:
+
+    @pytest.fixture
+    def patch_stellar_sdk(self, monkeypatch, mock_settings):
+        """Mock stellar_sdk's Server.load_account + submit_transaction.
+
+        Returns a state dict so the test can:
+          - set state["raise_on_submit"] = SomeException to simulate failure
+          - read state["submitted_tx"] to inspect the built tx
+          - read state["agent_address"] for a valid destination address
+
+        AGENT_ADDR up top is a placeholder string ('GAGENT...' repeated)
+        that fails Stellar's strkey checksum validation when used as a
+        TransactionBuilder destination. Generate a real keypair here.
+        """
+        import gateway.stellar
+        from stellar_sdk import Keypair
+        # GATEWAY_SECRET_KEY default is "" in tests, which makes
+        # send_refund early-return with reason='gateway_secret_not_configured'.
+        # Generate a valid testnet secret so the function reaches the
+        # Stellar SDK path.
+        kp = Keypair.random()
+        mock_settings.GATEWAY_SECRET_KEY = kp.secret
+        monkeypatch.setattr(gateway.stellar, "settings", mock_settings)
+
+        # Real agent keypair — TransactionBuilder validates the destination
+        # via strkey decoding, so a placeholder won't reach the mocked
+        # submit_transaction.
+        agent_kp = Keypair.random()
+
+        state = {
+            "raise_on_submit": None,
+            "submitted_tx": None,
+            "agent_address": agent_kp.public_key,
+        }
+
+        class _FakeAccount:
+            """Stand-in for stellar_sdk.Account; TransactionBuilder reads
+            account_id + sequence_number off this."""
+            def __init__(self, public_key):
+                self.account_id = public_key
+                self.account = public_key
+                self.sequence = 1
+
+            def increment_sequence_number(self):
+                self.sequence += 1
+
+            def load_state(self):
+                return self
+
+        class _FakeServer:
+            def load_account(self, public_key):
+                return _FakeAccount(public_key)
+
+            def submit_transaction(self, tx):
+                state["submitted_tx"] = tx
+                if state["raise_on_submit"] is not None:
+                    raise state["raise_on_submit"]
+                return {"hash": "refund_tx_hash_abc", "successful": True}
+
+        monkeypatch.setattr(gateway.stellar, "get_server", lambda: _FakeServer())
+        return state
+
+    @pytest.mark.asyncio
+    async def test_send_refund_happy_path(self, patch_stellar_sdk):
+        """A successful refund returns success=True with the tx hash
+        from Horizon. The submitted tx has the agent as destination
+        and the full amount."""
+        from gateway.stellar import send_refund
+
+        result = await send_refund(
+            agent_address=patch_stellar_sdk["agent_address"],
+            amount_usdc="0.002",
+            payment_id="test-payment-uuid-1234",
+        )
+        assert result["success"] is True
+        assert result["tx_hash"] == "refund_tx_hash_abc"
+        # Decimal quantize to 7 places (Stellar's USDC precision) →
+        # "0.002" comes back as "0.0020000". Both Decimal-equivalent.
+        from decimal import Decimal
+        assert Decimal(result["amount"]) == Decimal("0.002")
+        # Tx was actually submitted (sanity)
+        assert patch_stellar_sdk["submitted_tx"] is not None
+
+    @pytest.mark.asyncio
+    async def test_send_refund_op_no_trust_returns_failure(self, patch_stellar_sdk):
+        """When the agent has no USDC trustline, stellar_sdk raises with
+        result_codes containing 'op_no_trust'. send_refund should
+        return success=False with that as the reason for the worker to
+        log + mark refund_failed."""
+        from gateway.stellar import send_refund
+
+        # Build an exception that looks like a stellar_sdk BadRequestError
+        # with the result_codes shape that _extract_stellar_reason knows
+        # how to decode. We don't need the real exception class —
+        # _extract_stellar_reason just reads `extras` off the object.
+        err = RuntimeError("dummy")
+        err.extras = {"result_codes": {"operations": ["op_no_trust"]}}
+        patch_stellar_sdk["raise_on_submit"] = err
+
+        result = await send_refund(
+            agent_address=patch_stellar_sdk["agent_address"],
+            amount_usdc="0.002",
+            payment_id="test-payment-uuid-1234",
+        )
+        assert result["success"] is False
+        assert "op_no_trust" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_send_refund_missing_gateway_secret_short_circuits(
+        self, mock_settings, monkeypatch
+    ):
+        """When GATEWAY_SECRET_KEY isn't configured, send_refund must
+        not even attempt to call stellar_sdk (which would crash on
+        Keypair.from_secret(''))."""
+        import gateway.stellar
+        mock_settings.GATEWAY_SECRET_KEY = ""
+        monkeypatch.setattr(gateway.stellar, "settings", mock_settings)
+
+        from gateway.stellar import send_refund
+        result = await send_refund(
+            agent_address=AGENT_ADDR,
+            amount_usdc="0.002",
+            payment_id="test-payment-uuid-1234",
+        )
+        assert result["success"] is False
+        assert result["reason"] == "gateway_secret_not_configured"

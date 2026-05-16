@@ -538,3 +538,74 @@ class TestLifecycleStateMachine:
         assert "tool_exec_failed" in refund_row.get("error_reason", "")
         # payment_done must NOT have been written for a failed tool call
         assert "payment_done" not in states_for_pid
+
+    def test_tool_failure_response_body_dark_launch(
+        self, client, supabase_lifecycle_capture, monkeypatch, patch_route_verify,
+    ):
+        """PR #12: with REFUND_ENABLED=False (the default), the response
+        body carries payment_status='refund_disabled' so the SDK can
+        distinguish 'we'd refund if the flag were on' from 'we will
+        refund'. refund_eta_seconds is null.
+        """
+        # The conftest mock_settings sets REFUND_ENABLED to whatever the
+        # cached settings has. We don't override here — default is False.
+        async def boom(tool_name, params):
+            raise RuntimeError("ETIMEDOUT")
+        import gateway.routes.tools as routes_tools_mod
+        monkeypatch.setattr(routes_tools_mod, "real_tool_response", boom)
+
+        first = client.post("/tools/token_price/call", json={"parameters": {}})
+        payment_id = first.json()["payment_id"]
+
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {}},
+            headers={
+                "X-Payment": f"tx_hash=darkhash,from=GAGENT,id={payment_id}",
+                "X-Agent-Address": "GAGENTAGENTAGENTAGENTAGENTAGENTAGENT",
+            },
+        )
+        assert r.status_code == 502
+        body = r.json()
+        assert body["error"] == "Tool execution failed"
+        assert body["payment_id"] == payment_id
+        assert body["payment_status"] == "refund_disabled"
+        assert body["refund_eta_seconds"] is None
+        assert "tool_exec_failed" in body["error_reason"]
+        assert "ETIMEDOUT" in body["error_reason"]
+
+    def test_tool_failure_response_body_flag_on(
+        self, client, supabase_lifecycle_capture, monkeypatch, patch_route_verify,
+    ):
+        """PR #12: with REFUND_ENABLED=True, the response body switches
+        to payment_status='refund_pending' + refund_eta_seconds=60.
+        The actual on-chain refund is handled by the background worker;
+        the response is forward-looking advice for the SDK.
+        """
+        import gateway.routes.tools as routes_tools_mod
+        # Patch settings.REFUND_ENABLED to True for this test
+        from gateway.config import get_settings
+        get_settings.cache_clear()
+        new_settings = get_settings()
+        new_settings.REFUND_ENABLED = True
+        monkeypatch.setattr(routes_tools_mod, "settings", new_settings)
+
+        async def boom(tool_name, params):
+            raise RuntimeError("upstream 503")
+        monkeypatch.setattr(routes_tools_mod, "real_tool_response", boom)
+
+        first = client.post("/tools/token_price/call", json={"parameters": {}})
+        payment_id = first.json()["payment_id"]
+
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {}},
+            headers={
+                "X-Payment": f"tx_hash=hothash,from=GAGENT,id={payment_id}",
+                "X-Agent-Address": "GAGENTAGENTAGENTAGENTAGENTAGENTAGENT",
+            },
+        )
+        assert r.status_code == 502
+        body = r.json()
+        assert body["payment_status"] == "refund_pending"
+        assert body["refund_eta_seconds"] == 60

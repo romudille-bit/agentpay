@@ -32,13 +32,17 @@ import pytest
 import respx
 
 from gateway.services.supabase import (
+    claim_refund_pending,
     cleanup_expired_challenges,
     delete_pending_challenge,
     faucet_ip_seen_recently,
     get_pending_challenge,
+    increment_refund_attempt,
     insert_pending_payment_log,
     is_payment_id_consumed,
     is_tx_hash_consumed,
+    mark_refund_done,
+    mark_refund_failed,
     record_faucet_ip,
     record_payment_id,
     record_tx_hash,
@@ -421,6 +425,138 @@ class TestPaymentLogsLifecycle:
         assert captured["body"] == {"state": "verified", "agent_address": "GAGENT"}
         assert "error_reason" not in captured["body"]
         assert "refund_tx_hash" not in captured["body"]
+
+
+# ── Refund worker ORM (PR #12) ──────────────────────────────────────────────
+
+class TestRefundORM:
+
+    @pytest.mark.asyncio
+    async def test_claim_refund_pending_filters_state_and_attempts(self):
+        """The worker query must target ONLY rows in 'refund_pending'
+        state with attempts < cap. Otherwise: refund_failed rows
+        would be retried indefinitely, or already-done refunds would
+        be re-sent."""
+        captured = {}
+
+        def capture_request(request):
+            captured["url"] = str(request.url)
+            return httpx.Response(200, json=[])
+
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=capture_request
+            )
+            await claim_refund_pending()
+
+        assert "state=eq.refund_pending" in captured["url"]
+        assert "refund_attempts=lt.5" in captured["url"]
+        # Order matters for fair processing — oldest first
+        assert "order=created_at.asc" in captured["url"]
+
+    @pytest.mark.asyncio
+    async def test_claim_refund_pending_returns_rows_for_worker(self):
+        """The worker needs the actual row data (agent_address,
+        amount_usdc, network) to construct the refund tx. Confirm
+        the function returns the parsed JSON rather than swallowing it."""
+        rows = [
+            {"payment_id": "uuid-1", "agent_address": "GAGENT1",
+             "amount_usdc": "0.002", "network": "stellar-testnet",
+             "tool_name": "token_price", "refund_attempts": 0},
+            {"payment_id": "uuid-2", "agent_address": "GAGENT2",
+             "amount_usdc": "0.001", "network": "stellar-testnet",
+             "tool_name": "gas_tracker", "refund_attempts": 2},
+        ]
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(200, json=rows)
+            )
+            result = await claim_refund_pending(limit=20)
+
+        assert len(result) == 2
+        assert result[0]["payment_id"] == "uuid-1"
+        assert result[1]["refund_attempts"] == 2
+
+    @pytest.mark.asyncio
+    async def test_increment_refund_attempt_reads_then_writes_plus_one(self):
+        """Read-modify-write semantics: read current count, write +1.
+        With the single-worker invariant this is effectively atomic
+        from the worker's perspective. The test pins that we always
+        write current+1, not 1 (which would clobber).
+        """
+        write_payload = {}
+
+        def get_handler(request):
+            return httpx.Response(200, json=[{"refund_attempts": 3}])
+
+        def patch_handler(request):
+            import json
+            write_payload.update(json.loads(request.content))
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(side_effect=get_handler)
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(side_effect=patch_handler)
+            await increment_refund_attempt("test-uuid")
+
+        assert write_payload == {"refund_attempts": 4}
+
+    @pytest.mark.asyncio
+    async def test_mark_refund_done_uses_state_guard(self):
+        """Terminal happy-path PATCH must filter by
+        state=eq.refund_pending so it can't accidentally overwrite a
+        refund_failed row (which would happen if a delayed worker
+        comes back to a row we'd already given up on). PR #14a
+        state-guard pattern."""
+        captured = {}
+
+        def capture_request(request):
+            captured["url"] = str(request.url)
+            import json
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=capture_request
+            )
+            await mark_refund_done("test-uuid", "refund_hash_abc")
+
+        # State-guarded
+        assert "state=eq.refund_pending" in captured["url"]
+        # Carries the refund tx_hash
+        assert captured["body"]["state"] == "refund_done"
+        assert captured["body"]["refund_tx_hash"] == "refund_hash_abc"
+
+    @pytest.mark.asyncio
+    async def test_mark_refund_failed_idempotent_via_in_filter(self):
+        """The terminal-sad PATCH includes BOTH 'refund_pending' and
+        'refund_failed' in its state filter so a second call to
+        mark_refund_failed (e.g. a retry of the worker's give-up
+        logic) lands as a no-op rather than a 0-row update. Otherwise
+        callers can't distinguish 'already terminal' from 'PATCH bug'.
+        """
+        captured = {}
+
+        def capture_request(request):
+            captured["url"] = str(request.url)
+            import json
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=capture_request
+            )
+            await mark_refund_failed("test-uuid", "max_attempts_exhausted")
+
+        # PostgREST `in.()` syntax (URL-encoded: %28 = '(', %29 = ')')
+        assert (
+            "state=in.(refund_pending,refund_failed)" in captured["url"]
+            or "state=in.%28refund_pending%2Crefund_failed%29" in captured["url"]
+        )
+        assert captured["body"]["state"] == "refund_failed"
+        assert captured["body"]["error_reason"] == "max_attempts_exhausted"
 
 
 # ── sweep_abandoned_pending (PR #14) ────────────────────────────────────────

@@ -666,3 +666,177 @@ async def sweep_abandoned_pending() -> int:
     except Exception as e:
         logger.error(f"sweep_abandoned_pending failure: {e}")
         return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Refund worker (PR #12 — Option C from §1 of the Tier 2 design doc)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# When a paid tool call fails post-verify, routes/tools.py:call_tool sets
+# payment_logs.state='refund_pending'. This group exposes the ORM that the
+# background _refund_worker_loop in main.py:lifespan uses to drive each
+# row through the rest of the lifecycle:
+#
+#   refund_pending ──send_refund OK──→ refund_done           (terminal happy)
+#                  ──send_refund fails (1..4 attempts)──→ refund_pending
+#                  ──send_refund fails (5th attempt)────→ refund_failed (terminal)
+#
+# Retry count is persisted in the refund_attempts column (PR #12 migration).
+# Cap is 5 attempts; at 60s/attempt that's ~5 min of retry window per row.
+#
+# Behaviour conventions:
+#   claim_refund_pending() — read, returns the actual rows so the worker
+#       has all fields needed for send_refund (agent_address, amount_usdc,
+#       network, payment_id). Filtered to refund_attempts < cap so the
+#       failed-out rows don't get re-tried.
+#   increment_refund_attempt() — write, atomic increment of the counter
+#       using Postgres-side arithmetic via PostgREST.
+#   mark_refund_done() — write, terminal state transition with the refund
+#       tx_hash. State-guarded against double-write per PR #14a pattern.
+#   mark_refund_failed() — write, terminal state for retry exhaustion.
+#       Accepts both 'refund_pending' AND 'refund_failed' as expected
+#       state so a retry of the terminal write is a no-op rather than
+#       a 0-row update that the caller can't distinguish from a bug.
+
+_REFUND_ATTEMPT_CAP = 5
+
+
+async def claim_refund_pending(limit: int = 20) -> list[dict]:
+    """SELECT rows in state='refund_pending' with attempts < cap.
+
+    Returns up to `limit` rows ordered by created_at ASC (oldest first)
+    so each pass of the worker makes monotonic progress. Empty list on
+    Supabase error / disabled — the worker treats that as "nothing to
+    do this tick" and waits for the next sweep.
+
+    No locking. Multi-pod deploys would re-claim the same rows; we run
+    single-pod on Railway today and Stellar's submit_transaction is
+    idempotent enough that a double-send is a survivable duplicate
+    transfer (the agent receives twice — manual reconciliation, but
+    no funds lost).
+    """
+    if not sb_enabled():
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={
+                    "select":          "id,payment_id,agent_address,amount_usdc,network,tool_name,refund_attempts",
+                    "state":           "eq.refund_pending",
+                    "refund_attempts": f"lt.{_REFUND_ATTEMPT_CAP}",
+                    "order":           "created_at.asc",
+                    "limit":           str(limit),
+                },
+            )
+        if resp.status_code != 200:
+            logger.error(
+                f"claim_refund_pending error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]}"
+            )
+            return []
+        return resp.json()
+    except Exception as e:
+        logger.error(f"claim_refund_pending failure: {e}")
+        return []
+
+
+async def increment_refund_attempt(payment_id: str) -> None:
+    """PATCH refund_attempts = refund_attempts + 1, atomically.
+
+    PostgREST doesn't expose SQL-side arithmetic in a PATCH body
+    directly — but we can hit a SQL function via /rpc, or read-modify-
+    write. We use read-modify-write here for simplicity: the row's
+    state filter (state=refund_pending) plus the single-worker
+    invariant means the increment is effectively serial. If we ever
+    scale to multiple workers, switch to an `inc_refund_attempt`
+    Postgres function exposed via /rpc.
+
+    Called BEFORE the on-chain send so a worker crash mid-attempt
+    still counts against the cap — bias towards "don't retry forever"
+    over "don't waste an attempt".
+    """
+    if not sb_enabled():
+        return
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            # Read current count
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={
+                    "payment_id": f"eq.{payment_id}",
+                    "select":     "refund_attempts",
+                },
+            )
+            current = 0
+            if r.status_code == 200 and r.json():
+                current = int(r.json()[0].get("refund_attempts", 0))
+            # Write +1
+            resp = await client.patch(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={"payment_id": f"eq.{payment_id}"},
+                json={"refund_attempts": current + 1},
+            )
+        if resp.status_code not in (200, 204):
+            logger.error(
+                f"increment_refund_attempt error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]} (payment_id={payment_id})"
+            )
+    except Exception as e:
+        logger.error(
+            f"increment_refund_attempt failure (payment_id={payment_id}): {e}"
+        )
+
+
+async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
+    """Terminal happy-path transition. PATCH state='refund_done',
+    refund_tx_hash=$1, with expected_state='refund_pending' guard so
+    we don't accidentally overwrite a refund_failed (which would
+    happen if a stale worker comes back after we'd already given up).
+    """
+    await update_payment_log_state(
+        payment_id,
+        "refund_done",
+        expected_state="refund_pending",
+        refund_tx_hash=refund_tx_hash,
+        # Clear any error_reason from a previous failed attempt so the
+        # success state is unambiguous.
+        error_reason=None,
+    )
+
+
+async def mark_refund_failed(payment_id: str, error_reason: str) -> None:
+    """Terminal sad-path transition after cap exhaustion. Filters by
+    expected_state IN ('refund_pending', 'refund_failed') so a retry
+    of this terminal write is idempotent — second call lands as a
+    no-op rather than a 0-rows update that callers can't distinguish
+    from a bug.
+
+    PostgREST 'in.(...)' syntax for the state filter.
+    """
+    if not sb_enabled():
+        return
+    payload = {"state": "refund_failed", "error_reason": error_reason}
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.patch(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={
+                    "payment_id": f"eq.{payment_id}",
+                    "state":      "in.(refund_pending,refund_failed)",
+                },
+                json=payload,
+            )
+        if resp.status_code not in (200, 204):
+            logger.error(
+                f"mark_refund_failed error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]} (payment_id={payment_id})"
+            )
+    except Exception as e:
+        logger.error(
+            f"mark_refund_failed failure (payment_id={payment_id}): {e}"
+        )

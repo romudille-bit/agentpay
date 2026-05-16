@@ -347,6 +347,99 @@ async def split_payment(
         return {"success": False, "reason": str(e)}
 
 
+# ── Refund ───────────────────────────────────────────────────────────────────
+
+async def send_refund(
+    agent_address: str,
+    amount_usdc: str,
+    payment_id: str,
+) -> dict:
+    """Send USDC from the gateway wallet back to the agent.
+
+    PR #12: Option C from the Tier 2 design doc — pre-split rollback +
+    async on-chain refund. Called by main.py:_refund_worker_loop when
+    processing rows in state='refund_pending'.
+
+    Structurally identical to split_payment but with:
+      - destination = agent_address (not developer)
+      - amount = full amount the agent paid (not the 85% dev share)
+      - no gateway_fee_usdc PATCH on success (the fee is reversed)
+
+    Returns:
+      {"success": True,  "tx_hash": "...", "amount": "..."}  on success
+      {"success": False, "reason": "..."}                    on failure
+
+    Failure shapes we care about:
+      'op_no_trust'                 — agent has no USDC trustline; manual
+                                      reconciliation needed
+      'tx_insufficient_fee'         — gateway low on XLM; retry later
+      'op_underfunded'              — gateway low on USDC; retry later
+      generic str(e)                — anything else, retry the row
+
+    The gateway pays the Stellar network fee (~0.00001 XLM per refund).
+    `_extract_stellar_reason`-style decoding of result_codes would
+    give cleaner error strings — worth a follow-up; for now str(e)
+    is enough for the retry loop to keep working.
+    """
+    if not settings.GATEWAY_SECRET_KEY:
+        return {"success": False, "reason": "gateway_secret_not_configured"}
+
+    server = get_server()
+    gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
+    usdc = get_usdc_asset()
+    amount = Decimal(amount_usdc).quantize(Decimal("0.0000001"))
+
+    try:
+        gateway_account = await asyncio.to_thread(
+            server.load_account, gateway_keypair.public_key
+        )
+
+        tx = (
+            TransactionBuilder(
+                source_account=gateway_account,
+                network_passphrase=get_network_passphrase(),
+                base_fee=100,
+            )
+            .append_payment_op(
+                destination=agent_address,
+                asset=usdc,
+                amount=str(amount),
+            )
+            # Add a memo so the on-chain audit trail ties the refund tx
+            # back to the original challenge. payment_ids are 36-char
+            # UUIDs; Stellar text memos are limited to 28 bytes. Slice
+            # to fit — the prefix is enough to grep against payment_logs.
+            .add_text_memo(f"refund:{payment_id[:20]}")
+            .set_timeout(30)
+            .build()
+        )
+
+        tx.sign(gateway_keypair)
+        response = await asyncio.to_thread(server.submit_transaction, tx)
+        refund_tx_hash = response.get("hash", "")
+
+        logger.info(
+            f"[REFUND] sent {amount} USDC to {agent_address[:8]}... "
+            f"payment_id={payment_id[:8]}... tx={refund_tx_hash[:16]}..."
+        )
+        return {"success": True, "tx_hash": refund_tx_hash, "amount": str(amount)}
+
+    except Exception as e:
+        # Pull a clean reason out of the stellar-sdk exception. The full
+        # str(e) often includes an XDR dump that's useless in logs; the
+        # result_codes (e.g. 'op_no_trust') are the real signal. Lazy
+        # import to avoid coupling at module-load time.
+        try:
+            from agentpay._wallet import _extract_stellar_reason
+            reason = _extract_stellar_reason(e)
+        except Exception:
+            reason = str(e)[:200]
+        logger.error(
+            f"[REFUND] FAILED payment_id={payment_id[:8]}... reason={reason}"
+        )
+        return {"success": False, "reason": reason}
+
+
 # ── Balance Check ─────────────────────────────────────────────────────────────
 
 async def get_usdc_balance(public_key: str) -> str:
