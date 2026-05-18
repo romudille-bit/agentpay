@@ -35,6 +35,7 @@ from agentpay._wallet import (  # noqa: F401  (re-exports)
     # Exceptions
     BudgetExceeded,
     PaymentFailed,
+    RefundPending,
     # Core classes
     AgentWallet,
     Session,
@@ -51,6 +52,7 @@ __all__ = [
     "USDC_ISSUER_MAINNET",
     "BudgetExceeded",
     "PaymentFailed",
+    "RefundPending",
     "AgentWallet",
     "Session",
     "BudgetSession",

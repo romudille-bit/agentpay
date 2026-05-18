@@ -3,7 +3,13 @@ client.py — Public-facing wrappers and helpers for the agentpay pip package.
 """
 
 import httpx
-from agentpay._wallet import AgentWallet, Session as _Session, BudgetExceeded, PaymentFailed
+from agentpay._wallet import (
+    AgentWallet,
+    Session as _Session,
+    BudgetExceeded,
+    PaymentFailed,
+    RefundPending,
+)
 
 TESTNET_GATEWAY  = "https://gateway-testnet-production.up.railway.app"
 MAINNET_GATEWAY  = "https://gateway-production-2cc2.up.railway.app"
@@ -64,4 +70,4 @@ class Session(_Session):
 
 
 __all__ = ["AgentWallet", "Session", "BudgetExceeded", "PaymentFailed",
-           "faucet_wallet", "TESTNET_GATEWAY", "MAINNET_GATEWAY"]
+           "RefundPending", "faucet_wallet", "TESTNET_GATEWAY", "MAINNET_GATEWAY"]

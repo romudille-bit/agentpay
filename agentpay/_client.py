@@ -8,7 +8,7 @@ import httpx
 import logging
 from decimal import Decimal
 
-from agentpay._wallet import AgentWallet, PaymentFailed
+from agentpay._wallet import AgentWallet, PaymentFailed, RefundPending
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,33 @@ class AgentPayClient:
             )
 
             if retry.status_code != 200:
+                # PR #12 contract (v0.1.4): on tool-failure-post-verify the
+                # gateway now returns 502 with a structured body carrying
+                # payment_status, refund_eta_seconds, payment_id, and
+                # error_reason. Surface that as a typed RefundPending so
+                # callers can branch on the failure mode instead of
+                # parsing JSON themselves.
+                #
+                # Fallback to the generic Exception if the body doesn't
+                # parse as JSON (e.g. Railway edge 500s, unrelated
+                # gateway errors) — preserves the previous behaviour
+                # for shapes we don't recognise.
+                try:
+                    err_body = retry.json()
+                    payment_status = err_body.get("payment_status")
+                except Exception:
+                    err_body = None
+                    payment_status = None
+
+                if payment_status in ("refund_pending", "refund_disabled"):
+                    raise RefundPending(
+                        err_body.get("error_reason", ""),
+                        payment_id=err_body.get("payment_id", ""),
+                        refund_eta_seconds=err_body.get("refund_eta_seconds"),
+                        error_reason=err_body.get("error_reason", ""),
+                        payment_status=payment_status,
+                    )
+
                 raise Exception(f"Tool call failed after payment: {retry.text}")
 
             result = retry.json()

@@ -43,6 +43,62 @@ class PaymentFailed(Exception):
     pass
 
 
+class RefundPending(Exception):
+    """
+    Raised when the gateway accepted the payment on-chain but the tool
+    execution itself failed. The gateway has marked the row for refund;
+    the agent's USDC is on its way back (or already arrived).
+
+    Introduced in agentpay-x402 v0.1.4 to surface the gateway PR #12
+    contract — the 502 response body now carries `payment_status`,
+    `refund_eta_seconds`, and `payment_id`, and this exception type
+    lets callers branch on the failure mode without parsing JSON:
+
+        try:
+            result = session.call("token_price", {"symbol": "ETH"})
+            use(result["result"])
+        except RefundPending as e:
+            log_warn(
+                f"refund queued for {e.payment_id}, "
+                f"tx will appear within ~{e.refund_eta_seconds}s"
+            )
+        except PaymentFailed:
+            # On-chain payment failed (wallet empty, no trustline, etc.)
+            skip()
+
+    Attributes:
+        payment_id: UUID echoed back by the gateway; cross-references
+                    payment_logs row for manual reconciliation.
+        refund_eta_seconds: gateway's estimate for when the refund tx
+                    will appear on-chain. None when the gateway's
+                    REFUND_ENABLED flag is False (dark-launch mode);
+                    in that case the agent SHOULD treat it as
+                    "lost until manually reconciled" and may want to
+                    escalate.
+        error_reason: short string describing what went wrong upstream,
+                    starts with 'tool_exec_failed:' for the common case.
+        payment_status: raw value from the gateway — either
+                    'refund_pending' (worker will retry) or
+                    'refund_disabled' (worker is off, manual handling
+                    needed). Callers can branch on this if they want
+                    sub-states without separate exception classes.
+    """
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        payment_id: str = "",
+        refund_eta_seconds = None,
+        error_reason: str = "",
+        payment_status: str = "",
+    ):
+        super().__init__(message or error_reason or "refund pending")
+        self.payment_id = payment_id
+        self.refund_eta_seconds = refund_eta_seconds
+        self.error_reason = error_reason
+        self.payment_status = payment_status
+
+
 def _extract_stellar_reason(exc) -> str:
     """
     Pull a short, clean reason string out of a stellar-sdk exception.
@@ -278,6 +334,13 @@ class Session:
             # On-chain payment itself failed — a fallback tool would fail for the
             # same reason (empty wallet, wrong network, etc.). Surface the clean
             # reason to the caller instead of cascading into more failures.
+            raise
+        except RefundPending:
+            # The agent already paid and the gateway has queued a refund.
+            # Falling back to another tool would just spend more USDC for
+            # another attempt at the same upstream failure mode. Surface
+            # the typed exception so callers can branch on it explicitly
+            # (see RefundPending docstring for the usage pattern).
             raise
         except Exception as exc:
             # Tool call itself failed (e.g., tool server down post-payment)

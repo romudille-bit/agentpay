@@ -35,17 +35,19 @@ from agentpay.client import (
     Session,
     BudgetExceeded,
     PaymentFailed,
+    RefundPending,
     faucet_wallet,
     TESTNET_GATEWAY,
     MAINNET_GATEWAY,
 )
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 __all__ = [
     "AgentWallet",
     "Session",
     "BudgetExceeded",
     "PaymentFailed",
+    "RefundPending",
     "faucet_wallet",
     "TESTNET_GATEWAY",
     "MAINNET_GATEWAY",
