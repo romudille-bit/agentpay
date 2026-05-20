@@ -282,18 +282,28 @@ async def call_tool(
             logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status={status} reason={auth['reason']}")
 
             # PR #14: PATCH the pending row to 'rejected' with error_reason.
-            # Fire-and-forget — the agent gets the 402 immediately; the
-            # analytics write doesn't need to block. The payment_id we
-            # PATCH on comes from the X-Payment header (parsed by
-            # verify_and_fulfill); if the header was malformed there's no
-            # UUID to PATCH and the pending row eventually becomes
-            # 'abandoned' via the sweep.
+            # AWAITED, not fire-and-forget. Per the Q3 decision in the
+            # PR #14 plan, terminal states (payment_done, rejected,
+            # refund_pending) are awaited so the analytics guarantee
+            # holds at response time. The original v1 of this code
+            # used asyncio.create_task — which loses the race on the
+            # rejected branch specifically because there's no
+            # downstream await before the return (unlike the verified
+            # PATCH, which gets a yield during tool execution). Caught
+            # by test_replay_attempt_marks_rejected failing on CI 3.10
+            # where the TestClient event loop closed before the
+            # scheduled task ran.
+            #
+            # The payment_id we PATCH on comes from the X-Payment header
+            # (parsed by verify_and_fulfill); if the header was malformed
+            # there's no UUID to PATCH and the pending row eventually
+            # becomes 'abandoned' via the sweep.
             parsed = parse_payment_header(x_payment) or {}
             rejected_pid = parsed.get("id")
             if rejected_pid:
-                asyncio.create_task(update_payment_log_state(
+                await update_payment_log_state(
                     rejected_pid, "rejected", error_reason=auth["reason"],
-                ))
+                )
 
             return JSONResponse(
                 status_code=402,
