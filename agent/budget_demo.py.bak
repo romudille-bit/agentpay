@@ -41,7 +41,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
-GATEWAY_URL  = os.getenv("AGENTPAY_GATEWAY_URL", "https://agentpay.tools")
+GATEWAY_URL  = os.getenv("AGENTPAY_GATEWAY_URL", "https://gateway-production-2cc2.up.railway.app")
 AGENT_SECRET = os.getenv("STELLAR_SECRET_KEY") or os.getenv("TEST_AGENT_SECRET_KEY", "")
 MAX_BUDGET   = "0.10"
 

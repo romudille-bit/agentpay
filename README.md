@@ -9,7 +9,7 @@ AgentPay is an x402 payment gateway for AI agents. Access 14 crypto data tools u
 → **x402 protocol**: works with any x402-compatible agent
 → **Stellar + Base**: pay with USDC on either network — Stellar (5s, ~$0.00001 fee) or Base mainnet (2s, ~$0.0001 fee)
 
-**Live gateway (mainnet)**: `https://gateway-production-2cc2.up.railway.app`
+**Live gateway (mainnet)**: `https://agentpay.tools`
 
 ---
 
@@ -43,14 +43,14 @@ That's it. No API keys, no accounts, no config.
 Send USDC to a Stellar wallet via [Coinbase](https://coinbase.com), [Lobstr](https://lobstr.co), or any Stellar DEX. Then use your Stellar secret key (`S...`) directly.
 
 USDC issuer on Stellar mainnet: `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`
-Gateway: `https://gateway-production-2cc2.up.railway.app` — use `network="mainnet"`
+Gateway: `https://agentpay.tools` — use `network="mainnet"`
 
 **Option B — Base mainnet (alternative)**
 
 Send USDC to an EVM wallet on Base. Use your EVM private key with `network="base"`.
 
 USDC contract on Base: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
-Gateway: `https://gateway-production-2cc2.up.railway.app` — use `network="base"`
+Gateway: `https://agentpay.tools` — use `network="base"`
 
 **Option C — Testnet (free, no wallet needed)**
 
@@ -220,7 +220,7 @@ See **[README_MCP.md](README_MCP.md)** for setup instructions.
       "args": ["/path/to/agentpay/gateway/mcp_server.py"],
       "env": {
         "STELLAR_SECRET_KEY": "S...",
-        "AGENTPAY_GATEWAY_URL": "https://gateway-production-2cc2.up.railway.app"
+        "AGENTPAY_GATEWAY_URL": "https://agentpay.tools"
       }
     }
   }
@@ -240,7 +240,7 @@ npx @romudille/agentpay-mcp
 The x402 flow works with any HTTP client in any language.
 
 ```bash
-GATEWAY="https://gateway-production-2cc2.up.railway.app"
+GATEWAY="https://agentpay.tools"
 AGENT_ADDR="G..."   # your Stellar public key
 
 # 1. Call the tool → receive 402 payment challenge

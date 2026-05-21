@@ -34,7 +34,7 @@ from mcp.server.stdio import stdio_server
 
 GATEWAY_URL = os.environ.get(
     "AGENTPAY_GATEWAY_URL",
-    "https://gateway-production-2cc2.up.railway.app",
+    "https://agentpay.tools",
 ).rstrip("/")
 
 STELLAR_SECRET_KEY = os.environ.get("STELLAR_SECRET_KEY", "")
@@ -113,7 +113,7 @@ async def _call_with_payment(tool_name: str, params: dict) -> dict:
     if not STELLAR_SECRET_KEY:
         raise RuntimeError(
             "STELLAR_SECRET_KEY is not set. "
-            "Get a testnet wallet: curl https://gateway-production-2cc2.up.railway.app/faucet"
+            "Get a testnet wallet: curl https://agentpay.tools/faucet"
         )
 
     kp = Keypair.from_secret(STELLAR_SECRET_KEY)

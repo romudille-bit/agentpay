@@ -112,11 +112,25 @@ def build_payment_required_header(
     requirements: dict,
     resource_url: str,
     tool_description: str = "",
+    output_schema: dict | None = None,
 ) -> str:
     """
     Build the PAYMENT-REQUIRED header value (base64-encoded x402 v2 JSON).
     Sent alongside the 402 response for x402-v2-aware clients.
+
+    If `output_schema` is provided it's embedded inside the `accepts[0]`
+    entry under the `outputSchema` key. This is what Coinbase's Bazaar
+    directory reads on the first Base mainnet payment through the CDP
+    facilitator to auto-index the tool — without it, the listing shows
+    a price but no input/output shape and ranks poorly.
+
+    Conventional shape:
+        output_schema = {"input": <JSON Schema of parameters>,
+                         "output": <example or schema of response>}
     """
+    accepts_entry = dict(requirements)  # shallow copy — don't mutate caller's dict
+    if output_schema is not None:
+        accepts_entry["outputSchema"] = output_schema
     payload = {
         "x402Version": 2,
         "error":        "Payment required",
@@ -125,7 +139,7 @@ def build_payment_required_header(
             "description": tool_description,
             "mimeType":    "application/json",
         },
-        "accepts": [requirements],
+        "accepts": [accepts_entry],
     }
     return base64.b64encode(json.dumps(payload).encode()).decode()
 

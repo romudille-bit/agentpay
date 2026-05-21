@@ -26,7 +26,7 @@ Quickstart (mainnet):
         print(r["result"]["rates"])
 
 Gateway URLs:
-    Mainnet: https://agentpay.tools
+    Mainnet: https://gateway-production-2cc2.up.railway.app
     Testnet: https://gateway-testnet-production.up.railway.app
 """
 

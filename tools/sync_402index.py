@@ -15,7 +15,7 @@ Usage:
     python3 tools/sync_402index.py [--dry-run] [--no-delete] [--force-all]
 
 Environment:
-    GATEWAY_URL      (default: https://gateway-production-2cc2.up.railway.app)
+    GATEWAY_URL      (default: https://agentpay.tools)
     INDEX_URL        (default: https://402index.io)
     CONTACT_EMAIL    (default: velvetvau@gmail.com)
     INDEX402_TOKEN   (optional) — domain-verification token for DELETE/PATCH.
@@ -31,7 +31,7 @@ import time
 import urllib.request
 import urllib.error
 
-GATEWAY_URL   = os.environ.get("GATEWAY_URL",   "https://gateway-production-2cc2.up.railway.app")
+GATEWAY_URL   = os.environ.get("GATEWAY_URL",   "https://agentpay.tools")
 INDEX_URL     = os.environ.get("INDEX_URL",     "https://402index.io")
 CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "velvetvau@gmail.com")
 INDEX_TOKEN   = os.environ.get("INDEX402_TOKEN", "")   # empty = read-only mode

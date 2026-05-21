@@ -12,7 +12,7 @@ from agentpay._wallet import (
 )
 
 TESTNET_GATEWAY  = "https://gateway-testnet-production.up.railway.app"
-MAINNET_GATEWAY  = "https://agentpay.tools"
+MAINNET_GATEWAY  = "https://gateway-production-2cc2.up.railway.app"
 FAUCET_URL       = f"{TESTNET_GATEWAY}/faucet"
 
 

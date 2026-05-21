@@ -38,7 +38,7 @@ from agent.wallet import AgentWallet, Session, BudgetExceeded, _fmt
 NETWORK  = _env_network or "testnet"
 
 GATEWAYS = {
-    "mainnet": "https://gateway-production-2cc2.up.railway.app",
+    "mainnet": "https://agentpay.tools",
     "testnet": "https://gateway-testnet-production.up.railway.app",
 }
 EXPLORERS = {

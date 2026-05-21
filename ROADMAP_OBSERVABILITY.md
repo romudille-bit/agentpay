@@ -1,7 +1,7 @@
 # AgentPay — Observability & Monitoring Plan
 
-Date: May 15, 2026 · Revised: May 16, 2026 (after PR #13/#14/#12 shipped)
-Status: Proposed — slot into ROADMAP.md Tier 2 as **D4** (parallel to D1/D2/D3) before Round 1 closes end of May.
+Date: May 15, 2026 · Revised: May 16, 2026 (PR #13/#14/#12 shipped) · Revised: May 20, 2026 (Instaward SOW alignment — Option A)
+Status: Proposed — internal engineering track, **outside the funded Instaward Round 1 SOW**. See §Instaward Round 1 alignment below for the funding boundary and evidence rules. D4 phases interleave with the SOW's D1/D2/D3 4-week schedule; full ship-out concludes mid-June after Round 1 closes.
 Owner: Valeria
 
 ---
@@ -26,6 +26,43 @@ Round 1's D2 distribution sprint depends on telemetry that doesn't exist. Build 
 
 ---
 
+## Instaward Round 1 alignment & evidence boundary
+
+D4 is **not** a funded deliverable of the Instaward Round 1 SOW (`AgentPay_Instawards_SOW.docx`). That SOW commits to D1 (Claude SDK), D2 (code improvements: pytest+CI, refund semantics, OZ flag-gate, async safety, CDP schema), and D3 (agentpay.tools landing, Bazaar, sponsored accounts, brand) within 30 days at the $5,000 cap. D4 runs in parallel as internal engineering — claimed against neither the SOW budget nor §6.1 Evidence.
+
+Why ship it during the Round 1 window anyway: D4 Phase 1 (Sentry + `/metrics` + lifecycle counters) is what makes D2's committed latency-win evidence (the SOW promises "≥50% reduction in p95 Stellar payment latency after OZ flag-gate + async refactors") a permanent, queryable number rather than ad-hoc log scraping. D2 stays the deliverable; D4 is the harness that measures it.
+
+### Funding boundary — what's claimed on what
+
+| Item | Claimed under Round 1 SOW? | Notes |
+|---|---|---|
+| D2 latency-win number (p95 before vs after) | **Yes** — §6.1 D2 row | Source: D4 `agentpay_verify_duration_seconds` histogram, but the evidence row stays D2's. Methodology footnote: "tracked via internal Prometheus histogram." |
+| Sentry dashboard, Grafana dashboard, `/metrics` endpoint | No | Internal engineering. Surface as evidence in the future Round 2 SOW, not Round 1. |
+| `RUNBOOK.md`, `/stats` page, weekly digest | No | Phase 3 work ships post-SOW close. Round 2 SOW evidence material. |
+| PR #13e (replay state → Supabase), PR #14 (`payment_logs` state machine), PR #12 (CI suite) | **Don't retroactively claim** under Round 1 SOW | These shipped during Round 1 but map to SOW Round 2 candidate scope ("Supabase persistence layer"). Acknowledge as "delivered ahead of schedule" when drafting the Round 2 SOW; don't quietly fold them into Round 1's evidence pack — that breaks scope discipline. |
+
+### Interleaved schedule with the SOW's 4-week timeline
+
+The SOW's existing 4-week breakdown stays as the funded commitment. D4 phases slot into the unfunded margin around it.
+
+| SOW week | SOW work (funded, claimed) | D4 work (parallel, unfunded) |
+|---|---|---|
+| Week 1 — May 18–24 | D1 Claude SDK wrapper (production path), `cost_breakdown` + `should_call`, D2 pytest scaffolding, D3 `agentpay.tools` DNS | **Phase 1.1 Sentry init + breadcrumbs** around `verify_payment` / `split_payment` / `send_refund` (~1 day). Pairs naturally with D2's pytest scaffolding — same files. |
+| Week 2 — May 25–31 | D1 demo proxy + PyPI v1.2.0 + npm v1.2.0, D2 refund/credit policy, D3 Bazaar `outputSchema` patch | **Phase 1.2 structured logging + 1.3 `/metrics` endpoint + lifecycle counters** wired at every `update_payment_log_state` site (~2 days). Verify-duration histogram lands alongside D2's OZ flag-gate — same PR if possible, both touch `stellar.py:_verify_payment_horizon`. |
+| Week 3 — June 1–7 | D2 pytest coverage push + GitHub Actions + coverage badge, D2 OZ flag-gate + async safety, D3 landing copy + design | **Phase 2 alerting** (~1 day). Six Grafana rules → Discord webhook. Use the live histogram to capture the **before** p95 number, then **after** once OZ flag-gate ships — this is exactly the D2 evidence row. |
+| Week 4 — June 8–14, **SOW closes** | D2 CDP schema validation, D3 sponsored agent accounts + landing deploy + demo video + brand guide, final coverage push, evidence pack delivery | Phase 3 does **not** start inside Week 4 — protect the SOW evidence pack. Hold the line. |
+| Post-SOW (mid-to-late June) | — | **Phase 3** (stats page, runbook, weekly digest, ~3-4 days). Ships into the gap between Round 1 close and Round 2 SOW draft. |
+
+### Why this sequencing matters for Round 2
+
+When the Round 2 SOW gets drafted (post-mid-June), the live D4 stack plus the three already-shipped Round-2-candidate PRs (#13e, #14, #12) reshape what Round 2 should commit to. The SOW's current Round 2 candidate list ("Soroban testnet, Supabase persistence layer, OpenAI integration, per-agent rate limiting, distribution sprint") is already partially obsolete — Supabase persistence is done, observability infrastructure is in place to back distribution-sprint metrics. The Round 2 SOW becomes a tighter, evidence-richer document because of this sequencing.
+
+### The one rule for executing Option A
+
+**Do not write D4 acceptance criteria into the SOW evidence pack.** Phase 1's acceptance ("synthetic broken payment in testnet shows up in Sentry within 60 seconds; `/metrics` returns three custom series") is internal QA, not Instaward evidence. The only D4-derived line that touches the SOW is the latency-win p95 number, and that lives in D2's row, not its own.
+
+---
+
 ## Goals (in priority order)
 
 1. **Know within 5 minutes** when a payment-path regression hits production.
@@ -41,11 +78,11 @@ Explicit non-goals: full distributed tracing, custom dashboards beyond what Graf
 
 Almost-free instrumentation because the data flow already exists. PR #14's state machine PATCHes are the natural emit points:
 
-- Inside `routes/tools.py:call_tool`, every awaited `update_payment_log_state(payment_id, "payment_done", ...)` is also a metric increment.
-- Same for `rejected`, `refund_pending`. Fire-and-forget intermediates (`verified`, `split_done`) emit too.
-- Inside `stellar.py:send_refund` — terminal success/failure increments the refund-result counter.
+- Inside `routes/tools.py:call_tool`, every awaited `update_payment_log_state(payment_id, "payment_done", ...)` is also a metric increment — emitted **after** the PATCH returns success, never before. If the PATCH fails the metric stays at its prior count, so Prometheus and Supabase can't diverge upward.
+- Same for `rejected`, `refund_pending`. Fire-and-forget intermediates (`verified`, `split_done`) follow the same after-PATCH ordering.
+- Refund-result counter emits from `main.py:_refund_worker_loop` only (not `stellar.py:send_refund`). The worker is the unique decision point that knows `refund_attempts`, picks the right `result` label (`success` / `op_no_trust` / `horizon_timeout` / `gateway_secret_not_configured` / `max_attempts` / `other`), and writes the `refund_done` / `refund_failed` transition itself — one site, one source of truth.
 
-No new background polling. No Supabase round-trips for metrics. The metrics increment in the same code path that's already writing to Supabase, so they're always in sync with the lifecycle state.
+No new background polling. No Supabase round-trips for metrics. Strict "PATCH first, increment second" ordering keeps the two stores in sync.
 
 This step is technically part of Phase 1 below, but worth calling out as the design point: **metrics emission is co-located with state transitions, not retro-fitted from a separate poller.**
 
@@ -59,7 +96,9 @@ Three integrations, free tiers, zero infra to run.
 - `sentry-sdk[fastapi]` in `requirements.txt`.
 - `sentry_sdk.init(...)` in `gateway/main.py:lifespan`, behind a `SENTRY_DSN` env var (no-op if unset, same pattern as `SUPABASE_URL`).
 - Wrap `verify_payment` (Stellar + Base) and `split_payment` and `send_refund` in explicit `try/except` that calls `sentry_sdk.capture_exception(...)` — these are the silent-failure surfaces.
-- Tag every event with `network` (stellar-mainnet / stellar-testnet / base-mainnet), `tool`, and `payment_id` (`set_tag` + `set_context`).
+- `set_tag("network", ...)`, `set_tag("tool", ...)`, `set_tag("payment_id", ...)` — low-cardinality fields stay as tags so Sentry search works on them. `payment_id` is unique-per-call but Sentry handles per-event uniques fine; what hurts is high-cardinality *repeating* values.
+- `set_context("agent", {"address": ...})` — `agent_address` *is* high-cardinality and repeats across many events, so it goes on the context object, not a tag. Keeps the tag index healthy and the free-tier event quota safe from power-user agents.
+- `sentry_sdk.init(release=os.getenv("RAILWAY_GIT_COMMIT_SHA"))` so every event is tied to a deploy. Spike-on-deploy correlation is free now and painful to retrofit later.
 - Replace the silent `except: pass` patterns in `agent/_wallet.py` (the agentpay-x402 SDK) with `logger.warning` + Sentry breadcrumb. Two birds, one PR.
 
 ### 1.2 Structured logging with payment_id correlation
@@ -92,7 +131,7 @@ The data backbone is already in Supabase + Prometheus from Phase 1. This phase i
 
 Wire alerts on these conditions (all firing into a single Discord webhook for now, email later):
 
-- **Payment success rate < 95% over 15-min window per network.** Rule: `sum(rate(agentpay_lifecycle_transitions_total{state="payment_done"}[15m])) / sum(rate(agentpay_lifecycle_transitions_total{state=~"pending|verified"}[15m])) < 0.95`. Per `network` label.
+- **Payment success rate < 95% over 15-min window per network.** Rule: `sum by (network) (rate(agentpay_lifecycle_transitions_total{state="payment_done"}[15m])) / sum by (network) (rate(agentpay_lifecycle_transitions_total{state=~"payment_done|rejected|abandoned"}[15m])) < 0.95`. Terminal-state ratio only — including `pending` / `verified` in the denominator would double-count every payment that passes through those transient states. This is the same number that goes on the public `/stats` page (Phase 3.1) and the SCF/Instaward decks, so define it once here.
 - **p95 `agentpay_verify_duration_seconds{path="facilitator"}` > 10s for 5 min.** Canary for OZ facilitator behaviour change. Fires only when the facilitator is enabled.
 - **Any `rejected` transition rate > 0 over a 5-min window.** Replay attempts or forged headers — both are abuse signals, want to know fast.
 - **Any `refund_failed` transition.** Means the auto-refund worker gave up after 5 attempts. Manual reconciliation needed.
@@ -200,13 +239,35 @@ Net roadmap impact: +1 new tier-2 item, -3 future items now redundant.
 
 ## Revised scope estimate (post-PR #13/#14/#12)
 
-Originally the plan was 11-15 focused days. With the Supabase data backbone and lifecycle state machine already shipped, the revised total is **~5-7 focused days**:
+Originally the plan was 11-15 focused days. With the Supabase data backbone and lifecycle state machine already shipped, the revised total is **~5-7 focused days** of unfunded engineering time outside the Instaward Round 1 $5,000 SOW envelope (see §Instaward Round 1 alignment above):
 
 - **Phase 1: ~3 days (~6-8h focused work).** Sentry init + structured logging + `/metrics` + three custom series + one Grafana dashboard. The metric emission piggy-backs on existing lifecycle PATCH sites — no separate poller.
 - **Phase 2: ~1 day (~4h).** Six Discord alerts wired to Grafana rules. No data-side work needed.
 - **Phase 3: ~3-4 days (~8-10h).** Stats page + runbook + weekly digest. Blocked on D3 DNS but ships at the interim Railway URL if needed.
 
 PR #13/#14/#12 pre-bought roughly half of the original Phase 2 scope.
+
+---
+
+## Next step (post-D4): Claude inference as a paid data source
+
+Once D4 has shipped end-to-end and been green in production for ≥14 days (alerts firing on the right things, no false positives, weekly digest auto-posting), the next roadmap item is **adding Claude inference itself as a paid tool category in the registry** — distinct from D1's SDK wrapper around the agent's own Anthropic key. D1 wraps Claude under the agent's budget; this step makes Claude a tool the gateway *sells*.
+
+The shape:
+- New registry category `inference`.
+- Initial tools, all on Haiku for cost predictability:
+  - `claude_summary` — $0.005 — summarise a list of recent on-chain events, news, or payment activity into one paragraph.
+  - `claude_classify` — $0.003 — classify a transaction or transfer by intent (`accumulation` / `distribution` / `bridge` / `defi_deposit` / `other`) with a confidence score.
+  - `claude_call` — $0.005 — free-form prompt under a strict system prompt and token cap, for agents that already know what they want to ask.
+- Gateway holds the Anthropic key. Agent pays USDC, gateway calls Anthropic, returns the completion. Same 85/15 split shape as data tools, except here the "developer" address is the gateway itself — margin is the Anthropic-list-price-to-x402-price spread plus the standard 15%.
+- Strict token caps (≤1k input, ≤256 output for Haiku-priced tools) so a single call can never blow past the listed price. Caps enforced in the gateway before the Anthropic request leaves.
+
+Why D4 is the hard prerequisite:
+- Inference introduces a new failure mode the gateway has never had to handle — Anthropic API errors, token-cap overruns, completion-quality issues, retry semantics. D4's lifecycle counters + Sentry tagging are the harness that makes shipping it safe instead of guesswork.
+- It's the first tool category where the marginal cost-per-call is variable, not fixed — Haiku token pricing means the gateway needs internal telemetry on tokens-in / tokens-out per call to know whether margins are positive in aggregate. D4's metric infra is the natural home for `agentpay_inference_tokens_total{model, direction}` and `agentpay_inference_cost_usd_total{model}`.
+- Funder narrative: "AgentPay is the x402 layer for AI agents to pay for both data and intelligence" is a strictly stronger pitch than "data only." The SCF/Instaward decks are due after Round 1 closes — D4 + this together are the pitch.
+
+Sequencing: design + scope after D4 Phase 2 lands (~early June). Ships in **Round 2 or Round 3** — open question to settle when drafting the Round 2 SOW. SOW Round 2 candidates already total 5 items at the $5,000 cap (Soroban testnet, Supabase persistence [already shipped], OpenAI integration, rate limiting, distribution sprint), so adding inference-as-paid-tool to Round 2 means displacing one item (most defensibly OpenAI integration, since both are "inference" work), otherwise it pushes to Round 3 alongside Soroban escrow — which is the architecturally cleaner home anyway because the escrow contract is the natural settlement layer for variable-cost inference calls. Gated on D4 alerting being green for ≥14 days — if we don't trust the alerts, we won't see the inference-side regressions when they happen.
 
 ---
 
@@ -217,3 +278,4 @@ PR #13/#14/#12 pre-bought roughly half of the original Phase 2 scope.
 - Real-time anomaly detection — Phase 2 alerting rules are good enough at current volume.
 - Per-agent fraud scoring — separate piece of work; the data is in `payment_logs.agent_address` whenever we want it.
 - Schema redesign of `payment_logs` to add separate `verify_result` / `split_result` / `api_result` columns (the original v1 of this doc proposed this). The state-machine column we shipped covers the same analytics with one column instead of three, and the redesign would be a breaking migration. Stick with what's deployed.
+- Aggregating the D1 SDK's `Session.cost_breakdown()` ledger (per-call tool + Claude spend) into the public `/stats` page. D4 covers gateway-side payment telemetry only — the SDK ledger is client-side and would require a separate opt-in reporting path. Worth its own design once D1 has real usage.

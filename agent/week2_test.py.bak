@@ -34,7 +34,7 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %
 NETWORK = os.environ.get("WEEK2_NETWORK", "testnet")
 
 _GATEWAY_DEFAULTS = {
-    "mainnet": "https://agentpay.tools",
+    "mainnet": "https://gateway-production-2cc2.up.railway.app",
     "testnet": "https://gateway-testnet-production.up.railway.app",
 }
 GATEWAY_URL  = os.environ.get("WEEK2_GATEWAY_URL", _GATEWAY_DEFAULTS[NETWORK])

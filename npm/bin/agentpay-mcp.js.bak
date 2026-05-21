@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 
 const GATEWAY_URL = process.env.AGENTPAY_GATEWAY_URL ||
-  'https://agentpay.tools';
+  'https://gateway-production-2cc2.up.railway.app';
 
 // ── 1. Check Python is available ─────────────────────
 function getPython() {

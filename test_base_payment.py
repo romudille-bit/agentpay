@@ -33,7 +33,7 @@ from web3 import Web3
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GATEWAY_URL   = os.getenv("AGENTPAY_GATEWAY_URL", "https://gateway-production-2cc2.up.railway.app")
+GATEWAY_URL   = os.getenv("AGENTPAY_GATEWAY_URL", "https://agentpay.tools")
 PRIVATE_KEY   = os.getenv("BASE_PRIVATE_KEY", "")
 BASE_RPC_URL  = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
 

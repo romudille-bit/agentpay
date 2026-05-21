@@ -308,3 +308,92 @@ class TestModeBReplayCutover:
         assert result["tx_hash"] == VALID_TX_HASH
         # In-memory set was updated as a cache for graceful degradation
         assert VALID_TX_HASH in base_mod._used_base_tx_hashes
+
+
+# ── PAYMENT-REQUIRED outputSchema (Bazaar indexing) ───────────────────────────
+#
+# Coinbase's Bazaar reads `accepts[0].outputSchema` from the PAYMENT-REQUIRED
+# header on the first Base mainnet payment through the CDP facilitator to
+# auto-index the tool. Without it the listing shows price but no shape.
+# These tests pin the header shape and the non-mutation invariant on the
+# caller's requirements dict.
+
+from gateway.base import build_payment_required_header, build_payment_requirements
+
+
+def _sample_requirements() -> dict:
+    return build_payment_requirements(
+        amount_usdc="0.001",
+        pay_to=PAYTO,
+        resource_url="https://agentpay.tools/tools/token_price",
+        network="base-mainnet",
+    )
+
+
+def _sample_output_schema() -> dict:
+    return {
+        "input": {
+            "type": "object",
+            "properties": {"symbol": {"type": "string"}},
+            "required": ["symbol"],
+        },
+        "output": {"symbol": "ETH", "price_usd": 2069.73, "source": "coingecko"},
+    }
+
+
+class TestPaymentRequiredHeader:
+
+    def test_output_schema_embedded_in_accepts_entry(self):
+        """outputSchema lives inside accepts[0], not at payload top level —
+        this is the shape Bazaar's indexer reads."""
+        header = build_payment_required_header(
+            requirements=_sample_requirements(),
+            resource_url="https://agentpay.tools/tools/token_price",
+            tool_description="Get current USD price",
+            output_schema=_sample_output_schema(),
+        )
+        decoded = json.loads(base64.b64decode(header))
+        assert decoded["x402Version"] == 2
+        assert "outputSchema" in decoded["accepts"][0]
+        assert decoded["accepts"][0]["outputSchema"]["input"]["properties"]["symbol"]["type"] == "string"
+        assert decoded["accepts"][0]["outputSchema"]["output"]["price_usd"] == 2069.73
+
+    def test_output_schema_omitted_when_none(self):
+        """Backward compat: callers that don't pass output_schema get a
+        payload with no outputSchema key — same shape as before the patch."""
+        header = build_payment_required_header(
+            requirements=_sample_requirements(),
+            resource_url="https://agentpay.tools/tools/token_price",
+            tool_description="Get current USD price",
+        )
+        decoded = json.loads(base64.b64decode(header))
+        assert "outputSchema" not in decoded["accepts"][0]
+
+    def test_caller_requirements_dict_not_mutated(self):
+        """The function does a shallow copy of `requirements` before embedding
+        outputSchema. The same dict is reused as input to settle_base_payment,
+        so leaking outputSchema into it would pollute the CDP /settle call."""
+        req = _sample_requirements()
+        original_keys = set(req.keys())
+        build_payment_required_header(
+            requirements=req,
+            resource_url="x",
+            tool_description="y",
+            output_schema=_sample_output_schema(),
+        )
+        assert set(req.keys()) == original_keys
+        assert "outputSchema" not in req
+
+    def test_payload_is_valid_base64_json(self):
+        """Cheap smoke test — corruption here would silently break every
+        x402-v2-aware client, not just Bazaar."""
+        header = build_payment_required_header(
+            requirements=_sample_requirements(),
+            resource_url="x",
+            tool_description="y",
+            output_schema=_sample_output_schema(),
+        )
+        # Round-trip without error
+        decoded = json.loads(base64.b64decode(header))
+        assert isinstance(decoded, dict)
+        assert decoded["error"] == "Payment required"

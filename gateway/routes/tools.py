@@ -228,10 +228,21 @@ async def call_tool(
                     "PAYMENT-SIGNATURE: <base64_payload>"
                 ),
             }
+            # Build outputSchema for Bazaar auto-indexing. Bazaar reads this
+            # from the PAYMENT-REQUIRED header on the first Base mainnet payment
+            # through the CDP facilitator. Without it the listing has price but
+            # no shape and ranks poorly.
+            output_schema = None
+            if tool.parameters or tool.response_example is not None:
+                output_schema = {
+                    "input":  tool.parameters or {},
+                    "output": tool.response_example,
+                }
             payment_required_header = base_pay.build_payment_required_header(
                 requirements=base_req,
                 resource_url=resource_url,
                 tool_description=tool.description,
+                output_schema=output_schema,
             )
 
         headers = build_402_headers(challenge)

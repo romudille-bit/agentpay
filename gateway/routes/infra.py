@@ -25,9 +25,9 @@ async def root():
         "version":          "1.0",
         "tools":            len(registry.list_tools()),
         "docs":             "https://github.com/romudille-bit/agentpay",
-        "tools_endpoint":   "https://gateway-production-2cc2.up.railway.app/tools",
-        "faucet":           "https://gateway-production-2cc2.up.railway.app/faucet",
-        "discovery":        "https://gateway-production-2cc2.up.railway.app/.well-known/agentpay.json",
+        "tools_endpoint":   "https://agentpay.tools/tools",
+        "faucet":           "https://agentpay.tools/faucet",
+        "discovery":        "https://agentpay.tools/.well-known/agentpay.json",
         "payment_networks": ["stellar", "base"],
     }
 

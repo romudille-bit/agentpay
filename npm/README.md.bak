@@ -62,5 +62,5 @@ No config needed. Wallet created automatically.
 | `yield_scanner` | $0.004 |
 | `dune_query` | $0.005 |
 
-Gateway: https://agentpay.tools
+Gateway: https://gateway-production-2cc2.up.railway.app
 GitHub: https://github.com/romudille-bit/agentpay

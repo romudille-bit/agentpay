@@ -37,7 +37,7 @@ _TOOLS: dict[str, Tool] = {
     "token_price": Tool(
         name="token_price",
         description="Get the current USD price of any cryptocurrency token",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/token_price",
+        endpoint="https://agentpay.tools/tools/token_price",
         price_usdc="0.001",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -59,7 +59,7 @@ _TOOLS: dict[str, Tool] = {
     "wallet_balance": Tool(
         name="wallet_balance",
         description="Get the token balances for any Ethereum or Stellar wallet address",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/wallet_balance",
+        endpoint="https://agentpay.tools/tools/wallet_balance",
         price_usdc="0.002",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -86,7 +86,7 @@ _TOOLS: dict[str, Tool] = {
     "token_market_data": Tool(
         name="token_market_data",
         description="Get market cap, 24h volume, ATH, and price change for any token. Note: does NOT return pool depth or slippage — for pre-trade liquidity estimates, use a dedicated orderbook tool.",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/token_market_data",
+        endpoint="https://agentpay.tools/tools/token_market_data",
         price_usdc="0.001",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -106,7 +106,7 @@ _TOOLS: dict[str, Tool] = {
     "gas_tracker": Tool(
         name="gas_tracker",
         description="Get current Ethereum gas prices (slow, standard, fast)",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/gas_tracker",
+        endpoint="https://agentpay.tools/tools/gas_tracker",
         price_usdc="0.001",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -122,7 +122,7 @@ _TOOLS: dict[str, Tool] = {
     "dune_query": Tool(
         name="dune_query",
         description="Run any Dune Analytics query and return live onchain results by query ID. Use fast_only=True for live bots — returns cached result instantly or raises immediately, never blocks.",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/dune_query",
+        endpoint="https://agentpay.tools/tools/dune_query",
         price_usdc="0.005",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -159,7 +159,7 @@ _TOOLS: dict[str, Tool] = {
     "fear_greed_index": Tool(
         name="fear_greed_index",
         description="Crypto Fear & Greed Index (0=extreme fear, 100=extreme greed) with optional history",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/fear_greed_index",
+        endpoint="https://agentpay.tools/tools/fear_greed_index",
         price_usdc="0.001",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -181,7 +181,7 @@ _TOOLS: dict[str, Tool] = {
     "crypto_news": Tool(
         name="crypto_news",
         description="Latest crypto news and community sentiment from r/CryptoCurrency for any token",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/crypto_news",
+        endpoint="https://agentpay.tools/tools/crypto_news",
         price_usdc="0.003",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -209,7 +209,7 @@ _TOOLS: dict[str, Tool] = {
     "defi_tvl": Tool(
         name="defi_tvl",
         description="DeFi protocol Total Value Locked from DeFiLlama. Returns top 10 or a specific protocol.",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/defi_tvl",
+        endpoint="https://agentpay.tools/tools/defi_tvl",
         price_usdc="0.002",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -231,7 +231,7 @@ _TOOLS: dict[str, Tool] = {
     "whale_activity": Tool(
         name="whale_activity",
         description="Detect recent large wallet movements for a token (whale tracking)",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/whale_activity",
+        endpoint="https://agentpay.tools/tools/whale_activity",
         price_usdc="0.002",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -255,7 +255,7 @@ _TOOLS: dict[str, Tool] = {
     "yield_scanner": Tool(
         name="yield_scanner",
         description="Find best DeFi yield opportunities across protocols for a given token",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/yield_scanner",
+        endpoint="https://agentpay.tools/tools/yield_scanner",
         price_usdc="0.004",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -287,7 +287,7 @@ _TOOLS: dict[str, Tool] = {
     "funding_rates": Tool(
         name="funding_rates",
         description="Get perpetual futures funding rates across Binance, Bybit, and OKX",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/funding_rates",
+        endpoint="https://agentpay.tools/tools/funding_rates",
         price_usdc="0.003",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -309,7 +309,7 @@ _TOOLS: dict[str, Tool] = {
     "token_security": Tool(
         name="token_security",
         description="Scan any token contract for honeypot, rug pull, and security risks",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/token_security",
+        endpoint="https://agentpay.tools/tools/token_security",
         price_usdc="0.002",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -337,7 +337,7 @@ _TOOLS: dict[str, Tool] = {
     "open_interest": Tool(
         name="open_interest",
         description="Get total open interest in perpetual futures for any asset, with 1h and 24h change rates. Pairs with funding_rates to complete the derivatives picture — rising OI with high funding = overcrowded position.",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/open_interest",
+        endpoint="https://agentpay.tools/tools/open_interest",
         price_usdc="0.002",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
@@ -359,7 +359,7 @@ _TOOLS: dict[str, Tool] = {
     "orderbook_depth": Tool(
         name="orderbook_depth",
         description="Get real bid/ask depth and slippage estimates at $10k, $50k, and $250k notional from Binance and Bybit. Use before sizing a position to know if you can execute without moving the market.",
-        endpoint="https://gateway-production-2cc2.up.railway.app/tools/orderbook_depth",
+        endpoint="https://agentpay.tools/tools/orderbook_depth",
         price_usdc="0.002",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={

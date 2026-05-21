@@ -21,7 +21,7 @@ Set `AGENTPAY_GATEWAY_URL` to `https://gateway-testnet-production.up.railway.app
 
 **Option B — Mainnet (real USDC):**
 
-Fund a Stellar mainnet wallet via [Coinbase](https://coinbase.com) or [Lobstr](https://lobstr.co) and use your mainnet secret key with `AGENTPAY_GATEWAY_URL=https://gateway-production-2cc2.up.railway.app`.
+Fund a Stellar mainnet wallet via [Coinbase](https://coinbase.com) or [Lobstr](https://lobstr.co) and use your mainnet secret key with `AGENTPAY_GATEWAY_URL=https://agentpay.tools`.
 
 ---
 
@@ -45,7 +45,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
       "args": ["/absolute/path/to/agentpay/gateway/mcp_server.py"],
       "env": {
         "STELLAR_SECRET_KEY": "S...",
-        "AGENTPAY_GATEWAY_URL": "https://gateway-production-2cc2.up.railway.app"
+        "AGENTPAY_GATEWAY_URL": "https://agentpay.tools"
       }
     }
   }
@@ -110,7 +110,7 @@ You never see this — it just works. Costs are shown in each tool response:
 | Variable | Required | Default |
 |----------|----------|---------|
 | `STELLAR_SECRET_KEY` | Yes | — |
-| `AGENTPAY_GATEWAY_URL` | No | `https://gateway-production-2cc2.up.railway.app` |
+| `AGENTPAY_GATEWAY_URL` | No | `https://agentpay.tools` |
 
 ---
 
