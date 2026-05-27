@@ -237,7 +237,16 @@ class Session:
             print(s.summary())
     """
 
-    def __init__(self, wallet: AgentWallet, gateway_url: str, max_spend: str = "0.10"):
+    def __init__(
+        self,
+        wallet: AgentWallet,
+        gateway_url: str,
+        max_spend: str = "0.10",
+        *,
+        allowed_tools: list[str] | None = None,
+        max_per_tool: dict[str, float] | None = None,
+        rate_limit: int | None = None,
+    ):
         self.wallet = wallet
         self.gateway_url = gateway_url.rstrip("/")
         self.max_spend = Decimal(max_spend)
@@ -245,6 +254,13 @@ class Session:
         self._call_log: list[dict] = []
         self._tool_cache: dict[str, dict] = {}   # tool_name → full tool metadata
         self._all_tools_cache: list[dict] | None = None
+        # Policy parameters
+        self._allowed_tools: list[str] | None = allowed_tools
+        self._max_per_tool: dict[str, Decimal] = {
+            k: Decimal(str(v)) for k, v in (max_per_tool or {}).items()
+        }
+        self._rate_limit: int | None = rate_limit   # max calls per minute
+        self._rate_window: list[float] = []          # timestamps of recent calls
 
     # ── Context manager ───────────────────────────────────────────────────────
 
@@ -280,6 +296,70 @@ class Session:
         """True if adding this cost would exceed the budget."""
         return (self._spent + Decimal(amount_usdc)) > self.max_spend
 
+    def tool_cost(self, tool_name: str) -> str:
+        """
+        Return the cost of a tool as a formatted string, e.g. '$0.005'.
+        Lets agents reason about cost before committing to a call.
+
+        Example:
+            if session.tool_cost('dune_query') > session.remaining():
+                result = session.call('token_price', {...})  # cheaper alternative
+        """
+        info = self._fetch_tool_info(tool_name)
+        if info:
+            return _fmt(info["price_usdc"])
+        return "unknown"
+
+    def suggest_cheaper(self, tool_name: str) -> dict | None:
+        """
+        Return the cheapest available tool in the same category as tool_name
+        that fits within the remaining budget, excluding tool_name itself.
+        Returns a dict with 'name' and 'price', or None if no alternative exists.
+
+        Example:
+            alt = session.suggest_cheaper('dune_query')
+            if alt:
+                result = session.call(alt['name'], params)
+        """
+        info = self._fetch_tool_info(tool_name)
+        category = info.get("category", "data") if info else "data"
+        fallback = self._find_fallback(category=category, exclude=tool_name)
+        if fallback:
+            return {"name": fallback["name"], "price": _fmt(fallback["price_usdc"])}
+        return None
+
+    def spending_summary(self) -> dict:
+        """
+        Developer-friendly session receipt — every call, cost, and timestamp.
+        Suitable for logging, visibility dashboards, and session receipts.
+
+        Returns:
+            {
+                "calls": 5,
+                "spent": "$0.000",
+                "remaining": "$0.100",
+                "budget": "$0.100",
+                "tools": ["token_price", "whale_activity", ...],
+                "breakdown": [{"tool": ..., "cost": ..., "tx_hash": ...}, ...],
+            }
+        """
+        return {
+            "calls":     len(self._call_log),
+            "spent":     self.spent(),
+            "remaining": self.remaining(),
+            "budget":    _fmt(self.max_spend),
+            "tools":     [e["tool"] for e in self._call_log],
+            "breakdown": [
+                {
+                    "tool":     e["tool"],
+                    "cost":     _fmt(e["amount_usdc"]),
+                    "tx_hash":  e.get("tx_hash", ""),
+                    **({"fallback_for": e["fallback_for"]} if "fallback_for" in e else {}),
+                }
+                for e in self._call_log
+            ],
+        }
+
     def call(self, tool_name: str, params: dict = None) -> dict:
         """
         Call a paid tool within budget.
@@ -291,9 +371,41 @@ class Session:
         - Raises BudgetExceeded if no affordable option exists.
         - Records actual spend from the x402 payment receipt.
         """
+        import time as _time
         from agentpay._client import AgentPayClient
 
         params = params or {}
+
+        # ── Policy: allowed_tools whitelist ───────────────────────────────────
+        if self._allowed_tools is not None and tool_name not in self._allowed_tools:
+            raise BudgetExceeded(
+                f"Tool '{tool_name}' is not in the session allowlist: {self._allowed_tools}"
+            )
+
+        # ── Policy: rate_limit (max calls per minute) ─────────────────────────
+        if self._rate_limit is not None:
+            now = _time.monotonic()
+            # Prune calls older than 60 seconds
+            self._rate_window = [t for t in self._rate_window if now - t < 60.0]
+            if len(self._rate_window) >= self._rate_limit:
+                raise BudgetExceeded(
+                    f"Rate limit exceeded: max {self._rate_limit} calls/min "
+                    f"(made {len(self._rate_window)} in the last 60s)"
+                )
+            self._rate_window.append(now)
+
+        # ── Policy: max_per_tool cap ──────────────────────────────────────────
+        if tool_name in self._max_per_tool:
+            already_spent_on_tool = sum(
+                Decimal(e["amount_usdc"])
+                for e in self._call_log
+                if e["tool"] == tool_name
+            )
+            if already_spent_on_tool >= self._max_per_tool[tool_name]:
+                raise BudgetExceeded(
+                    f"Per-tool cap reached for '{tool_name}': "
+                    f"spent {_fmt(already_spent_on_tool)} of max {_fmt(self._max_per_tool[tool_name])}"
+                )
 
         # ── Resolve which tool to actually call ───────────────────────────────
         tool_info = self._fetch_tool_info(tool_name)

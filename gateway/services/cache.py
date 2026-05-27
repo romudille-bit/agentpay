@@ -19,6 +19,9 @@ CACHE_TTL: dict[str, int] = {
     "defi_tvl":           300,  # 5 minutes
     "token_market_data":  120,  # 2 minutes
     "dex_liquidity":      120,  # legacy alias — same TTL
+    "url_reader":         300,  # 5 minutes — page content rarely changes mid-session
+    "web_search":         120,  # 2 minutes — search results can shift
+    "market_snapshot":    60,   # 60 seconds — macro + crypto ticks frequently
 }
 
 

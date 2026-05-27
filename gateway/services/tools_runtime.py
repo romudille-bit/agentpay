@@ -162,6 +162,12 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_open_interest(client, params)
             elif tool_name == "orderbook_depth":
                 result = await _fetch_orderbook_depth(client, params)
+            elif tool_name == "url_reader":
+                result = await _fetch_url_reader(client, params)
+            elif tool_name == "web_search":
+                result = await _fetch_web_search(client, params)
+            elif tool_name == "market_snapshot":
+                result = await _fetch_market_snapshot(client)
             else:
                 result = {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
@@ -1121,4 +1127,173 @@ async def _fetch_orderbook_depth(client: httpx.AsyncClient, params: dict) -> dic
         "depth":       depth,
         "exchanges":   exchange_summary,
         "source":      "binance/bybit",
+    }
+
+
+async def _fetch_url_reader(client: httpx.AsyncClient, params: dict) -> dict:
+    """Convert any URL to clean LLM-ready markdown via Jina Reader (r.jina.ai).
+
+    Free, no API key required. Strips ads, navigation, and boilerplate.
+    Returns up to 10,000 characters of the page content.
+    """
+    url = params.get("url", "").strip()
+    if not url:
+        return {"error": "url parameter is required"}
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+
+    resp = await client.get(
+        f"https://r.jina.ai/{url}",
+        headers={
+            "Accept": "text/markdown",
+            "User-Agent": "AgentPay/1.0",
+        },
+        timeout=20.0,
+        follow_redirects=True,
+    )
+    resp.raise_for_status()
+    content = resp.text
+    max_chars = 10_000
+    truncated = len(content) > max_chars
+    return {
+        "url": url,
+        "content": content[:max_chars],
+        "length": len(content),
+        "truncated": truncated,
+        "source": "jina_reader",
+    }
+
+
+async def _fetch_web_search(client: httpx.AsyncClient, params: dict) -> dict:
+    """Web search returning top results with full content via Jina Search (s.jina.ai).
+
+    Free, no API key required. Returns up to 5 results with LLM-ready content.
+    """
+    query = params.get("query", "").strip()
+    if not query:
+        return {"error": "query parameter is required"}
+
+    from urllib.parse import quote
+    resp = await client.get(
+        f"https://s.jina.ai/{quote(query)}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "AgentPay/1.0",
+        },
+        timeout=20.0,
+        follow_redirects=True,
+    )
+    resp.raise_for_status()
+
+    # Jina Search returns JSON when Accept: application/json is set
+    try:
+        data = resp.json()
+        raw_results = data.get("data", []) if isinstance(data, dict) else data
+        if not isinstance(raw_results, list):
+            raw_results = []
+    except Exception:
+        # Fallback: Jina returned plain text — wrap it as a single result
+        raw_results = [{"url": f"https://s.jina.ai/{quote(query)}", "title": query, "content": resp.text[:5000]}]
+
+    results = []
+    for r in raw_results[:5]:
+        content = r.get("content", r.get("description", ""))
+        results.append({
+            "url":         r.get("url", ""),
+            "title":       r.get("title", ""),
+            "description": r.get("description", ""),
+            "content":     content[:3000],  # cap per-result content
+        })
+
+    return {
+        "query":   query,
+        "count":   len(results),
+        "results": results,
+        "source":  "jina_search",
+    }
+
+
+async def _fetch_market_snapshot(client: httpx.AsyncClient) -> dict:
+    """Macro + crypto market snapshot in one call.
+
+    Combines: S&P 500 + 10-year Treasury yield (Yahoo Finance),
+    BTC + ETH price (CoinGecko), Ethereum gas (Etherscan).
+    All free APIs, no keys required for Yahoo Finance.
+    """
+    from datetime import datetime, timezone
+
+    async def _yahoo(symbol: str) -> dict:
+        """Fetch last close + change for a Yahoo Finance symbol."""
+        try:
+            r = await client.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                params={"interval": "1d", "range": "5d"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            result = r.json().get("chart", {}).get("result", [{}])[0]
+            meta = result.get("meta", {})
+            price = meta.get("regularMarketPrice") or meta.get("previousClose", 0)
+            prev_close = meta.get("chartPreviousClose") or meta.get("previousClose", price)
+            change_pct = round((price - prev_close) / prev_close * 100, 2) if prev_close else None
+            return {"price": price, "change_pct": change_pct}
+        except Exception as e:
+            logger.warning(f"Yahoo Finance {symbol} error: {e}")
+            return {"price": None, "change_pct": None}
+
+    async def _crypto() -> dict:
+        """BTC + ETH price from CoinGecko."""
+        try:
+            r = await client.get(
+                f"{settings.COINGECKO_API_URL}/simple/price",
+                params={"ids": "bitcoin,ethereum", "vs_currencies": "usd"},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return {
+                "btc": data.get("bitcoin", {}).get("usd", None),
+                "eth": data.get("ethereum", {}).get("usd", None),
+            }
+        except Exception as e:
+            logger.warning(f"CoinGecko market_snapshot error: {e}")
+            return {"btc": None, "eth": None}
+
+    async def _gas() -> float | None:
+        """Standard gas price from Etherscan."""
+        try:
+            r = await client.get(
+                "https://api.etherscan.io/v2/api",
+                params={
+                    "chainid": "1", "module": "gastracker", "action": "gasoracle",
+                    "apikey": settings.ETHERSCAN_API_KEY,
+                },
+                timeout=8.0,
+            )
+            r.raise_for_status()
+            result = r.json().get("result", {})
+            if isinstance(result, dict):
+                return float(result.get("ProposeGasPrice", 0))
+        except Exception as e:
+            logger.warning(f"Gas tracker market_snapshot error: {e}")
+        return None
+
+    # Fetch all in parallel
+    sp500_res, treasury_res, crypto_res, gas_val = await asyncio.gather(
+        _yahoo("%5EGSPC"),    # S&P 500
+        _yahoo("%5ETNX"),     # 10-year Treasury yield
+        _crypto(),
+        _gas(),
+    )
+
+    return {
+        "sp500_price":       sp500_res.get("price"),
+        "sp500_change_pct":  sp500_res.get("change_pct"),
+        "treasury_yield_10y": treasury_res.get("price"),  # ^TNX price IS the yield in %
+        "btc_price_usd":     crypto_res.get("btc"),
+        "eth_price_usd":     crypto_res.get("eth"),
+        "gas_standard_gwei": gas_val,
+        "timestamp":         datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source":            "yahoo_finance+coingecko+etherscan",
     }

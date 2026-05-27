@@ -38,7 +38,7 @@ _TOOLS: dict[str, Tool] = {
         name="token_price",
         description="Get the current USD price of any cryptocurrency token",
         endpoint="https://agentpay.tools/tools/token_price",
-        price_usdc="0.001",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -60,7 +60,7 @@ _TOOLS: dict[str, Tool] = {
         name="wallet_balance",
         description="Get the token balances for any Ethereum or Stellar wallet address",
         endpoint="https://agentpay.tools/tools/wallet_balance",
-        price_usdc="0.002",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -87,7 +87,7 @@ _TOOLS: dict[str, Tool] = {
         name="token_market_data",
         description="Get market cap, 24h volume, ATH, and price change for any token. Note: does NOT return pool depth or slippage — for pre-trade liquidity estimates, use a dedicated orderbook tool.",
         endpoint="https://agentpay.tools/tools/token_market_data",
-        price_usdc="0.001",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -107,7 +107,7 @@ _TOOLS: dict[str, Tool] = {
         name="gas_tracker",
         description="Get current Ethereum gas prices (slow, standard, fast)",
         endpoint="https://agentpay.tools/tools/gas_tracker",
-        price_usdc="0.001",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -123,7 +123,7 @@ _TOOLS: dict[str, Tool] = {
         name="dune_query",
         description="Run any Dune Analytics query and return live onchain results by query ID. Use fast_only=True for live bots — returns cached result instantly or raises immediately, never blocks.",
         endpoint="https://agentpay.tools/tools/dune_query",
-        price_usdc="0.005",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -160,7 +160,7 @@ _TOOLS: dict[str, Tool] = {
         name="fear_greed_index",
         description="Crypto Fear & Greed Index (0=extreme fear, 100=extreme greed) with optional history",
         endpoint="https://agentpay.tools/tools/fear_greed_index",
-        price_usdc="0.001",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -182,7 +182,7 @@ _TOOLS: dict[str, Tool] = {
         name="crypto_news",
         description="Latest crypto news and community sentiment from r/CryptoCurrency for any token",
         endpoint="https://agentpay.tools/tools/crypto_news",
-        price_usdc="0.003",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -210,7 +210,7 @@ _TOOLS: dict[str, Tool] = {
         name="defi_tvl",
         description="DeFi protocol Total Value Locked from DeFiLlama. Returns top 10 or a specific protocol.",
         endpoint="https://agentpay.tools/tools/defi_tvl",
-        price_usdc="0.002",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -232,7 +232,7 @@ _TOOLS: dict[str, Tool] = {
         name="whale_activity",
         description="Detect recent large wallet movements for a token (whale tracking)",
         endpoint="https://agentpay.tools/tools/whale_activity",
-        price_usdc="0.002",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -256,7 +256,7 @@ _TOOLS: dict[str, Tool] = {
         name="yield_scanner",
         description="Find best DeFi yield opportunities across protocols for a given token",
         endpoint="https://agentpay.tools/tools/yield_scanner",
-        price_usdc="0.004",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -288,7 +288,7 @@ _TOOLS: dict[str, Tool] = {
         name="funding_rates",
         description="Get perpetual futures funding rates across Binance, Bybit, and OKX",
         endpoint="https://agentpay.tools/tools/funding_rates",
-        price_usdc="0.003",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -310,7 +310,7 @@ _TOOLS: dict[str, Tool] = {
         name="token_security",
         description="Scan any token contract for honeypot, rug pull, and security risks",
         endpoint="https://agentpay.tools/tools/token_security",
-        price_usdc="0.002",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -338,7 +338,7 @@ _TOOLS: dict[str, Tool] = {
         name="open_interest",
         description="Get total open interest in perpetual futures for any asset, with 1h and 24h change rates. Pairs with funding_rates to complete the derivatives picture — rising OI with high funding = overcrowded position.",
         endpoint="https://agentpay.tools/tools/open_interest",
-        price_usdc="0.002",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -360,7 +360,7 @@ _TOOLS: dict[str, Tool] = {
         name="orderbook_depth",
         description="Get real bid/ask depth and slippage estimates at $10k, $50k, and $250k notional from Binance and Bybit. Use before sizing a position to know if you can execute without moving the market.",
         endpoint="https://agentpay.tools/tools/orderbook_depth",
-        price_usdc="0.002",
+        price_usdc="0.000",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -378,6 +378,66 @@ _TOOLS: dict[str, Tool] = {
         use_when="You need to estimate slippage before executing a large trade. Tells you how much a $10k, $50k, or $250k order will move the market.",
         returns="best_bid, best_ask, spread_pct, depth with slippage_pct at $10k/$50k/$250k notional, per-exchange best prices",
         response_example={"asset": "ETH", "pair": "ETH/USDT", "best_ask": 2071.5, "best_bid": 2071.2, "spread_pct": 0.0145, "depth": [{"notional_usd": 10000, "slippage_pct": 0.002, "executable": True}, {"notional_usd": 50000, "slippage_pct": 0.008, "executable": True}, {"notional_usd": 250000, "slippage_pct": 0.031, "executable": True}], "exchanges": [{"exchange": "Binance", "best_ask": 2071.5, "best_bid": 2071.2}, {"exchange": "Bybit", "best_ask": 2071.6, "best_bid": 2071.1}], "source": "binance/bybit"},
+    ),
+    "url_reader": Tool(
+        name="url_reader",
+        description="Convert any URL to clean, LLM-ready markdown. Strips ads, nav, and boilerplate — returns just the content. No API key needed.",
+        endpoint="https://agentpay.tools/tools/url_reader",
+        price_usdc="0.000",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch and convert to markdown",
+                },
+            },
+            "required": ["url"],
+        },
+        category="data",
+        triggers=["read url", "fetch page", "scrape", "extract content", "read article", "get page", "url to text", "website content"],
+        use_when="You need to read the content of a web page or article and get clean, structured text for further processing.",
+        returns="content (markdown), url, length, truncated flag",
+        response_example={"url": "https://example.com", "content": "# Example Domain\n\nThis domain is for use in illustrative examples...", "length": 1256, "truncated": False, "source": "jina_reader"},
+    ),
+    "web_search": Tool(
+        name="web_search",
+        description="Search the web and return the top 5 results with their full content as clean markdown. Better than DIY because zero setup and results include page content, not just links.",
+        endpoint="https://agentpay.tools/tools/web_search",
+        price_usdc="0.000",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query",
+                },
+            },
+            "required": ["query"],
+        },
+        category="data",
+        triggers=["search", "look up", "find", "google", "web search", "what is", "latest news", "who is", "current"],
+        use_when="You need to find current information on any topic — news, documentation, prices, events, or anything else on the web.",
+        returns="results[] with url, title, description, content; query; count",
+        response_example={"query": "ETH gas fees today", "count": 5, "results": [{"url": "https://etherscan.io/gastracker", "title": "Ethereum Gas Tracker", "description": "Real-time Ethereum gas price tracker", "content": "Current gas: 2 Gwei..."}], "source": "jina_search"},
+    ),
+    "market_snapshot": Tool(
+        name="market_snapshot",
+        description="Fed rate, inflation proxy, S&P 500, BTC, ETH, and gas in one call. Replaces three separate API integrations with a single normalized response — the only tool that gives you macro + crypto in one shot.",
+        endpoint="https://agentpay.tools/tools/market_snapshot",
+        price_usdc="0.000",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {},
+        },
+        category="data",
+        triggers=["market overview", "market snapshot", "macro", "big picture", "market summary", "overall market", "sp500", "s&p", "bitcoin and stocks"],
+        use_when="You need a combined macro + crypto market overview in one call: S&P 500, Treasury yield, BTC, ETH, and Ethereum gas.",
+        returns="sp500_price, sp500_change_pct, treasury_yield_10y, btc_price_usd, eth_price_usd, gas_standard_gwei, timestamp",
+        response_example={"sp500_price": 5234.18, "sp500_change_pct": -0.42, "treasury_yield_10y": 4.31, "btc_price_usd": 67200.0, "eth_price_usd": 3450.0, "gas_standard_gwei": 5.2, "timestamp": "2026-05-26T12:00:00Z", "source": "yahoo_finance+coingecko+etherscan"},
     ),
 }
 

@@ -1,16 +1,18 @@
 """
 routes/infra.py — Basic gateway-status endpoints.
 
-  GET / | HEAD /     — name, version, tool count, key URLs
+  GET / | HEAD /     — landing page (HTML) for browsers, JSON manifest for agents
   GET /health        — Railway healthcheck target
   GET /stats         — pending payments + recent transaction tail
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 import registry
 
-from gateway.config import settings
+from gateway.config import GATEWAY_URL, settings
+from gateway.landing import render_landing
 from gateway.services.transaction_log import recent_transactions
 from gateway.x402 import get_pending_count
 
@@ -18,18 +20,29 @@ router = APIRouter()
 
 
 @router.api_route("/", methods=["GET", "HEAD"])
-async def root():
-    return {
+async def root(request: Request):
+    """Content-negotiated root.
+
+    Browsers (Accept: text/html) get the landing page. Agents and API clients
+    get the JSON manifest. HEAD requests run GET and drop the body, so both
+    content types respond with 200 — keeps the Bazaar "quality score" check
+    happy regardless of which Accept the indexer sends.
+    """
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and "application/json" not in accept:
+        return HTMLResponse(content=render_landing(registry.list_tools(), GATEWAY_URL))
+
+    return JSONResponse(content={
         "name":             "AgentPay",
         "tagline":          "Your agent is only as smart as its data",
         "version":          "1.0",
         "tools":            len(registry.list_tools()),
         "docs":             "https://github.com/romudille-bit/agentpay",
-        "tools_endpoint":   "https://agentpay.tools/tools",
-        "faucet":           "https://agentpay.tools/faucet",
-        "discovery":        "https://agentpay.tools/.well-known/agentpay.json",
+        "tools_endpoint":   f"{GATEWAY_URL}/tools",
+        "faucet":           f"{GATEWAY_URL}/faucet",
+        "discovery":        f"{GATEWAY_URL}/.well-known/agentpay.json",
         "payment_networks": ["stellar", "base"],
-    }
+    })
 
 
 @router.get("/health")

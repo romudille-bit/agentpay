@@ -1,15 +1,14 @@
-# AgentPay — ![tests](https://github.com/romudille-bit/agentpay/actions/workflows/test.yml/badge.svg) Ditch those API keys.
+# AgentPay — ![tests](https://github.com/romudille-bit/agentpay/actions/workflows/test.yml/badge.svg)
 
-Pay per call. No subscriptions. No human in the loop.
+Your agent makes API calls. You get a bill. You have no idea which calls were worth it.
 
-AgentPay is an x402 payment gateway for AI agents. Access 14 crypto data tools using USDC on Stellar or Base — agents discover, pay, and get data back autonomously, within a hard budget cap.
+AgentPay gives autonomous agents economic intelligence — a wallet, a budget cap, and the awareness to spend it well. Start with three free tools (no USDC needed). Get full session visibility. Add metered inference when you're ready to scale.
 
-→ **14 live tools**: token prices, open interest, orderbook depth, whale activity, funding rates, gas tracker, DeFi TVL, Fear & Greed, yield scanner, token security, Dune queries and more
-→ **Budget-aware Session**: agents estimate costs, track spend, never exceed budget
-→ **x402 protocol**: works with any x402-compatible agent
-→ **Stellar + Base**: pay with USDC on either network — Stellar (5s, ~$0.00001 fee) or Base mainnet (2s, ~$0.0001 fee)
+**Free tools:** `url_reader` · `web_search` · `market_snapshot`  
+**Developer visibility:** session receipts · agent profiles · anomaly alerts  
+**Coming soon:** metered inference — pay per reasoning call, no subscription
 
-**Live gateway (mainnet)**: `https://agentpay.tools`
+**Live gateway**: `https://agentpay.tools`
 
 ---
 
@@ -19,18 +18,21 @@ AgentPay is an x402 payment gateway for AI agents. Access 14 crypto data tools u
 pip install agentpay-x402
 ```
 
-## Quickstart — try it free in 30 seconds (testnet)
+## Quickstart — 5 lines, zero cost
+
+All 17 tools are free. No USDC, no wallet setup required to start.
 
 ```python
-from agentpay import faucet_wallet, Session
+from agentpay import AgentWallet, Session
 
-wallet = faucet_wallet()          # instant testnet wallet, 0.05 USDC — no setup
-with Session(wallet, testnet=True) as s:
+wallet = AgentWallet(network="mainnet")   # or "testnet"
+with Session(wallet, gateway_url="https://agentpay.tools") as s:
     r = s.call("token_price", {"symbol": "ETH"})
     print(r["result"]["price_usd"])
+    print(s.spending_summary())           # receipt showing every call
 ```
 
-That's it. No API keys, no accounts, no config.
+No API keys, no accounts, no config. Every call is session-tracked.
 
 ---
 
@@ -97,20 +99,16 @@ The `Session` enforces a hard USDC cap across all calls. It raises `BudgetExceed
 ```python
 with Session(wallet, max_spend="0.05") as session:
 
-    # Token price — $0.001
     r = session.call("token_price", {"symbol": "ETH"})
     print(f"ETH: ${r['result']['price_usd']:,.2f}  ({r['result']['change_24h_pct']:+.2f}% 24h)")
 
-    # Open interest — $0.002
     r = session.call("open_interest", {"symbol": "ETH"})
     print(f"ETH OI: ${r['result']['total_oi_usd']/1e9:.2f}B  ({r['result']['oi_change_24h_pct']:+.2f}% 24h)")
 
-    # Orderbook depth — $0.002
     r = session.call("orderbook_depth", {"symbol": "ETHUSDT"})
     slip = next(d['slippage_pct'] for d in r['result']['depth'] if d['notional_usd'] == 250_000)
     print(f"ETH $250k slippage: {slip:.3f}%")
 
-    # Funding rates — $0.003
     r = session.call("funding_rates", {"asset": "ETH"})
     for ex in r['result'].get("rates", [])[:2]:
         print(f"  {ex['exchange']}: {ex['funding_rate_pct']:+.4f}%/8h")
@@ -131,22 +129,27 @@ Each `session.call()` handles the full x402 flow internally:
 
 ## Available Tools
 
-| Tool | Price | Parameters | Returns |
-|------|-------|-----------|---------|
-| `token_price` | $0.001 | `symbol` (BTC, ETH, SOL…) | price_usd, change_24h_pct, market_cap_usd |
-| `gas_tracker` | $0.001 | — | slow/standard/fast gwei, base_fee_gwei |
-| `fear_greed_index` | $0.001 | `limit` (days of history, default 1) | value 0–100, value_classification, history[] |
-| `token_market_data` | $0.001 | `token_a`, `token_b` | volume_24h_usd, market_cap_usd, price_usd |
-| `wallet_balance` | $0.002 | `address`, `chain` (ethereum/stellar) | token balances |
-| `whale_activity` | $0.002 | `token`, `min_usd` (default 100k) | large_transfers[] with exchange direction, total_volume_usd |
-| `defi_tvl` | $0.002 | `protocol` (optional, e.g. "uniswap") | tvl, change_1d, change_7d, chains[] |
-| `token_security` | $0.002 | `contract_address`, `chain` (ethereum/bsc) | risk_level, is_honeypot, buy_tax, sell_tax |
-| `open_interest` | $0.002 | `symbol` (BTC, ETH…) | total_oi_usd, oi_change_1h_pct, oi_change_24h_pct, long_short_ratio, exchanges[] |
-| `orderbook_depth` | $0.002 | `symbol` (e.g. ETHUSDT), `exchange` (binance/bybit) | best_bid, best_ask, spread_pct, slippage at $10k/$50k/$250k |
-| `funding_rates` | $0.003 | `asset` (optional, e.g. "BTC") | funding_rate_pct, annualized_rate_pct, sentiment per exchange |
-| `crypto_news` | $0.003 | `currencies` (e.g. "ETH,BTC"), `filter` (hot/new/rising) | headlines[] with title, url, sentiment, score |
-| `yield_scanner` | $0.004 | `token`, `chain` (optional), `min_tvl` (default $1M) | top 10 pools by APY with protocol, tvl_usd, risk_level |
-| `dune_query` | $0.005 | `query_id`, `limit` (default 25), `fast_only` (bool) | rows[], columns[], row_count from Dune Analytics |
+All 17 tools are free. Every call is session-tracked — you get a receipt showing every tool called, every cost, and every timestamp.
+
+| Tool | Parameters | Returns |
+|------|-----------|---------|
+| `url_reader` | `url` | Clean markdown content of any web page |
+| `web_search` | `query` | Top 5 results with full content |
+| `market_snapshot` | — | S&P 500, Treasury yield, BTC, ETH, gas in one call |
+| `token_price` | `symbol` (BTC, ETH, SOL…) | price_usd, change_24h_pct, market_cap_usd |
+| `gas_tracker` | — | slow/standard/fast gwei, base_fee_gwei |
+| `fear_greed_index` | `limit` (days of history, default 1) | value 0–100, value_classification, history[] |
+| `token_market_data` | `token_a`, `token_b` | volume_24h_usd, market_cap_usd, price_usd |
+| `wallet_balance` | `address`, `chain` (ethereum/stellar) | token balances |
+| `whale_activity` | `token`, `min_usd` (default 100k) | large_transfers[] with exchange direction, total_volume_usd |
+| `defi_tvl` | `protocol` (optional, e.g. "uniswap") | tvl, change_1d, change_7d, chains[] |
+| `token_security` | `contract_address`, `chain` (ethereum/bsc) | risk_level, is_honeypot, buy_tax, sell_tax |
+| `open_interest` | `symbol` (BTC, ETH…) | total_oi_usd, oi_change_1h_pct, oi_change_24h_pct, long_short_ratio, exchanges[] |
+| `orderbook_depth` | `symbol` (e.g. ETHUSDT), `exchange` (binance/bybit) | best_bid, best_ask, spread_pct, slippage at $10k/$50k/$250k |
+| `funding_rates` | `asset` (optional, e.g. "BTC") | funding_rate_pct, annualized_rate_pct, sentiment per exchange |
+| `crypto_news` | `currencies` (e.g. "ETH,BTC"), `filter` (hot/new/rising) | headlines[] with title, url, sentiment, score |
+| `yield_scanner` | `token`, `chain` (optional), `min_tvl` (default $1M) | top 10 pools by APY with protocol, tvl_usd, risk_level |
+| `dune_query` | `query_id`, `limit` (default 25), `fast_only` (bool) | rows[], columns[], row_count from Dune Analytics |
 
 Discover all tools dynamically:
 
@@ -161,7 +164,7 @@ for t in tools:
 
 ## Pre-trade signal check
 
-Pull the market context your agent needs right before a decision — funding regime, OI momentum, sentiment, and whale activity — in one call, $0.008.
+Pull the market context your agent needs right before a decision — funding regime, OI momentum, sentiment, and whale activity — four tools, all free.
 
 ```python
 from agentpay import faucet_wallet, Session
@@ -207,7 +210,7 @@ Base payments use Mode B direct on-chain settlement: the client calls `transferW
 
 ## MCP Server
 
-AgentPay ships a Model Context Protocol server that gives Claude Desktop (and any MCP client) direct access to all 14 tools. Payments happen automatically in the background using Stellar USDC.
+AgentPay ships a Model Context Protocol server that gives Claude Desktop (and any MCP client) direct access to all 17 tools. All tools are free — no USDC payments required.
 
 See **[README_MCP.md](README_MCP.md)** for setup instructions.
 
@@ -278,30 +281,42 @@ curl -s -X POST "$GATEWAY/tools/token_price/call" \
 ## Session API reference
 
 ```python
-# Pre-check price without paying
-price = session.estimate("dune_query")       # "$0.005"
+# Check tool cost before calling
+session.tool_cost("dune_query")          # "Free" (all tools are currently free)
 
-# Check headroom before committing
+# Check if it fits the budget
+session.remaining()                      # "$0.046"
 if not session.would_exceed("0.005"):
     result = session.call("dune_query", {"query_id": 3810512, "limit": 10})
 
-# Access spend state mid-session
-session.spent()        # "$0.004"
-session.remaining()    # "$0.046"
+# Find a cheaper alternative
+alt = session.suggest_cheaper("dune_query")   # {"name": "token_price", "price": "Free"}
 
-# Full breakdown after session closes
-summary = session.summary()
+# Access spend state mid-session
+session.spent()        # "$0"
+session.remaining()    # "$0.1"
+
+# Full session receipt
+print(session.spending_summary())
 # {
 #   "calls": 3,
-#   "spent_usdc": "0.007",
-#   "spent_fmt": "$0.007",
-#   "remaining_fmt": "$0.043",
+#   "spent": "$0",
+#   "remaining": "$0.1",
+#   "budget": "$0.1",
+#   "tools": ["token_price", "whale_activity", "crypto_news"],
 #   "breakdown": [
-#     {"tool": "funding_rates",   "amount_usdc": "0.003", "tx_hash": "abc123..."},
-#     {"tool": "open_interest",   "amount_usdc": "0.002", "tx_hash": "def456..."},
-#     {"tool": "orderbook_depth", "amount_usdc": "0.002", "tx_hash": "ghi789..."}
+#     {"tool": "token_price",    "cost": "Free", "tx_hash": ""},
+#     {"tool": "whale_activity", "cost": "Free", "tx_hash": ""},
+#     {"tool": "crypto_news",    "cost": "Free", "tx_hash": ""}
 #   ]
 # }
+
+# Policy — control what agents can do
+with Session(wallet, gateway_url=GATEWAY,
+             allowed_tools=["token_price", "gas_tracker"],
+             max_per_tool={"dune_query": 0.02},
+             rate_limit=10) as session:
+    ...
 ```
 
 ---
@@ -332,6 +347,8 @@ with Session(wallet, testnet=True) as s:
 
 ## Architecture
 
+Under the hood, AgentPay is an **x402 payment gateway**. Agents discover tools, receive HTTP 402 payment challenges, pay on-chain in USDC (Stellar or Base), then get real data back — all within the budget cap they were initialized with.
+
 ```
 agent (Python SDK)
     │
@@ -343,10 +360,13 @@ agent (Python SDK)
     ▼
 gateway (FastAPI on Railway)
     │
-    ├── registry/registry.py   — 14-tool catalog with prices & dev wallets
+    ├── registry/registry.py   — 17-tool catalog (all free)
     ├── gateway/stellar.py     — Stellar payment verification via Horizon
     ├── gateway/base.py        — Base payment verification via JSON-RPC
     └── gateway/main.py        — real API dispatchers
+            ├── Jina Reader       url_reader
+            ├── Jina Search       web_search
+            ├── Yahoo+CoinGecko   market_snapshot
             ├── CoinGecko         token_price, token_market_data
             ├── Etherscan V2      gas_tracker, whale_activity, wallet_balance
             ├── DeFiLlama         defi_tvl, yield_scanner
@@ -372,7 +392,7 @@ gateway (FastAPI on Railway)
 | [Glama MCP](https://glama.ai/mcp/servers/romudille-bit/agentpay) | ✅ listed |
 | [awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed |
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
-| [402index.io](https://402index.io) | ✅ domain verified, 14 tools synced |
+| [402index.io](https://402index.io) | ✅ domain verified, 17 tools synced |
 | [xpay.tools](https://xpay.tools) | 🔜 submission in progress |
 
 ### Agent-Readable Endpoints

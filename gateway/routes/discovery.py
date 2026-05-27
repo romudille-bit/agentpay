@@ -16,7 +16,7 @@ from fastapi.responses import Response
 
 import registry
 
-from gateway.config import GATEWAY_URL, settings
+from gateway.config import GATEWAY_URL, settings, stellar_caip2
 
 router = APIRouter()
 
@@ -32,7 +32,7 @@ async def well_known_agentpay():
         "description": "Real-time crypto data for AI agents. Pay per call in USDC on Stellar. No API keys, no subscriptions.",
         "url": GATEWAY_URL,
         "payment_protocol": "x402",
-        "payment_network": f"stellar-{settings.STELLAR_NETWORK}",
+        "payment_network": stellar_caip2(),
         "payment_asset": "USDC",
         "pricing_model": "per-call",
         "budget_aware": True,
@@ -112,7 +112,7 @@ async def well_known_l402_services():
         "homepage": GATEWAY_URL,
         "protocol": "x402",
         "protocols": ["x402"],
-        "payment_network": "stellar",
+        "payment_network": stellar_caip2(),
         "services": [
             {
                 "id": t.name,
@@ -150,7 +150,7 @@ async def well_known_x402():
         "accepts": [
             {
                 "scheme": "exact",
-                "network": "stellar-mainnet",
+                "network": stellar_caip2(),
                 "asset": "USDC",
                 "assetIssuer": settings.USDC_ISSUER_MAINNET,
                 "minAmount": str(min(prices)),

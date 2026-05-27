@@ -89,7 +89,26 @@ settings = get_settings()
 
 
 # Public-facing gateway URL used in discovery responses, faucet snippets,
-# 402 challenge instructions, and the keepalive ping. Settings exposes
-# AGENTPAY_GATEWAY_URL as an override; this constant is the stable fallback
-# pointing at the production deploy.
-GATEWAY_URL = "https://agentpay.tools"
+# 402 challenge instructions, and the keepalive ping. The AGENTPAY_GATEWAY_URL
+# env var (exposed via Settings) overrides the hardcoded default — so swapping
+# domains in production is an env var change, not a code redeploy.
+GATEWAY_URL = settings.AGENTPAY_GATEWAY_URL or "https://agentpay.tools"
+
+
+def stellar_caip2() -> str:
+    """Return the CAIP-2 network ID for the configured Stellar network.
+
+    The Stellar Foundation's x402 reference and the broader CAIP-2 standard
+    expect ``stellar:pubnet`` (NOT ``stellar:mainnet``) for the production
+    network. AgentPay's internal env values use the older ``mainnet`` /
+    ``testnet`` shorthand, and the in-memory replay tables key on the legacy
+    ``stellar-{network}`` label for backward compatibility — but anything we
+    *publish* outward (discovery manifests, x402 response advertisements)
+    should be CAIP-2.
+
+    Mapping::
+
+        STELLAR_NETWORK="mainnet"  →  "stellar:pubnet"
+        STELLAR_NETWORK="testnet"  →  "stellar:testnet"
+    """
+    return "stellar:pubnet" if settings.STELLAR_NETWORK == "mainnet" else "stellar:testnet"
