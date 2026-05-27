@@ -80,14 +80,14 @@ def patch_route_tool_response(monkeypatch):
 
 class TestListTools:
 
-    def test_returns_all_14_tools(self, client):
+    def test_returns_all_17_tools(self, client):
         r = client.get("/tools")
         assert r.status_code == 200
         body = r.json()
         assert "tools" in body
         assert "count" in body
-        assert body["count"] == 14
-        assert len(body["tools"]) == 14
+        assert body["count"] == 17
+        assert len(body["tools"]) == 17
 
     def test_each_tool_has_required_fields(self, client):
         r = client.get("/tools")
@@ -114,7 +114,7 @@ class TestGetTool:
         assert r.status_code == 200
         body = r.json()
         assert body["name"] == "token_price"
-        assert body["price_usdc"] == "0.001"
+        assert body["price_usdc"] == "0.000"
 
     def test_unknown_tool_returns_404(self, client):
         r = client.get("/tools/nonexistent_tool")
@@ -130,7 +130,7 @@ class TestGetTool:
     def test_head_preflight_returns_pricing_headers(self, client):
         r = client.head("/tools/token_price/call")
         assert r.status_code == 200
-        assert r.headers.get("x-price-usdc") == "0.001"
+        assert r.headers.get("x-price-usdc") == "0.000"
         assert r.headers.get("x-asset") == "USDC"
         assert "x-network" in r.headers
         assert r.headers.get("x-tool-name") == "token_price"
@@ -184,9 +184,9 @@ class TestCall402Challenge:
         )
         assert r.status_code == 402
         body = r.json()
-        # token_market_data is $0.001 — confirm the price is correct for
-        # the *resolved* tool, not 0 or some other value
-        assert body["amount_usdc"] == "0.001"
+        # token_market_data is free ($0.000) — confirm the price is correct for
+        # the *resolved* tool, not some other value
+        assert body["amount_usdc"] == "0.000"
 
     def test_unknown_tool_post_returns_404(self, client):
         r = client.post(
@@ -226,7 +226,7 @@ class TestCallWithPayment:
         body = r.json()
         assert body["tool"] == "token_price"
         assert body["result"]["mocked"] is True
-        assert body["payment"]["amount_usdc"] == "0.001"
+        assert body["payment"]["amount_usdc"] == "0.000"
         assert body["payment"]["network"] == "stellar-testnet"
 
     def test_missing_agent_address_returns_400(
@@ -394,7 +394,7 @@ class TestLifecycleStateMachine:
         row = supabase_lifecycle_capture["insert"][0]
         assert row["tool_name"] == "token_price"
         assert row["network"] == "stellar-testnet"
-        assert row["amount_usdc"] == "0.001"
+        assert row["amount_usdc"] == "0.000"
         # payment_id matches what we returned in the body
         assert row["payment_id"] == r.json()["payment_id"]
 

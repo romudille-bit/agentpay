@@ -23,15 +23,15 @@ def test_root_html_for_browser(client):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     body = r.text
-    # Hero pins the April 26 positioning: problem-first, wallet + budget cap
-    # framing. If this changes, the CMO skill, README, and CLAUDE.md must move
-    # together — they all inherit from AgentPay_Positioning_v1.docx.
-    assert "Right now you're paying for every API your agent touches" in body
-    assert "wallet and a hard budget cap" in body
+    # Hero pins the current positioning: economic intelligence layer, 17 free
+    # tools, zero cost to start. If this copy changes, the CMO skill, README,
+    # and CLAUDE.md must move together.
+    assert "Your agent shouldn't just have a budget" in body
+    assert "economic intelligence" in body
     assert "AgentPay" in body
-    # The 5-line code snippet should be present
+    # The quickstart snippet must be present
     assert "from agentpay import AgentWallet, Session" in body
-    assert "max_spend=" in body
+    assert "spending_summary" in body
 
 
 def test_root_json_for_agent(client):
