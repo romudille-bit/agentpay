@@ -50,3 +50,12 @@ tools/*_draft.txt
 # Internal research notes and runtime reports — never commit
 exchange_wallet_audit.md
 usage_reports/
+
+# Internal strategy + copy docs
+STRATEGY.md
+COPY_UPDATES.md
+twitter_positioning_v1.md
+
+# Local agent skill plugins
+.agents/
+skills-lock.json
