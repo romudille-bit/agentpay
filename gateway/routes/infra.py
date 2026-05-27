@@ -34,7 +34,7 @@ async def root(request: Request):
 
     return JSONResponse(content={
         "name":             "AgentPay",
-        "tagline":          "Your agent is only as smart as its data",
+        "tagline":          "Economic intelligence for autonomous agents",
         "version":          "1.0",
         "tools":            len(registry.list_tools()),
         "docs":             "https://github.com/romudille-bit/agentpay",

@@ -28,8 +28,8 @@ async def well_known_agentpay():
     return {
         "name": "AgentPay",
         "version": "1.0",
-        "tagline": "Your agent is only as smart as its data",
-        "description": "Real-time crypto data for AI agents. Pay per call in USDC on Stellar. No API keys, no subscriptions.",
+        "tagline": "Economic intelligence for autonomous agents",
+        "description": "17 free tools for AI agents — market data, DeFi, sentiment, whale tracking. Full session receipts on every call. No API keys, no USDC needed to start.",
         "url": GATEWAY_URL,
         "payment_protocol": "x402",
         "payment_network": stellar_caip2(),
@@ -63,7 +63,7 @@ async def well_known_agent():
     tools = registry.list_tools()
     return {
         "name": "AgentPay Data Gateway",
-        "description": "Autonomous crypto data tools for AI agents",
+        "description": "Economic intelligence for autonomous agents — 17 free tools, session receipts, metered inference coming",
         "url": GATEWAY_URL,
         "version": "1.0",
         "capabilities": {
@@ -108,7 +108,7 @@ async def well_known_l402_services():
     return {
         "version": "0.2.0",
         "name": "AgentPay",
-        "description": "Real-time crypto data for AI agents. Pay per call in USDC on Stellar or Base. No API keys.",
+        "description": "17 free tools for AI agents. Session receipts on every call. No API keys, no USDC needed to start.",
         "homepage": GATEWAY_URL,
         "protocol": "x402",
         "protocols": ["x402"],
@@ -146,7 +146,7 @@ async def well_known_x402():
         "x402Version": 1,
         "gateway": GATEWAY_URL,
         "name": "AgentPay",
-        "description": "Real-time crypto data for AI agents. Pay per call in USDC on Stellar or Base.",
+        "description": "Economic intelligence for autonomous agents. 17 free tools, session receipts, metered inference coming.",
         "accepts": [
             {
                 "scheme": "exact",
@@ -207,23 +207,29 @@ async def robots():
 @router.get("/llms.txt", response_class=Response)
 async def llms_txt():
     tools = registry.list_tools()
+    def _price_label(p: str) -> str:
+        try:
+            return "Free" if float(p) == 0 else f"${p}"
+        except (ValueError, TypeError):
+            return f"${p}"
+
     tool_lines = "\n".join(
-        f"- {t.name} (${t.price_usdc}): {t.description}"
-        for t in sorted(tools, key=lambda t: t.price_usdc)
+        f"- {t.name} ({_price_label(t.price_usdc)}): {t.description}"
+        for t in sorted(tools, key=lambda t: t.name)
     )
     content = f"""\
 # AgentPay
 
-> x402 payment gateway for AI agents. Agents pay micro-amounts of USDC on Stellar or Base to call real crypto data tools — no API keys, no subscriptions, pay-per-call.
+> Economic intelligence for autonomous agents. 17 free tools to start — no API keys, no USDC needed. Every call is session-tracked with a full receipt. Metered inference coming.
 
-AgentPay implements the x402 protocol: agents receive an HTTP 402 challenge, pay on-chain in USDC, then retry with an X-Payment header to receive data. All payments are verified on-chain. The gateway takes 15% and auto-splits 85% to the tool developer's Stellar wallet.
+AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well. All 17 tools are currently free. When metered inference ships, it uses the same x402 protocol: agents receive an HTTP 402 challenge, pay in USDC on Stellar or Base, retry with an X-Payment header, and receive data. All payments are verified on-chain.
 
 ## Gateway
 
 - Production (mainnet): {GATEWAY_URL}
 - Network: Stellar mainnet + Base mainnet
-- Tools: {len(tools)} live crypto data tools
-- Protocol: x402 (HTTP 402 → pay → retry)
+- Tools: {len(tools)} tools (all free today)
+- Protocol: x402-v2 (HTTP 402 → pay → retry) — active for future paid tools
 
 ## Tools
 

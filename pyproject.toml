@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentpay-x402"
 version = "0.1.4"
-description = "Pay-per-call crypto data for AI agents — x402 + USDC on Stellar or Base"
+description = "Economic intelligence for autonomous agents — 17 free tools, session receipts, x402 on Stellar or Base"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "romudille", email = "velvetvau@gmail.com" }]
