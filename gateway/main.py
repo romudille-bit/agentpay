@@ -378,16 +378,26 @@ async def _hydrate_tools_from_supabase() -> None:
         # (e.g. triggers=[]) gets shadowed by the seed. We've never used
         # Supabase to deliberately clear fields, so this is fine in
         # practice — but worth knowing if that ever changes.
+        sb_names = {t.name for t in tools}
         for t in tools:
             if t.name not in _SEED:
                 continue
             seed = _SEED[t.name]
+            # Always use seed price — Supabase may be stale after a pricing change
+            t.price_usdc = seed.price_usdc
             if t.response_example is None: t.response_example = seed.response_example
             if not t.triggers:              t.triggers = seed.triggers
             if not t.use_when:              t.use_when = seed.use_when
             if not t.returns:               t.returns = seed.returns
+        # Seed tools missing from Supabase (e.g. registry.py added a new tool
+        # but Supabase hasn't been migrated yet). Registry.py is always the
+        # source of truth for existence; Supabase is an override layer only.
+        for name, seed in _SEED.items():
+            if name not in sb_names and seed.active:
+                tools.append(seed)
+                logger.info(f"Tool '{name}' not in Supabase — using seed value")
         reload_tools(tools)
-        logger.info(f"Loaded {len(tools)} tools from Supabase")
+        logger.info(f"Loaded {len(tools)} tools ({len(sb_names)} from Supabase, {len(tools) - len(sb_names)} from seed)")
     except Exception as e:
         logger.warning(f"Supabase unavailable ({e}) — using in-memory registry")
 
