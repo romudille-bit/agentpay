@@ -61,27 +61,51 @@ async def well_known_agentpay():
 async def well_known_agent():
     """A2A protocol card — agent-to-agent discovery."""
     tools = registry.list_tools()
+    free_tools  = [t for t in tools if float(t.price_usdc) == 0]
+    paid_tools  = [t for t in tools if float(t.price_usdc) > 0]
     return {
-        "name": "AgentPay Data Gateway",
-        "description": "Economic intelligence for autonomous agents — 17 free tools, session receipts, metered inference coming",
-        "url": GATEWAY_URL,
-        "version": "1.0",
-        "capabilities": {
-            "tools": True,
-            "payments": "x402/stellar",
-            "budget_sessions": True,
+        "name":        "AgentPay",
+        "description": "Economic intelligence for autonomous agents — 17 free tools, budget-capped sessions, session receipts on every call.",
+        "url":         GATEWAY_URL,
+        "version":     "1.0",
+
+        # ── How an agent registers and starts using AgentPay ─────────────────
+        # Step 1: POST /v1/session/create ($0.001 USDC, one-time per session)
+        #         → returns session_id + budget config + tools_endpoint
+        # Step 2: GET  /tools → discover all 17 free tools with descriptions
+        # Step 3: POST /tools/{name}/call → call any tool, session receipt logged
+        "onboarding": {
+            "register":         f"{GATEWAY_URL}/v1/session/create",
+            "register_cost":    "0.001",
+            "register_network": "base-mainnet or stellar-mainnet",
+            "discover_tools":   f"{GATEWAY_URL}/tools",
+            "call_tool":        f"{GATEWAY_URL}/tools/{{name}}/call",
+            "sdk":              "pip install agentpay-x402",
+            "sdk_quickstart":   "from agentpay import AgentWallet, Session",
         },
+
+        "capabilities": {
+            "tools":           True,
+            "budget_sessions": True,
+            "session_receipts": True,
+            "payments":        "x402-v2",
+            "networks":        ["stellar-mainnet", "base-mainnet"],
+            "free_tools":      len(free_tools),
+            "paid_tools":      len(paid_tools),
+        },
+
         "contact": "https://github.com/romudille-bit/agentpay",
+
         "tools": [
             {
-                "name": t.name,
-                "description": t.description,
-                "price_usdc": t.price_usdc,
-                "category": t.category,
+                "name":          t.name,
+                "description":   t.description,
+                "price_usdc":    t.price_usdc,
+                "category":      t.category,
                 "call_endpoint": f"{GATEWAY_URL}/tools/{t.name}/call",
-                "triggers": t.triggers,
-                "use_when": t.use_when,
-                "returns": t.returns,
+                "triggers":      t.triggers,
+                "use_when":      t.use_when,
+                "returns":       t.returns,
             }
             for t in tools
         ],
