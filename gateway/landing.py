@@ -28,6 +28,8 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <meta property="og:url" content="GATEWAY_URL_PLACEHOLDER">
 <meta property="og:type" content="website">
 <link rel="canonical" href="GATEWAY_URL_PLACEHOLDER">
+<link rel="icon" type="image/svg+xml" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
+<link rel="alternate icon" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
 <style>
 :root {
   --bg: #0a0a0b;

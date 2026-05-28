@@ -22,9 +22,13 @@ import asyncio
 import base64
 import json
 import logging
+import secrets
+import time
 from decimal import Decimal
 
 import httpx
+import jwt
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from gateway.services import supabase as sb
 
@@ -70,6 +74,41 @@ def _network_label(caip2: str) -> str:
     keyed on "eip155:1234" than no row at all.
     """
     return _CAIP2_TO_NETWORK_LABEL.get(caip2, caip2)
+
+
+def _build_cdp_jwt(key_name: str, key_secret_raw: str, uri: str) -> str:
+    """Build a signed ES256 JWT for Coinbase CDP API authentication.
+
+    CDP expects:
+      Authorization: Bearer <jwt>
+
+    where the JWT is signed with the EC private key from the CDP portal.
+
+    Args:
+        key_name:       CDP key name, e.g. "organizations/abc.../apiKeys/xyz..."
+        key_secret_raw: PEM private key — Railway stores it with literal \\n;
+                        we convert those back to real newlines before parsing.
+        uri:            Request URI in CDP format: "METHOD hostname/path"
+                        e.g. "POST api.cdp.coinbase.com/platform/v2/x402/settle"
+    """
+    # Railway env vars can't store literal newlines — the PEM key arrives with
+    # \\n (backslash-n string). Convert to real newlines before loading.
+    pem = key_secret_raw.replace("\\n", "\n").encode()
+    private_key = load_pem_private_key(pem, password=None)
+
+    now = int(time.time())
+    payload = {
+        "sub":   key_name,
+        "iss":   "cdp",
+        "nbf":   now,
+        "exp":   now + 120,
+        "uri":   uri,
+    }
+    headers = {
+        "kid":   key_name,
+        "nonce": secrets.token_hex(16),
+    }
+    return jwt.encode(payload, private_key, algorithm="ES256", headers=headers)
 
 
 def get_chain_config(network: str) -> tuple[str, str]:
@@ -303,17 +342,20 @@ async def settle_base_payment(
     # ── Mode A: CDP Facilitator ───────────────────────────────────────────────
     # Call https://api.cdp.coinbase.com/platform/v2/x402/settle.
     # The CDP facilitator submits the EIP-3009 signed tx on-chain and returns
-    # the tx hash. Critically, Bazaar reads the paymentRequirements.resource
-    # field on settlement and auto-indexes that URL — this is what makes
-    # AgentPay tools discoverable on Base Bazaar without manual submission.
+    # the tx hash. Bazaar reads paymentRequirements.resource on settlement and
+    # auto-indexes that URL — this is what makes AgentPay discoverable on Bazaar.
     #
-    # If CDP_API_KEY is set (optional), include it as a bearer token. Bazaar
-    # indexing works without it, but authenticated calls get higher rate limits
-    # and priority settlement. Set CDP_API_KEY in Railway env to enable.
+    # Auth: CDP requires a signed ES256 JWT (not a plain bearer token).
+    # Set CDP_KEY_NAME + CDP_KEY_SECRET in Railway env vars to enable.
     from gateway.config import settings as _settings
     cdp_headers: dict[str, str] = {"Content-Type": "application/json"}
-    if getattr(_settings, "CDP_API_KEY", ""):
-        cdp_headers["Authorization"] = f"Bearer {_settings.CDP_API_KEY}"
+    if _settings.CDP_KEY_NAME and _settings.CDP_KEY_SECRET:
+        settle_uri = f"POST {CDP_FACILITATOR_URL.removeprefix('https://')}/settle"
+        try:
+            token = _build_cdp_jwt(_settings.CDP_KEY_NAME, _settings.CDP_KEY_SECRET, settle_uri)
+            cdp_headers["Authorization"] = f"Bearer {token}"
+        except Exception as e:
+            logger.warning(f"[BASE] CDP JWT build failed: {e} — proceeding unauthenticated")
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:

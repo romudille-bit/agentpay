@@ -7,7 +7,7 @@ routes/infra.py — Basic gateway-status endpoints.
 """
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 import registry
 
@@ -43,6 +43,24 @@ async def root(request: Request):
         "discovery":        f"{GATEWAY_URL}/.well-known/agentpay.json",
         "payment_networks": ["stellar", "base"],
     })
+
+
+_FAVICON_SVG = """\
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- dark rounded background -->
+  <rect width="32" height="32" rx="7" fill="#0a0a0b"/>
+  <!-- teal "A" mark — two legs + crossbar -->
+  <path d="M16 5 L26 27 H22 L19.5 21 H12.5 L10 27 H6 Z M14 17 H18 L16 12 Z"
+        fill="#5eead4"/>
+</svg>
+"""
+
+
+@router.get("/favicon.svg", response_class=Response)
+async def favicon():
+    """SVG favicon — dark background, teal A mark."""
+    return Response(content=_FAVICON_SVG, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/health")

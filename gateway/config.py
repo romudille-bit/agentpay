@@ -59,11 +59,17 @@ class Settings(BaseSettings):
     # /.well-known/402index-verify.txt. Leave blank to serve 404.
     INDEX402_VERIFY_HASH: str = ""
 
-    # Coinbase CDP API key — optional, used for authenticated x402 facilitator
-    # calls. Bazaar auto-indexing works without it, but authenticated calls get
-    # higher rate limits and priority settlement on the CDP facilitator.
-    # Set CDP_API_KEY in Railway env vars to enable.
-    CDP_API_KEY: str = ""
+    # Coinbase CDP API credentials — required for authenticated x402 facilitator
+    # calls (POST /settle). The CDP Facilitator returns 401 without these.
+    # Bazaar auto-indexing only works when settlement flows through CDP.
+    #
+    # CDP_KEY_NAME:   key name from portal.cdp.coinbase.com
+    #                 e.g. "organizations/abc.../apiKeys/xyz..."
+    # CDP_KEY_SECRET: EC private key in PEM format. In Railway, store with
+    #                 literal \n characters — the gateway restores them on load.
+    #                 e.g. "-----BEGIN EC PRIVATE KEY-----\nMHQC...\n-----END EC PRIVATE KEY-----\n"
+    CDP_KEY_NAME:   str = ""
+    CDP_KEY_SECRET: str = ""
 
     # PR #12: Async on-chain refund worker. When False (default),
     # tool-failure rows still get state='refund_pending' and the response

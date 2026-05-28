@@ -17,13 +17,12 @@ Requirements:
   pip install requests eth-account --break-system-packages
 
 Usage:
-  BASE_PRIVATE_KEY=0x... python3 tools/bazaar_tx.py
-
-  Or with optional label:
-  BASE_PRIVATE_KEY=0x... SESSION_LABEL="bazaar-bootstrap" python3 tools/bazaar_tx.py
+  python3 tools/bazaar_tx.py
+  (prompts for private key — never stored, never echoed)
 """
 
 import base64
+import getpass
 import json
 import os
 import secrets
@@ -44,17 +43,16 @@ CHAIN_ID        = 8453     # Base mainnet
 AMOUNT_ATOMIC   = 1000     # $0.001 USDC — 6 decimal places (1000 = 0.001 * 10^6)
 CAIP2_NETWORK   = "eip155:8453"
 
-# ── Load private key ──────────────────────────────────────────────────────────
+# ── Load private key (interactive, never echoed) ──────────────────────────────
 
-private_key = os.environ.get("BASE_PRIVATE_KEY", "")
+private_key = getpass.getpass("Base private key (0x...): ").strip()
 if not private_key:
-    print("Error: BASE_PRIVATE_KEY env var not set.")
-    print("Usage: BASE_PRIVATE_KEY=0x... python3 tools/bazaar_tx.py")
+    print("Error: no key provided.")
     sys.exit(1)
 
 account = Account.from_key(private_key)
 agent_address = account.address
-session_label = os.environ.get("SESSION_LABEL", "bazaar-bootstrap")
+session_label = "bazaar-bootstrap"
 
 print(f"Agent address : {agent_address}")
 print(f"Session label : {session_label}")

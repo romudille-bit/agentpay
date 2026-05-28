@@ -7,3 +7,5 @@ pydantic==2.7.0
 pydantic-settings==2.4.0
 slowapi==0.1.9
 eth-account>=0.11.0   # EVM wallet — Base mainnet x402 payments
+PyJWT>=2.8.0          # CDP Facilitator JWT auth (ES256)
+cryptography>=42.0.0  # EC key loading for CDP JWT signing
