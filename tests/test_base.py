@@ -28,7 +28,7 @@ VALID_PAYER   = "0x" + "b" * 40           # 42 chars total — passes shape chec
 VALID_NETWORK = "eip155:8453"             # CAIP-2 Base mainnet
 PAYTO         = "0x" + "c" * 40
 
-CDP_URL = "https://x402.coinbase.com"
+CDP_URL = "https://api.cdp.coinbase.com/platform/v2/x402"
 
 
 def _mode_a_signature_header() -> str:

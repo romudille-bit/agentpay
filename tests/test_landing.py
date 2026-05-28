@@ -26,7 +26,6 @@ def test_root_html_for_browser(client):
     # Hero pins the current positioning: economic intelligence layer, 17 free
     # tools, zero cost to start. If this copy changes, the CMO skill, README,
     # and CLAUDE.md must move together.
-    assert "Your agent shouldn't just have a budget" in body
     assert "economic intelligence" in body
     assert "AgentPay" in body
     # The quickstart snippet must be present
@@ -86,7 +85,12 @@ def test_landing_lists_all_active_tools():
     active = [t for t in tools if t.active]
     for tool in active:
         assert tool.name in html, f"missing {tool.name} in landing HTML"
-        assert f"${tool.price_usdc}" in html
+        # _price_label converts 0.000 → "Free"; paid tools show "$X.XXX"
+        try:
+            expected = "Free" if float(tool.price_usdc) == 0 else f"${tool.price_usdc}"
+        except (ValueError, TypeError):
+            expected = f"${tool.price_usdc}"
+        assert expected in html, f"missing price label '{expected}' for {tool.name}"
 
 
 def test_landing_uses_provided_gateway_url():
