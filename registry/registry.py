@@ -423,6 +423,51 @@ _TOOLS: dict[str, Tool] = {
         returns="results[] with url, title, description, content; query; count",
         response_example={"query": "ETH gas fees today", "count": 5, "results": [{"url": "https://etherscan.io/gastracker", "title": "Ethereum Gas Tracker", "description": "Real-time Ethereum gas price tracker", "content": "Current gas: 2 Gwei..."}], "source": "jina_search"},
     ),
+    "session_create": Tool(
+        name="session_create",
+        description=(
+            "Open a budget-capped agent session on AgentPay. "
+            "Pay $0.001 USDC once — get a session_id, budget config, and gateway URL. "
+            "Enforces a hard max_spend cap across all subsequent tool calls via the AgentPay SDK. "
+            "The entry point for agents discovering AgentPay on Base Bazaar."
+        ),
+        endpoint="https://agentpay.tools/v1/session/create",
+        price_usdc="0.001",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {
+                "agent_address": {
+                    "type": "string",
+                    "description": "Your wallet address (Stellar G... or EVM 0x...)",
+                },
+                "max_spend": {
+                    "type": "string",
+                    "description": "Hard budget cap in USDC for this session, e.g. '0.10'",
+                    "default": "0.10",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional human-readable label for this session",
+                },
+            },
+        },
+        category="session",
+        triggers=["start session", "open session", "register agent", "budget cap", "session create", "agentpay session"],
+        use_when="You want to start an AgentPay session with a hard spend cap and get a session_id for tracking.",
+        returns="session_id, max_spend, agent_address, gateway_url, tools_endpoint, created_at, receipt (tx_hash + network)",
+        response_example={
+            "session_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            "max_spend": "0.10",
+            "agent_address": "GBCVQCNFWPM3GDO4GPT4YEQ42ZHPY67QTJA3WN5ERQIKQDXKBX62SLNJ",
+            "label": None,
+            "gateway_url": "https://agentpay.tools",
+            "tools_endpoint": "https://agentpay.tools/tools",
+            "created_at": "2026-05-27T12:00:00Z",
+            "receipt": {"tx_hash": "0xabc...def", "network": "base", "amount_usdc": "0.001"},
+            "sdk_hint": "Use `from agentpay import Session` to enforce the max_spend cap client-side.",
+        },
+    ),
     "market_snapshot": Tool(
         name="market_snapshot",
         description="Fed rate, inflation proxy, S&P 500, BTC, ETH, and gas in one call. Replaces three separate API integrations with a single normalized response — the only tool that gives you macro + crypto in one shot.",

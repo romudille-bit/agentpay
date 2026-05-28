@@ -21,10 +21,10 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgentPay — economic intelligence for autonomous agents</title>
-<meta name="description" content="17 free tools to start, full session visibility, metered inference coming. AgentPay gives autonomous agents economic intelligence — a wallet, a budget cap, and the awareness to spend it well.">
-<meta property="og:title" content="AgentPay — economic intelligence for autonomous agents">
-<meta property="og:description" content="Your agent shouldn't just have a budget. It should know how to use one. 17 free tools, session receipts on every call, metered inference coming.">
+<title>AgentPay — the economic intelligence layer for MCP servers and AI agents</title>
+<meta name="description" content="AgentPay is the economic intelligence layer for MCP servers and AI agents. Hard budget caps enforced at the payment layer. Cost awareness before every call. Full session receipts. 18 tools, 17 free.">
+<meta property="og:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
+<meta property="og:description" content="Agents spend money. Most don't know how much until the session ends. AgentPay gives agents the ability to reason about cost while they work, not after.">
 <meta property="og:url" content="GATEWAY_URL_PLACEHOLDER">
 <meta property="og:type" content="website">
 <link rel="canonical" href="GATEWAY_URL_PLACEHOLDER">
@@ -123,6 +123,31 @@ pre {
   border: 1px solid var(--border);
 }
 .snippet-note { color: var(--muted); margin: 1rem 0 0; font-size: 0.9rem; }
+.hero-hook {
+  font-style: italic;
+  color: var(--muted);
+  font-size: 1rem;
+  margin: 0 0 1.25rem;
+  max-width: 620px;
+  line-height: 1.6;
+}
+.value-props {
+  margin: 2rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+}
+.value-prop {
+  padding: 1.1rem 1.25rem;
+  background: var(--code-bg);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.value-prop h3 { font-size: 0.88rem; font-weight: 600; margin: 0 0 0.35rem; color: var(--accent); }
+.value-prop p  { color: var(--muted); font-size: 0.85rem; margin: 0; line-height: 1.5; }
+@media (max-width: 640px) {
+  .value-props { grid-template-columns: 1fr; }
+}
 .snippet-note code { background: var(--code-bg); padding: 0.1rem 0.4rem; border-radius: 3px; }
 
 .tools-list { list-style: none; padding: 0; margin: 0; }
@@ -203,22 +228,36 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 1.25rem
 <main>
 
 <section class="hero">
-  <h1>Your agent shouldn't just have a budget. It should know how to use one.</h1>
-  <p class="subtitle">AgentPay gives autonomous agents economic intelligence — 17 free tools to start, full visibility for you, and metered inference when you're ready.</p>
-  <a href="#snippet" class="cta">Start free — 17 tools, zero cost →</a>
+  <p class="hero-hook">If you are wondering how autonomous software entities discover, trust, pay, meter, and coordinate with each other safely —</p>
+  <h1>AgentPay is the economic intelligence layer for MCP servers and AI agents.</h1>
+  <p class="subtitle">Agents spend money. Most don't know how much, or why, until the session ends. AgentPay gives agents the ability to reason about cost while they work — not after.</p>
+  <a href="#snippet" class="cta">Start free — 18 tools, zero cost →</a>
   <a href="#tools" class="cta secondary">Browse the tools</a>
-  <p class="snippet-note" style="margin-top:1rem;">17 tools · All free · Session receipts on every call · Works with LangChain, CrewAI, any Python agent</p>
+  <div class="value-props">
+    <div class="value-prop">
+      <h3>Budget enforced at the payment layer</h3>
+      <p>A hard cap the agent can't ignore — set at the point where money moves, not in code a model can bypass.</p>
+    </div>
+    <div class="value-prop">
+      <h3>Cost awareness before every call</h3>
+      <p>Check price before committing. Route to a cheaper alternative mid-task if the math doesn't work.</p>
+    </div>
+    <div class="value-prop">
+      <h3>Full receipt when the session ends</h3>
+      <p>Every call, every cost, every decision — proof of economic accountability, not a debug log.</p>
+    </div>
+  </div>
 </section>
 
 <section id="snippet" class="snippet">
-  <h2>5 lines. 17 tools. Zero cost.</h2>
+  <h2>5 lines. 18 tools. Zero cost.</h2>
 <pre><code># pip install agentpay-x402
 
 from agentpay import AgentWallet, Session
 
 wallet = AgentWallet(network="mainnet")   # or testnet
 
-# All 17 tools — zero cost, session receipts on every call
+# 17 free tools — session receipts on every call
 with Session(wallet, gateway_url="GATEWAY_URL_PLACEHOLDER") as session:
     page    = session.call("url_reader",      {"url": "https://example.com"})
     results = session.call("web_search",      {"query": "ETH gas fees today"})
@@ -228,11 +267,11 @@ with Session(wallet, gateway_url="GATEWAY_URL_PLACEHOLDER") as session:
 
     print(session.spending_summary())
     # { "calls": 5, "spent": "$0", "remaining": "$0.1", "tools": [...] }</code></pre>
-  <p class="snippet-note">All 17 tools are free. Every call gets a session receipt — every tool called, every cost, every timestamp. Works with LangChain, CrewAI, AutoGen, or plain Python. No USDC needed to start.</p>
+  <p class="snippet-note">17 tools are free. Every call gets a session receipt — tool called, cost, timestamp. Works with LangChain, CrewAI, AutoGen, or plain Python. No USDC needed to start.</p>
 </section>
 
 <section id="tools" class="tools">
-  <h2>17 tools — all free</h2>
+  <h2>18 tools — 17 free</h2>
   <ul class="tools-list">
 TOOLS_ROWS_PLACEHOLDER
   </ul>
@@ -248,13 +287,13 @@ TOOLS_ROWS_PLACEHOLDER
     </div>
     <div class="how-step">
       <span class="num">02</span>
-      <h3>Gateway returns 402</h3>
-      <p>HTTP 402 with payment instructions: amount, address, memo. Pure x402 protocol.</p>
+      <h3>Free tools return 200 directly</h3>
+      <p>17 tools return data immediately — no payment, no wallet required. Session receipt included on every call.</p>
     </div>
     <div class="how-step">
       <span class="num">03</span>
-      <h3>Pay on-chain, retry</h3>
-      <p>Agent sends USDC, retries with <code>X-Payment</code> header. Data returned, payment verified on-chain.</p>
+      <h3>Paid tools use x402</h3>
+      <p>Gateway returns HTTP 402 with payment instructions. Agent pays USDC on-chain, retries with <code>X-Payment</code> header. Payment verified on Stellar or Base.</p>
     </div>
   </div>
 </section>
@@ -264,7 +303,7 @@ TOOLS_ROWS_PLACEHOLDER
   <div class="networks-grid">
     <div class="network-card">
       <h3>Stellar mainnet</h3>
-      <p>Native USDC. Sub-cent settlement (~$0.000001 per tx). As of May 2026, Circle's CCTP is live on Stellar, so agents can fund from any of 23 supported chains and settle here. Ready for paid tools when metered inference ships.</p>
+      <p>Native USDC. Sub-cent settlement (~$0.000001 per tx). As of May 2026, Circle's CCTP is live on Stellar, so agents can fund from any of 23 supported chains and settle here. Used today for <code>session_create</code> ($0.001) — metered inference settles here next.</p>
     </div>
     <div class="network-card">
       <h3>Base mainnet</h3>
@@ -277,9 +316,10 @@ TOOLS_ROWS_PLACEHOLDER
 
 <footer>
   <div class="alignment">
-    AgentPay implements x402-v2 paywall headers with direct Horizon-verified settlement — aligned with the
-    <a href="https://developers.stellar.org/docs/build/agentic-payments/x402">Stellar Foundation's agentic payments roadmap</a>.
-    Compatible with MPP-Charge-style per-request settlement; no facilitator dependency required.
+    AgentPay is the economic intelligence layer for MCP servers and AI agents — x402-v2 payment protocol,
+    Horizon-verified Stellar settlement, and CDP Facilitator settlement on Base for
+    <a href="https://www.coinbase.com/en-gb/developer-platform/discover/launches/introducing-bazaar">Bazaar</a> auto-indexing.
+    Aligned with the <a href="https://developers.stellar.org/docs/build/agentic-payments/x402">Stellar Foundation's agentic payments roadmap</a>.
   </div>
   <ul>
     <li><a href="https://github.com/romudille-bit/agentpay">GitHub</a></li>

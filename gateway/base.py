@@ -30,7 +30,15 @@ from gateway.services import supabase as sb
 
 logger = logging.getLogger(__name__)
 
-FACILITATOR_URL = "https://x402.coinbase.com"
+# Coinbase CDP x402 facilitator — required for Base Bazaar auto-indexing.
+# When a payment flows through /settle here, Bazaar reads the resource_url
+# from paymentRequirements and indexes the tool at that URL automatically.
+# Old URL (still works but not Bazaar-aware): https://x402.coinbase.com
+CDP_FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402"
+
+# Legacy alias — kept so existing callers that reference FACILITATOR_URL
+# don't break. Remove once all internal callers are updated.
+FACILITATOR_URL = CDP_FACILITATOR_URL
 
 # In-memory replay protection for Base tx hashes
 _used_base_tx_hashes: set[str] = set()
@@ -292,16 +300,31 @@ async def settle_base_payment(
         result["network"] = payment_requirements.get("network", "")
         return result
 
+    # ── Mode A: CDP Facilitator ───────────────────────────────────────────────
+    # Call https://api.cdp.coinbase.com/platform/v2/x402/settle.
+    # The CDP facilitator submits the EIP-3009 signed tx on-chain and returns
+    # the tx hash. Critically, Bazaar reads the paymentRequirements.resource
+    # field on settlement and auto-indexes that URL — this is what makes
+    # AgentPay tools discoverable on Base Bazaar without manual submission.
+    #
+    # If CDP_API_KEY is set (optional), include it as a bearer token. Bazaar
+    # indexing works without it, but authenticated calls get higher rate limits
+    # and priority settlement. Set CDP_API_KEY in Railway env to enable.
+    from gateway.config import settings as _settings
+    cdp_headers: dict[str, str] = {"Content-Type": "application/json"}
+    if getattr(_settings, "CDP_API_KEY", ""):
+        cdp_headers["Authorization"] = f"Bearer {_settings.CDP_API_KEY}"
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                f"{FACILITATOR_URL}/settle",
+                f"{CDP_FACILITATOR_URL}/settle",
                 json={
                     "x402Version":        2,
                     "paymentPayload":     payload,
                     "paymentRequirements": payment_requirements,
                 },
-                headers={"Content-Type": "application/json"},
+                headers=cdp_headers,
             )
     except Exception as e:
         return {"success": False, "tx_hash": "", "payer": "", "network": "", "reason": f"Facilitator unreachable: {e}"}

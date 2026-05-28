@@ -32,6 +32,7 @@ from gateway.config import GATEWAY_URL, settings
 from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
 from gateway.routes.infra import router as infra_router
+from gateway.routes.session import router as session_router
 from gateway.routes.tools import router as tools_router
 from gateway.services import supabase as sb
 from gateway.services.supabase import sb_enabled, sb_headers
@@ -476,6 +477,7 @@ app.add_middleware(
 # ── Mount routers ─────────────────────────────────────────────────────────────
 app.include_router(infra_router)
 app.include_router(tools_router)
+app.include_router(session_router)
 app.include_router(discovery_router)
 app.include_router(faucet_router)
 

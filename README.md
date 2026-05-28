@@ -1,14 +1,23 @@
 # AgentPay — ![tests](https://github.com/romudille-bit/agentpay/actions/workflows/test.yml/badge.svg)
 
-Your agent makes API calls. You get a bill. You have no idea which calls were worth it.
+*If you are wondering how autonomous software entities discover, trust, pay, meter, and coordinate with each other safely —*
 
-AgentPay gives autonomous agents economic intelligence — a wallet, a budget cap, and the awareness to spend it well. Start with 17 free tools (no USDC needed). Get full session visibility. Add metered inference when you're ready to scale.
+**AgentPay is the economic intelligence layer for MCP servers and AI agents.**
 
-**Free tools:** `url_reader` · `web_search` · `market_snapshot` · and 14 more  
-**Developer visibility:** session receipts · agent profiles · spend anomalies  
-**Coming soon:** metered inference — pay per reasoning call, no subscription
+Agents spend money. Most don't know how much, or why, until the session ends and the bill arrives.
 
-**Live gateway**: `https://agentpay.tools`
+AgentPay gives agents economic intelligence — the ability to reason about cost while they work, not after.
+
+It starts with a budget. Every session opens with a hard cap enforced at the payment layer — not in code a model can ignore, but at the point where money moves. The agent knows from the first call exactly what it has to spend.
+
+Before calling a tool, it knows what that call costs. Mid-task, it can check what's left and route to a cheaper alternative if the math doesn't work. When the session ends, a receipt captures every call, every cost, every decision — not a debug log, but proof of economic accountability.
+
+The developer sees all of it: spending patterns per agent, anomaly flags when something loops or spikes, policy controls that enforce exactly which tools an agent can use and how much it can spend on each.
+
+The result is an agent that doesn't just have a budget. It knows how to use one.
+
+**Start free:** 18 tools, no USDC needed, no wallet setup required.  
+**Live gateway:** `https://agentpay.tools`
 
 ---
 
@@ -22,7 +31,7 @@ pip install agentpay-x402
 
 ## Quickstart — 5 lines, zero cost
 
-All 17 tools are free. No USDC, no wallet setup required to start.
+18 tools. 17 free. No USDC, no wallet setup required to start.
 
 ```python
 from agentpay import AgentWallet, Session
@@ -38,7 +47,7 @@ No API keys, no accounts, no config. Every call is session-tracked.
 
 ---
 
-## 17 Free Tools
+## 18 Tools (17 Free)
 
 Every call is session-tracked — you get a receipt showing every tool called, every cost, and every timestamp.
 
@@ -61,12 +70,13 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `crypto_news` | `currencies` (e.g. "ETH,BTC"), `filter` | headlines[] with title, url, sentiment, score |
 | `yield_scanner` | `token`, `chain` (optional), `min_tvl` | top 10 pools by APY with protocol, tvl_usd, risk_level |
 | `dune_query` | `query_id`, `limit`, `fast_only` | rows[], columns[], row_count from Dune Analytics |
+| `session_create` | `agent_address`, `max_spend`, `label` | session_id, budget config, gateway_url, receipt — **$0.001** |
 
 ---
 
 ## Session Intelligence
 
-This is what makes AgentPay different from a plain API wrapper. The Session gives your agent — or you — real visibility into what happened and why.
+This is the economic intelligence layer in practice. The Session gives your agent — and you — real visibility into what happened, what it cost, and why.
 
 ```python
 from agentpay import AgentWallet, Session, BudgetExceeded
@@ -151,7 +161,7 @@ with Session(wallet, gateway_url="https://agentpay.tools") as session:
 
 ## MCP Server
 
-AgentPay ships an MCP server that gives Claude Desktop direct access to all 17 tools. All tools are free — no USDC required.
+AgentPay ships an MCP server that gives Claude Desktop direct access to all 18 tools. 17 are free — no USDC required.
 
 ```bash
 npx @romudille/agentpay-mcp
@@ -177,9 +187,11 @@ Listed on [Glama](https://glama.ai/mcp/servers/romudille-bit/agentpay).
 
 ---
 
-## When paid tools arrive
+## Paid tool: session_create
 
-All tools are currently free. When metered inference ships, it works through the same Session interface — your agent checks cost, decides if it's worth it, and pays in USDC on Stellar or Base.
+One tool costs money today: `session_create` ($0.001 USDC per session). It opens a budget-capped session with a hard `max_spend` limit — for autonomous agents that need spend enforcement across multiple calls. All 17 data tools remain free.
+
+When metered inference ships, it works through the same Session interface — your agent checks cost, decides if it's worth it, and pays in USDC on Stellar or Base.
 
 ```python
 # Future — inference as a Session tool
@@ -192,13 +204,13 @@ else:
     result = session.call("url_reader", {"url": summary_url})  # cheaper path
 ```
 
-To fund a wallet when you need it: send USDC to a Stellar wallet (`S...` key, issuer `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`) or a Base wallet (`0x...`, contract `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
+To fund a wallet for `session_create`: send USDC to a Stellar wallet (`S...` key, issuer `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`) or a Base wallet (`0x...`, contract `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
 
 ---
 
 ## Architecture
 
-AgentPay is an x402 payment gateway — agents call tools, receive HTTP 402 payment challenges when tools are paid, pay in USDC on-chain, and get data back within their budget cap. Free tools skip the payment step entirely.
+AgentPay is an x402 payment gateway and economic intelligence layer — agents call tools within a hard budget cap, pay USDC on-chain when tools cost money, and accumulate a full session receipt as they work. Free tools skip the payment step entirely; the session tracking and cost awareness are always on.
 
 ```
 agent (Python SDK)
@@ -212,7 +224,7 @@ agent (Python SDK)
     ▼
 gateway (FastAPI on Railway)
     │
-    ├── registry/registry.py   — 17-tool catalog (all free today)
+    ├── registry/registry.py   — 18-tool catalog (17 free, session_create $0.001)
     ├── gateway/stellar.py     — Stellar payment verification via Horizon
     ├── gateway/base.py        — Base payment verification via JSON-RPC
     └── gateway/services/tools_runtime.py — real API dispatchers

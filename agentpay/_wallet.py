@@ -6,6 +6,8 @@ Two main classes:
   Session      — Budget-aware session with fallback routing
 """
 
+import base64
+import json
 import httpx
 import logging
 from decimal import Decimal
@@ -14,6 +16,9 @@ from stellar_sdk import (
     Keypair, Server, Network, Asset,
     TransactionBuilder
 )
+
+# ── Bazaar discovery endpoint (read-only, no API key required) ─────────────────
+BAZAAR_SEARCH_URL = "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search"
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +136,33 @@ def _extract_stellar_reason(exc) -> str:
 
 class AgentWallet:
     """
-    Stellar wallet for an AI agent.
-    Manages USDC payments to AgentPay gateway in response to 402 challenges.
+    Multi-network wallet for an AI agent.
+    Supports Stellar (primary) and Base EVM (optional) USDC payments.
+
+    Args:
+        secret_key:   Stellar secret key (S...).
+        network:      "mainnet" or "testnet" (applies to Stellar).
+        base_key:     Optional Base/EVM private key (0x...) for paying
+                      x402 tools that only accept Base USDC.
+                      Read from env var BASE_AGENT_KEY if not passed.
+
+    Example:
+        wallet = AgentWallet(
+            secret_key=os.environ["STELLAR_SECRET"],
+            network="mainnet",
+            base_key=os.environ.get("BASE_AGENT_KEY"),
+        )
     """
 
-    def __init__(self, secret_key: str, network: str = "testnet"):
+    # Base mainnet config
+    BASE_RPC_URL   = "https://mainnet.base.org"
+    BASE_CHAIN_ID  = 8453
+    BASE_USDC      = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    # ERC20 transfer(address,uint256) selector
+    _ERC20_TRANSFER_SIG = bytes.fromhex("a9059cbb")
+
+    def __init__(self, secret_key: str, network: str = "testnet", *, base_key: str = None):
+        import os
         self.keypair = Keypair.from_secret(secret_key)
         self.network = network
         self.server = Server(HORIZON_TESTNET if network == "testnet" else HORIZON_MAINNET)
@@ -149,6 +176,22 @@ class AgentWallet:
             USDC_ISSUER_TESTNET if network == "testnet" else USDC_ISSUER_MAINNET
         )
         self._total_spent = Decimal("0")
+
+        # ── Base/EVM wallet (optional) ────────────────────────────────────────
+        _base_key = base_key or os.environ.get("BASE_AGENT_KEY")
+        if _base_key:
+            try:
+                from eth_account import Account as _Account
+                self._evm_account = _Account.from_key(_base_key)
+                self.base_address = self._evm_account.address
+                logger.info(f"Base wallet loaded: {self.base_address[:10]}...")
+            except Exception as e:
+                logger.warning(f"Base wallet init failed: {e} — Base payments disabled")
+                self._evm_account = None
+                self.base_address = None
+        else:
+            self._evm_account = None
+            self.base_address = None
 
     @property
     def public_key(self) -> str:
@@ -211,6 +254,77 @@ class AgentWallet:
     def would_exceed_budget(self, amount_usdc: str, max_budget: str) -> bool:
         """Return True if paying this amount would exceed the budget."""
         return (self._total_spent + Decimal(amount_usdc)) > Decimal(max_budget)
+
+    def pay_evm(self, to: str, amount_raw: int) -> dict:
+        """
+        Send USDC on Base mainnet.
+
+        Args:
+            to:          Recipient EVM address (0x...).
+            amount_raw:  Amount in USDC smallest unit (6 decimals).
+                         e.g. 100000 = $0.10 USDC.
+
+        Returns:
+            {"success": True,  "tx_hash": "0x..."}
+            {"success": False, "reason": "..."}
+        """
+        if self._evm_account is None:
+            return {
+                "success": False,
+                "reason": (
+                    "Base wallet not configured. Pass base_key= to AgentWallet "
+                    "or set BASE_AGENT_KEY env var."
+                ),
+            }
+
+        try:
+            from eth_account import Account as _Account
+
+            # ── Build ERC20 transfer calldata ──────────────────────────────────
+            # transfer(address,uint256)
+            to_padded     = bytes.fromhex(to.removeprefix("0x").zfill(64))
+            amount_padded = amount_raw.to_bytes(32, "big")
+            calldata = self._ERC20_TRANSFER_SIG + to_padded + amount_padded
+
+            # ── RPC helpers ────────────────────────────────────────────────────
+            def _rpc(method: str, params: list):
+                resp = httpx.post(
+                    self.BASE_RPC_URL,
+                    json={"jsonrpc": "2.0", "method": method, "params": params, "id": 1},
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if "error" in data:
+                    raise Exception(f"RPC error: {data['error']}")
+                return data["result"]
+
+            nonce     = int(_rpc("eth_getTransactionCount", [self._evm_account.address, "latest"]), 16)
+            gas_price = int(_rpc("eth_gasPrice", []), 16)
+            gas_limit = 65_000   # ERC20 transfer is ~50k gas; small safety buffer
+
+            tx = {
+                "chainId":  self.BASE_CHAIN_ID,
+                "nonce":    nonce,
+                "to":       self.BASE_USDC,
+                "value":    0,
+                "data":     "0x" + calldata.hex(),
+                "gas":      gas_limit,
+                "gasPrice": gas_price,
+            }
+
+            signed  = self._evm_account.sign_transaction(tx)
+            raw_hex = "0x" + signed.raw_transaction.hex()
+            tx_hash = _rpc("eth_sendRawTransaction", [raw_hex])
+
+            self._total_spent += Decimal(amount_raw) / Decimal("1000000")
+            logger.info(f"Base payment sent: {amount_raw / 1e6:.6f} USDC → {to[:10]}... | tx: {tx_hash[:16]}...")
+            return {"success": True, "tx_hash": tx_hash}
+
+        except Exception as e:
+            reason = f"evm:{str(e)[:120]}"
+            logger.error(f"Base payment failed: {reason}")
+            return {"success": False, "reason": reason}
 
 
 # ── Budget-Aware Session ──────────────────────────────────────────────────────
@@ -360,9 +474,317 @@ class Session:
             ],
         }
 
+    # ── Bazaar discovery ──────────────────────────────────────────────────────
+
+    def discover(
+        self,
+        query: str,
+        max_price_usd: float = None,
+        limit: int = 5,
+        network: str = None,
+    ) -> list[dict]:
+        """
+        Search the x402 Bazaar for tools matching query, filtered by remaining budget.
+
+        Args:
+            query:         Natural language search, e.g. "whale activity" or "web search".
+            max_price_usd: Optional price ceiling in USD. Defaults to remaining budget.
+            limit:         Max results to return (Bazaar caps at 20).
+            network:       Optional CAIP-2 filter, e.g. "eip155:8453" for Base.
+
+        Returns:
+            List of dicts, each with:
+              "resource"    — the callable URL
+              "description" — what the tool does
+              "price_usd"   — cheapest payment option in USD
+              "network"     — network of the cheapest option
+              "accepts"     — full list of payment options
+
+        Example:
+            tools = session.discover("whale activity", max_price_usd=0.01)
+            print(tools[0]["resource"], tools[0]["price_usd"])
+            result = session.call(tools[0]["resource"], {"token": "ETH"})
+        """
+        remaining_usd = float(self.max_spend - self._spent)
+        effective_max = min(
+            max_price_usd if max_price_usd is not None else remaining_usd,
+            remaining_usd,
+        )
+
+        params: dict = {
+            "query": query,
+            "maxUsdPrice": f"{effective_max:.6f}",
+            "limit": min(limit, 20),
+        }
+        if network:
+            params["network"] = network
+
+        try:
+            resp = httpx.get(BAZAAR_SEARCH_URL, params=params, timeout=10.0)
+            if resp.status_code != 200:
+                logger.warning(f"Bazaar search returned {resp.status_code}")
+                return []
+
+            resources = resp.json().get("resources", [])
+            results = []
+            for r in resources:
+                accepts = r.get("accepts", [])
+                if not accepts:
+                    continue
+
+                # Build a clean list of payment options with USD prices
+                options = []
+                for a in accepts:
+                    try:
+                        amount_raw = int(a.get("amount", 0))
+                        price_usd = amount_raw / 1_000_000   # USDC has 6 decimals
+                        options.append({
+                            "price_usd":  price_usd,
+                            "network":    a.get("network", ""),
+                            "pay_to":     a.get("payTo", ""),
+                            "asset":      a.get("asset", ""),
+                            "scheme":     a.get("scheme", ""),
+                            "amount_raw": amount_raw,
+                        })
+                    except (ValueError, TypeError):
+                        continue
+
+                if not options:
+                    continue
+
+                cheapest = min(options, key=lambda x: x["price_usd"])
+                results.append({
+                    "resource":    r.get("resource", ""),
+                    "description": r.get("description", ""),
+                    "price_usd":   cheapest["price_usd"],
+                    "network":     cheapest["network"],
+                    "accepts":     options,
+                })
+
+            return results
+
+        except Exception as e:
+            logger.warning(f"Bazaar discover failed: {e}")
+            return []
+
+    def discover_and_call(
+        self,
+        query: str,
+        params: dict = None,
+        max_price_usd: float = None,
+    ) -> dict:
+        """
+        Discover the best tool for a query and call it in one step.
+
+        Searches Bazaar, picks the top result within budget, and calls it.
+        The agent never needs to know which specific URL was used.
+
+        Example:
+            result = session.discover_and_call(
+                "solana transaction explanation",
+                {"signature": "5KQw..."},
+            )
+        """
+        results = self.discover(query, max_price_usd=max_price_usd, limit=5)
+        if not results:
+            raise BudgetExceeded(
+                f"No tools found on Bazaar for '{query}' "
+                f"within remaining budget {self.remaining()}"
+            )
+
+        best = results[0]
+        logger.info(
+            f"[discover] '{query}' → {best['resource']} "
+            f"(${best['price_usd']:.4f}, {best['network']})"
+        )
+        return self.call(best["resource"], params or {})
+
+    # ── External x402 call ────────────────────────────────────────────────────
+
+    def _call_x402_url(self, url: str, params: dict) -> dict:
+        """
+        Call any external x402-compatible URL directly.
+
+        Handles the full x402 v2 payment flow:
+          1. POST to URL
+          2. Parse 402 payment requirements from response
+          3. Select a Stellar payment option from accepts[]
+          4. Pay via Stellar wallet
+          5. Retry with X-Payment header (base64 JSON proof)
+          6. Record spend in session
+
+        Currently supports Stellar mainnet and testnet.
+        Base/Solana support: add EVM wallet to AgentWallet (roadmap).
+        """
+        import time as _time
+
+        # ── Policy checks (reuse same guards as call()) ───────────────────────
+        if self._rate_limit is not None:
+            now = _time.monotonic()
+            self._rate_window = [t for t in self._rate_window if now - t < 60.0]
+            if len(self._rate_window) >= self._rate_limit:
+                raise BudgetExceeded(
+                    f"Rate limit exceeded: max {self._rate_limit} calls/min"
+                )
+            self._rate_window.append(now)
+
+        with httpx.Client(timeout=60.0) as client:
+            # ── First request — probe for 402 ─────────────────────────────────
+            logger.info(f"→ x402 external call: {url}")
+            try:
+                resp = client.post(url, json=params)
+            except Exception as e:
+                raise Exception(f"External x402 call failed: {e}")
+
+            if resp.status_code == 200:
+                return resp.json()
+
+            if resp.status_code != 402:
+                raise Exception(
+                    f"Expected 200 or 402 from {url}, got {resp.status_code}: {resp.text[:200]}"
+                )
+
+            # ── Parse x402 v2 payment requirements ────────────────────────────
+            # External tools use the x402 v2 standard: body contains {"accepts": [...]}
+            try:
+                data = resp.json()
+                accepts = data.get("accepts", [])
+            except Exception:
+                raise Exception(f"Could not parse 402 response from {url}: {resp.text[:200]}")
+
+            if not accepts:
+                raise Exception(f"402 from {url} had no payment requirements in 'accepts'")
+
+            # ── Find a Stellar-compatible option ──────────────────────────────
+            stellar_network = (
+                "stellar:pubnet" if self.wallet.network == "mainnet"
+                else "stellar:testnet"
+            )
+
+            stellar_option = next(
+                (a for a in accepts if stellar_network in a.get("network", "")),
+                None,
+            )
+
+            # ── Select best payment option ─────────────────────────────────────
+            # Priority: Base mainnet (eip155:8453) if EVM wallet available,
+            # then Stellar, then any other.
+            base_network   = "eip155:8453"
+            stellar_network_id = (
+                "stellar:pubnet" if self.wallet.network == "mainnet"
+                else "stellar:testnet"
+            )
+
+            base_option = (
+                next((a for a in accepts if a.get("network") == base_network), None)
+                if self.wallet.base_address
+                else None
+            )
+            stellar_option = next(
+                (a for a in accepts if stellar_network_id in a.get("network", "")),
+                None,
+            )
+            chosen = base_option or stellar_option
+
+            if chosen is None:
+                networks = list({a.get("network", "?") for a in accepts})
+                raise NotImplementedError(
+                    f"Tool at {url} requires payment on {networks}. "
+                    f"Configure a Base wallet (base_key= or BASE_AGENT_KEY) "
+                    f"or a Stellar wallet to pay on those networks."
+                )
+
+            amount_raw  = int(chosen["amount"])
+            amount_usdc = f"{amount_raw / 1_000_000:.6f}"
+            pay_to      = chosen["payTo"]
+            pay_network = chosen.get("network", "")
+            pay_scheme  = chosen.get("scheme", "exact")
+
+            # ── Budget check ──────────────────────────────────────────────────
+            if self.would_exceed(amount_usdc):
+                raise BudgetExceeded(
+                    f"Tool costs ${float(amount_usdc):.4f} but only "
+                    f"{self.remaining()} remains (budget: {_fmt(self.max_spend)})"
+                )
+
+            # ── Pay on selected network ───────────────────────────────────────
+            if chosen is base_option:
+                logger.info(f"  402 — paying {amount_usdc} USDC to {pay_to[:10]}... (Base)")
+                payment = self.wallet.pay_evm(
+                    to=pay_to,
+                    amount_raw=amount_raw,
+                )
+                payer_address = self.wallet.base_address
+            else:
+                logger.info(f"  402 — paying {amount_usdc} USDC to {pay_to[:10]}... (Stellar)")
+                payment = self.wallet.pay(
+                    destination=pay_to,
+                    amount_usdc=amount_usdc,
+                    memo="agentpay-x402",
+                )
+                payer_address = self.wallet.public_key
+
+            if not payment["success"]:
+                raise PaymentFailed(payment["reason"])
+
+            tx_hash = payment["tx_hash"]
+            logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
+
+            # ── Build x402 v2 X-Payment header ────────────────────────────────
+            proof_payload = {
+                "x402Version": 2,
+                "scheme":      pay_scheme,
+                "network":     pay_network,
+                "payload": {
+                    "signature": tx_hash,
+                    "from":      payer_address,
+                },
+            }
+            x_payment = base64.b64encode(
+                json.dumps(proof_payload).encode()
+            ).decode()
+
+            # ── Retry with payment proof ──────────────────────────────────────
+            retry = client.post(
+                url,
+                json=params,
+                headers={
+                    "X-Payment":       x_payment,
+                    "X-Agent-Address": payer_address,
+                },
+            )
+
+            if retry.status_code != 200:
+                raise Exception(
+                    f"External x402 call failed after payment: {retry.status_code} {retry.text[:200]}"
+                )
+
+            result = retry.json()
+
+            # ── Record spend ──────────────────────────────────────────────────
+            cost = Decimal(amount_usdc)
+            self._spent += cost
+            self._call_log.append({
+                "tool":        url,
+                "amount_usdc": amount_usdc,
+                "tx_hash":     tx_hash,
+                "success":     True,
+                "external":    True,
+            })
+
+            logger.info(f"  ✓ External x402 call complete | spent {_fmt(cost)}")
+            return result
+
     def call(self, tool_name: str, params: dict = None) -> dict:
         """
         Call a paid tool within budget.
+
+        Accepts either:
+          - A tool name from AgentPay's registry ("token_price", "whale_activity", ...)
+          - Any external x402-compatible URL ("https://api.oatp.cc/tools/tx_explainer")
+
+        For external URLs, payment goes directly to the tool provider.
+        AgentPay tracks the spend locally and enforces the budget cap.
 
         - Pre-checks the price against remaining budget.
         - If budget would be exceeded, looks for the next-cheapest tool in the
@@ -373,6 +795,10 @@ class Session:
         """
         import time as _time
         from agentpay._client import AgentPayClient
+
+        # ── External x402 URL: route directly, skip AgentPay registry ─────────
+        if isinstance(tool_name, str) and tool_name.startswith(("http://", "https://")):
+            return self._call_x402_url(tool_name, params or {})
 
         params = params or {}
 
