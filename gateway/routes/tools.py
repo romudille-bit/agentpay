@@ -157,6 +157,56 @@ async def call_tool(
     agent_address = x_agent_address or body.agent_address
     resource_url  = f"{GATEWAY_URL}/tools/{tool_name}/call"
 
+    # ── Step 0: Free tools → run directly, no 402, no payment path ────────────
+    # Free tools (price_usdc == 0) must NOT enter the x402 flow. Issuing a 402
+    # for them forces every client down the payment path — and an agent that
+    # tries to "pay" $0 on Stellar from an unfunded/ephemeral account fails
+    # with 'Resource Missing'. (That's the exact symptom the Base demo hit on
+    # its free-tool calls.) The product promise is "17 free tools, no USDC
+    # needed", so short-circuit straight to execution with a zero-cost receipt.
+    try:
+        _is_free = Decimal(tool.price_usdc) == 0
+    except Exception:
+        _is_free = False
+
+    if _is_free and not x_payment and not payment_signature:
+        agent_short = (agent_address or "unknown")[:8]
+        logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=free_direct")
+        registry.increment_call_count(resolved)
+        try:
+            if not tool.endpoint:
+                tool_result = await real_tool_response(resolved, body.parameters)
+            else:
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(
+                            tool.endpoint,
+                            json={"parameters": body.parameters},
+                            headers={"Content-Type": "application/json"},
+                        )
+                        if response.status_code != 200:
+                            raise httpx.ConnectError("Tool server returned non-200")
+                        tool_result = response.json()
+                except httpx.ConnectError:
+                    logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
+                    tool_result = await real_tool_response(resolved, body.parameters)
+        except Exception as e:
+            logger.error(f"Free tool execution error: {e}")
+            raise HTTPException(status_code=502, detail=f"Tool execution failed: {str(e)[:200]}")
+
+        append_transaction({
+            "tool": tool_name,
+            "amount_usdc": "0",
+            "agent": agent_address,
+            "tx_hash": None,
+            "success": True,
+        })
+        return {
+            "tool": tool_name,
+            "result": tool_result,
+            "payment": {"amount_usdc": "0", "tx_hash": None, "network": "free"},
+        }
+
     # ── Step 1: No payment → 402 with both Stellar + Base options ────────────
     if not x_payment and not payment_signature:
         agent_short = (agent_address or "unknown")[:8]

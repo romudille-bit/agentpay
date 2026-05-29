@@ -40,6 +40,7 @@ from agentpay.client import (
     TESTNET_GATEWAY,
     MAINNET_GATEWAY,
 )
+from agentpay.budget_policy import budget_policy, BudgetDecision
 
 __version__ = "0.1.4"
 __all__ = [
@@ -51,4 +52,6 @@ __all__ = [
     "faucet_wallet",
     "TESTNET_GATEWAY",
     "MAINNET_GATEWAY",
+    "budget_policy",
+    "BudgetDecision",
 ]
