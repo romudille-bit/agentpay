@@ -68,6 +68,45 @@ class TestHappyPath:
         assert result["result"]["price_usd"] == 2070.13
 
 
+# ── Free tool ($0): SDK skips settlement, never calls wallet.pay ─────────────
+
+class TestFreeTool:
+
+    FREE_402 = {
+        "payment_id":  "free-uuid-456",
+        "amount_usdc": "0.000",
+        "pay_to":      "GFAKEPAYTOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    }
+
+    def test_free_tool_skips_payment(self, fake_wallet):
+        """A $0 challenge must NOT trigger an on-chain payment. The wallet
+        here would FAIL if paid (simulating an unfunded account), so the
+        only way this passes is if the SDK skips settlement for $0 and
+        retries with a free proof."""
+        # If the SDK ever calls .pay here, the test fails loudly.
+        fake_wallet.pay.side_effect = AssertionError("wallet.pay must not be called for a free tool")
+
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            route = respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=self.FREE_402),
+                httpx.Response(200, json={
+                    "tool": "token_price",
+                    "result": {"price_usd": 2070.13},
+                    "payment": {"amount_usdc": "0.000", "tx_hash": ""},
+                }),
+            ])
+            result = client.call_tool("token_price", {"symbol": "ETH"})
+
+        assert result["result"]["price_usd"] == 2070.13
+        assert fake_wallet.pay.call_count == 0
+        # Retry carried a unique free proof derived from the payment_id.
+        retry_req = route.calls[-1].request
+        assert b"free:free-uuid-456" in retry_req.headers["X-Payment"].encode()
+        # Recorded at $0 in the call log.
+        assert client.call_log[-1]["amount_usdc"] == "0.000"
+
+
 # ── 502 with refund_pending body → RefundPending raised ──────────────────────
 
 class TestRefundPendingParse:

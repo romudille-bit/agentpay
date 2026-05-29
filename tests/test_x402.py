@@ -404,6 +404,40 @@ class TestVerifyAndFulfill:
         assert patched_x402["split_payment"] == 0
 
     @pytest.mark.asyncio
+    async def test_free_tool_authorizes_without_onchain_verify(
+        self, patched_x402, mock_settings
+    ):
+        """A $0 (free) challenge authorizes WITHOUT calling verify_payment.
+
+        Free tools issue a 402 and flow through the lifecycle for analytics,
+        but there is nothing to settle on-chain — so verify_payment must be
+        skipped entirely (a $0 settlement would fail on an unfunded wallet).
+        Replay/consume side-effects still fire so the lifecycle is intact.
+        """
+        challenge = issue_payment_challenge(
+            tool_name="token_price",
+            price_usdc="0.000",                       # ← free
+            developer_address=mock_settings.GATEWAY_PUBLIC_KEY,
+            request_data={"parameters": {"symbol": "ETH"}},
+        )
+        # The SDK sends a unique free sentinel rather than a real tx hash.
+        proof = (
+            f"tx_hash=free:{challenge.payment_id},"
+            f"from=GAGENT,"
+            f"id={challenge.payment_id}"
+        )
+        result = await verify_and_fulfill(
+            payment_header=proof,
+            agent_address="GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGEN",
+        )
+
+        assert result["authorized"] is True
+        # The on-chain verifier was NOT called for a free tool.
+        assert patched_x402["verify_payment"] == 0
+        # Challenge was still consumed (replay protection intact).
+        assert challenge.payment_id not in _pending_challenges
+
+    @pytest.mark.asyncio
     async def test_replay_attack_short_circuits(self, patched_x402, mock_settings):
         """Replay protection runs BEFORE verify_payment, so the dual-write
         side-effects never fire on a replay. This pins the order: free

@@ -29,6 +29,7 @@ from registry import reload_tools
 
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
+from gateway.routes.agent import router as agent_router
 from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
 from gateway.routes.infra import router as infra_router
@@ -490,6 +491,7 @@ app.include_router(tools_router)
 app.include_router(session_router)
 app.include_router(discovery_router)
 app.include_router(faucet_router)
+app.include_router(agent_router)
 
 
 if __name__ == "__main__":

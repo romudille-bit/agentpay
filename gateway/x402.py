@@ -23,6 +23,7 @@ import time
 import hashlib
 import json
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 from dataclasses import dataclass, asdict
 
@@ -292,14 +293,28 @@ async def verify_and_fulfill(
     if await _is_replay(payment_id, tx_hash, network_label):
         return {"authorized": False, "reason": "Payment already used (replay attack)"}
 
-    # Verify payment on Stellar
-    result = await verify_payment(
-        from_address=agent_address,
-        to_address=challenge_data["gateway_address"],
-        amount_usdc=challenge_data["amount_usdc"],
-        payment_id=payment_id,
-        tx_hash=tx_hash or "",
-    )
+    # Free tools ($0 challenge): there is no on-chain payment to verify. Skip
+    # the Stellar verification entirely so an agent can use free tools without
+    # a funded wallet (a $0 settlement would fail on an unfunded account). The
+    # challenge still goes through expiry + replay checks above and is consumed
+    # below, so the lifecycle (pending → payment_done) and replay protection
+    # are preserved for analytics.
+    try:
+        _is_free = Decimal(str(challenge_data["amount_usdc"])) == 0
+    except (InvalidOperation, ValueError, TypeError):
+        _is_free = False
+
+    if _is_free:
+        result = {"verified": True, "reason": "free_tool"}
+    else:
+        # Verify payment on Stellar
+        result = await verify_payment(
+            from_address=agent_address,
+            to_address=challenge_data["gateway_address"],
+            amount_usdc=challenge_data["amount_usdc"],
+            payment_id=payment_id,
+            tx_hash=tx_hash or "",
+        )
 
     if not result["verified"]:
         return {"authorized": False, "reason": result["reason"]}

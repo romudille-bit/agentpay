@@ -74,19 +74,28 @@ class AgentPayClient:
                     f"which exceeds max_spend={max_spend}"
                 )
 
-            # ── Send payment on Stellar ────────────────────────────────────
-            logger.info(f"  Sending payment on Stellar {self.wallet.network}...")
-            payment = self.wallet.pay(
-                destination=pay_to,
-                amount_usdc=amount_usdc,
-                memo=payment_id[:28],
-            )
-
-            if not payment["success"]:
-                raise PaymentFailed(payment["reason"])
-
-            tx_hash = payment["tx_hash"]
-            logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
+            # ── Free tool ($0 challenge): no on-chain settlement ───────────
+            # The gateway issues a 402 for free tools too (so every call gets
+            # a payment_logs row + receipt), but there is nothing to pay. Skip
+            # wallet.pay — a $0 Stellar settlement would fail on an unfunded
+            # account — and retry with a unique free proof. The tx_hash is
+            # derived from the (unique) payment_id so it never collides with a
+            # prior free call's replay record.
+            if Decimal(str(amount_usdc)) == 0:
+                tx_hash = f"free:{payment_id}"
+                logger.info(f"  ✓ {tool_name} is free — skipping settlement")
+            else:
+                # ── Send payment on Stellar ────────────────────────────────
+                logger.info(f"  Sending payment on Stellar {self.wallet.network}...")
+                payment = self.wallet.pay(
+                    destination=pay_to,
+                    amount_usdc=amount_usdc,
+                    memo=payment_id[:28],
+                )
+                if not payment["success"]:
+                    raise PaymentFailed(payment["reason"])
+                tx_hash = payment["tx_hash"]
+                logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
 
             # ── Retry with payment proof ───────────────────────────────────
             proof_header = (
