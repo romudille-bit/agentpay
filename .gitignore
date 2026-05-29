@@ -55,6 +55,8 @@ usage_reports/
 STRATEGY.md
 COPY_UPDATES.md
 twitter_positioning_v1.md
+POSITIONING.md
+PLAN.md
 
 # Local agent skill plugins
 .agents/
