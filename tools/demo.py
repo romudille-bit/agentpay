@@ -285,18 +285,26 @@ wait("Searching for a third-party x402 tool to combine with...")
 candidates = bazaar_search("crypto data") + bazaar_search("market")
 time.sleep(0.4)
 
+def _callable_url(resource: str) -> bool:
+    """Skip resources we can't call blindly: non-http, or URL templates with
+    an unfilled path placeholder like '/:endpoint' (needs a param we don't
+    have). Note '/:' never matches the '://' in the scheme."""
+    if not resource.startswith("http"):
+        return False
+    if "/:" in resource or "{" in resource:
+        return False
+    return True
+
 external = None
 for res in candidates:
     resource = res.get("resource", "")
-    if not resource.startswith("http"):
+    if not _callable_url(resource):
         continue
     if "agentpay" in resource or GATEWAY_ADDR.lower() in json.dumps(res).lower():
         continue
     price = cheapest_usd(res)
     if price is None:
         continue
-    # Must be affordable AND leave room so a SECOND call would breach the cap
-    # (that's what we use to demonstrate the budget biting).
     if 0 < price <= float(BUDGET):
         external = {
             "resource": resource,
@@ -304,6 +312,22 @@ for res in candidates:
             "desc": res.get("description", "")[:70],
         }
         break
+
+# Safe fallback: pin a known-good x402 tool via DEMO_EXTERNAL_URL when discovery
+# finds nothing cleanly callable, so the combine step always has something to
+# show. Format:  DEMO_EXTERNAL_URL="https://...|0.001"  (url|price_usd)
+if external is None and os.environ.get("DEMO_EXTERNAL_URL"):
+    raw = os.environ["DEMO_EXTERNAL_URL"]
+    url_part, _, price_part = raw.partition("|")
+    if _callable_url(url_part.strip()):
+        try:
+            external = {
+                "resource": url_part.strip(),
+                "price": float(price_part) if price_part else 0.001,
+                "desc": "pinned via DEMO_EXTERNAL_URL",
+            }
+        except ValueError:
+            external = None
 
 if external:
     tick("Found a third-party x402 tool on Base")

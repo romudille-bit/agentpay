@@ -326,6 +326,71 @@ class AgentWallet:
             logger.error(f"Base payment failed: {reason}")
             return {"success": False, "reason": reason}
 
+    def build_base_payment_signature(self, accept: dict, resource_url: str) -> str:
+        """
+        Sign an EIP-3009 transferWithAuthorization OFF-CHAIN for an x402 Base
+        payment option and return the base64 X-PAYMENT payload.
+
+        Crucially, NOTHING is broadcast here. The signed authorization is
+        settled server-side by the resource server's facilitator ONLY if the
+        request is accepted — so a rejected retry costs nothing. This is the
+        gasless x402 v2 flow (the same one the gateway's session_create uses),
+        and it fixes the "paid on-chain then rejected" loss that a raw ERC-20
+        transfer + tx_hash proof produced against CDP-facilitator tools.
+
+        Args:
+            accept:        One entry from the 402 response 'accepts' list
+                           (amount, asset, payTo, network, scheme, extra).
+            resource_url:  The tool URL being paid for.
+
+        Returns:
+            base64-encoded x402 v2 PaymentPayload, ready for the X-PAYMENT
+            header.
+
+        Raises:
+            RuntimeError:  if no Base wallet is configured.
+            ImportError:   if the x402[evm] extra isn't installed.
+        """
+        if self._evm_account is None:
+            raise RuntimeError(
+                "Base wallet not configured. Pass base_key= to AgentWallet "
+                "or set BASE_AGENT_KEY env var."
+            )
+        from x402.mechanisms.evm.signers import EthAccountSigner
+        from x402.mechanisms.evm.exact.client import ExactEvmScheme
+        from x402.schemas import PaymentRequirements
+
+        amount  = str(accept["amount"])
+        asset   = accept.get("asset") or self.BASE_USDC
+        pay_to  = accept["payTo"]
+        network = accept.get("network", "eip155:8453")
+        scheme_name = accept.get("scheme", "exact")
+        timeout = int(accept.get("maxTimeoutSeconds", 300))
+        extra   = accept.get("extra") or {
+            "name": "USD Coin", "version": "2", "assetTransferMethod": "eip3009",
+        }
+
+        signer = EthAccountSigner(self._evm_account)
+        scheme = ExactEvmScheme(signer)
+        requirements = PaymentRequirements(
+            scheme=scheme_name, network=network, asset=asset, amount=amount,
+            pay_to=pay_to, max_timeout_seconds=timeout, extra=extra,
+        )
+        payload_dict = scheme.create_payment_payload(requirements)
+
+        payment_payload = {
+            "x402Version": 2,
+            "payload": payload_dict,
+            "resource": {"url": resource_url, "mimeType": "application/json"},
+            "accepted": {
+                "scheme": scheme_name, "network": network, "amount": amount,
+                "asset": asset, "payTo": pay_to, "maxTimeoutSeconds": timeout,
+                "resource": resource_url, "mimeType": "application/json",
+                "extra": extra,
+            },
+        }
+        return base64.b64encode(json.dumps(payment_payload).encode()).decode()
+
 
 # ── Budget-Aware Session ──────────────────────────────────────────────────────
 
@@ -707,61 +772,71 @@ class Session:
                     f"{self.remaining()} remains (budget: {_fmt(self.max_spend)})"
                 )
 
-            # ── Pay on selected network ───────────────────────────────────────
+            # ── Pay on the selected network and retry ─────────────────────────
+            tx_hash = ""
             if chosen is base_option:
-                logger.info(f"  402 — paying {amount_usdc} USDC to {pay_to[:10]}... (Base)")
-                payment = self.wallet.pay_evm(
-                    to=pay_to,
-                    amount_raw=amount_raw,
-                )
+                # Base: sign EIP-3009 OFF-CHAIN — nothing is broadcast. The
+                # resource server's facilitator settles the authorization only
+                # if it accepts the request, so a rejected retry moves no funds.
+                # (This replaces the old raw ERC-20 transfer + tx_hash proof,
+                # which paid on-chain BEFORE the provider accepted and lost USDC
+                # against CDP-facilitator tools.)
+                logger.info(f"  402 — signing {amount_usdc} USDC auth for {pay_to[:10]}... (Base, off-chain)")
+                try:
+                    x_payment = self.wallet.build_base_payment_signature(chosen, url)
+                except Exception as e:
+                    raise PaymentFailed(f"evm:could not sign x402 payment: {str(e)[:160]}")
                 payer_address = self.wallet.base_address
+
+                retry = client.post(
+                    url,
+                    json=params,
+                    headers={
+                        "X-PAYMENT":         x_payment,   # x402 v2 standard header
+                        "PAYMENT-SIGNATURE": x_payment,   # alias some gateways use
+                        "X-Agent-Address":   payer_address,
+                    },
+                )
+                if retry.status_code != 200:
+                    # No broadcast happened — no USDC left the wallet.
+                    raise Exception(
+                        f"External x402 call rejected (no payment settled): "
+                        f"{retry.status_code} {retry.text[:200]}"
+                    )
+                result = retry.json()
+                if isinstance(result, dict):
+                    tx_hash = ((result.get("payment") or {}).get("tx_hash")) or ""
             else:
+                # Stellar: broadcast the payment, then prove it with the tx_hash.
                 logger.info(f"  402 — paying {amount_usdc} USDC to {pay_to[:10]}... (Stellar)")
                 payment = self.wallet.pay(
-                    destination=pay_to,
-                    amount_usdc=amount_usdc,
-                    memo="agentpay-x402",
+                    destination=pay_to, amount_usdc=amount_usdc, memo="agentpay-x402",
                 )
+                if not payment["success"]:
+                    raise PaymentFailed(payment["reason"])
+                tx_hash = payment["tx_hash"]
                 payer_address = self.wallet.public_key
+                logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
 
-            if not payment["success"]:
-                raise PaymentFailed(payment["reason"])
-
-            tx_hash = payment["tx_hash"]
-            logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
-
-            # ── Build x402 v2 X-Payment header ────────────────────────────────
-            proof_payload = {
-                "x402Version": 2,
-                "scheme":      pay_scheme,
-                "network":     pay_network,
-                "payload": {
-                    "signature": tx_hash,
-                    "from":      payer_address,
-                },
-            }
-            x_payment = base64.b64encode(
-                json.dumps(proof_payload).encode()
-            ).decode()
-
-            # ── Retry with payment proof ──────────────────────────────────────
-            retry = client.post(
-                url,
-                json=params,
-                headers={
-                    "X-Payment":       x_payment,
-                    "X-Agent-Address": payer_address,
-                },
-            )
-
-            if retry.status_code != 200:
-                raise Exception(
-                    f"External x402 call failed after payment: {retry.status_code} {retry.text[:200]}"
+                proof_payload = {
+                    "x402Version": 2,
+                    "scheme":      pay_scheme,
+                    "network":     pay_network,
+                    "payload":     {"signature": tx_hash, "from": payer_address},
+                }
+                x_payment = base64.b64encode(json.dumps(proof_payload).encode()).decode()
+                retry = client.post(
+                    url,
+                    json=params,
+                    headers={"X-Payment": x_payment, "X-Agent-Address": payer_address},
                 )
+                if retry.status_code != 200:
+                    raise Exception(
+                        f"External x402 call failed after payment: {retry.status_code} {retry.text[:200]}"
+                    )
+                result = retry.json()
 
-            result = retry.json()
-
-            # ── Record spend ──────────────────────────────────────────────────
+            # ── Record spend (only reached when the call returned 200) ─────────
             cost = Decimal(amount_usdc)
             self._spent += cost
             self._call_log.append({

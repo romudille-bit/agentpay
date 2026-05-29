@@ -43,6 +43,17 @@ class AgentPayClient:
             resp = client.post(url, json=payload)
 
             if resp.status_code == 200:
+                # Free tool — the gateway returns 200 directly with no 402.
+                # Record it anyway (at $0) so it appears in the session receipt.
+                # Full session visibility means every call shows up, free or paid.
+                self.call_log.append({
+                    "tool": tool_name,
+                    "amount_usdc": "0",
+                    "tx_hash": None,
+                    "success": True,
+                    "free": True,
+                })
+                logger.info(f"  ✓ {tool_name} (free) — logged at $0")
                 return resp.json()
 
             if resp.status_code != 402:
