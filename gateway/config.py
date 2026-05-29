@@ -63,12 +63,12 @@ class Settings(BaseSettings):
     # calls (POST /settle). The CDP Facilitator returns 401 without these.
     # Bazaar auto-indexing only works when settlement flows through CDP.
     #
-    # CDP_KEY_NAME:   key name from portal.cdp.coinbase.com
-    #                 e.g. "organizations/abc.../apiKeys/xyz..."
-    # CDP_KEY_SECRET: EC private key in PEM format. In Railway, store with
-    #                 literal \n characters — the gateway restores them on load.
-    #                 e.g. "-----BEGIN EC PRIVATE KEY-----\nMHQC...\n-----END EC PRIVATE KEY-----\n"
-    CDP_KEY_NAME:   str = ""
+    # CDP_KEY_ID:     Key ID from portal.cdp.coinbase.com → Secret API keys
+    #                 (UUID format, e.g. "472e91b4-...")
+    # CDP_KEY_SECRET: API key secret from the same portal.
+    #                 Ed25519 keys: short base64 string.
+    #                 EC keys (cloud.coinbase.com): PEM string with literal \n.
+    CDP_KEY_ID:     str = ""
     CDP_KEY_SECRET: str = ""
 
     # PR #12: Async on-chain refund worker. When False (default),

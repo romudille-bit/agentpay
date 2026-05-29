@@ -76,39 +76,53 @@ def _network_label(caip2: str) -> str:
     return _CAIP2_TO_NETWORK_LABEL.get(caip2, caip2)
 
 
-def _build_cdp_jwt(key_name: str, key_secret_raw: str, uri: str) -> str:
-    """Build a signed ES256 JWT for Coinbase CDP API authentication.
+def _build_cdp_jwt(key_id: str, key_secret_raw: str, uri: str) -> str:
+    """Build a signed JWT for Coinbase CDP API authentication.
 
     CDP expects:
       Authorization: Bearer <jwt>
 
-    where the JWT is signed with the EC private key from the CDP portal.
+    Auto-detects key type from the secret format:
+      - PEM string (starts with '-----BEGIN'): EC key → ES256
+      - Short base64 string (Ed25519 seed):    Ed25519 key → EdDSA
 
     Args:
-        key_name:       CDP key name, e.g. "organizations/abc.../apiKeys/xyz..."
-        key_secret_raw: PEM private key — Railway stores it with literal \\n;
-                        we convert those back to real newlines before parsing.
+        key_id:         CDP key ID from portal.cdp.coinbase.com
+                        (UUID format or "organizations/.../apiKeys/..." format)
+        key_secret_raw: Key secret. For Ed25519 (portal): short base64 string.
+                        For EC keys (cloud.coinbase.com): PEM with literal \\n.
         uri:            Request URI in CDP format: "METHOD hostname/path"
                         e.g. "POST api.cdp.coinbase.com/platform/v2/x402/settle"
     """
-    # Railway env vars can't store literal newlines — the PEM key arrives with
-    # \\n (backslash-n string). Convert to real newlines before loading.
-    pem = key_secret_raw.replace("\\n", "\n").encode()
-    private_key = load_pem_private_key(pem, password=None)
+    import base64 as _base64
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    secret = key_secret_raw.strip()
+
+    if secret.startswith("-----BEGIN"):
+        # EC/RSA PEM key — Railway stores with literal \n, restore newlines
+        pem = secret.replace("\\n", "\n").encode()
+        private_key = load_pem_private_key(pem, password=None)
+        algorithm = "ES256"
+    else:
+        # Ed25519 seed — base64-encoded 32-byte raw key from CDP portal
+        seed = _base64.b64decode(secret + "==")   # pad to avoid truncation errors
+        private_key = Ed25519PrivateKey.from_private_bytes(seed[:32])
+        algorithm = "EdDSA"
 
     now = int(time.time())
     payload = {
-        "sub":   key_name,
+        "sub":   key_id,
         "iss":   "cdp",
         "nbf":   now,
         "exp":   now + 120,
         "uri":   uri,
     }
     headers = {
-        "kid":   key_name,
+        "kid":   key_id,
         "nonce": secrets.token_hex(16),
     }
-    return jwt.encode(payload, private_key, algorithm="ES256", headers=headers)
+    return jwt.encode(payload, private_key, algorithm=algorithm, headers=headers)
 
 
 def get_chain_config(network: str) -> tuple[str, str]:
@@ -345,15 +359,17 @@ async def settle_base_payment(
     # the tx hash. Bazaar reads paymentRequirements.resource on settlement and
     # auto-indexes that URL — this is what makes AgentPay discoverable on Bazaar.
     #
-    # Auth: CDP requires a signed ES256 JWT (not a plain bearer token).
-    # Set CDP_KEY_NAME + CDP_KEY_SECRET in Railway env vars to enable.
+    # Auth: CDP requires a signed JWT. Ed25519 keys (portal.cdp.coinbase.com)
+    # use EdDSA; EC keys (cloud.coinbase.com) use ES256. Auto-detected.
+    # Set CDP_KEY_ID + CDP_KEY_SECRET in Railway env vars to enable.
     from gateway.config import settings as _settings
     cdp_headers: dict[str, str] = {"Content-Type": "application/json"}
-    if _settings.CDP_KEY_NAME and _settings.CDP_KEY_SECRET:
+    if _settings.CDP_KEY_ID and _settings.CDP_KEY_SECRET:
         settle_uri = f"POST {CDP_FACILITATOR_URL.removeprefix('https://')}/settle"
         try:
-            token = _build_cdp_jwt(_settings.CDP_KEY_NAME, _settings.CDP_KEY_SECRET, settle_uri)
+            token = _build_cdp_jwt(_settings.CDP_KEY_ID, _settings.CDP_KEY_SECRET, settle_uri)
             cdp_headers["Authorization"] = f"Bearer {token}"
+            logger.info(f"[BASE] CDP JWT built for key {_settings.CDP_KEY_ID[:8]}...")
         except Exception as e:
             logger.warning(f"[BASE] CDP JWT build failed: {e} — proceeding unauthenticated")
 
