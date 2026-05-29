@@ -151,6 +151,10 @@ def build_payment_requirements(
     the /settle request to the CDP facilitator.
     """
     caip2, usdc_contract = get_chain_config(network)
+    # Token name must match the USDC contract's EIP-712 domain exactly.
+    # Base mainnet: "USD Coin" — Base Sepolia: "USDC"
+    # CDP Facilitator reads extra.name to reconstruct the domain for sig verification.
+    token_name = "USD Coin" if caip2 == CAIP2_BASE_MAINNET else "USDC"
     return {
         "scheme":            "exact",
         "network":           caip2,
@@ -162,9 +166,9 @@ def build_payment_requirements(
         "description":       "AgentPay tool call",
         "mimeType":          "application/json",
         "extra": {
-            "name":                "USDC",
+            "name":                token_name,
             "version":             "2",
-            "assetTransferMethod": "eip3009",   # preferred for USDC on Base
+            "assetTransferMethod": "eip3009",
         },
     }
 
