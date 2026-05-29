@@ -21,3 +21,6 @@ slowapi>=0.1.9
 uvicorn>=0.30
 pydantic-settings>=2.0
 stellar-sdk>=10.0.0
+eth-account>=0.11.0   # Base payment signing
+PyJWT>=2.8.0          # CDP Facilitator JWT auth
+cryptography>=42.0.0  # EC + Ed25519 key loading for CDP JWT
