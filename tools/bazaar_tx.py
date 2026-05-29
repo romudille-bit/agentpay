@@ -118,12 +118,54 @@ payment_payload = {
         "payTo":             GATEWAY_ADDRESS,
         "maxTimeoutSeconds": 300,
         "resource":          SESSION_URL,
-        "description":       "AgentPay session_create",
+        "description":       "Open a budget-capped agent session on AgentPay. Pay $0.001 USDC once — get a session_id, budget config, and access to 17 free crypto data tools.",
         "mimeType":          "application/json",
         "extra": {
             "name":                "USD Coin",
             "version":             "2",
             "assetTransferMethod": "eip3009",
+        },
+    },
+    # Bazaar extension — required for CDP to index this resource in discovery.
+    # info.input = example POST body; schema validates info.input.
+    "extensions": {
+        "bazaar": {
+            "info": {
+                "input": {
+                    "agent_address": agent_address,
+                    "max_spend":     "0.10",
+                    "label":         "optional session label",
+                },
+                "output": {
+                    "example": {
+                        "session_id":     "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                        "max_spend":      "0.10",
+                        "gateway_url":    GATEWAY_URL,
+                        "tools_endpoint": f"{GATEWAY_URL}/tools",
+                        "created_at":     "2026-05-29T00:00:00Z",
+                        "receipt": {
+                            "tx_hash":     "0x...",
+                            "network":     "eip155:8453",
+                            "amount_usdc": "0.001",
+                        },
+                    },
+                },
+            },
+            "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "object",
+                        "properties": {
+                            "agent_address": {"type": "string", "description": "Paying agent's EVM wallet address"},
+                            "max_spend":     {"type": "string", "description": "Hard budget cap in USDC, e.g. '0.10'"},
+                            "label":         {"type": "string", "description": "Optional human-readable session label"},
+                        },
+                        "required": ["agent_address"],
+                    },
+                },
+            },
         },
     },
 }

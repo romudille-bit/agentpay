@@ -391,6 +391,16 @@ async def settle_base_payment(
     except Exception as e:
         return {"success": False, "tx_hash": "", "payer": "", "network": "", "reason": f"Facilitator unreachable: {e}"}
 
+    # Log Bazaar extension response so we can confirm indexing was accepted
+    ext_resp = resp.headers.get("extension-responses") or resp.headers.get("EXTENSION-RESPONSES")
+    if ext_resp:
+        import base64 as _b64, json as _json
+        try:
+            decoded = _json.loads(_b64.b64decode(ext_resp + "=="))
+            logger.info(f"[BASE] Bazaar extension response: {decoded}")
+        except Exception:
+            logger.info(f"[BASE] EXTENSION-RESPONSES header: {ext_resp[:200]}")
+
     if resp.status_code != 200:
         logger.warning(f"[BASE] Facilitator HTTP {resp.status_code}: {resp.text[:200]}")
         return {
