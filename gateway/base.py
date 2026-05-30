@@ -295,6 +295,8 @@ async def settle_base_payment(
     payment_signature_header: str,
     payment_requirements: dict,
     rpc_url: str = "",
+    bazaar_resource: dict | None = None,
+    bazaar_extension: dict | None = None,
 ) -> dict:
     """
     Verify and settle a Base/EVM payment.
@@ -376,6 +378,18 @@ async def settle_base_payment(
             logger.info(f"[BASE] CDP JWT built for key {_settings.CDP_KEY_ID[:8]}...")
         except Exception as e:
             logger.warning(f"[BASE] CDP JWT build failed: {e} — proceeding unauthenticated")
+
+    # ── Inject AgentPay's canonical Bazaar indexing metadata ──────────────────
+    # Bazaar indexes the resource from paymentPayload.resource + .extensions.bazaar
+    # at settle time. We set these server-side (authoritatively, overriding
+    # whatever the client sent for our own resource) so EVERY session_create
+    # settlement triggers discovery indexing — not just clients that happen to
+    # include the extension. resource carries serviceName + tags; extensions.bazaar
+    # carries the input/output schema Bazaar needs to rank the listing.
+    if bazaar_resource is not None:
+        payload["resource"] = bazaar_resource
+    if bazaar_extension is not None:
+        payload.setdefault("extensions", {})["bazaar"] = bazaar_extension
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:

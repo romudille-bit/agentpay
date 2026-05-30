@@ -82,6 +82,74 @@ _SESSION_OUTPUT_SCHEMA = {
 }
 
 
+# ── Bazaar indexing metadata (injected server-side into every CDP settle) ─────
+# Bazaar reads paymentPayload.resource + .extensions.bazaar at settle time to
+# auto-index this resource in discovery. We set these on the gateway so indexing
+# fires on EVERY session_create payment, not just clients that include them.
+# serviceName <= 32 chars; tags <= 5 entries, each <= 32 chars.
+_SESSION_BAZAAR_RESOURCE = {
+    "url":         SESSION_RESOURCE_URL,
+    "description": "Open a budget-capped agent session. Pay $0.001 USDC once — get a session_id and access to 17 free crypto data tools.",
+    "mimeType":    "application/json",
+    "serviceName": "AgentPay",
+    "tags":        ["ai-agents", "crypto", "defi", "session", "budget"],
+}
+
+_SESSION_BAZAAR_EXTENSION = {
+    "info": {
+        "input": {
+            "type":     "http",
+            "method":   "POST",
+            "bodyType": "json",
+            "body": {
+                "agent_address": "0x0000000000000000000000000000000000000000",
+                "max_spend":     "0.10",
+                "label":         "session",
+            },
+        },
+        "output": {
+            "type": "json",
+            "example": {
+                "session_id":     "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                "max_spend":      "0.10",
+                "gateway_url":    GATEWAY_URL,
+                "tools_endpoint": f"{GATEWAY_URL}/tools",
+                "created_at":     "2026-05-29T00:00:00Z",
+                "receipt": {
+                    "tx_hash":     "0xee85d8dd374b5d1cb40bfa441086af557d356acc2bb4d5819f56331fce42adee",
+                    "network":     "eip155:8453",
+                    "amount_usdc": "0.001",
+                },
+            },
+        },
+    },
+    "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "input": {
+                "type": "object",
+                "required": ["type", "method", "body"],
+                "properties": {
+                    "type":     {"type": "string"},
+                    "method":   {"type": "string"},
+                    "bodyType": {"type": "string"},
+                    "body": {
+                        "type": "object",
+                        "required": ["agent_address"],
+                        "properties": {
+                            "agent_address": {"type": "string", "description": "Paying agent's EVM wallet address"},
+                            "max_spend":     {"type": "string", "description": "Hard budget cap in USDC, e.g. '0.10'"},
+                            "label":         {"type": "string", "description": "Optional human-readable session label"},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 # ── Request model ─────────────────────────────────────────────────────────────
 
 class SessionCreateRequest(BaseModel):
@@ -265,7 +333,11 @@ async def create_session(
             network=settings.BASE_NETWORK,
         )
         logger.info("[SESSION] verifying Base PAYMENT-SIGNATURE")
-        result = await base_pay.settle_base_payment(payment_signature, base_req, rpc_url=settings.BASE_RPC_URL)
+        result = await base_pay.settle_base_payment(
+            payment_signature, base_req, rpc_url=settings.BASE_RPC_URL,
+            bazaar_resource=_SESSION_BAZAAR_RESOURCE,
+            bazaar_extension=_SESSION_BAZAAR_EXTENSION,
+        )
 
         if not result["success"]:
             status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"

@@ -65,7 +65,29 @@ def wait(msg):  print(f"  {DIM}…{RESET}  {msg}", flush=True)
 def warn(msg):  print(f"  {AMBER}⚠{RESET}  {msg}")
 def block(msg): print(f"  {RED}✗{RESET}  {msg}")
 
-GATEWAY      = "https://agentpay.tools"
+# Pick a reachable gateway. DEMO_GATEWAY overrides; otherwise try the custom
+# domain, then fall back to the Railway URL (which resolves independently — so a
+# DNS hiccup on agentpay.tools doesn't kill the demo).
+def _pick_gateway():
+    candidates = [
+        os.environ.get("DEMO_GATEWAY"),
+        "https://agentpay.tools",
+        "https://gateway-production-2cc2.up.railway.app",
+    ]
+    last = "https://agentpay.tools"
+    for g in candidates:
+        if not g:
+            continue
+        g = g.rstrip("/")
+        last = g
+        try:
+            requests.get(f"{g}/health", timeout=8)
+            return g
+        except Exception:
+            continue
+    return last
+
+GATEWAY      = _pick_gateway()
 REGISTER_URL = f"{GATEWAY}/v1/agent/register"
 TOOLS_URL    = f"{GATEWAY}/tools"
 SESSION_URL  = f"{GATEWAY}/v1/session/create"
