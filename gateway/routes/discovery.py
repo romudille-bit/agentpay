@@ -65,23 +65,27 @@ async def well_known_agent():
     paid_tools  = [t for t in tools if float(t.price_usdc) > 0]
     return {
         "name":        "AgentPay",
-        "description": "Economic intelligence for autonomous agents — 17 free tools, budget-capped sessions, session receipts on every call.",
+        "description": "The economic intelligence layer for agent spend — agents reason about cost (price a plan before spending, route to the cheapest tool that works) under a hard budget cap. 17 free tools, no USDC to start. USDC on Stellar or Base.",
         "url":         GATEWAY_URL,
         "version":     "1.0",
 
-        # ── How an agent registers and starts using AgentPay ─────────────────
-        # Step 1: POST /v1/session/create ($0.001 USDC, one-time per session)
-        #         → returns session_id + budget config + tools_endpoint
-        # Step 2: GET  /tools → discover all 17 free tools with descriptions
-        # Step 3: POST /tools/{name}/call → call any tool, session receipt logged
+        # ── How an agent onboards (free, zero human, zero funding) ───────────
+        # Step 1: POST /v1/agent/register → mints a wallet + session_token,
+        #         lists free tools. Free, no payment.
+        # Step 2: GET  /tools → discover all tools (17 free + session_create)
+        # Step 3: POST /tools/{name}/call → call any tool; free tools settle
+        #         $0 (no funding needed) but still produce a receipt.
+        # Paid path: POST /v1/session/create ($0.001) is the Bazaar-indexed
+        #         paid anchor; agents that discover AgentPay on Bazaar land there.
         "onboarding": {
-            "register":         f"{GATEWAY_URL}/v1/session/create",
-            "register_cost":    "0.001",
-            "register_network": "base-mainnet or stellar-mainnet",
+            "register":         f"{GATEWAY_URL}/v1/agent/register",
+            "register_cost":    "0",
+            "register_network": "stellar (free-tier identity; pay with your own funded wallet on Stellar or Base)",
             "discover_tools":   f"{GATEWAY_URL}/tools",
             "call_tool":        f"{GATEWAY_URL}/tools/{{name}}/call",
+            "paid_session":     f"{GATEWAY_URL}/v1/session/create",
             "sdk":              "pip install agentpay-x402",
-            "sdk_quickstart":   "from agentpay import AgentWallet, Session",
+            "sdk_quickstart":   "from agentpay import AgentWallet, Session, budget_policy",
         },
 
         "capabilities": {
@@ -244,16 +248,25 @@ async def llms_txt():
     content = f"""\
 # AgentPay
 
-> Economic intelligence for autonomous agents. 17 free tools to start — no API keys, no USDC needed. Every call is session-tracked with a full receipt. Metered inference coming.
+> The economic intelligence layer for agent spend. An agent reasons about cost — prices a plan before spending and routes to the cheapest tool that works — under a hard budget cap enforced before a dollar moves. 17 free tools to start: no API keys, no USDC, no wallet setup. Every call is session-tracked with a full receipt.
 
-AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well. All 17 tools are currently free. When metered inference ships, it uses the same x402 protocol: agents receive an HTTP 402 challenge, pay in USDC on Stellar or Base, retry with an X-Payment header, and receive data. All payments are verified on-chain.
+AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well. An agent can onboard with zero humans and zero funding in three calls: register, discover, call. Free tools cost $0 and need no funded wallet, yet every call still produces a receipt. Paid tools (and metered inference, coming) use x402: a 402 challenge, USDC settlement, retry with proof, verified on-chain. Chain-agnostic — USDC on Stellar or Base (CCTP-bridged 1:1).
+
+## Onboarding (zero human, zero funding)
+
+1. POST /v1/agent/register → {{ wallet, session_token, free_tools }}  (free)
+2. GET  /tools → list tools
+3. POST /tools/{{name}}/call → {{ result, receipt }}  (free tools settle $0)
+
+Paid anchor: POST /v1/session/create ($0.001, Bazaar-indexed) for agents arriving via Bazaar discovery.
 
 ## Gateway
 
-- Production (mainnet): {GATEWAY_URL}
-- Network: Stellar mainnet + Base mainnet
-- Tools: {len(tools)} tools (all free today)
-- Protocol: x402-v2 (HTTP 402 → pay → retry) — active for future paid tools
+- Production: {GATEWAY_URL}
+- Chains: USDC on Stellar or Base (Base is the canonical paid chain; Stellar is supported and CCTP-bridged)
+- Tools: {len(tools)} ({len([t for t in tools if float(t.price_usdc) == 0])} free)
+- Protocol: x402-v2 (HTTP 402 → pay → retry)
+- SDK: pip install agentpay-x402 — `from agentpay import AgentWallet, Session, budget_policy`
 
 ## Tools
 
@@ -262,7 +275,7 @@ AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well
 ## Integration
 
 POST /tools/{{name}}/call with {{parameters, agent_address}}
-On 402: pay USDC to the given Stellar or Base address, retry with X-Payment header.
+On 402: free tools ($0.000) authorize without an on-chain tx; paid tools settle USDC on Stellar or Base, retry with X-Payment header.
 Response: data is in result["result"]
 
 ## Docs
