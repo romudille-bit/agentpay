@@ -9,6 +9,7 @@ from agentpay._wallet import (
     BudgetExceeded,
     PaymentFailed,
     RefundPending,
+    ToolResult,
 )
 
 TESTNET_GATEWAY  = "https://gateway-testnet-production.up.railway.app"
@@ -164,6 +165,6 @@ class Session(_Session):
         super().__init__(wallet=wallet, gateway_url=gateway_url, max_spend=max_spend)
 
 
-__all__ = ["AgentWallet", "Session", "BudgetExceeded", "PaymentFailed",
+__all__ = ["AgentWallet", "Session", "ToolResult", "BudgetExceeded", "PaymentFailed",
            "RefundPending", "faucet_wallet", "quickstart",
            "TESTNET_GATEWAY", "MAINNET_GATEWAY"]

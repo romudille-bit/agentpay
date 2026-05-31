@@ -33,6 +33,7 @@ Gateway URLs:
 from agentpay.client import (
     AgentWallet,
     Session,
+    ToolResult,
     BudgetExceeded,
     PaymentFailed,
     RefundPending,
@@ -47,6 +48,7 @@ __version__ = "0.2.0"
 __all__ = [
     "AgentWallet",
     "Session",
+    "ToolResult",
     "BudgetExceeded",
     "PaymentFailed",
     "RefundPending",

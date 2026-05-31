@@ -400,6 +400,55 @@ def _fmt(amount) -> str:
     return f"${s}"
 
 
+class ToolResult(dict):
+    """
+    The value returned by `Session.call()`.
+
+    It IS the gateway envelope dict (``{"tool", "result", "payment"}``), so all
+    existing code keeps working unchanged::
+
+        r = s.call("token_price", {"symbol": "ETH"})
+        r["result"]["price_usd"]      # still works
+
+    …but it also adds accessors so you don't have to double-index::
+
+        r.data["price_usd"]           # inner tool output  (== r["result"])
+        r.cost                        # payment amount, e.g. "0.001" or "0"
+        r.tx                          # settlement tx hash (or None)
+        r.network                     # settlement network (or None)
+
+    For third-party x402 tools whose response isn't enveloped, ``.data`` falls
+    back to the whole response.
+    """
+
+    @property
+    def data(self):
+        v = self.get("result")
+        return v if v is not None else self
+
+    @property
+    def _pay(self) -> dict:
+        return self.get("payment") or {}
+
+    @property
+    def cost(self):
+        return self._pay.get("amount_usdc")
+
+    @property
+    def tx(self):
+        return self._pay.get("tx_hash")
+
+    @property
+    def network(self):
+        return self._pay.get("network")
+
+
+def _wrap_result(r):
+    """Wrap a gateway/tool response so callers get .data/.cost/.tx ergonomics
+    without losing dict behaviour. Non-dicts pass through untouched."""
+    return ToolResult(r) if isinstance(r, dict) and not isinstance(r, ToolResult) else r
+
+
 class Session:
     """
     Budget-aware session for multi-tool agent tasks.
@@ -873,7 +922,7 @@ class Session:
 
         # ── External x402 URL: route directly, skip AgentPay registry ─────────
         if isinstance(tool_name, str) and tool_name.startswith(("http://", "https://")):
-            return self._call_x402_url(tool_name, params or {})
+            return _wrap_result(self._call_x402_url(tool_name, params or {}))
 
         params = params or {}
 
@@ -987,7 +1036,7 @@ class Session:
                 entry["fallback_for"] = tool_name
             self._call_log.append(entry)
 
-        return result
+        return _wrap_result(result)
 
     def summary(self) -> dict:
         return {
