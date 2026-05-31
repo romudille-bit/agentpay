@@ -33,6 +33,12 @@ WALLETS = {
         "secret_var": "GATEWAY_SECRET_KEY",
         "network":   "stellar",
     },
+    "3": {
+        "name":      "Testing wallet (Stellar mainnet, funded + trustline)",
+        "addr_var":  "AGENT_STELLAR_ADDRESS_TEST",
+        "secret_var": "AGENT_STELLAR_KEY_TEST",
+        "network":   "stellar",
+    },
     # ── No Base gateway SECRET today ──────────────────────────────────────────
     # The gateway only RECEIVES on Base (BASE_GATEWAY_ADDRESS) and verifies txs
     # by reading the chain — it never signs a Base transaction, so there is no

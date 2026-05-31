@@ -48,8 +48,13 @@ CATEGORY_MAP = {
 }
 
 
+# Some hosts (Railway/Cloudflare in front of the gateway) 403 the default
+# urllib User-Agent. Send a real one so /.well-known/l402-services resolves.
+_UA = "agentpay-sync/1.0 (+https://agentpay.tools)"
+
+
 def http_get_json(url: str, timeout: int = 15) -> dict:
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -60,7 +65,7 @@ def _http_json(method: str, url: str, payload: dict | None, timeout: int = 15) -
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": _UA},
         method=method,
     )
     try:
