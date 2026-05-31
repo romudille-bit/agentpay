@@ -37,12 +37,13 @@ from agentpay.client import (
     PaymentFailed,
     RefundPending,
     faucet_wallet,
+    quickstart,
     TESTNET_GATEWAY,
     MAINNET_GATEWAY,
 )
 from agentpay.budget_policy import budget_policy, BudgetDecision
 
-__version__ = "0.1.4"
+__version__ = "0.2.0"
 __all__ = [
     "AgentWallet",
     "Session",
@@ -50,6 +51,7 @@ __all__ = [
     "PaymentFailed",
     "RefundPending",
     "faucet_wallet",
+    "quickstart",
     "TESTNET_GATEWAY",
     "MAINNET_GATEWAY",
     "budget_policy",

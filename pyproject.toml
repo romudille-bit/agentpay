@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentpay-x402"
-version = "0.1.4"
-description = "Economic intelligence for autonomous agents — 17 free tools, session receipts, x402 on Stellar or Base"
+version = "0.2.0"
+description = "Economic intelligence for AI agents — quickstart() in one line, 17 free tools, hard budget caps, session receipts, x402 on Stellar or Base"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "romudille", email = "velvetvau@gmail.com" }]
@@ -25,6 +25,15 @@ dependencies = [
     "stellar-sdk>=10.0.0",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
+]
+
+# Optional: pay tools that settle on Base/EVM (off-chain EIP-3009 via the CDP
+# facilitator). Core install is Stellar-only and light; add this for Base.
+#   pip install "agentpay-x402[base]"
+[project.optional-dependencies]
+base = [
+    "eth-account>=0.11.0",
+    "x402[evm]>=0.1.0",
 ]
 
 [project.urls]
