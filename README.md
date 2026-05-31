@@ -24,26 +24,33 @@ The result is an agent that doesn't just have a budget. It knows how to use one.
 ## Install
 
 ```bash
-pip install agentpay-x402
+pip install agentpay-x402            # core (Stellar)
+pip install "agentpay-x402[base]"    # + pay tools that settle on Base
 ```
 
 ---
 
-## Quickstart — 5 lines, zero cost
+## Quickstart — 3 lines, zero setup
 
-18 tools. 17 free. No USDC, no wallet setup required to start.
+17 free tools. No USDC, no wallet, no API keys, no human. `quickstart()` registers
+an agent, mints a wallet, and returns a ready, budget-capped session.
 
 ```python
-from agentpay import AgentWallet, Session
+from agentpay import quickstart
 
-wallet = AgentWallet(network="mainnet")
-with Session(wallet, gateway_url="https://agentpay.tools") as s:
-    r = s.call("token_price", {"symbol": "ETH"})
-    print(r["result"]["price_usd"])
-    print(s.spending_summary())
+s = quickstart()                                   # registers + mints a wallet
+print(s.call("token_price", {"symbol": "ETH"})["result"]["price_usd"])
+print(s.spending_summary())                        # receipt: every call, cost, tx
 ```
 
-No API keys, no accounts, no config. Every call is session-tracked.
+Set a hard budget, or bring your own funded wallet to pay for tools:
+
+```python
+s = quickstart(max_spend="0.50")                   # cap this run at $0.50
+s = quickstart(secret_key="S...", base_key="0x...")  # your wallet (Stellar + Base)
+```
+
+Every call is session-tracked, and the cap is enforced **before** any payment is signed.
 
 ---
 
@@ -79,11 +86,11 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 This is the economic intelligence layer in practice. The Session gives your agent — and you — real visibility into what happened, what it cost, and why.
 
 ```python
-from agentpay import AgentWallet, Session, BudgetExceeded
+from agentpay import quickstart, BudgetExceeded
 
-wallet = AgentWallet(network="mainnet")
-
-with Session(wallet, gateway_url="https://agentpay.tools", max_spend="0.10") as session:
+# quickstart() registers + mints a wallet; the returned session is also a
+# context manager, so you can `with` it for a printed receipt on exit.
+with quickstart(max_spend="0.10") as session:
 
     # Check cost before committing
     session.tool_cost("dune_query")        # "Free"
@@ -131,11 +138,9 @@ with Session(wallet,
 Five free tools, one session, full receipt.
 
 ```python
-from agentpay import AgentWallet, Session
+from agentpay import quickstart
 
-wallet = AgentWallet(network="mainnet")
-
-with Session(wallet, gateway_url="https://agentpay.tools") as session:
+with quickstart() as session:
 
     snapshot = session.call("market_snapshot", {})
     rates    = session.call("funding_rates",    {"asset": "ETH"})
