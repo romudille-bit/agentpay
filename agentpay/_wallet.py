@@ -477,7 +477,10 @@ class Session:
     ):
         self.wallet = wallet
         self.gateway_url = gateway_url.rstrip("/")
-        self.max_spend = Decimal(max_spend)
+        # Coerce through str() so a float cap is EXACT: Decimal(0.10) drifts to
+        # 0.1000000000000000055…, but Decimal(str(0.10)) == Decimal("0.10").
+        # Accepts "0.10", 0.10, or Decimal("0.10") — all do the right thing.
+        self.max_spend = Decimal(str(max_spend))
         self._spent = Decimal("0")
         self._call_log: list[dict] = []
         self._tool_cache: dict[str, dict] = {}   # tool_name → full tool metadata
@@ -512,31 +515,53 @@ class Session:
         return "unknown"
 
     def remaining(self) -> str:
-        """Remaining budget as formatted string, e.g. '$0.097'."""
-        rem = max(self.max_spend - self._spent, Decimal("0"))
-        return _fmt(rem)
+        """Remaining budget as a formatted DISPLAY string, e.g. '$0.097'.
+        For comparisons use remaining_usd() (a Decimal) — comparing the
+        '$'-prefixed strings is a foot-gun."""
+        return _fmt(self.remaining_usd())
+
+    def remaining_usd(self) -> Decimal:
+        """Remaining budget as a Decimal — use this for math/comparisons."""
+        return max(self.max_spend - self._spent, Decimal("0"))
 
     def spent(self) -> str:
-        """Total spent so far as formatted string."""
+        """Total spent so far as a formatted DISPLAY string."""
         return _fmt(self._spent)
 
-    def would_exceed(self, amount_usdc: str) -> bool:
-        """True if adding this cost would exceed the budget."""
-        return (self._spent + Decimal(amount_usdc)) > self.max_spend
+    def spent_usd(self) -> Decimal:
+        """Total spent so far as a Decimal — use this for math/comparisons."""
+        return self._spent
+
+    def would_exceed(self, amount_usdc) -> bool:
+        """True if adding this cost would exceed the budget. The recommended
+        way to ask "does this fit?" — accepts a str, float, or Decimal."""
+        return (self._spent + Decimal(str(amount_usdc))) > self.max_spend
 
     def tool_cost(self, tool_name: str) -> str:
         """
-        Return the cost of a tool as a formatted string, e.g. '$0.005'.
-        Lets agents reason about cost before committing to a call.
+        Return the cost of a tool as a formatted DISPLAY string, e.g. '$0.005'
+        (or 'unknown'). For deciding whether to call it, use would_exceed()
+        or tool_cost_usd() — do NOT compare the '$' strings directly.
 
-        Example:
-            if session.tool_cost('dune_query') > session.remaining():
+        Example (correct):
+            if session.would_exceed(session.tool_cost_usd('dune_query')):
                 result = session.call('token_price', {...})  # cheaper alternative
         """
         info = self._fetch_tool_info(tool_name)
         if info:
             return _fmt(info["price_usdc"])
         return "unknown"
+
+    def tool_cost_usd(self, tool_name: str) -> Decimal | None:
+        """The tool's price as a Decimal (None if unknown) — use for math /
+        comparisons / passing to would_exceed()."""
+        info = self._fetch_tool_info(tool_name)
+        if info and info.get("price_usdc") is not None:
+            try:
+                return Decimal(str(info["price_usdc"]))
+            except (ValueError, ArithmeticError):
+                return None
+        return None
 
     def suggest_cheaper(self, tool_name: str) -> dict | None:
         """
