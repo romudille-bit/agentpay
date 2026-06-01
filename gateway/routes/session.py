@@ -49,13 +49,13 @@ SESSION_TOOL_NAME   = "session_create"
 SESSION_RESOURCE_URL = f"{GATEWAY_URL}/v1/session/create"
 
 _SESSION_DESCRIPTION = (
-    "Multi-chain spend governance for autonomous agents. Open a session "
-    "with a hard USDC budget cap, then get verifiable receipts and a spend "
-    "ledger for every payment the agent makes — budget enforcement, payment "
-    "authorization, and an audit trail across x402 tool calls, with USDC "
-    "settling on Base or Stellar. Costs "
-    "$0.001 USDC once; returns a session_id and budget config. Enforce the "
-    "cap client-side with the AgentPay SDK (from agentpay import Session)."
+    "A stateful, multi-chain spending session for AI agents. One session "
+    "enforces a hard USDC budget cap across every tool call, with a "
+    "verifiable receipt and running ledger for each payment — not a "
+    "one-shot budget check, but persistent spend governance with a full "
+    "audit trail. USDC settles on Base or Stellar. Costs $0.001 USDC once; "
+    "returns a session_id and budget config. Enforce the cap client-side "
+    "with the AgentPay SDK (from agentpay import Session)."
 )
 
 _SESSION_OUTPUT_SCHEMA = {
@@ -90,7 +90,7 @@ _SESSION_OUTPUT_SCHEMA = {
 # serviceName <= 32 chars; tags <= 5 entries, each <= 32 chars.
 _SESSION_BAZAAR_RESOURCE = {
     "url":         SESSION_RESOURCE_URL,
-    "description": "Multi-chain spend governance for AI agents: hard budget caps, verifiable receipts, payment authorization, and a spend audit trail for autonomous x402 payments on USDC (Base or Stellar).",
+    "description": "A stateful, multi-chain spending session for AI agents. One session enforces a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger for each payment — not a one-shot budget check, but persistent spend governance with a full audit trail. USDC on Base or Stellar.",
     "mimeType":    "application/json",
     "serviceName": "AgentPay",
     # ≤5 tags, ≤32 chars each — own the governance category, not the data-API commodity.
