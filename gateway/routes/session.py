@@ -49,12 +49,13 @@ SESSION_TOOL_NAME   = "session_create"
 SESSION_RESOURCE_URL = f"{GATEWAY_URL}/v1/session/create"
 
 _SESSION_DESCRIPTION = (
-    "Create a budget-capped agent session on AgentPay. "
-    "Costs $0.001 USDC once. Returns a session_id and budget config "
-    "for tracking spend across tool calls. Use the AgentPay SDK's "
-    "Session class (from agentpay import Session) to enforce the cap "
-    "client-side — this endpoint is the server-side receipt and Bazaar "
-    "discovery anchor."
+    "Multi-chain spend governance for autonomous agents. Open a session "
+    "with a hard USDC budget cap, then get verifiable receipts and a spend "
+    "ledger for every payment the agent makes — budget enforcement, payment "
+    "authorization, and an audit trail across x402 tool calls, with USDC "
+    "settling on Base or Stellar. Costs "
+    "$0.001 USDC once; returns a session_id and budget config. Enforce the "
+    "cap client-side with the AgentPay SDK (from agentpay import Session)."
 )
 
 _SESSION_OUTPUT_SCHEMA = {
@@ -89,10 +90,11 @@ _SESSION_OUTPUT_SCHEMA = {
 # serviceName <= 32 chars; tags <= 5 entries, each <= 32 chars.
 _SESSION_BAZAAR_RESOURCE = {
     "url":         SESSION_RESOURCE_URL,
-    "description": "Open a budget-capped agent session. Pay $0.001 USDC once — get a session_id and access to 17 free crypto data tools.",
+    "description": "Multi-chain spend governance for AI agents: hard budget caps, verifiable receipts, payment authorization, and a spend audit trail for autonomous x402 payments on USDC (Base or Stellar).",
     "mimeType":    "application/json",
     "serviceName": "AgentPay",
-    "tags":        ["ai-agents", "crypto", "defi", "session", "budget"],
+    # ≤5 tags, ≤32 chars each — own the governance category, not the data-API commodity.
+    "tags":        ["spend-control", "agent-budget", "payment-receipts", "spend-authorization", "agent-commerce"],
 }
 
 _SESSION_BAZAAR_EXTENSION = {
