@@ -90,28 +90,31 @@ from agentpay import quickstart, BudgetExceeded
 
 # quickstart() registers + mints a wallet; the returned session is also a
 # context manager, so you can `with` it for a printed receipt on exit.
-with quickstart(max_spend="0.10") as session:
+# Budget caps are exact: max_spend=0.10 (float) == "0.10" (str).
+with quickstart(max_spend=0.10) as session:
 
-    # Check cost before committing
-    session.tool_cost("dune_query")        # "Free"
-    session.remaining()                    # "$0.1"
+    # Reason about cost before committing (use the *_usd Decimals for comparisons)
+    if session.would_exceed(session.tool_cost_usd("dune_query")):
+        alt = session.suggest_cheaper("dune_query")   # {"name": ..., "price": ...}
 
-    # Find a cheaper alternative if needed
-    alt = session.suggest_cheaper("dune_query")
-    # {"name": "token_price", "price": "Free"}
+    # Call a tool — budget enforced before any payment is signed
+    r = session.call("token_price", {"symbol": "ETH"})
+    r.data["price_usd"]    # inner tool output  (r["result"]["price_usd"] still works)
+    r.cost                 # payment amount, e.g. "0"
+    r.network              # settlement chain, e.g. "stellar-mainnet" / "base"
 
-    # Call tools — budget enforced automatically
-    result = session.call("token_price", {"symbol": "ETH"})
+    session.remaining_usd()   # Decimal('0.10')
 
-    # Full receipt after any call
+    # For an external x402 tool that offers several chains, pick one:
+    # session.call("https://some-x402-tool/endpoint", {}, chain="base")
+
+    # Full receipt — every call, cost, tx hash, and settlement chain
     print(session.spending_summary())
     # {
-    #   "calls": 1,
-    #   "spent": "$0",
-    #   "remaining": "$0.1",
-    #   "budget": "$0.1",
-    #   "tools": ["token_price"],
-    #   "breakdown": [{"tool": "token_price", "cost": "Free", "tx_hash": ""}]
+    #   "calls": 1, "spent": "$0", "remaining": "$0.1", "budget": "$0.1",
+    #   "breakdown": [
+    #     {"tool": "token_price", "cost": "Free", "tx_hash": "", "network": "stellar-mainnet"}
+    #   ]
     # }
 ```
 
@@ -120,12 +123,16 @@ with quickstart(max_spend="0.10") as session:
 Control exactly what your agent is allowed to do:
 
 ```python
+from agentpay import AgentWallet, Session
+
+wallet = AgentWallet(secret_key="S...", network="mainnet")   # or quickstart()'s minted wallet
 with Session(wallet,
              gateway_url="https://agentpay.tools",
-             max_spend="0.10",
+             max_spend=0.10,
              allowed_tools=["token_price", "gas_tracker", "web_search"],
              max_per_tool={"dune_query": 0.02},
-             rate_limit=10) as session:    # max 10 calls/min
+             rate_limit=10,                # max 10 calls/min
+             prefer_chain="base") as session:   # default chain for multi-chain x402 tools
     ...
 ```
 

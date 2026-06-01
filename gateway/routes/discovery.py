@@ -85,7 +85,7 @@ async def well_known_agent():
             "call_tool":        f"{GATEWAY_URL}/tools/{{name}}/call",
             "paid_session":     f"{GATEWAY_URL}/v1/session/create",
             "sdk":              "pip install agentpay-x402",
-            "sdk_quickstart":   "from agentpay import AgentWallet, Session, budget_policy",
+            "sdk_quickstart":   "from agentpay import quickstart; s = quickstart(); s.call('token_price', {'symbol':'ETH'})",
         },
 
         "capabilities": {
@@ -266,7 +266,7 @@ Paid anchor: POST /v1/session/create ($0.001, Bazaar-indexed) for agents arrivin
 - Chains: USDC on Stellar or Base (Base is the canonical paid chain; Stellar is supported and CCTP-bridged)
 - Tools: {len(tools)} ({len([t for t in tools if float(t.price_usdc) == 0])} free)
 - Protocol: x402-v2 (HTTP 402 → pay → retry)
-- SDK: pip install agentpay-x402 — `from agentpay import AgentWallet, Session, budget_policy`
+- SDK: pip install agentpay-x402 — one-liner: `from agentpay import quickstart; s = quickstart(); print(s.call('token_price', {{'symbol':'ETH'}}).data['price_usd'])`  (Base support: `pip install "agentpay-x402[base]"`)
 
 ## Tools
 
