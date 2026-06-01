@@ -59,6 +59,7 @@ def quickstart(
     testnet: bool = False,
     gateway_url: str = None,
     label: str = "quickstart",
+    prefer_chain: str = None,
     quiet: bool = False,
 ) -> "Session":
     """
@@ -106,7 +107,7 @@ def quickstart(
             wallet = AgentWallet(secret_key=secret_key, network=net, base_key=base_key)
         except TypeError:                       # older build without base_key kwarg
             wallet = AgentWallet(secret_key=secret_key, network=net)
-        s = Session(wallet, max_spend=max_spend, gateway_url=gw)
+        s = Session(wallet, max_spend=max_spend, gateway_url=gw, prefer_chain=prefer_chain)
         s.session_token, s.free_tools, s.wallet_public_key = None, [], wallet.public_key
         if not quiet:
             print(f"✓ AgentPay ready — your wallet {wallet.public_key[:10]}…, budget ${max_spend}.")
@@ -134,7 +135,7 @@ def quickstart(
     except TypeError:
         wallet = AgentWallet(secret_key=minted_secret, network=net)
 
-    s = Session(wallet, max_spend=max_spend, gateway_url=gw)
+    s = Session(wallet, max_spend=max_spend, gateway_url=gw, prefer_chain=prefer_chain)
     s.session_token     = data.get("session_token")
     s.free_tools        = data.get("free_tools", [])
     s.wallet_public_key = w.get("public_key")
@@ -159,10 +160,12 @@ class Session(_Session):
             ...
     """
     def __init__(self, wallet: AgentWallet, max_spend: str = "0.10",
-                 testnet: bool = False, gateway_url: str = None):
+                 testnet: bool = False, gateway_url: str = None,
+                 prefer_chain: str = None):
         if gateway_url is None:
             gateway_url = TESTNET_GATEWAY if testnet else MAINNET_GATEWAY
-        super().__init__(wallet=wallet, gateway_url=gateway_url, max_spend=max_spend)
+        super().__init__(wallet=wallet, gateway_url=gateway_url, max_spend=max_spend,
+                         prefer_chain=prefer_chain)
 
 
 __all__ = ["AgentWallet", "Session", "ToolResult", "BudgetExceeded", "PaymentFailed",

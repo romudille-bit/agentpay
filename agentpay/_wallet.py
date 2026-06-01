@@ -394,6 +394,13 @@ class AgentWallet:
 
 # ── Budget-Aware Session ──────────────────────────────────────────────────────
 
+# Default settlement chain for PAID calls when the caller hasn't pinned one.
+# Base/EIP-3009 (Mode A) is preferred because it settles through the CDP
+# facilitator that keeps AgentPay discoverable on Bazaar; Stellar is the
+# automatic fallback when no Base wallet/option is available.
+DEFAULT_PAID_CHAIN = "base"
+
+
 def _fmt(amount) -> str:
     """Format a Decimal/str/float as '$0.0030' with clean trailing-zero stripping."""
     s = f"{Decimal(str(amount)):.7f}".rstrip("0").rstrip(".")
@@ -833,7 +840,11 @@ class Session:
             payable_opts = [c for c in candidates if c["payable"]]
             wallet_can = (["base"] if self.wallet.base_address else []) + ["stellar"]
 
-            # ── Select by policy: explicit chain → else cheapest payable ──────
+            # ── Select by policy ──────────────────────────────────────────────
+            # Explicit chain (per-call chain= or Session prefer_chain=) is a hard
+            # requirement → raise if not payable. With no explicit pin we default
+            # to Base (Mode A / Bazaar-indexable) when it's payable, otherwise the
+            # cheapest payable option (Stellar fallback).
             want = (chain or self._prefer_chain)
             want = want.lower() if want else None
             if want:
@@ -847,7 +858,9 @@ class Session:
                     )
                 chosen = min(match, key=lambda c: c["amount_atomic"])
             elif payable_opts:
-                chosen = min(payable_opts, key=lambda c: c["amount_atomic"])
+                base_payable = [c for c in payable_opts if c["kind"] == DEFAULT_PAID_CHAIN]
+                pool = base_payable or payable_opts
+                chosen = min(pool, key=lambda c: c["amount_atomic"])
             else:
                 offered = sorted({c["kind"] for c in candidates}) or \
                           sorted({str(a.get("network", "?")) for a in accepts})
@@ -984,6 +997,13 @@ class Session:
         if isinstance(tool_name, str) and tool_name.startswith(("http://", "https://")):
             return _wrap_result(self._call_x402_url(tool_name, params or {}, chain=chain))
 
+        # ── Resolve paid-tool chain preference (Base default, Stellar fallback)
+        # An explicit chain (per-call chain= or Session prefer_chain=) is a hard
+        # requirement; otherwise we default to Base so paid AgentPay settlements
+        # flow through the CDP/Mode-A path that keeps the Bazaar listing live.
+        _chain_is_explicit = bool(chain or self._prefer_chain)
+        _prefer_chain = (chain or self._prefer_chain or DEFAULT_PAID_CHAIN).lower()
+
         params = params or {}
 
         # ── Policy: allowed_tools whitelist ───────────────────────────────────
@@ -1051,7 +1071,10 @@ class Session:
         # ── Execute via x402 flow ─────────────────────────────────────────────
         client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
         try:
-            result = client.call_tool(target, params)
+            result = client.call_tool(
+                target, params,
+                prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
+            )
         except PaymentFailed:
             # On-chain payment itself failed — a fallback tool would fail for the
             # same reason (empty wallet, wrong network, etc.). Surface the clean
@@ -1072,7 +1095,10 @@ class Session:
                 if fallback and not self.would_exceed(fallback["price_usdc"]):
                     logger.warning(f"  '{target}' failed ({exc}) — trying '{fallback['name']}'")
                     client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
-                    result = client.call_tool(fallback["name"], params)
+                    result = client.call_tool(
+                        fallback["name"], params,
+                        prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
+                    )
                     target = fallback["name"]
                 else:
                     raise

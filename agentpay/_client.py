@@ -28,11 +28,63 @@ class AgentPayClient:
         self.gateway_url = gateway_url
         self.call_log: list[dict] = []
 
-    def call_tool(self, tool_name: str, parameters: dict, max_spend: str = None) -> dict:
+    def _settle_base(self, client, url, payload, base_opt, challenge):
+        """
+        Settle a paid AgentPay tool on Base via the gasless EIP-3009 (Mode A)
+        path and return the retry HTTP response.
+
+        `base_opt` is the `payment_options.base` block from AgentPay's native
+        402. Nothing is broadcast client-side — the gateway's CDP facilitator
+        settles the signed authorization only if it accepts the retry, so a
+        rejected call moves no USDC.
+        """
+        accept = {
+            "amount":            str(base_opt.get("amount_atomic") or base_opt.get("amount")),
+            "asset":             base_opt.get("asset"),
+            "payTo":             base_opt.get("pay_to") or base_opt.get("payTo"),
+            "network":           base_opt.get("network", "eip155:8453"),
+            "scheme":            base_opt.get("scheme", "exact"),
+            "maxTimeoutSeconds": int(base_opt.get("maxTimeoutSeconds", 300)),
+        }
+        logger.info(
+            f"  Settling on Base (EIP-3009, gasless) "
+            f"{base_opt.get('amount_usdc')} USDC → {str(accept['payTo'])[:10]}..."
+        )
+        x_payment = self.wallet.build_base_payment_signature(accept, url)
+        return client.post(
+            url,
+            json=payload,
+            headers={
+                "X-PAYMENT":         x_payment,
+                "PAYMENT-SIGNATURE": x_payment,
+                "X-Agent-Address":   self.wallet.base_address,
+            },
+        )
+
+    def call_tool(
+        self,
+        tool_name: str,
+        parameters: dict,
+        max_spend: str = None,
+        *,
+        prefer_chain: str = "base",
+        chain_is_explicit: bool = False,
+    ) -> dict:
         """
         Call a paid tool. Handles 402 automatically.
         Raises ValueError if max_spend is set and price exceeds it.
+
+        Chain selection for PAID tools:
+          - prefer_chain="base" (default) settles via the gateway's Base/EIP-3009
+            (Mode A) path when the wallet has a Base key and the 402 advertises a
+            Base option — this is the path that keeps AgentPay's listing live on
+            Bazaar. Stellar is used as the automatic fallback otherwise.
+          - prefer_chain="stellar" forces the legacy Stellar settlement.
+          - chain_is_explicit=True means the caller demanded this chain; if it
+            isn't usable a PaymentFailed is raised instead of falling back.
+        Free ($0) tools never settle on-chain and ignore prefer_chain entirely.
         """
+        prefer_chain = (prefer_chain or "base").lower()
         url = f"{self.gateway_url}/tools/{tool_name}/call"
         payload = {"parameters": parameters, "agent_address": self.wallet.public_key}
 
@@ -82,35 +134,77 @@ class AgentPayClient:
             # derived from the (unique) payment_id so it never collides with a
             # prior free call's replay record.
             if Decimal(str(amount_usdc)) == 0:
+                # ── Free tool: never settle on-chain (chain pref ignored) ──
                 tx_hash = f"free:{payment_id}"
                 logger.info(f"  ✓ {tool_name} is free — skipping settlement")
-            else:
-                # ── Send payment on Stellar ────────────────────────────────
-                logger.info(f"  Sending payment on Stellar {self.wallet.network}...")
-                payment = self.wallet.pay(
-                    destination=pay_to,
-                    amount_usdc=amount_usdc,
-                    memo=payment_id[:28],
+                proof_header = (
+                    f"tx_hash={tx_hash},"
+                    f"from={self.wallet.public_key},"
+                    f"id={payment_id}"
                 )
-                if not payment["success"]:
-                    raise PaymentFailed(payment["reason"])
-                tx_hash = payment["tx_hash"]
-                logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
+                retry = client.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "X-Payment": proof_header,
+                        "X-Agent-Address": self.wallet.public_key,
+                    },
+                )
+            else:
+                # ── Paid tool: prefer Base (Mode A) → fall back to Stellar ──
+                base_opt = (data.get("payment_options") or {}).get("base")
+                want_base = (
+                    prefer_chain != "stellar"
+                    and base_opt is not None
+                    and getattr(self.wallet, "base_address", None)
+                )
+                if chain_is_explicit and prefer_chain == "base" and not want_base:
+                    raise PaymentFailed(
+                        f"chain='base' requested for '{tool_name}' but "
+                        f"{'no Base wallet configured' if not getattr(self.wallet, 'base_address', None) else 'the gateway did not offer a Base option'}."
+                    )
 
-            # ── Retry with payment proof ───────────────────────────────────
-            proof_header = (
-                f"tx_hash={tx_hash},"
-                f"from={self.wallet.public_key},"
-                f"id={payment_id}"
-            )
-            retry = client.post(
-                url,
-                json=payload,
-                headers={
-                    "X-Payment": proof_header,
-                    "X-Agent-Address": self.wallet.public_key,
-                },
-            )
+                retry = None
+                if want_base:
+                    try:
+                        retry = self._settle_base(
+                            client, url, payload, base_opt, data
+                        )
+                    except Exception as e:
+                        if chain_is_explicit and prefer_chain == "base":
+                            raise PaymentFailed(f"base settlement failed: {str(e)[:160]}")
+                        logger.warning(
+                            f"  Base settlement failed ({str(e)[:120]}) — falling back to Stellar"
+                        )
+                        retry = None
+
+                if retry is None:
+                    # ── Stellar settlement (fallback / explicit) ───────────
+                    logger.info(f"  Sending payment on Stellar {self.wallet.network}...")
+                    payment = self.wallet.pay(
+                        destination=pay_to,
+                        amount_usdc=amount_usdc,
+                        memo=payment_id[:28],
+                    )
+                    if not payment["success"]:
+                        raise PaymentFailed(payment["reason"])
+                    tx_hash = payment["tx_hash"]
+                    logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
+                    proof_header = (
+                        f"tx_hash={tx_hash},"
+                        f"from={self.wallet.public_key},"
+                        f"id={payment_id}"
+                    )
+                    retry = client.post(
+                        url,
+                        json=payload,
+                        headers={
+                            "X-Payment": proof_header,
+                            "X-Agent-Address": self.wallet.public_key,
+                        },
+                    )
+                else:
+                    tx_hash = retry.headers.get("x-tx-hash", "") or ""
 
             if retry.status_code != 200:
                 # PR #12 contract (v0.1.4): on tool-failure-post-verify the
@@ -143,6 +237,11 @@ class AgentPayClient:
                 raise Exception(f"Tool call failed after payment: {retry.text}")
 
             result = retry.json()
+
+            # Base settlement returns the tx hash inside the response envelope.
+            if not tx_hash and isinstance(result, dict):
+                tx_hash = (result.get("payment") or {}).get("tx_hash", "") or \
+                          (result.get("receipt") or {}).get("tx_hash", "") or ""
 
             self.call_log.append({
                 "tool": tool_name,
