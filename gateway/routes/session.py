@@ -160,6 +160,102 @@ class SessionCreateRequest(BaseModel):
     label: Optional[str] = None  # Optional human label for this session
 
 
+# ── 402 challenge builder (shared by POST no-payment branch + GET probe) ──────
+
+def _session_402_payload(challenge) -> tuple[dict, dict]:
+    """
+    Build the (content, headers) for a session_create 402 challenge.
+
+    Pure — no DB writes. Used both by the POST no-payment branch (which also
+    persists a pending row) and by the GET discovery probe (which does not).
+    Always advertises the Base option + PAYMENT-REQUIRED header when Base is
+    configured, so x402 indexers (Bazaar) can validate the resource on a plain
+    GET the same way they would on a POST.
+    """
+    resource_url = SESSION_RESOURCE_URL
+    base_option = None
+    payment_required_header = None
+    if settings.BASE_GATEWAY_ADDRESS:
+        base_req = base_pay.build_payment_requirements(
+            amount_usdc=SESSION_PRICE_USDC,
+            pay_to=settings.BASE_GATEWAY_ADDRESS,
+            resource_url=resource_url,
+            network=settings.BASE_NETWORK,
+        )
+        base_option = {
+            "scheme":            base_req["scheme"],
+            "network":           base_req["network"],
+            "amount_atomic":     base_req["amount"],
+            "amount_usdc":       SESSION_PRICE_USDC,
+            "asset":             base_req["asset"],
+            "pay_to":            settings.BASE_GATEWAY_ADDRESS,
+            "maxTimeoutSeconds": base_req["maxTimeoutSeconds"],
+            "instructions": (
+                "Sign an EIP-3009 transferWithAuthorization for the amount above, "
+                "encode as base64 JSON PaymentPayload, and retry with header "
+                "PAYMENT-SIGNATURE: <base64_payload>"
+            ),
+        }
+        payment_required_header = base_pay.build_payment_required_header(
+            requirements=base_req,
+            resource_url=resource_url,
+            tool_description=_SESSION_DESCRIPTION,
+            output_schema=_SESSION_OUTPUT_SCHEMA,
+        )
+
+    headers = build_402_headers(challenge)
+    if payment_required_header:
+        headers["PAYMENT-REQUIRED"] = payment_required_header
+
+    content = {
+        "error":       "Payment required",
+        "x402Version": 2,
+        # ── Stellar option (backward-compat) ──────────────────────────────────
+        "payment_id":  challenge.payment_id,
+        "amount_usdc": challenge.amount_usdc,
+        "pay_to":      challenge.gateway_address,
+        "asset":       "USDC",
+        "network":     settings.STELLAR_NETWORK,
+        "instructions": (
+            f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
+            f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
+            f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}."
+        ),
+        # ── Structured multi-chain options ────────────────────────────────────
+        "payment_options": {
+            "stellar": {
+                "payment_id":  challenge.payment_id,
+                "amount_usdc": challenge.amount_usdc,
+                "pay_to":      challenge.gateway_address,
+                "network":     settings.STELLAR_NETWORK,
+                "asset":       "USDC",
+                "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
+            },
+            **({"base": base_option} if base_option else {}),
+        },
+    }
+    return content, headers
+
+
+# ── Discovery probe: GET returns the 402 challenge (no DB row) ────────────────
+# x402 indexers (Bazaar) validate a resource by GETting its URL and expecting a
+# 402 with payment requirements. The paid flow is POST-only, so without this a
+# crawler GET hit 405 and the listing could never be validated → stuck in
+# 'processing'. This handler advertises the same challenge for discovery without
+# persisting a pending payment row.
+@router.get("/v1/session/create")
+@limiter.limit("60/minute")
+async def session_create_probe(request: Request):
+    challenge = issue_payment_challenge(
+        tool_name=SESSION_TOOL_NAME,
+        price_usdc=SESSION_PRICE_USDC,
+        developer_address=settings.GATEWAY_PUBLIC_KEY,
+        request_data={"max_spend": "0.10"},
+    )
+    content, headers = _session_402_payload(challenge)
+    return JSONResponse(status_code=402, content=content, headers=headers)
+
+
 # ── Route ─────────────────────────────────────────────────────────────────────
 
 @router.post("/v1/session/create")
@@ -221,72 +317,10 @@ async def create_session(
                     detail="Supabase write failure — challenge issuance refused. Retry shortly.",
                 )
 
-        # Build Base payment option (required for Bazaar CDP Facilitator indexing)
-        base_option            = None
-        payment_required_header = None
-        if settings.BASE_GATEWAY_ADDRESS:
-            base_req = base_pay.build_payment_requirements(
-                amount_usdc=SESSION_PRICE_USDC,
-                pay_to=settings.BASE_GATEWAY_ADDRESS,
-                resource_url=resource_url,
-                network=settings.BASE_NETWORK,
-            )
-            base_option = {
-                "scheme":            base_req["scheme"],
-                "network":           base_req["network"],
-                "amount_atomic":     base_req["amount"],
-                "amount_usdc":       SESSION_PRICE_USDC,
-                "asset":             base_req["asset"],
-                "pay_to":            settings.BASE_GATEWAY_ADDRESS,
-                "maxTimeoutSeconds": base_req["maxTimeoutSeconds"],
-                "instructions": (
-                    "Sign an EIP-3009 transferWithAuthorization for the amount above, "
-                    "encode as base64 JSON PaymentPayload, and retry with header "
-                    "PAYMENT-SIGNATURE: <base64_payload>"
-                ),
-            }
-            payment_required_header = base_pay.build_payment_required_header(
-                requirements=base_req,
-                resource_url=resource_url,
-                tool_description=_SESSION_DESCRIPTION,
-                output_schema=_SESSION_OUTPUT_SCHEMA,
-            )
-
-        headers = build_402_headers(challenge)
-        if payment_required_header:
-            headers["PAYMENT-REQUIRED"] = payment_required_header
-
-        return JSONResponse(
-            status_code=402,
-            content={
-                "error":       "Payment required",
-                "x402Version": 2,
-                # ── Stellar option (backward-compat) ──────────────────────────
-                "payment_id":  challenge.payment_id,
-                "amount_usdc": challenge.amount_usdc,
-                "pay_to":      challenge.gateway_address,
-                "asset":       "USDC",
-                "network":     settings.STELLAR_NETWORK,
-                "instructions": (
-                    f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
-                    f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
-                    f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}."
-                ),
-                # ── Structured multi-chain options ────────────────────────────
-                "payment_options": {
-                    "stellar": {
-                        "payment_id":  challenge.payment_id,
-                        "amount_usdc": challenge.amount_usdc,
-                        "pay_to":      challenge.gateway_address,
-                        "network":     settings.STELLAR_NETWORK,
-                        "asset":       "USDC",
-                        "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
-                    },
-                    **({"base": base_option} if base_option else {}),
-                },
-            },
-            headers=headers,
-        )
+        # Build the 402 challenge body + headers (Base option + PAYMENT-REQUIRED
+        # included for Bazaar CDP Facilitator indexing).
+        content, headers = _session_402_payload(challenge)
+        return JSONResponse(status_code=402, content=content, headers=headers)
 
     # ── Step 2a: Stellar payment ───────────────────────────────────────────────
     if x_payment:
