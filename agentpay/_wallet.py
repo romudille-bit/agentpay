@@ -474,9 +474,13 @@ class Session:
         allowed_tools: list[str] | None = None,
         max_per_tool: dict[str, float] | None = None,
         rate_limit: int | None = None,
+        prefer_chain: str | None = None,
     ):
         self.wallet = wallet
         self.gateway_url = gateway_url.rstrip("/")
+        # Default settlement chain for external x402 tools that offer several
+        # (e.g. "base" or "stellar"). Overridable per-call via call(..., chain=).
+        self._prefer_chain = prefer_chain.lower() if prefer_chain else None
         # Coerce through str() so a float cap is EXACT: Decimal(0.10) drifts to
         # 0.1000000000000000055…, but Decimal(str(0.10)) == Decimal("0.10").
         # Accepts "0.10", 0.10, or Decimal("0.10") — all do the right thing.
@@ -607,6 +611,7 @@ class Session:
                     "tool":     e["tool"],
                     "cost":     _fmt(e["amount_usdc"]),
                     "tx_hash":  e.get("tx_hash", ""),
+                    "network":  e.get("network", "") or "",   # settlement chain
                     **({"fallback_for": e["fallback_for"]} if "fallback_for" in e else {}),
                 }
                 for e in self._call_log
@@ -740,7 +745,7 @@ class Session:
 
     # ── External x402 call ────────────────────────────────────────────────────
 
-    def _call_x402_url(self, url: str, params: dict) -> dict:
+    def _call_x402_url(self, url: str, params: dict, chain: str | None = None) -> dict:
         """
         Call any external x402-compatible URL directly.
 
@@ -783,61 +788,81 @@ class Session:
                     f"Expected 200 or 402 from {url}, got {resp.status_code}: {resp.text[:200]}"
                 )
 
-            # ── Parse x402 v2 payment requirements ────────────────────────────
-            # External tools use the x402 v2 standard: body contains {"accepts": [...]}
+            # ── Parse payment options (x402 v2 'accepts[]') ───────────────────
             try:
                 data = resp.json()
-                accepts = data.get("accepts", [])
             except Exception:
                 raise Exception(f"Could not parse 402 response from {url}: {resp.text[:200]}")
-
+            accepts = data.get("accepts", []) or []
             if not accepts:
+                # AgentPay's own endpoints use the native 'payment_options' shape,
+                # not x402-v2 'accepts' — guide the caller instead of failing cryptically.
+                if data.get("payment_options"):
+                    raise Exception(
+                        f"{url} returned an AgentPay-native 402 (payment_options, not "
+                        f"x402-v2 'accepts'). Call AgentPay tools by name — "
+                        f"session.call('tool_name') — rather than by URL."
+                    )
                 raise Exception(f"402 from {url} had no payment requirements in 'accepts'")
 
-            # ── Find a Stellar-compatible option ──────────────────────────────
-            stellar_network = (
-                "stellar:pubnet" if self.wallet.network == "mainnet"
-                else "stellar:testnet"
-            )
+            # ── Normalise into payable candidates, tagged by chain ────────────
+            def _chain_kind(net) -> str | None:
+                n = str(net or "").lower()
+                if "eip155" in n or n.startswith("base"):
+                    return "base"
+                if "stellar" in n:
+                    return "stellar"
+                return None
 
-            stellar_option = next(
-                (a for a in accepts if stellar_network in a.get("network", "")),
-                None,
-            )
+            candidates = []
+            for a in accepts:
+                kind_ = _chain_kind(a.get("network"))
+                if kind_ is None:
+                    continue
+                try:
+                    atomic = int(a.get("amount", 0))
+                except (ValueError, TypeError):
+                    continue
+                can = bool(self.wallet.base_address) if kind_ == "base" else True  # any Stellar wallet can pay
+                candidates.append({
+                    "kind": kind_, "network": a.get("network", ""), "pay_to": a.get("payTo"),
+                    "amount_atomic": atomic, "amount_usdc": f"{atomic / 1_000_000:.6f}",
+                    "scheme": a.get("scheme", "exact"), "accept": a, "payable": can,
+                })
 
-            # ── Select best payment option ─────────────────────────────────────
-            # Priority: Base mainnet (eip155:8453) if EVM wallet available,
-            # then Stellar, then any other.
-            base_network   = "eip155:8453"
-            stellar_network_id = (
-                "stellar:pubnet" if self.wallet.network == "mainnet"
-                else "stellar:testnet"
-            )
+            payable_opts = [c for c in candidates if c["payable"]]
+            wallet_can = (["base"] if self.wallet.base_address else []) + ["stellar"]
 
-            base_option = (
-                next((a for a in accepts if a.get("network") == base_network), None)
-                if self.wallet.base_address
-                else None
-            )
-            stellar_option = next(
-                (a for a in accepts if stellar_network_id in a.get("network", "")),
-                None,
-            )
-            chosen = base_option or stellar_option
-
-            if chosen is None:
-                networks = list({a.get("network", "?") for a in accepts})
-                raise NotImplementedError(
-                    f"Tool at {url} requires payment on {networks}. "
-                    f"Configure a Base wallet (base_key= or BASE_AGENT_KEY) "
-                    f"or a Stellar wallet to pay on those networks."
+            # ── Select by policy: explicit chain → else cheapest payable ──────
+            want = (chain or self._prefer_chain)
+            want = want.lower() if want else None
+            if want:
+                match = [c for c in payable_opts if c["kind"] == want]
+                if not match:
+                    offered = sorted({c["kind"] for c in candidates})
+                    raise PaymentFailed(
+                        f"chain='{want}' is not usable for {url}. Tool offers "
+                        f"{offered or 'no recognised chains'}; your wallet can pay "
+                        f"{sorted(set(wallet_can))}."
+                    )
+                chosen = min(match, key=lambda c: c["amount_atomic"])
+            elif payable_opts:
+                chosen = min(payable_opts, key=lambda c: c["amount_atomic"])
+            else:
+                offered = sorted({c["kind"] for c in candidates}) or \
+                          sorted({str(a.get("network", "?")) for a in accepts})
+                raise PaymentFailed(
+                    f"{url} requires payment on {offered}, but your wallet can only pay "
+                    f"on {sorted(set(wallet_can))}. Add a Base key (base_key= / "
+                    f"BASE_AGENT_KEY) to pay on Base."
                 )
 
-            amount_raw  = int(chosen["amount"])
-            amount_usdc = f"{amount_raw / 1_000_000:.6f}"
-            pay_to      = chosen["payTo"]
-            pay_network = chosen.get("network", "")
-            pay_scheme  = chosen.get("scheme", "exact")
+            kind        = chosen["kind"]
+            base_accept = chosen["accept"]
+            amount_usdc = chosen["amount_usdc"]
+            pay_to      = chosen["pay_to"]
+            pay_network = chosen["network"]
+            pay_scheme  = chosen["scheme"]
 
             # ── Budget check ──────────────────────────────────────────────────
             if self.would_exceed(amount_usdc):
@@ -848,7 +873,7 @@ class Session:
 
             # ── Pay on the selected network and retry ─────────────────────────
             tx_hash = ""
-            if chosen is base_option:
+            if kind == "base":
                 # Base: sign EIP-3009 OFF-CHAIN — nothing is broadcast. The
                 # resource server's facilitator settles the authorization only
                 # if it accepts the request, so a rejected retry moves no funds.
@@ -857,7 +882,7 @@ class Session:
                 # against CDP-facilitator tools.)
                 logger.info(f"  402 — signing {amount_usdc} USDC auth for {pay_to[:10]}... (Base, off-chain)")
                 try:
-                    x_payment = self.wallet.build_base_payment_signature(chosen, url)
+                    x_payment = self.wallet.build_base_payment_signature(base_accept, url)
                 except Exception as e:
                     raise PaymentFailed(f"evm:could not sign x402 payment: {str(e)[:160]}")
                 payer_address = self.wallet.base_address
@@ -917,20 +942,30 @@ class Session:
                 "tool":        url,
                 "amount_usdc": amount_usdc,
                 "tx_hash":     tx_hash,
+                "network":     pay_network,
                 "success":     True,
                 "external":    True,
             })
+            # Make the settlement chain observable on the result (ToolResult.network)
+            # for third-party tools whose response isn't already enveloped.
+            if isinstance(result, dict) and "payment" not in result:
+                result["payment"] = {"amount_usdc": amount_usdc, "tx_hash": tx_hash, "network": pay_network}
 
-            logger.info(f"  ✓ External x402 call complete | spent {_fmt(cost)}")
+            logger.info(f"  ✓ External x402 call complete on {pay_network} | spent {_fmt(cost)}")
             return result
 
-    def call(self, tool_name: str, params: dict = None) -> dict:
+    def call(self, tool_name: str, params: dict = None, *, chain: str | None = None) -> dict:
         """
         Call a paid tool within budget.
 
         Accepts either:
           - A tool name from AgentPay's registry ("token_price", "whale_activity", ...)
           - Any external x402-compatible URL ("https://api.oatp.cc/tools/tx_explainer")
+
+        For external URLs that offer payment on several chains, `chain=` ("base"
+        or "stellar") picks which to settle on; without it, the Session's
+        prefer_chain (or cheapest payable option) is used. The chosen chain is
+        recorded on the result (``.network``) and the receipt.
 
         For external URLs, payment goes directly to the tool provider.
         AgentPay tracks the spend locally and enforces the budget cap.
@@ -947,7 +982,7 @@ class Session:
 
         # ── External x402 URL: route directly, skip AgentPay registry ─────────
         if isinstance(tool_name, str) and tool_name.startswith(("http://", "https://")):
-            return _wrap_result(self._call_x402_url(tool_name, params or {}))
+            return _wrap_result(self._call_x402_url(tool_name, params or {}, chain=chain))
 
         params = params or {}
 
@@ -1051,10 +1086,16 @@ class Session:
             self._spent += cost
             self._tool_cache.setdefault(target, {})["price_usdc"] = str(cost)
 
+            # Settlement chain from the gateway receipt (e.g. 'stellar-mainnet',
+            # 'base', or 'free' for $0 tools) — recorded so it shows on the receipt.
+            net = ""
+            if isinstance(result, dict):
+                net = (result.get("payment") or {}).get("network", "") or ""
             entry: dict = {
                 "tool": target,
                 "amount_usdc": str(cost),
                 "tx_hash": last.get("tx_hash", ""),
+                "network": net,
                 "success": True,
             }
             if target != tool_name:
@@ -1138,11 +1179,13 @@ class Session:
         ]
         for entry in self._call_log:
             tx = (entry.get("tx_hash") or "")[:16]
+            net = entry.get("network") or ""
             label = entry["tool"]
             if "fallback_for" in entry:
                 label += f"  (fallback for {entry['fallback_for']})"
             lines.append(
-                f"    {label:<30} {_fmt(entry['amount_usdc'])}"
+                f"    {label:<30} {_fmt(entry['amount_usdc']):>9}"
+                + (f"  {net}" if net else "")
                 + (f"  |  {tx}..." if tx else "")
             )
         lines.append("─" * width)
