@@ -278,34 +278,81 @@ async def split_payment(
     developer_share = total * Decimal(str(1 - gateway_fee_percent))
     developer_share = developer_share.quantize(Decimal("0.0000001"))
 
+    # Bounded retry-with-backoff. The split used to be a single fire-and-forget
+    # submit: any transient failure (Horizon 5xx/timeout, momentary low XLM on
+    # the gateway, a stale sequence number under concurrency) silently lost the
+    # developer their 85%. We now retry up to SPLIT_MAX_RETRIES times, rebuilding
+    # the tx each attempt so the sequence number is re-fetched. On final failure
+    # we durably stamp the payment_logs row for manual reconciliation rather
+    # than dropping the obligation on the floor.
+    max_retries = max(0, int(getattr(settings, "SPLIT_MAX_RETRIES", 3)))
+    base_delay  = float(getattr(settings, "SPLIT_RETRY_BASE_DELAY", 0.5))
+    last_error: str = "unknown"
+
+    for attempt in range(max_retries + 1):
+        try:
+            # asyncio.to_thread keeps the event loop free while stellar_sdk's
+            # synchronous Horizon call runs on a worker thread. Without this,
+            # split_payment blocks the entire FastAPI worker for the 200-2000ms
+            # of network round-trip — every concurrent call freezes during a split.
+            #
+            # Re-load the account inside the loop: a retry after a failed submit
+            # needs a fresh sequence number, otherwise it'd fail with tx_bad_seq.
+            gateway_account = await asyncio.to_thread(
+                server.load_account, gateway_keypair.public_key
+            )
+
+            tx = (
+                TransactionBuilder(
+                    source_account=gateway_account,
+                    network_passphrase=get_network_passphrase(),
+                    base_fee=100,
+                )
+                .append_payment_op(
+                    destination=tool_developer_address,
+                    asset=usdc,
+                    amount=str(developer_share),
+                )
+                .set_timeout(30)
+                .build()
+            )
+
+            tx.sign(gateway_keypair)
+            response = await asyncio.to_thread(server.submit_transaction, tx)
+            split_tx_hash = response.get("hash", "")
+
+            if attempt > 0:
+                logger.info(
+                    f"Split succeeded on retry {attempt} for "
+                    f"{tool_developer_address[:10]}..."
+                )
+            break  # success — fall through to the split_done bookkeeping below
+
+        except Exception as e:
+            last_error = str(e)[:200]
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"Split attempt {attempt + 1}/{max_retries + 1} failed "
+                    f"({last_error}); retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+                continue
+            # Exhausted — record a durable, reconcilable failure marker.
+            logger.error(
+                f"Split payment FAILED after {max_retries + 1} attempts "
+                f"(dev={tool_developer_address[:10]}..., amount={developer_share}): "
+                f"{last_error}"
+            )
+            if payment_id:
+                try:
+                    from gateway.services.supabase import mark_split_failed
+                    await mark_split_failed(payment_id, last_error)
+                except Exception as mark_err:
+                    logger.error(f"mark_split_failed could not be recorded: {mark_err}")
+            return {"success": False, "reason": last_error}
+
     try:
-        # asyncio.to_thread keeps the event loop free while stellar_sdk's
-        # synchronous Horizon call runs on a worker thread. Without this,
-        # split_payment blocks the entire FastAPI worker for the 200-2000ms
-        # of network round-trip — every concurrent call freezes during a split.
-        gateway_account = await asyncio.to_thread(
-            server.load_account, gateway_keypair.public_key
-        )
-
-        tx = (
-            TransactionBuilder(
-                source_account=gateway_account,
-                network_passphrase=get_network_passphrase(),
-                base_fee=100,
-            )
-            .append_payment_op(
-                destination=tool_developer_address,
-                asset=usdc,
-                amount=str(developer_share),
-            )
-            .set_timeout(30)
-            .build()
-        )
-
-        tx.sign(gateway_keypair)
-        response = await asyncio.to_thread(server.submit_transaction, tx)
-        split_tx_hash = response.get("hash", "")
-
         logger.info(f"Split sent {developer_share} USDC to {tool_developer_address}")
 
         # PR #14: PATCH payment_logs.state='split_done'. Lazy import to

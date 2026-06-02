@@ -100,13 +100,48 @@ async function main() {
 
   const env = { ...process.env };
 
+  // Resolve the gateway's actual network ONCE up front. Every wallet path
+  // below needs it: a wallet keyed to one network but pointed at a gateway
+  // on the other produces a confusing raw Horizon 404 on the first tool call
+  // (the gateway looks the wallet's account up on the wrong network's
+  // Horizon). We fail fast here with a clear message instead.
+  let gatewayNetwork = null;
+  try {
+    const health = await checkGatewayNetwork();
+    gatewayNetwork = health.network;  // "mainnet" | "testnet"
+  } catch (err) {
+    console.error('⚠️  Could not reach gateway /health:', err.message);
+    console.error('   Proceeding without a network-match check.');
+  }
+
   // Payment method priority:
   // 1. STELLAR_SECRET_KEY set → use Stellar (testnet or mainnet via STELLAR_NETWORK)
   // 2. BASE_PRIVATE_KEY set → use Base mainnet
   // 3. Neither set → auto-create testnet Stellar wallet via faucet
 
   if (process.env.STELLAR_SECRET_KEY) {
-    const network = process.env.STELLAR_NETWORK || 'testnet';
+    // If STELLAR_NETWORK is set explicitly and disagrees with the gateway,
+    // refuse to start — this is the misconfiguration that surfaces as a raw
+    // Horizon 404 mid-session. If it's unset, default it to the gateway's
+    // network so the wallet is interpreted on the right Horizon.
+    const explicitNet = process.env.STELLAR_NETWORK;
+    if (gatewayNetwork && explicitNet && explicitNet !== gatewayNetwork) {
+      console.error('');
+      console.error('❌ Network mismatch.');
+      console.error(`   STELLAR_NETWORK=${explicitNet} but the gateway at`);
+      console.error(`   ${GATEWAY_URL} is running on ${gatewayNetwork}.`);
+      console.error('');
+      console.error(`   A ${explicitNet} wallet cannot pay a ${gatewayNetwork} gateway —`);
+      console.error('   the gateway would look your account up on the wrong');
+      console.error('   network and every tool call would fail with a 404.');
+      console.error('');
+      console.error(`   Fix: use a ${gatewayNetwork} STELLAR_SECRET_KEY, or point at a`);
+      console.error(`   ${explicitNet} gateway via AGENTPAY_GATEWAY_URL.`);
+      console.error('');
+      process.exit(1);
+    }
+    const network = explicitNet || gatewayNetwork || 'testnet';
+    env.STELLAR_NETWORK = network;
     console.log(`✓ Using Stellar wallet (${network})`);
 
   } else if (process.env.BASE_PRIVATE_KEY) {
@@ -114,23 +149,18 @@ async function main() {
 
   } else {
     console.log('🔍 Checking gateway network...');
-    try {
-      const health = await checkGatewayNetwork();
-      if (health.network === 'mainnet') {
-        console.log('');
-        console.log('⚠️  This gateway is running on mainnet.');
-        console.log('   The faucet is not available on mainnet.');
-        console.log('');
-        console.log('   To use AgentPay on mainnet, fund a Stellar wallet');
-        console.log('   with USDC and set your secret key:');
-        console.log('');
-        console.log('     STELLAR_SECRET_KEY=<your-secret-key> npx agentpay-mcp');
-        console.log('');
-        console.log('   Docs: https://github.com/romudille-bit/agentpay');
-        process.exit(0);
-      }
-    } catch (err) {
-      console.error('⚠️  Could not reach gateway /health:', err.message);
+    if (gatewayNetwork === 'mainnet') {
+      console.log('');
+      console.log('⚠️  This gateway is running on mainnet.');
+      console.log('   The faucet is not available on mainnet.');
+      console.log('');
+      console.log('   To use AgentPay on mainnet, fund a Stellar wallet');
+      console.log('   with USDC and set your secret key:');
+      console.log('');
+      console.log('     STELLAR_SECRET_KEY=<your-secret-key> npx agentpay-mcp');
+      console.log('');
+      console.log('   Docs: https://github.com/romudille-bit/agentpay');
+      process.exit(0);
     }
     console.log('🪙 No wallet configured — creating a free testnet wallet...');
     try {
@@ -159,7 +189,7 @@ async function main() {
 
   console.log('🚀 Starting AgentPay MCP server...');
   console.log(`   Gateway: ${GATEWAY_URL}`);
-  console.log(`   Tools: 12 crypto data tools`);
+  console.log(`   Tools: 18 tools (17 free)`);
   console.log('');
 
   const proc = spawn(python, [mcpServer], {

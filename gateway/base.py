@@ -371,11 +371,27 @@ async def settle_base_payment(
             rpc_url              = rpc_url,
         )
         if result["success"]:
+            # ── Atomic consume (closes the TOCTOU on the replay pre-check) ──
+            # The is_replay check above is a fast pre-check, but verify_base_tx
+            # does JSON-RPC I/O with await boundaries — two concurrent retries
+            # with the same tx_hash can both pass it and both settle. Serialize
+            # the claim here, before declaring success:
+            #   1. In-memory check-and-add with no await between is atomic
+            #      within this worker's event loop.
+            #   2. record_tx_hash() is an insert into a composite-PK table and
+            #      returns False on a 409 — another worker/pod already consumed
+            #      this hash. Now AWAITED so the 409 actually gates the result
+            #      instead of being discarded by fire-and-forget.
+            if tx_hash in _used_base_tx_hashes:
+                return {"success": False, "tx_hash": tx_hash, "payer": payer,
+                        "network": payment_requirements.get("network", ""),
+                        "reason": "replay_attack"}
             _used_base_tx_hashes.add(tx_hash)
-            # Persist replay state to Supabase (primary after PR #13e
-            # cutover). Still fire-and-forget — response doesn't wait on
-            # the round-trip.
-            asyncio.create_task(sb.record_tx_hash(tx_hash, network_label))
+            recorded = await sb.record_tx_hash(tx_hash, network_label)
+            if recorded is False:
+                return {"success": False, "tx_hash": tx_hash, "payer": payer,
+                        "network": payment_requirements.get("network", ""),
+                        "reason": "replay_attack"}
         # Inject CAIP-2 network from requirements so callers don't see ""
         result["network"] = payment_requirements.get("network", "")
         return result

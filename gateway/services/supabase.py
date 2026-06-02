@@ -610,6 +610,47 @@ async def update_payment_log_state(
         )
 
 
+async def mark_split_failed(payment_id: str, reason: str) -> None:
+    """Durably flag a payment whose revenue split could not be settled.
+
+    split_payment() runs concurrently with (and usually finishes after) the
+    route's terminal 'payment_done' PATCH, so we must NOT touch the `state`
+    column — clobbering 'payment_done' would corrupt the funnel analytics and
+    could be re-read as a non-terminal row. Instead we stamp `error_reason`
+    only, leaving `state` untouched. A permanently-failed split is then
+    reconcilable with:
+
+        SELECT payment_id, developer_address, amount_usdc
+          FROM payment_logs
+         WHERE error_reason LIKE 'split_failed:%';
+
+    No expected_state guard (unlike the refund helpers) precisely because we
+    want this to land on whatever terminal state the row already holds. The
+    error_reason column is otherwise unused on the happy path (it's only set
+    on the tool-failure/refund branches, which are mutually exclusive with a
+    successful paid call that owes a split). Best-effort: a failure to record
+    the marker is logged but never raised — the caller is already in a
+    degraded path.
+    """
+    if not sb_enabled():
+        return
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.patch(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={"payment_id": f"eq.{payment_id}"},
+                json={"error_reason": f"split_failed: {reason}"[:300]},
+            )
+        if resp.status_code not in (200, 204):
+            logger.error(
+                f"mark_split_failed error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]} (payment_id={payment_id})"
+            )
+    except Exception as e:
+        logger.error(f"mark_split_failed failure (payment_id={payment_id}): {e}")
+
+
 # Abandoned-pending sweep window. A pending payment_logs row is considered
 # abandoned if it's been sitting in `pending` for longer than this without
 # ever transitioning to `verified`. Matches the design doc §5.4 spec.

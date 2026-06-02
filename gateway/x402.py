@@ -319,21 +319,35 @@ async def verify_and_fulfill(
     if not result["verified"]:
         return {"authorized": False, "reason": result["reason"]}
 
-    # Mark as used — update both stores. In-memory is now a cache for
-    # graceful degradation rather than the source of truth, but we keep
-    # it hot so a Supabase outage doesn't immediately reject valid
-    # second-leg requests.
+    # ── Atomic consume (closes the TOCTOU between _is_replay and here) ────────
+    # The _is_replay() call above is only a fast pre-check. verify_payment()
+    # does on-chain I/O with await boundaries, so two concurrent retries
+    # carrying the same tx_hash can BOTH pass the pre-check, then both fulfil
+    # and both trigger split_payment — a double-spend of one on-chain payment.
+    # Serialize the claim here, before authorizing:
+    #
+    #   1. In-memory: a check-and-add with NO await in between is atomic
+    #      within this worker's event loop.
+    #   2. Durable: the replay_* tables are insert-only with a PK/composite-PK,
+    #      so record_*() returns False on an HTTP 409 — i.e. another worker or
+    #      a pre-restart request already consumed this payment. (They return
+    #      True when Supabase is disabled/unreachable, so this never fails
+    #      closed on infra blips; in-memory still guards the single-process
+    #      case.) These are now AWAITED — the few-ms cost buys correctness.
+    if tx_hash in _completed_payments:
+        return {"authorized": False, "reason": "Payment already used (replay attack)"}
     _completed_payments.add(tx_hash)
-    _pending_challenges.pop(payment_id, None)
 
-    # Persist replay state to Supabase (primary after PR #13e cutover).
-    # Still fire-and-forget — the response shouldn't wait on three round
-    # trips. Composite PK (tx_hash, network) on replay_tx_hashes keeps
-    # stellar-mainnet and stellar-testnet hashes independent.
-    # delete_pending_challenge removes the row we just consumed so the
-    # periodic cleanup sweep has less work to do.
-    asyncio.create_task(sb.record_payment_id(payment_id))
-    asyncio.create_task(sb.record_tx_hash(tx_hash, network_label))
+    tx_recorded  = await sb.record_tx_hash(tx_hash, network_label)
+    pid_recorded = await sb.record_payment_id(payment_id)
+    if tx_recorded is False or pid_recorded is False:
+        # Durable store already had this tx_hash / payment_id → concurrent or
+        # cross-restart replay won the race. Reject WITHOUT fulfilling or
+        # splitting. (The competing request that inserted first proceeds.)
+        return {"authorized": False, "reason": "Payment already used (replay attack)"}
+
+    # Consumed successfully — drop the pending challenge from both stores.
+    _pending_challenges.pop(payment_id, None)
     asyncio.create_task(sb.delete_pending_challenge(payment_id))
 
     # Trigger revenue split (async, non-blocking).

@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     # short-circuit to refund_failed with reason='base_refund_not_implemented'.
     REFUND_ENABLED: bool = False
 
+    # Revenue-split resilience. split_payment() forwards the developer's 85%
+    # on every paid call; before this it was fire-and-forget with no retry,
+    # so any transient Horizon blip or momentary low-XLM on the gateway
+    # silently lost the developer their cut. split_payment now retries up to
+    # SPLIT_MAX_RETRIES times with exponential backoff, and on final failure
+    # durably stamps the payment_logs row (error_reason='split_failed: ...')
+    # so a permanently-failed split is queryable for manual reconciliation
+    # instead of vanishing. Set to 0 to disable retries (single attempt).
+    SPLIT_MAX_RETRIES: int = 3
+    SPLIT_RETRY_BASE_DELAY: float = 0.5   # seconds; doubles each attempt
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
