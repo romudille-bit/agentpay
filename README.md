@@ -132,7 +132,7 @@ with Session(wallet,
              allowed_tools=["token_price", "gas_tracker", "web_search"],
              max_per_tool={"dune_query": 0.02},
              rate_limit=10,                # max 10 calls/min
-             prefer_chain="base") as session:   # default chain for multi-chain x402 tools
+             prefer_chain="base") as session:   # Base is the default; pass "stellar" to override
     ...
 ```
 

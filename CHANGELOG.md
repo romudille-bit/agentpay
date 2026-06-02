@@ -4,6 +4,30 @@ All notable changes to **agentpay-x402** (the `agentpay` Python SDK).
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] — 2026-06-01
+
+### Changed
+- **Base is now the DEFAULT paid settlement chain; Stellar is the fallback.**
+  Previously paid calls picked the *cheapest payable* option (which, with equal
+  prices, leaned Stellar). Now both the named-tool path and external x402 URLs
+  prefer Base/EIP-3009 (Mode A) when the wallet has a Base key and the 402 offers
+  a Base option — the CDP-facilitator path that keeps AgentPay discoverable on
+  Bazaar — and fall back to Stellar automatically otherwise.
+- The **named-tool paid path now supports Base** (it was Stellar-only). Paid
+  AgentPay tools settle gaslessly via EIP-3009 (`AgentPayClient._settle_base`),
+  falling back to Stellar on any failure.
+
+### Added
+- **`prefer_chain` on `quickstart()` and `Session`** to pin the default chain
+  (e.g. `prefer_chain="stellar"`). An explicit chain (per-call `chain=` or session
+  `prefer_chain=`) is a hard requirement and raises `PaymentFailed` if unpayable;
+  the implicit Base default degrades silently to Stellar.
+- `DEFAULT_PAID_CHAIN = "base"` constant in `agentpay/_wallet.py`.
+
+### Unchanged
+- Free ($0) tools never settle on-chain and ignore the chain preference (they keep
+  flowing through the x402 lifecycle for receipts/analytics).
+
 ## [0.2.2] — 2026-05-31
 
 ### Added
@@ -64,6 +88,7 @@ Initial releases: `AgentWallet`, budget-aware `Session`, Stellar settlement,
 `session.call()` for AgentPay tools and external x402 URLs, `discover()`,
 `spending_summary()`, faucet wallet.
 
+[0.2.3]: https://pypi.org/project/agentpay-x402/0.2.3/
 [0.2.2]: https://pypi.org/project/agentpay-x402/0.2.2/
 [0.2.1]: https://pypi.org/project/agentpay-x402/0.2.1/
 [0.2.0]: https://pypi.org/project/agentpay-x402/0.2.0/
