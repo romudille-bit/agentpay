@@ -82,7 +82,27 @@ def _send_usdc_payment(
         usdc_issuer = USDC_ISSUER_MAINNET
 
     stellar = StellarServer(horizon_url)
-    account = stellar.load_account(kp.public_key)
+    try:
+        account = stellar.load_account(kp.public_key)
+    except Exception as e:
+        # The most common first-contact failure: the wallet's network doesn't
+        # match the gateway's, so the account simply doesn't exist on the
+        # Horizon we're querying (e.g. a testnet key paying a mainnet gateway).
+        # A raw Horizon 404 here is useless to the caller — it can't tell a
+        # broken gateway from a misconfigured wallet. Detect the not-found case
+        # and raise a clear, actionable error instead.
+        msg = str(e)
+        if "404" in msg or "not_found" in msg or "Resource Missing" in msg:
+            raise RuntimeError(
+                f"Wallet {kp.public_key[:8]}... was not found on Stellar "
+                f"{network} (Horizon: {horizon_url}). This almost always means "
+                f"your STELLAR_SECRET_KEY is for a different network than the "
+                f"gateway ({GATEWAY_URL} settles on '{network}'). Fix: use a "
+                f"{network} wallet funded with USDC, or point AGENTPAY_GATEWAY_URL "
+                f"at a gateway on your wallet's network. (Free tools work on any "
+                f"wallet and don't require this.)"
+            ) from e
+        raise
     usdc = Asset("USDC", usdc_issuer)
 
     tx = (
@@ -139,14 +159,33 @@ async def _call_with_payment(tool_name: str, params: dict) -> dict:
         pay_to      = challenge["pay_to"]
         network     = challenge.get("network", "testnet")
 
-        # ── Step 2: Pay on Stellar (blocking, run in thread) ─────────────────
-        loop = asyncio.get_event_loop()
-        tx_hash = await loop.run_in_executor(
-            None,
-            lambda: _send_usdc_payment(
-                STELLAR_SECRET_KEY, pay_to, amount_usdc, payment_id, network
-            ),
-        )
+        # ── Step 2: Settle ────────────────────────────────────────────────────
+        # Free tools ($0 challenge): the gateway issues a 402 for them too (so
+        # every call gets a payment_logs row + receipt), but there is nothing
+        # to pay. Skip the on-chain settlement entirely — a $0 Stellar payment
+        # would fail on an unfunded account, and loading the wallet for a free
+        # call needlessly hits Horizon (and 404s outright if the wallet's
+        # network doesn't match the gateway's). Retry with a unique `free:`
+        # proof instead, mirroring the canonical SDK (agentpay/_client.py).
+        # This is what makes the 17 free tools usable on ANY wallet — funded
+        # or not, right network or not — which is the zero-setup promise.
+        from decimal import Decimal, InvalidOperation
+        try:
+            is_free = Decimal(str(amount_usdc)) == 0
+        except (InvalidOperation, ValueError, TypeError):
+            is_free = False
+
+        if is_free:
+            tx_hash = f"free:{payment_id}"
+        else:
+            # Paid tool: settle on Stellar (blocking, run in thread).
+            loop = asyncio.get_event_loop()
+            tx_hash = await loop.run_in_executor(
+                None,
+                lambda: _send_usdc_payment(
+                    STELLAR_SECRET_KEY, pay_to, amount_usdc, payment_id, network
+                ),
+            )
 
         # ── Step 3: Retry with payment proof ─────────────────────────────────
         r2 = await client.post(
