@@ -39,6 +39,26 @@ GATEWAY_URL = os.environ.get(
 
 STELLAR_SECRET_KEY = os.environ.get("STELLAR_SECRET_KEY", "")
 
+# Zero-setup default. 17 of 18 tools are free, and free tools never settle
+# on-chain (see the free-tool branch in _call_with_payment), so they only need
+# *an address* to fill the X-Payment `from=` field — not a funded wallet on any
+# particular network. If no key is provided we mint an ephemeral throwaway
+# keypair so the free tools work instantly against the (mainnet) gateway with no
+# faucet, no funding, and no network choice — this is the "17 free tools, no
+# USDC, no wallet setup" promise. A real funded *mainnet* key is required only
+# for the one paid tool (session_create); attempting it on the ephemeral wallet
+# raises a clear error below rather than leaking a Horizon 404.
+_EPHEMERAL_WALLET = False
+if not STELLAR_SECRET_KEY:
+    STELLAR_SECRET_KEY = Keypair.random().secret
+    _EPHEMERAL_WALLET = True
+    print(
+        "AgentPay MCP: no STELLAR_SECRET_KEY set — using an ephemeral wallet. "
+        "Free tools work as-is; to use the paid session_create tool, set "
+        "STELLAR_SECRET_KEY to a funded mainnet Stellar wallet.",
+        file=sys.stderr,
+    )
+
 USDC_ISSUER_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
 USDC_ISSUER_MAINNET = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
@@ -130,12 +150,6 @@ async def _call_with_payment(tool_name: str, params: dict) -> dict:
       2. Pay USDC on Stellar
       3. Retry → 200 result
     """
-    if not STELLAR_SECRET_KEY:
-        raise RuntimeError(
-            "STELLAR_SECRET_KEY is not set. "
-            "Get a testnet wallet: curl https://agentpay.tools/faucet"
-        )
-
     kp = Keypair.from_secret(STELLAR_SECRET_KEY)
     agent_address = kp.public_key
 
@@ -178,6 +192,17 @@ async def _call_with_payment(tool_name: str, params: dict) -> dict:
         if is_free:
             tx_hash = f"free:{payment_id}"
         else:
+            # Paid tool on an ephemeral (unfunded) wallet → fail fast with a
+            # clear, actionable message instead of attempting a payment that
+            # can't settle. Free tools never reach here.
+            if _EPHEMERAL_WALLET:
+                raise RuntimeError(
+                    f"'{tool_name}' is a paid tool ({amount_usdc} USDC) but no "
+                    f"wallet is configured — AgentPay is running on an ephemeral "
+                    f"wallet that only supports the free tools. To use paid tools, "
+                    f"set STELLAR_SECRET_KEY to a funded mainnet Stellar wallet "
+                    f"(with a USDC trustline)."
+                )
             # Paid tool: settle on Stellar (blocking, run in thread).
             loop = asyncio.get_event_loop()
             tx_hash = await loop.run_in_executor(

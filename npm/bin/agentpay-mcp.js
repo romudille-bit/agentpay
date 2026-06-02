@@ -114,10 +114,20 @@ async function main() {
     console.error('   Proceeding without a network-match check.');
   }
 
-  // Payment method priority:
-  // 1. STELLAR_SECRET_KEY set → use Stellar (testnet or mainnet via STELLAR_NETWORK)
-  // 2. BASE_PRIVATE_KEY set → use Base mainnet
-  // 3. Neither set → auto-create testnet Stellar wallet via faucet
+  // Wallet selection. AgentPay leads with 17 free tools that need no funding
+  // and no on-chain settlement, so the default path is ZERO-SETUP against the
+  // (mainnet) gateway — no faucet, no testnet, no wallet. A funded wallet is
+  // only needed for the one paid tool (session_create).
+  //
+  // 1. STELLAR_SECRET_KEY set → use Stellar, validate network vs gateway.
+  // 2. BASE_PRIVATE_KEY set → use Base mainnet.
+  // 3. Nothing set → DEFAULT: no wallet; the MCP server mints an ephemeral
+  //    keypair so free tools just work. Opt into the testnet faucet explicitly
+  //    with AGENTPAY_USE_FAUCET=1 (only useful for testing the paid tool).
+
+  const wantFaucet = ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.AGENTPAY_USE_FAUCET || '').toLowerCase()
+  );
 
   if (process.env.STELLAR_SECRET_KEY) {
     // If STELLAR_NETWORK is set explicitly and disagrees with the gateway,
@@ -147,22 +157,21 @@ async function main() {
   } else if (process.env.BASE_PRIVATE_KEY) {
     console.log('✓ Using Base mainnet wallet');
 
-  } else {
-    console.log('🔍 Checking gateway network...');
+  } else if (wantFaucet) {
+    // Explicit opt-in: mint a funded testnet wallet via the faucet. Only
+    // useful for testing the paid session_create tool without real USDC, and
+    // only works against the testnet gateway (the faucet 404s on mainnet).
     if (gatewayNetwork === 'mainnet') {
-      console.log('');
-      console.log('⚠️  This gateway is running on mainnet.');
-      console.log('   The faucet is not available on mainnet.');
-      console.log('');
-      console.log('   To use AgentPay on mainnet, fund a Stellar wallet');
-      console.log('   with USDC and set your secret key:');
-      console.log('');
-      console.log('     STELLAR_SECRET_KEY=<your-secret-key> npx agentpay-mcp');
-      console.log('');
-      console.log('   Docs: https://github.com/romudille-bit/agentpay');
-      process.exit(0);
+      console.error('');
+      console.error('❌ AGENTPAY_USE_FAUCET is set but the gateway is on mainnet.');
+      console.error('   The faucet is testnet-only. Either:');
+      console.error('     • point at the testnet gateway:');
+      console.error('       AGENTPAY_GATEWAY_URL=https://gateway-testnet-production.up.railway.app');
+      console.error('     • or set a funded mainnet STELLAR_SECRET_KEY instead.');
+      console.error('');
+      process.exit(1);
     }
-    console.log('🪙 No wallet configured — creating a free testnet wallet...');
+    console.log('🪙 AGENTPAY_USE_FAUCET set — creating a funded testnet wallet...');
     try {
       const wallet = await createTestnetWallet();
       console.log('');
@@ -173,9 +182,6 @@ async function main() {
       console.log('💾 Save your secret key to reuse this wallet:');
       console.log(`   STELLAR_SECRET_KEY=${wallet.secret_key}`);
       console.log('');
-      console.log('⚠️  This is a TESTNET wallet. For mainnet, fund a real');
-      console.log('   Stellar wallet and set STELLAR_SECRET_KEY.');
-      console.log('');
       env.STELLAR_SECRET_KEY = wallet.secret_key;
       env.STELLAR_NETWORK = 'testnet';
     } catch (err) {
@@ -183,6 +189,16 @@ async function main() {
       console.error('   Set STELLAR_SECRET_KEY or BASE_PRIVATE_KEY manually.');
       process.exit(1);
     }
+
+  } else {
+    // DEFAULT zero-setup path: no wallet. The MCP server mints an ephemeral
+    // keypair so all 17 free tools work immediately against the gateway with
+    // no funding, no faucet, no network choice. A funded mainnet wallet is
+    // only needed for the paid session_create tool.
+    console.log('🆓 No wallet configured — running in free-tools mode (zero setup).');
+    console.log('   All 17 free tools work as-is. For the paid session_create tool,');
+    console.log('   set STELLAR_SECRET_KEY to a funded mainnet wallet, or set');
+    console.log('   AGENTPAY_USE_FAUCET=1 against the testnet gateway to test it.');
   }
 
   env.AGENTPAY_GATEWAY_URL = GATEWAY_URL;
