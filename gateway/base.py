@@ -178,34 +178,55 @@ def build_payment_required_header(
     resource_url: str,
     tool_description: str = "",
     output_schema: dict | None = None,
+    bazaar_resource: dict | None = None,
+    bazaar_extension: dict | None = None,
 ) -> str:
     """
     Build the PAYMENT-REQUIRED header value (base64-encoded x402 v2 JSON).
     Sent alongside the 402 response for x402-v2-aware clients.
 
     If `output_schema` is provided it's embedded inside the `accepts[0]`
-    entry under the `outputSchema` key. This is what Coinbase's Bazaar
-    directory reads on the first Base mainnet payment through the CDP
-    facilitator to auto-index the tool — without it, the listing shows
-    a price but no input/output shape and ranks poorly.
+    entry under the `outputSchema` key.
 
-    Conventional shape:
-        output_schema = {"input": <JSON Schema of parameters>,
-                         "output": <example or schema of response>}
+    CRITICAL for Bazaar discovery: x402 indexers validate a resource by
+    GETting its URL and reading the live 402 — they look for the
+    `extensions.bazaar` block and `resource.serviceName`/`resource.tags`
+    RIGHT HERE in the 402 payload (every indexed resource exposes them).
+    Passing `output_schema` into the settle payload alone is NOT enough; the
+    validation crawl of the live endpoint must see the extension too, or the
+    resource stays stuck in `processing` and never promotes to indexed.
+
+      bazaar_resource  — {serviceName, tags, description} merged into `resource`.
+      bazaar_extension — the {info, schema} block set under `extensions.bazaar`.
     """
     accepts_entry = dict(requirements)  # shallow copy — don't mutate caller's dict
     if output_schema is not None:
         accepts_entry["outputSchema"] = output_schema
+
+    resource_block = {
+        "url":         resource_url,
+        "description": tool_description,
+        "mimeType":    "application/json",
+    }
+    if bazaar_resource:
+        # serviceName + tags inline on the resource (Bazaar reads these on the
+        # live 402); keep our richer description if the bazaar copy has one.
+        if bazaar_resource.get("serviceName"):
+            resource_block["serviceName"] = bazaar_resource["serviceName"]
+        if bazaar_resource.get("tags"):
+            resource_block["tags"] = bazaar_resource["tags"]
+        if bazaar_resource.get("description"):
+            resource_block["description"] = bazaar_resource["description"]
+
     payload = {
         "x402Version": 2,
         "error":        "Payment required",
-        "resource": {
-            "url":         resource_url,
-            "description": tool_description,
-            "mimeType":    "application/json",
-        },
-        "accepts": [accepts_entry],
+        "resource":     resource_block,
+        "accepts":     [accepts_entry],
     }
+    if bazaar_extension:
+        payload["extensions"] = {"bazaar": bazaar_extension}
+
     return base64.b64encode(json.dumps(payload).encode()).decode()
 
 

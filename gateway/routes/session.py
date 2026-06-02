@@ -98,6 +98,9 @@ _SESSION_BAZAAR_RESOURCE = {
 }
 
 _SESSION_BAZAAR_EXTENSION = {
+    # Top-level description mirrors indexed resources (their bazaar block is
+    # {description, info, schema}); also carried on resource.description.
+    "description": "A stateful, multi-chain spending session for AI agents: a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger per payment. Not a one-shot budget check — persistent spend governance with a full audit trail. USDC on Base or Stellar.",
     "info": {
         "input": {
             "type":     "http",
@@ -201,6 +204,11 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
             resource_url=resource_url,
             tool_description=_SESSION_DESCRIPTION,
             output_schema=_SESSION_OUTPUT_SCHEMA,
+            # Expose the Bazaar extension + serviceName/tags on the LIVE 402 so
+            # discovery crawlers can validate the resource (settle-only metadata
+            # left it stuck in 'processing'). Mirrors indexed competitors.
+            bazaar_resource=_SESSION_BAZAAR_RESOURCE,
+            bazaar_extension=_SESSION_BAZAAR_EXTENSION,
         )
 
     headers = build_402_headers(challenge)
