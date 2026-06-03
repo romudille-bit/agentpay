@@ -1,0 +1,18 @@
+{
+  "name": "agentpay",
+  "description": "AgentPay — buyer-side economic intelligence for AI agents. Find, judge, and pay for the best paid x402 tool within a budget: discover across the marketplace, skip the stubs, rank by real usage (not price), and cap + receipt every payment. Multi-chain (Base or Stellar), peer-to-peer, no custody.",
+  "owner": {
+    "name": "romudille",
+    "email": "romudille@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "agentpay",
+      "source": "./plugins/agentpay",
+      "description": "Buyer-side economic intelligence for agents: find, judge, and pay for the best paid x402 tool within a budget. Discovers across the marketplace, drops stubs, ranks by real usage (not price), caps + receipts the spend. Multi-chain (Base or Stellar).",
+      "version": "1.0.0",
+      "category": "agent-commerce",
+      "keywords": ["x402", "agent-budget", "spend-control", "tool-routing", "payment-receipts", "agent-commerce"]
+    }
+  ]
+}

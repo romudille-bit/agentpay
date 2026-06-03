@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""
+agent_router.py — Phase 2a: real buyer-side routing across the x402 marketplace.
+
+DISCOVER (Bazaar) → DECIDE (junk-filter → usage-quality rank → budget gate → price
+tiebreak) → ADVISE. Advise-only by default (peer-to-peed model: the agent pays the
+provider directly; this just tells it which one to pay). NO payment happens here.
+
+"Cheapest that's real and actually used," never "cheapest." Quality is borrowed from
+Bazaar's own `quality` block for cold-start; our own delivery telemetry layers on later.
+
+Run:
+  python3 tools/agent_router.py "funding rates"
+  python3 tools/agent_router.py "token security" --budget 0.004
+"""
+
+import sys, json, urllib.request, urllib.parse
+from collections import Counter
+from datetime import datetime, timezone
+from decimal import Decimal
+
+BAZAAR = "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search"
+UA = "agentpay-router/0.1 (+https://agentpay.tools)"
+
+# Known stub-factory payTo addresses (from the 2026-06-03 competitor scan). Same wallet
+# stamping dozens of "distinct" tools = downrank the whole family.
+KNOWN_FACTORIES = {"0x2bb72231eed3".lower()}  # prefix match; Orbis
+
+
+def _fmt(x):
+    s = f"{Decimal(str(x)):.6f}".rstrip("0").rstrip(".")
+    return f"${s}"
+
+
+def _get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return json.loads(r.read().decode())
+
+
+# ── DISCOVER ─────────────────────────────────────────────────────────────────
+def discover(need: str) -> list[dict]:
+    """Query Bazaar discovery for `need`, normalize + dedup into candidates."""
+    data = _get(f"{BAZAAR}?query={urllib.parse.quote(need)}")
+    out, seen = [], set()
+    for r in data.get("resources", []):
+        res = r.get("resource")
+        rd = res if isinstance(res, dict) else {}
+        url = res if isinstance(res, str) else rd.get("url", "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        accepts = r.get("accepts") or rd.get("accepts") or [{}]
+        a = accepts[0]
+        try:
+            price = Decimal(str(int(a.get("amount", 0)))) / Decimal("1000000")
+        except (ValueError, TypeError):
+            price = None
+        ext = (r.get("extensions") or rd.get("extensions") or {}).get("bazaar") or {}
+        out_schema = a.get("outputSchema") or ext.get("info", {}).get("output") or ext.get("schema")
+        q = r.get("quality") or {}
+        out.append({
+            "name": r.get("serviceName") or rd.get("serviceName") or url.rsplit("/", 1)[-1],
+            "url": url,
+            "price_usd": price,
+            "network": a.get("network", ""),
+            "pay_to": (a.get("payTo") or "").lower(),
+            "tags": r.get("tags") or rd.get("tags") or [],
+            "has_schema": bool(out_schema) and out_schema != {},
+            "calls30d": int(q.get("l30DaysTotalCalls", 0) or 0),
+            "payers30d": int(q.get("l30DaysUniquePayers", 0) or 0),
+            "last_called": q.get("lastCalledAt"),
+        })
+    return out
+
+
+# ── DECIDE ───────────────────────────────────────────────────────────────────
+def _recency_days(iso):
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - dt).days
+    except Exception:
+        return None
+
+
+def decide(cands: list[dict], remaining: Decimal):
+    """Filter + rank. Returns (ranked_with_verdicts, recommendation)."""
+    # Factory tell = ONE payTo wallet behind many DISTINCT service names (Orbis), not
+    # a single provider that simply has several endpoints (e.g. Usenami). Count distinct
+    # names per payTo.
+    names_per_payto: dict[str, set] = {}
+    for c in cands:
+        if c["pay_to"]:
+            names_per_payto.setdefault(c["pay_to"], set()).add(c["name"])
+
+    scored = []
+    for c in cands:
+        flags, dropped, reason = [], False, ""
+
+        # Stage 2 — junk filter
+        if not c["has_schema"]:
+            dropped, reason = True, "no usable schema (stub)"
+        # factory fingerprint: >=3 DISTINCT names under one wallet, or a known factory wallet
+        is_factory = (len(names_per_payto.get(c["pay_to"], set())) >= 3) or any(
+            c["pay_to"].startswith(f) for f in KNOWN_FACTORIES)
+        if is_factory:
+            flags.append("factory")
+
+        # budget gate
+        if not dropped and (c["price_usd"] is None or c["price_usd"] > remaining):
+            dropped, reason = True, (f"{_fmt(c['price_usd'])} > budget {_fmt(remaining)}"
+                                     if c["price_usd"] is not None else "no usable price")
+
+        # Stage 3 — usage quality (Bazaar cold-start signal)
+        rec_days = _recency_days(c["last_called"])
+        q = c["payers30d"] * 3 + c["calls30d"]            # adoption weighted over raw volume
+        if rec_days is not None and rec_days <= 7:
+            q += 5                                         # recently used = alive
+        if is_factory:
+            q = q // 4                                     # heavy downrank, not auto-drop
+        if c["payers30d"] == 0 and c["calls30d"] == 0:
+            flags.append("unproven(0/0)")
+
+        scored.append({**c, "flags": flags, "dropped": dropped, "drop_reason": reason,
+                       "quality": q, "rec_days": rec_days})
+
+    survivors = [s for s in scored if not s["dropped"]]
+    # Stage 4 — rank by quality desc, then price asc (cheapest that's real+used)
+    survivors.sort(key=lambda s: (-s["quality"], s["price_usd"]))
+    recommendation = survivors[0] if survivors else None
+    return scored, recommendation
+
+
+# ── ADVISE ───────────────────────────────────────────────────────────────────
+def run(need: str, budget: Decimal):
+    print(f"\n  NEED   : {need}\n  BUDGET : {_fmt(budget)}\n")
+    print("  1) DISCOVER (Coinbase Bazaar)")
+    cands = discover(need)
+    print(f"       {len(cands)} candidate(s) found\n")
+
+    scored, rec = decide(cands, budget)
+
+    print("  2) DECIDE — junk-filter → usage-quality rank → budget → price tiebreak\n")
+    print(f"     {'tool':<34} {'price':>8} {'calls/payers':>13} {'schema':>7}  flags")
+    print("     " + "-" * 78)
+    for s in sorted(scored, key=lambda s: (s["dropped"], -s["quality"])):
+        mark = "✗" if s["dropped"] else ("★" if s is rec else " ")
+        cp = f"{s['calls30d']}/{s['payers30d']}"
+        sc = "yes" if s["has_schema"] else "NO"
+        fl = ",".join(s["flags"])
+        if s["dropped"]:
+            fl = f"DROPPED: {s['drop_reason']}" + (f" [{fl}]" if fl else "")
+        price = _fmt(s["price_usd"]) if s["price_usd"] is not None else "?"
+        print(f"   {mark} {s['name'][:33]:<34} {price:>8} {cp:>13} {sc:>7}  {fl}")
+
+    print("\n  3) ADVISE")
+    if not rec:
+        print("       No real, affordable tool found. (Don't pay for a stub.)\n")
+        return
+    print(f"       → recommend: {rec['name']}  {_fmt(rec['price_usd'])}  on {rec['network']}")
+    why = f"real schema, {rec['payers30d']} unique payers / {rec['calls30d']} calls in 30d"
+    if rec["rec_days"] is not None:
+        why += f", used {rec['rec_days']}d ago"
+    print(f"         why: {why}; fits budget; price-tiebroken among quality peers")
+    print(f"         url: {rec['url']}")
+    print("\n       (advise-only — peer-to-peer: the agent pays this provider directly via x402)\n")
+
+
+if __name__ == "__main__":
+    args = [a for a in sys.argv[1:]]
+    budget = Decimal("0.01")
+    if "--budget" in args:
+        i = args.index("--budget"); budget = Decimal(args[i + 1]); del args[i:i + 2]
+    need = " ".join(args) or "funding rates"
+    run(need, budget)

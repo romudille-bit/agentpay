@@ -1,0 +1,11 @@
+{
+  "name": "agentpay",
+  "description": "Buyer-side economic intelligence for AI agents: find, judge, and pay for the best paid x402 tool within a budget. Discovers across the marketplace, drops stubs, ranks by real usage (not price), and caps + receipts the spend. Built on x402, multi-chain (Base or Stellar).",
+  "version": "1.0.0",
+  "author": {
+    "name": "romudille"
+  },
+  "homepage": "https://agentpay.tools",
+  "repository": "https://github.com/romudille-bit/agentpay",
+  "license": "MIT"
+}
