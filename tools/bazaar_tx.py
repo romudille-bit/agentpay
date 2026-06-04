@@ -28,7 +28,7 @@ SESSION_URL     = f"{GATEWAY_URL}/v1/session/create"
 USDC_BASE       = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 GATEWAY_ADDRESS = "0xE8B25A72dD6aeF69515452a61AD231C7DF2843b7"
 CAIP2_NETWORK   = "eip155:8453"
-AMOUNT_ATOMIC   = 1000     # $0.001 USDC (6 decimals)
+AMOUNT_ATOMIC   = 10000     # $0.01 USDC (6 decimals)
 
 
 # ── Load private key ──────────────────────────────────────────────────────────
@@ -110,6 +110,15 @@ print("Step 3 — Building PAYMENT-SIGNATURE...")
 payment_payload = {
     "x402Version": 2,
     "payload":     payload_dict,
+    # ResourceInfo — required for Bazaar indexing.
+    # service_name ≤ 32 chars; tags ≤ 5 entries, each ≤ 32 chars.
+    "resource": {
+        "url":         SESSION_URL,
+        "description": "Open a budget-capped agent session. Pay $0.01 USDC once — get a session_id and access to 17 free crypto data tools.",
+        "mimeType":    "application/json",
+        "serviceName": "AgentPay",
+        "tags":        ["ai-agents", "crypto", "defi", "session", "budget"],
+    },
     "accepted": {
         "scheme":            "exact",
         "network":           CAIP2_NETWORK,
@@ -118,7 +127,7 @@ payment_payload = {
         "payTo":             GATEWAY_ADDRESS,
         "maxTimeoutSeconds": 300,
         "resource":          SESSION_URL,
-        "description":       "Open a budget-capped agent session on AgentPay. Pay $0.001 USDC once — get a session_id, budget config, and access to 17 free crypto data tools.",
+        "description":       "Open a budget-capped agent session on AgentPay. Pay $0.01 USDC once — get a session_id, budget config, and access to 17 free crypto data tools.",
         "mimeType":          "application/json",
         "extra": {
             "name":                "USD Coin",
@@ -127,16 +136,23 @@ payment_payload = {
         },
     },
     # Bazaar extension — required for CDP to index this resource in discovery.
-    # info.input = example POST body; schema validates info.input.
+    # info.input must be the full HTTP input object (type + method + body).
+    # schema.properties.input must validate info.input exactly.
     "extensions": {
         "bazaar": {
             "info": {
                 "input": {
-                    "agent_address": agent_address,
-                    "max_spend":     "0.10",
-                    "label":         "optional session label",
+                    "type":     "http",
+                    "method":   "POST",
+                    "bodyType": "json",
+                    "body": {
+                        "agent_address": agent_address,
+                        "max_spend":     "0.10",
+                        "label":         "bazaar-indexing",
+                    },
                 },
                 "output": {
+                    "type": "json",
                     "example": {
                         "session_id":     "f47ac10b-58cc-4372-a567-0e02b2c3d479",
                         "max_spend":      "0.10",
@@ -144,9 +160,9 @@ payment_payload = {
                         "tools_endpoint": f"{GATEWAY_URL}/tools",
                         "created_at":     "2026-05-29T00:00:00Z",
                         "receipt": {
-                            "tx_hash":     "0x...",
+                            "tx_hash":     "0xee85d8dd374b5d1cb40bfa441086af557d356acc2bb4d5819f56331fce42adee",
                             "network":     "eip155:8453",
-                            "amount_usdc": "0.001",
+                            "amount_usdc": "0.01",
                         },
                     },
                 },
@@ -157,12 +173,21 @@ payment_payload = {
                 "properties": {
                     "input": {
                         "type": "object",
+                        "required": ["type", "method", "body"],
                         "properties": {
-                            "agent_address": {"type": "string", "description": "Paying agent's EVM wallet address"},
-                            "max_spend":     {"type": "string", "description": "Hard budget cap in USDC, e.g. '0.10'"},
-                            "label":         {"type": "string", "description": "Optional human-readable session label"},
+                            "type":     {"type": "string"},
+                            "method":   {"type": "string"},
+                            "bodyType": {"type": "string"},
+                            "body": {
+                                "type": "object",
+                                "required": ["agent_address"],
+                                "properties": {
+                                    "agent_address": {"type": "string", "description": "Paying agent's EVM wallet address"},
+                                    "max_spend":     {"type": "string", "description": "Hard budget cap in USDC, e.g. '0.10'"},
+                                    "label":         {"type": "string", "description": "Optional human-readable session label"},
+                                },
+                            },
                         },
-                        "required": ["agent_address"],
                     },
                 },
             },

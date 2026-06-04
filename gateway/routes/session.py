@@ -2,7 +2,7 @@
 routes/session.py — Session creation endpoint.
 
   POST /v1/session/create — Register a budget-capped agent session.
-                            Priced at $0.001 USDC via x402 (Base or Stellar).
+                            Priced at $0.01 USDC via x402 (Base or Stellar).
                             Returns session_id + budget config.
                             Indexed on Base Bazaar via CDP Facilitator.
 
@@ -44,7 +44,7 @@ router = APIRouter()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-SESSION_PRICE_USDC  = "0.001"
+SESSION_PRICE_USDC  = "0.01"
 SESSION_TOOL_NAME   = "session_create"
 SESSION_RESOURCE_URL = f"{GATEWAY_URL}/v1/session/create"
 
@@ -53,7 +53,7 @@ _SESSION_DESCRIPTION = (
     "enforces a hard USDC budget cap across every tool call, with a "
     "verifiable receipt and running ledger for each payment — not a "
     "one-shot budget check, but persistent spend governance with a full "
-    "audit trail. USDC settles on Base or Stellar. Costs $0.001 USDC once; "
+    "audit trail. USDC settles on Base or Stellar. Costs $0.01 USDC once; "
     "returns a session_id and budget config. Enforce the cap client-side "
     "with the AgentPay SDK (from agentpay import Session)."
 )
@@ -77,7 +77,7 @@ _SESSION_OUTPUT_SCHEMA = {
         "receipt": {
             "tx_hash":     "0x...",
             "network":     "base",
-            "amount_usdc": "0.001",
+            "amount_usdc": "0.01",
         },
     },
 }
@@ -123,7 +123,7 @@ _SESSION_BAZAAR_EXTENSION = {
                 "receipt": {
                     "tx_hash":     "0xee85d8dd374b5d1cb40bfa441086af557d356acc2bb4d5819f56331fce42adee",
                     "network":     "eip155:8453",
-                    "amount_usdc": "0.001",
+                    "amount_usdc": "0.01",
                 },
             },
         },
@@ -276,7 +276,7 @@ async def create_session(
     payment_signature: Optional[str] = Header(None),   # x402 v2 Base/EVM
 ):
     """
-    Open a budget-capped agent session for $0.001 USDC.
+    Open a budget-capped agent session for $0.01 USDC.
 
     Supports two payment paths:
       Stellar — X-Payment: tx_hash=<hash>,from=<addr>,id=<payment_id>

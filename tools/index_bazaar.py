@@ -62,7 +62,7 @@ SESSION_URL  = f"{GATEWAY}/v1/session/create"
 USDC_BASE    = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 GATEWAY_ADDR = "0xE8B25A72dD6aeF69515452a61AD231C7DF2843b7"
 CAIP2        = "eip155:8453"
-AMOUNT       = 1000   # $0.001 USDC (6 decimals)
+AMOUNT       = 10000   # $0.01 USDC (6 decimals)
 
 # ── Wallet ─────────────────────────────────────────────────────────────────────
 hex_key = os.environ.get("AGENT_BASE_KEY_TEST", "").strip().lower().removeprefix("0x")

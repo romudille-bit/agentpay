@@ -427,12 +427,12 @@ _TOOLS: dict[str, Tool] = {
         name="session_create",
         description=(
             "Open a budget-capped agent session on AgentPay. "
-            "Pay $0.001 USDC once — get a session_id, budget config, and gateway URL. "
+            "Pay $0.01 USDC once — get a session_id, budget config, and gateway URL. "
             "Enforces a hard max_spend cap across all subsequent tool calls via the AgentPay SDK. "
             "The entry point for agents discovering AgentPay on Base Bazaar."
         ),
         endpoint="https://agentpay.tools/v1/session/create",
-        price_usdc="0.001",
+        price_usdc="0.01",
         developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
         parameters={
             "type": "object",
@@ -464,7 +464,7 @@ _TOOLS: dict[str, Tool] = {
             "gateway_url": "https://agentpay.tools",
             "tools_endpoint": "https://agentpay.tools/tools",
             "created_at": "2026-05-27T12:00:00Z",
-            "receipt": {"tx_hash": "0xabc...def", "network": "base", "amount_usdc": "0.001"},
+            "receipt": {"tx_hash": "0xabc...def", "network": "base", "amount_usdc": "0.01"},
             "sdk_hint": "Use `from agentpay import Session` to enforce the max_spend cap client-side.",
         },
     ),

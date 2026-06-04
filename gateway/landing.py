@@ -305,7 +305,7 @@ TOOLS_ROWS_PLACEHOLDER
   <div class="networks-grid">
     <div class="network-card">
       <h3>Stellar mainnet</h3>
-      <p>Native USDC. Sub-cent settlement (~$0.000001 per tx). As of May 2026, Circle's CCTP is live on Stellar, so agents can fund from any of 23 supported chains and settle here. Used today for <code>session_create</code> ($0.001) — metered inference settles here next.</p>
+      <p>Native USDC. Sub-cent settlement (~$0.000001 per tx). As of May 2026, Circle's CCTP is live on Stellar, so agents can fund from any of 23 supported chains and settle here. Used today for <code>session_create</code> ($0.01) — metered inference settles here next.</p>
     </div>
     <div class="network-card">
       <h3>Base mainnet</h3>
