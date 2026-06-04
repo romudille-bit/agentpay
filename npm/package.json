@@ -1,9 +1,16 @@
 {
   "name": "@romudille/agentpay-mcp",
-  "version": "1.1.0",
-  "description": "AgentPay MCP server — 17 free tools for AI agents, session receipts on every call",
+  "version": "2.0.0",
+  "description": "AgentPay MCP server — 17 free crypto data tools for AI agents, no wallet required",
+  "type": "module",
   "bin": {
     "agentpay-mcp": "bin/agentpay-mcp.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0"
   },
   "keywords": [
     "mcp",

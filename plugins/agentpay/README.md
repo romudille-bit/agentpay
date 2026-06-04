@@ -13,6 +13,9 @@ the spend. Peer-to-peer (AgentPay never holds funds), multi-chain (USDC on Base 
 Then `/reload-plugins`. No keys or accounts needed to route.
 
 ## What you get
+- **17 free crypto/data tools via MCP** — token prices, gas, DeFi TVL, whale activity, news,
+  yield scanner, and more. Zero setup: no wallet, no keys, no USDC. Wired automatically via
+  `.mcp.json` (`npx @romudille/agentpay-mcp`, pure Node, no Python).
 - **`agentpay-route` skill + bundled router** (`agentpay-route "<need>" --budget <usdc>`):
   queries Coinbase Bazaar, drops keyword-stuffed/empty/factory stubs, ranks survivors by real
   usage (unique payers, calls, recency), enforces the budget, and recommends the best provider —
@@ -26,8 +29,7 @@ Then `/reload-plugins`. No keys or accounts needed to route.
 3. AgentPay advises and governs spend; it never custodies funds.
 
 ## Roadmap
-- Self-contained MCP server bundling the 17 free crypto/data tools (deferred until a Node-native,
-  zero-dependency server replaces the repo-bound Python one).
+- `route` MCP tool (discover + rank + return ready-to-pay details, no wallet).
 - Delivery-quality signal from AgentPay's own routing telemetry (Bazaar gives usage; we add
   "did it actually deliver").
 
