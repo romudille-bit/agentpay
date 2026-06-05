@@ -1,7 +1,7 @@
 {
   "name": "@romudille/agentpay-mcp",
-  "version": "2.0.0",
-  "description": "AgentPay MCP server — 17 free crypto data tools for AI agents, no wallet required",
+  "version": "2.1.0",
+  "description": "AgentPay MCP server — 17 free crypto data tools + route tool for buyer-side x402 marketplace routing",
   "type": "module",
   "bin": {
     "agentpay-mcp": "bin/agentpay-mcp.js"

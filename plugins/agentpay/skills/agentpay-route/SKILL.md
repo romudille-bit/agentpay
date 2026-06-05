@@ -23,7 +23,17 @@ of grabbing the first or cheapest result.
 
 ## How
 
-**1. Discover + judge (run the bundled router — no setup, pure stdlib):**
+**Option A — MCP `route` tool (any MCP-capable agent, no setup):**
+
+If your agent runtime has the AgentPay MCP connected (`npx @romudille/agentpay-mcp`), call
+the `route` tool directly — no Python, no CLI, no repo:
+```json
+{ "tool": "route", "arguments": { "need": "funding rates", "budget": 0.01 } }
+```
+Returns a ranked candidate list + recommendation + `ready_to_pay` details (provider URL +
+x402 `accepts` entry) as JSON. Advise-only, keyless, works in any MCP runtime.
+
+**Option B — bundled CLI router (Claude Code / shell, pure stdlib, no setup):**
 ```
 agentpay-route "<what you need>" --budget <max USDC, e.g. 0.01>
 ```

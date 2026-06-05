@@ -140,8 +140,8 @@ refuse / degrade to advise / escalate. Never auto-pay on price alone, never belo
 Keyless MCP (hosted/shareable, no secrets):
 1. **MCP-1 — Node free-tools server.** 17 free tools proxied to the gateway, no wallet. Fixes
    broken npx + restores plugin free tools. Smallest, highest immediate value.
-2. **MCP-2 — `route` tool** (discover+decide, advise) returning ranked candidates + ready-to-pay
-   details. No wallet.
+2. **MCP-2 — `route` tool** ✅ **DONE (2026-06-04).** (discover+decide, advise) returning ranked
+   candidates + ready-to-pay details. No wallet. Shipped in `@romudille/agentpay-mcp@2.1.0`.
 
 Agent-side SDK (operator's process, where keys + cap live):
 3. **SDK-pay — settle + cap + receipts.** Base/Stellar signing, client-side budget cap, receipt

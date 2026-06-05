@@ -2,13 +2,19 @@
 /**
  * agentpay-mcp.js — AgentPay MCP Server (Node-native, self-contained)
  *
- * Exposes AgentPay's 17 free tools as MCP tools via stdio transport.
+ * Exposes AgentPay's 17 free tools as MCP tools via stdio transport,
+ * plus a `route` tool for buyer-side x402 marketplace routing (MCP-2).
  * No Python, no repo checkout, no wallet — runs anywhere with Node ≥ 18.
  *
  * x402 free-flow (mirrors agentpay/_client.py):
  *   1. POST /tools/{name}/call → 402 with payment_id, amount_usdc = "0"
  *   2. Retry with X-Payment: tx_hash=free:<id>,from=<addr>,id=<id>
  *   3. Return result["result"] to the MCP caller
+ *
+ * route(need, budget) — MCP-2:
+ *   Discover across Coinbase Bazaar, junk-filter, usage-rank, budget-gate,
+ *   price-tiebreak → return ranked candidates + recommendation + ready-to-pay
+ *   details. Advise-only, keyless. No payment happens here.
  *
  * Usage:
  *   npx @romudille/agentpay-mcp
@@ -29,14 +35,14 @@ import { randomUUID } from 'crypto';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Ephemeral agent identity — free calls use it only for the `from=` field in
 // X-Payment (gateway logs only). A UUID is simpler and equally valid here.
 const AGENT_ADDRESS = `mcp-free-${randomUUID()}`;
 
-const USER_AGENT = `agentpay-mcp/${VERSION}`;
+const USER_AGENT = `agentpay-mcp/${VERSION} (+https://agentpay.tools)`;
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
 // All diagnostic output goes to stderr.
@@ -128,6 +134,200 @@ async function callTool(toolName, params) {
   return result.result ?? result;
 }
 
+// ── Route tool — buyer-side x402 routing (MCP-2) ─────────────────────────────
+
+const BAZAAR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402/discovery/search';
+const DEFAULT_BUDGET = 0.01;
+
+// Known stub-factory payTo addresses (from 2026-06-03 competitor scan).
+// Same wallet behind ≥3 distinct service names = factory.
+const KNOWN_FACTORY_PREFIXES = ['0x2bb72231eed3']; // Orbis
+
+function fmtPrice(usd) {
+  if (usd == null) return '?';
+  return '$' + usd.toFixed(6).replace(/\.?0+$/, '');
+}
+
+async function bazaarSearch(need) {
+  const url = `${BAZAAR_URL}?query=${encodeURIComponent(need)}`;
+  const resp = await fetch(url, {
+    headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
+    signal: AbortSignal.timeout(25_000),
+  });
+  if (!resp.ok) throw new Error(`Bazaar search → ${resp.status}`);
+  return resp.json();
+}
+
+function discover(data) {
+  const out = [];
+  const seen = new Set();
+
+  for (const r of (data.resources || [])) {
+    const res = r.resource;
+    const rd = (res && typeof res === 'object') ? res : {};
+    const url = (typeof res === 'string') ? res : (rd.url || '');
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+
+    const accepts = r.accepts || rd.accepts || [{}];
+    const a = accepts[0] || {};
+    const amountRaw = parseInt(a.amount || '0', 10);
+    const priceUsd = isNaN(amountRaw) ? null : amountRaw / 1_000_000;
+
+    const ext = ((r.extensions || rd.extensions || {}).bazaar) || {};
+    const outSchema = a.outputSchema || ext?.info?.output || ext?.schema;
+    const hasSchema = !!outSchema && JSON.stringify(outSchema) !== '{}';
+
+    const q = r.quality || {};
+    const calls30d = parseInt(q.l30DaysTotalCalls || 0, 10) || 0;
+    const payers30d = parseInt(q.l30DaysUniquePayers || 0, 10) || 0;
+
+    out.push({
+      name: r.serviceName || rd.serviceName || url.split('/').pop() || url,
+      url,
+      priceUsd,
+      network: a.network || '',
+      payTo: (a.payTo || '').toLowerCase(),
+      asset: a.asset || '',
+      amount: a.amount || '0',
+      tags: r.tags || rd.tags || [],
+      hasSchema,
+      calls30d,
+      payers30d,
+      lastCalled: q.lastCalledAt || null,
+      // store accepts[0] for ready-to-pay details
+      acceptsEntry: a,
+    });
+  }
+  return out;
+}
+
+function recencyDays(iso) {
+  if (!iso) return null;
+  try {
+    const dt = new Date(iso);
+    return Math.floor((Date.now() - dt.getTime()) / 86_400_000);
+  } catch {
+    return null;
+  }
+}
+
+function decide(cands, budget) {
+  // Factory detection: count distinct service names per payTo wallet
+  const namesPerPayTo = {};
+  for (const c of cands) {
+    if (c.payTo) {
+      if (!namesPerPayTo[c.payTo]) namesPerPayTo[c.payTo] = new Set();
+      namesPerPayTo[c.payTo].add(c.name);
+    }
+  }
+
+  const scored = [];
+  for (const c of cands) {
+    const flags = [];
+    let dropped = false;
+    let dropReason = '';
+
+    // Stage 2 — junk filter: no usable schema = stub
+    if (!c.hasSchema) {
+      dropped = true;
+      dropReason = 'no usable schema (stub)';
+    }
+
+    // Factory fingerprint: ≥3 DISTINCT names behind one payTo, or known factory wallet
+    const isFactory = (namesPerPayTo[c.payTo]?.size >= 3) ||
+      KNOWN_FACTORY_PREFIXES.some(p => c.payTo.startsWith(p));
+    if (isFactory) flags.push('factory');
+
+    // Budget gate
+    if (!dropped) {
+      if (c.priceUsd == null) {
+        dropped = true;
+        dropReason = 'no usable price';
+      } else if (c.priceUsd > budget) {
+        dropped = true;
+        dropReason = `${fmtPrice(c.priceUsd)} > budget ${fmtPrice(budget)}`;
+      }
+    }
+
+    // Stage 3 — usage quality score (Bazaar cold-start signal)
+    const days = recencyDays(c.lastCalled);
+    let quality = c.payers30d * 3 + c.calls30d;
+    if (days != null && days <= 7) quality += 5;  // recency bonus: recently used = alive
+    if (isFactory) quality = Math.floor(quality / 4); // heavy downrank
+    if (c.payers30d === 0 && c.calls30d === 0) flags.push('unproven(0/0)');
+
+    scored.push({ ...c, flags, dropped, dropReason, quality, recDays: days });
+  }
+
+  // Stage 4 — rank survivors: quality desc, then price asc
+  const survivors = scored.filter(s => !s.dropped);
+  survivors.sort((a, b) => (b.quality - a.quality) || (a.priceUsd - b.priceUsd));
+
+  const recommendation = survivors[0] || null;
+  return { scored, survivors, recommendation };
+}
+
+async function routeTool(need, budget) {
+  const data = await bazaarSearch(need);
+  const cands = discover(data);
+  const { scored, survivors, recommendation } = decide(cands, budget);
+
+  // Build the ranked list for the response
+  const rankedList = scored
+    .sort((a, b) => {
+      if (a.dropped !== b.dropped) return a.dropped ? 1 : -1;
+      return b.quality - a.quality;
+    })
+    .map(s => ({
+      name: s.name,
+      url: s.url,
+      price_usd: s.priceUsd,
+      network: s.network,
+      calls_30d: s.calls30d,
+      payers_30d: s.payers30d,
+      last_called_days_ago: s.recDays,
+      has_schema: s.hasSchema,
+      flags: s.flags,
+      dropped: s.dropped,
+      drop_reason: s.dropReason || null,
+      quality_score: s.quality,
+    }));
+
+  let rec = null;
+  if (recommendation) {
+    const why = [
+      'real schema',
+      `${recommendation.payers30d} unique payers / ${recommendation.calls30d} calls in 30d`,
+      recommendation.recDays != null ? `used ${recommendation.recDays}d ago` : null,
+      'fits budget',
+      'price-tiebroken among quality peers',
+    ].filter(Boolean).join('; ');
+
+    rec = {
+      name: recommendation.name,
+      url: recommendation.url,
+      price_usd: recommendation.priceUsd,
+      network: recommendation.network,
+      why,
+      ready_to_pay: {
+        url: recommendation.url,
+        accepts: recommendation.acceptsEntry,
+      },
+    };
+  }
+
+  return {
+    need,
+    budget,
+    total_found: cands.length,
+    survivors: survivors.length,
+    ranked_candidates: rankedList,
+    recommendation: rec,
+    note: 'Advise-only — peer-to-peer: the agent pays the chosen provider directly via x402. Use agentpay-x402 SDK (pip install agentpay-x402) to settle with the ready_to_pay details above.',
+  };
+}
+
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
 const server = new Server(
@@ -135,30 +335,81 @@ const server = new Server(
   { capabilities: { tools: {} } },
 );
 
+const ROUTE_TOOL_DEF = {
+  name: 'route',
+  description: [
+    'Find and judge the best paid x402 tool for a need, within a budget.',
+    'Discovers across Coinbase Bazaar, drops stubs (no schema / factory clones),',
+    'ranks survivors by real usage (unique payers × 3 + calls + recency bonus),',
+    'enforces the budget, price-tiebreaks quality-equal candidates.',
+    'Returns a ranked candidate list + a recommendation + ready-to-pay details',
+    '(the chosen provider URL and x402 accepts entry) so the agent can settle via',
+    'the agentpay-x402 SDK. Advise-only — no payment happens here.',
+    '',
+    'Use when: "which x402 tool for X", "find a paid API for X under $Y",',
+    '"compare these providers", or whenever an agent needs a paid capability',
+    'and must choose a provider without overpaying or hitting a stub.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      need: {
+        type: 'string',
+        description: 'What capability you need, e.g. "funding rates", "token security", "DeFi TVL"',
+      },
+      budget: {
+        type: 'number',
+        description: 'Maximum USDC per call (default 0.01). Tools priced above this are excluded.',
+        default: DEFAULT_BUDGET,
+      },
+    },
+    required: ['need'],
+  },
+};
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = await getTools();
 
-  return {
-    tools: tools.map((t) => {
-      let description = t.description ?? '';
-      if (t.use_when) description += `\n\nUse when: ${t.use_when}`;
-      if (t.returns) description += `\nReturns: ${t.returns}`;
-      if (t.response_example) {
-        description += `\nExample response: ${JSON.stringify(t.response_example)}`;
-      }
-      description += `\n\nPrice: $${t.price_usdc} USDC per call`;
+  const gatewayTools = tools.map((t) => {
+    let description = t.description ?? '';
+    if (t.use_when) description += `\n\nUse when: ${t.use_when}`;
+    if (t.returns) description += `\nReturns: ${t.returns}`;
+    if (t.response_example) {
+      description += `\nExample response: ${JSON.stringify(t.response_example)}`;
+    }
+    description += `\n\nPrice: $${t.price_usdc} USDC per call`;
 
-      return {
-        name: t.name,
-        description,
-        inputSchema: t.parameters ?? { type: 'object', properties: {} },
-      };
-    }),
-  };
+    return {
+      name: t.name,
+      description,
+      inputSchema: t.parameters ?? { type: 'object', properties: {} },
+    };
+  });
+
+  return { tools: [...gatewayTools, ROUTE_TOOL_DEF] };
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
+
+  // Handle route tool separately
+  if (name === 'route') {
+    try {
+      const need = args.need;
+      if (!need || typeof need !== 'string') {
+        throw new McpError(ErrorCode.InvalidParams, '`need` is required and must be a string');
+      }
+      const budget = typeof args.budget === 'number' ? args.budget : DEFAULT_BUDGET;
+      const result = await routeTool(need, budget);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      if (err instanceof McpError) throw err;
+      return {
+        content: [{ type: 'text', text: `AgentPay route error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
 
   try {
     const result = await callTool(name, args);
@@ -179,7 +430,7 @@ async function main() {
   // Pre-fetch tools so the first list_tools responds instantly
   try {
     const tools = await getTools();
-    log(`AgentPay MCP v${VERSION}: loaded ${tools.length} tools from ${GATEWAY_URL}`);
+    log(`AgentPay MCP v${VERSION}: loaded ${tools.length} tools from ${GATEWAY_URL} (+ route)`);
   } catch (err) {
     log(`AgentPay MCP v${VERSION}: could not pre-fetch tools (${err.message}) — will retry on first request`);
   }
