@@ -29,8 +29,11 @@ def test_root_html_for_browser(client):
     assert "economic intelligence" in body
     assert "AgentPay" in body
     # The quickstart snippet must be present
-    assert "from agentpay import AgentWallet, Session" in body
+    assert "from agentpay import quickstart" in body
     assert "spending_summary" in body
+    # The agent-install surfaces (plugin + MCP) must be present
+    assert "plugin marketplace add romudille-bit/agentpay" in body
+    assert "npx -y @romudille/agentpay-mcp" in body
 
 
 def test_root_json_for_agent(client):
