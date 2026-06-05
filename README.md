@@ -171,31 +171,50 @@ with quickstart() as session:
 
 ---
 
-## MCP Server
+## Use it in your agent
 
-AgentPay ships an MCP server that gives Claude Desktop direct access to all 18 tools. 17 are free — no USDC required.
+### Claude Code plugin (one command)
 
-```bash
-npx @romudille/agentpay-mcp
+```
+/plugin marketplace add romudille-bit/agentpay
+/plugin install agentpay@agentpay
 ```
 
-Or configure manually in `claude_desktop_config.json`:
+Installs the **`agentpay-route`** skill — your agent finds, judges, and pays for the best paid
+x402 tool within a budget — plus the 17 free tools. No keys needed to route.
+
+### MCP server (any runtime)
+
+Self-contained — pure Node, no Python, no repo, no wallet:
+
+```bash
+npx -y @romudille/agentpay-mcp
+```
 
 ```json
 {
   "mcpServers": {
     "agentpay": {
-      "command": "python",
-      "args": ["/path/to/agentpay/gateway/mcp_server.py"],
-      "env": {
-        "AGENTPAY_GATEWAY_URL": "https://agentpay.tools"
-      }
+      "command": "npx",
+      "args": ["-y", "@romudille/agentpay-mcp"]
     }
   }
 }
 ```
 
-Listed on [Glama](https://glama.ai/mcp/servers/romudille-bit/agentpay).
+Exposes the 17 free tools **and** a `route` tool (buyer-side routing). Listed on
+[Glama](https://glama.ai/mcp/servers/romudille-bit/agentpay).
+
+### Buyer-side routing — find & pay for the best tool, within a budget
+
+When an agent needs a paid tool, AgentPay discovers the options across the x402 marketplace,
+drops the fake/empty stubs, ranks by **real usage** (not price), and recommends the cheapest one
+that actually works — within a budget. The agent pays the provider **directly** (peer-to-peer,
+no custody) and keeps a verifiable receipt.
+
+```bash
+agentpay-route "funding rates" --budget 0.01   # ranked candidates + a recommendation
+```
 
 ---
 
@@ -265,6 +284,8 @@ gateway (FastAPI on Railway)
 | [awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed |
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
 | [402index.io](https://402index.io) | ✅ domain verified, 17 tools synced |
+| Coinbase Bazaar | ✅ indexed (`session_create`, Base) |
+| Claude Code plugin | ✅ `/plugin marketplace add romudille-bit/agentpay` |
 | [xpay.tools](https://xpay.tools) | 🔜 submission in progress |
 
 **Agent-readable endpoints:**

@@ -251,25 +251,26 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 1.25rem
   </div>
 </section>
 
+<section class="snippet">
+  <h2>Use it in your agent</h2>
+  <p>Claude Code — one command:</p>
+<pre><code>/plugin marketplace add romudille-bit/agentpay
+/plugin install agentpay@agentpay</code></pre>
+  <p>Any MCP runtime — self-contained (pure Node, no Python, no wallet):</p>
+<pre><code>npx -y @romudille/agentpay-mcp</code></pre>
+  <p class="snippet-note">When your agent needs a paid tool, AgentPay finds the options across the x402 marketplace, drops the fake/empty stubs, and recommends the cheapest one that's <em>actually used</em> — within a budget. The agent pays the provider directly (peer-to-peer, no custody) and keeps a verifiable receipt.</p>
+</section>
+
 <section id="snippet" class="snippet">
-  <h2>5 lines. 18 tools. Zero cost.</h2>
+  <h2>3 lines. 17 free tools. Zero setup.</h2>
 <pre><code># pip install agentpay-x402
 
-from agentpay import AgentWallet, Session
+from agentpay import quickstart
 
-wallet = AgentWallet(network="mainnet")   # or testnet
-
-# 17 free tools — session receipts on every call
-with Session(wallet, gateway_url="GATEWAY_URL_PLACEHOLDER") as session:
-    page    = session.call("url_reader",      {"url": "https://example.com"})
-    results = session.call("web_search",      {"query": "ETH gas fees today"})
-    market  = session.call("market_snapshot", {})
-    whales  = session.call("whale_activity",  {"token": "ETH"})
-    news    = session.call("crypto_news",     {"currencies": "ETH,BTC"})
-
-    print(session.spending_summary())
-    # { "calls": 5, "spent": "$0", "remaining": "$0.1", "tools": [...] }</code></pre>
-  <p class="snippet-note">17 tools are free. Every call gets a session receipt — tool called, cost, timestamp. Works with LangChain, CrewAI, AutoGen, or plain Python. No USDC needed to start.</p>
+s = quickstart(max_spend="0.10")          # registers + mints a wallet, no funding, no human
+print(s.call("token_price", {"symbol": "ETH"}).data["price_usd"])
+print(s.spending_summary())               # receipt: every call, cost, tx, chain</code></pre>
+  <p class="snippet-note">17 tools are free — no USDC, no wallet setup. Every call gets a session receipt (tool, cost, timestamp). Works with LangChain, CrewAI, AutoGen, or plain Python.</p>
 </section>
 
 <section id="tools" class="tools">
