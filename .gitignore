@@ -58,6 +58,22 @@ twitter_positioning_v1.md
 POSITIONING.md
 PLAN.md
 
+# Internal handoff / session / marketing notes — Drive-only, never commit
+AUTONOMY_MCP.md
+HANDOFF_*.md
+cmo-skill-update.md
+ROADMAP.md
+ROADMAP_OBSERVABILITY.md
+DEMO.md
+DISTRIBUTION_PLAN.md
+LAUNCH_KIT.md
+PHASE2_ROUTING.md
+
+# Build / packaging artifacts
+node_modules/
+*.tgz
+agentpay_x402-*/
+
 # Local agent skill plugins
 .agents/
 skills-lock.json
