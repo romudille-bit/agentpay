@@ -77,7 +77,7 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `crypto_news` | `currencies` (e.g. "ETH,BTC"), `filter` | headlines[] with title, url, sentiment, score |
 | `yield_scanner` | `token`, `chain` (optional), `min_tvl` | top 10 pools by APY with protocol, tvl_usd, risk_level |
 | `dune_query` | `query_id`, `limit`, `fast_only` | rows[], columns[], row_count from Dune Analytics |
-| `session_create` | `agent_address`, `max_spend`, `label` | session_id, budget config, gateway_url, receipt — **$0.001** |
+| `session_create` | `agent_address`, `max_spend`, `label` | session_id, budget config, gateway_url, receipt — **$0.01** |
 
 ---
 
