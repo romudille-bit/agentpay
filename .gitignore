@@ -77,3 +77,7 @@ agentpay_x402-*/
 # Local agent skill plugins
 .agents/
 skills-lock.json
+
+# Local demo (internal — kept off GitHub like DEMO.md)
+tools/agent_loop_demo.py
+tools/demo_quickstart.py
