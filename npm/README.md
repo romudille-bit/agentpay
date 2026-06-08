@@ -1,66 +1,84 @@
 # @romudille/agentpay-mcp
 
-AgentPay MCP server — 12 crypto data tools for AI agents.
-Pay per call in USDC on Stellar or Base. No API keys.
+**The economic-intelligence layer for AI agents.** Most agent-payment tools are a wallet —
+they move money. AgentPay is the layer that decides whether to spend it at all: a hard
+budget cap enforced at the payment layer, cost awareness before every call, and a
+verifiable receipt after.
+
+Self-contained Node MCP server (Node ≥ 18). No Python, no repo, no wallet, no API keys.
+17 free tools work out of the box, plus `route` — buyer-side x402 marketplace routing that
+finds the cheapest *real, actually-used* paid tool under a budget.
+
+Gateway: `https://agentpay.tools`
 
 ## Quick Start (zero config)
 
-Add to Claude Desktop config:
+```bash
+npx -y @romudille/agentpay-mcp
+```
+
+Or add to your MCP client (Claude Desktop, Cursor, Claude Code, Codex, Gemini CLI):
 
 ```json
 {
   "mcpServers": {
     "agentpay": {
       "command": "npx",
-      "args": ["@romudille/agentpay-mcp"]
+      "args": ["-y", "@romudille/agentpay-mcp"]
     }
   }
 }
 ```
 
-A testnet Stellar wallet is created and funded automatically
-on first run.
+Keyless by default — an ephemeral identity runs the x402 free-flow for all 17 free tools.
+No wallet or funding needed to start.
 
-## Options
+## Tools (18 — 17 free)
 
-**Option A — Auto (testnet Stellar wallet, free):**
-No config needed. Wallet created automatically.
+All data tools are **free**; only `session_create` settles on-chain.
 
-**Option B — Your Stellar wallet (testnet or mainnet):**
-```json
-{
-  "env": {
-    "STELLAR_SECRET_KEY": "S...",
-    "STELLAR_NETWORK": "testnet"
-  }
-}
+| Tool | Price | What it does |
+|------|-------|--------------|
+| `url_reader` | Free | Read any URL as clean text |
+| `web_search` | Free | Web search |
+| `market_snapshot` | Free | Cross-market price/volume snapshot |
+| `token_price` | Free | Current token price (USD) |
+| `gas_tracker` | Free | Live gas prices |
+| `fear_greed_index` | Free | Crypto Fear & Greed index |
+| `token_market_data` | Free | Token market data |
+| `wallet_balance` | Free | Wallet balance (Stellar / EVM) |
+| `whale_activity` | Free | Large-transfer monitoring |
+| `defi_tvl` | Free | Protocol TVL (DeFiLlama) |
+| `token_security` | Free | Token security / honeypot check |
+| `open_interest` | Free | Futures open interest |
+| `orderbook_depth` | Free | Order-book depth + slippage |
+| `crypto_news` | Free | Crypto news feed |
+| `funding_rates` | Free | Perp funding rates |
+| `yield_scanner` | Free | DeFi yield opportunities |
+| `dune_query` | Free | Run a Dune query |
+| `session_create` | $0.01 | Open a metered, budget-capped spending session |
+| `route` | Free | Buyer-side routing: cheapest real x402 tool under budget (advise-only) |
+
+## Config
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `AGENTPAY_GATEWAY_URL` | `https://agentpay.tools` | Point at a different gateway |
+
+## Pay for tools (Python SDK)
+
+The Node server is keyless and runs the free tools. To settle paid tools and get hard
+budget caps + receipts, use the Python SDK:
+
+```bash
+pip install agentpay-x402
 ```
 
-**Option C — Base mainnet (real USDC):**
-```json
-{
-  "env": {
-    "BASE_PRIVATE_KEY": "0x..."
-  }
-}
+```python
+from agentpay import quickstart
+s = quickstart(max_spend=0.10)              # one hard cap, no funding to start
+print(s.call("token_price", {"symbol": "ETH"}).data["price_usd"])
+print(s.spending_summary())                 # receipt: every call, cost, tx, chain
 ```
 
-## Tools (12)
-
-| Tool | Price |
-|------|-------|
-| `token_price` | $0.001 |
-| `gas_tracker` | $0.001 |
-| `fear_greed_index` | $0.001 |
-| `wallet_balance` | $0.002 |
-| `whale_activity` | $0.002 |
-| `defi_tvl` | $0.002 |
-| `token_security` | $0.002 |
-| `dex_liquidity` | $0.003 |
-| `crypto_news` | $0.003 |
-| `funding_rates` | $0.003 |
-| `yield_scanner` | $0.004 |
-| `dune_query` | $0.005 |
-
-Gateway: https://agentpay.tools
 GitHub: https://github.com/romudille-bit/agentpay

@@ -230,7 +230,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 1.25rem
 <main>
 
 <section class="hero">
-  <p class="hero-hook">If you are wondering how autonomous software entities discover, trust, pay, meter, and coordinate with each other safely —</p>
+  <p class="hero-hook">Most agent-payment tools are a wallet — they move money. AgentPay is the layer that decides whether to spend it at all.</p>
   <h1>AgentPay is the economic intelligence layer for MCP servers and AI agents.</h1>
   <p class="subtitle">Agents spend money. Most don't know how much, or why, until the session ends. AgentPay gives agents the ability to reason about cost while they work — not after.</p>
   <a href="#snippet" class="cta">Start free — 18 tools, zero cost →</a>

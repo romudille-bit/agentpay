@@ -471,7 +471,7 @@ async def lifespan(app: FastAPI):
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="AgentPay Gateway",
-    description="x402 payment gateway for MCP tools on Stellar",
+    description="The economic-intelligence layer for AI agents — budget-capped x402 spending sessions with verifiable receipts. USDC on Base (and Stellar).",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -492,6 +492,37 @@ app.include_router(session_router)
 app.include_router(discovery_router)
 app.include_router(faucet_router)
 app.include_router(agent_router)
+
+
+# ── OpenAPI: mark non-paid routes as free so x402 indexers skip them ──────────
+# x402 directories (x402scan, Bazaar) crawl /openapi.json and probe every
+# operation expecting a 402. Only the paid session resource should be probed;
+# every other route is free/utility. Tagging them `security: []` tells indexers
+# "not x402-paid — don't probe," producing a clean listing with zero errors.
+_PAID_PATHS = {"/v1/session/create"}
+
+
+def _custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    for path, operations in schema.get("paths", {}).items():
+        if path in _PAID_PATHS:
+            continue
+        for method, op in operations.items():
+            if method.lower() in ("get", "post", "put", "patch", "delete", "head", "options") and isinstance(op, dict):
+                op["security"] = []
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = _custom_openapi
 
 
 if __name__ == "__main__":

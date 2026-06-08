@@ -1,6 +1,6 @@
 # AgentPay — ![tests](https://github.com/romudille-bit/agentpay/actions/workflows/test.yml/badge.svg)
 
-*If you are wondering how autonomous software entities discover, trust, pay, meter, and coordinate with each other safely —*
+*Most agent-payment tools are a wallet — they move money. AgentPay is the layer that decides whether to spend it at all.*
 
 **AgentPay is the economic intelligence layer for MCP servers and AI agents.**
 

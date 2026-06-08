@@ -1,7 +1,7 @@
 {
   "name": "@romudille/agentpay-mcp",
-  "version": "2.1.0",
-  "description": "AgentPay MCP server — 17 free crypto data tools + route tool for buyer-side x402 marketplace routing",
+  "version": "2.1.1",
+  "description": "AgentPay — the economic-intelligence layer for AI agents: budget-capped tool calls with verifiable receipts, plus buyer-side x402 routing. 17 tools free to start. USDC on Base or Stellar, no keys.",
   "type": "module",
   "bin": {
     "agentpay-mcp": "bin/agentpay-mcp.js"
@@ -15,11 +15,15 @@
   "keywords": [
     "mcp",
     "x402",
-    "crypto",
-    "stellar",
-    "base",
     "ai-agents",
-    "defi"
+    "agent-payments",
+    "spend-control",
+    "agent-budget",
+    "payment-receipts",
+    "agent-commerce",
+    "base",
+    "stellar",
+    "usdc"
   ],
   "author": "romudille",
   "license": "MIT",
