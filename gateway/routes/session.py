@@ -215,33 +215,60 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
     if payment_required_header:
         headers["PAYMENT-REQUIRED"] = payment_required_header
 
-    content = {
-        "error":       "Payment required",
-        "x402Version": 2,
-        # ── Stellar option (backward-compat) ──────────────────────────────────
+    # Stellar option (always available as a fallback / secondary chain).
+    stellar_option = {
         "payment_id":  challenge.payment_id,
         "amount_usdc": challenge.amount_usdc,
         "pay_to":      challenge.gateway_address,
-        "asset":       "USDC",
         "network":     settings.STELLAR_NETWORK,
-        "instructions": (
-            f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
-            f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
-            f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}."
-        ),
-        # ── Structured multi-chain options ────────────────────────────────────
-        "payment_options": {
-            "stellar": {
-                "payment_id":  challenge.payment_id,
-                "amount_usdc": challenge.amount_usdc,
-                "pay_to":      challenge.gateway_address,
-                "network":     settings.STELLAR_NETWORK,
-                "asset":       "USDC",
-                "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
-            },
-            **({"base": base_option} if base_option else {}),
-        },
+        "asset":       "USDC",
+        "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
     }
+    stellar_instructions = (
+        f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
+        f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
+        f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}."
+    )
+
+    content = {
+        "error":       "Payment required",
+        "x402Version": 2,
+    }
+
+    if base_option:
+        # ── Lead with Base (canonical paid chain; CDP/Bazaar-native). ──────────
+        # Generic x402 clients read the TOP-LEVEL network/pay_to/instructions as
+        # the default offer, so those must advertise Base to match the
+        # PAYMENT-REQUIRED header and the "Base is the canonical paid chain"
+        # strategy. Stellar stays available as the secondary payment_option.
+        # `payment_id` is still surfaced at top level for backward-compat clients
+        # that key off it (Stellar memo).
+        content.update({
+            "network":      base_option["network"],
+            "pay_to":       base_option["pay_to"],
+            "asset":        base_option["asset"],
+            "amount_usdc":  base_option["amount_usdc"],
+            "instructions": base_option["instructions"],
+            "payment_id":   challenge.payment_id,
+            # ── Structured multi-chain options (Base first) ───────────────────
+            "payment_options": {
+                "base":    base_option,
+                "stellar": stellar_option,
+            },
+        })
+    else:
+        # ── No Base configured → fall back to leading with Stellar. ────────────
+        content.update({
+            "payment_id":   challenge.payment_id,
+            "amount_usdc":  challenge.amount_usdc,
+            "pay_to":       challenge.gateway_address,
+            "asset":        "USDC",
+            "network":      settings.STELLAR_NETWORK,
+            "instructions": stellar_instructions,
+            "payment_options": {
+                "stellar": stellar_option,
+            },
+        })
     return content, headers
 
 
@@ -306,14 +333,24 @@ async def create_session(
             request_data={"max_spend": body.max_spend},
         )
 
-        # Persist pending row in Supabase (fail-closed same as tools route)
+        # Persist pending row in Supabase (fail-closed same as tools route).
+        # Record the chain we actually LEAD the 402 with (Base when configured,
+        # else Stellar) rather than hardcoding Stellar — otherwise every
+        # abandoned-at-402 row is mislabelled stellar-mainnet and analytics
+        # can't tell Base-intent from Stellar-intent abandoners. The terminal
+        # payment_done PATCH still overwrites this with the chain that actually
+        # settled, so completed rows stay accurate.
+        offered_network = (
+            f"base-{settings.BASE_NETWORK}" if settings.BASE_GATEWAY_ADDRESS
+            else f"stellar-{settings.STELLAR_NETWORK}"
+        )
         if sb_enabled():
             client_ip  = request.client.host if request.client else None
             user_agent = request.headers.get("user-agent")
             row_id = await insert_pending_payment_log(
                 payment_id=challenge.payment_id,
                 tool_name=SESSION_TOOL_NAME,
-                network=f"stellar-{settings.STELLAR_NETWORK}",
+                network=offered_network,
                 amount_usdc=SESSION_PRICE_USDC,
                 developer_address=settings.GATEWAY_PUBLIC_KEY,
                 client_ip=client_ip,
