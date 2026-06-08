@@ -1,12 +1,36 @@
 # AgentPay MCP Server
 
-Give Claude Desktop direct access to live crypto data — prices, gas, whale activity, DeFi TVL, and more. 17 tools are free. No API key, no wallet, no setup required.
+**The economic intelligence layer for AI agents.** 18 tools, 17 free. No API keys, no wallet, no setup.
 
-**18 tools. 17 free. No API keys needed.**
+Agents call tools within a hard budget cap, pay USDC on-chain only when tools cost money, and get a full session receipt — every call, every cost, every decision.
 
 ---
 
-## Quickstart
+## Quickstart — Python SDK (3 lines, zero setup)
+
+```python
+from agentpay import quickstart
+
+s = quickstart()                                    # registers + mints wallet
+r = s.call("token_price", {"symbol": "ETH"})
+print(r.data["price_usd"])                         # $3,421.05
+print(s.spending_summary())                        # receipt: every call, cost, tx
+```
+
+Install: `pip install agentpay-x402`
+
+Set a hard budget or bring your own wallet:
+
+```python
+s = quickstart(max_spend=0.10)                     # hard cap at $0.10
+s = quickstart(secret_key="S...", base_key="0x...") # your Stellar + Base wallet
+```
+
+Every call is session-tracked. The cap is enforced **before** any payment is signed.
+
+---
+
+## Quickstart — MCP server (Claude Desktop / any MCP runtime)
 
 ```bash
 npx @romudille/agentpay-mcp
@@ -18,11 +42,8 @@ Or configure manually in `claude_desktop_config.json`:
 {
   "mcpServers": {
     "agentpay": {
-      "command": "python",
-      "args": ["/absolute/path/to/agentpay/gateway/mcp_server.py"],
-      "env": {
-        "AGENTPAY_GATEWAY_URL": "https://agentpay.tools"
-      }
+      "command": "npx",
+      "args": ["-y", "@romudille/agentpay-mcp"]
     }
   }
 }

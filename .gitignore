@@ -81,3 +81,9 @@ skills-lock.json
 # Local demo (internal — kept off GitHub like DEMO.md)
 tools/agent_loop_demo.py
 tools/demo_quickstart.py
+tools/demo_circle.py
+
+# Internal strategy/ops docs (kept off GitHub, like STRATEGY.md)
+COMPETITIVE_ACTION_AGENTCASH.md
+PARTNERSHIP_LANGCHAIN.md
+CLOUDFLARE_WAF_SKIP.md

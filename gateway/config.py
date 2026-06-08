@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     SPLIT_MAX_RETRIES: int = 3
     SPLIT_RETRY_BASE_DELAY: float = 0.5   # seconds; doubles each attempt
 
+    # Arbitrum x402 Radar discovery endpoint (GET /discovery/arbitrum). Additive,
+    # read-only, public. Kept behind a flag (default on) so it can be disabled
+    # without a redeploy if the upstream Bazaar discovery API misbehaves — mirrors
+    # the REFUND_ENABLED dark-launch pattern. Set RADAR_ENABLED=false to 404 it.
+    RADAR_ENABLED: bool = True
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"

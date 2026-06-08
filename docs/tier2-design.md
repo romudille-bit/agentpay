@@ -127,6 +127,26 @@ challenge_issued ──pay──→ verified ──split_queued──→ split_d
 Every transition writes a `payment_logs` row update (§2.2). No state is
 in-memory only.
 
+> **Post-Tier-2 hardening (shipped).** Two gaps in the above were closed
+> after the original design landed:
+>
+> 1. **Atomic replay consume.** `verified` is now claimed atomically. The
+>    `_is_replay` check is only a pre-check; because on-chain verification has
+>    `await` boundaries, the authoritative claim (in-memory check-and-add +
+>    **awaited** insert into `replay_tx_hashes`/`replay_payment_ids`) happens
+>    after verification and before fulfilment. A 409 on the insert (`record_*`
+>    → `False`) rejects the duplicate. Closes the TOCTOU where two concurrent
+>    retries of one `tx_hash` could both reach `split_queued` + `payment_done`.
+>
+> 2. **Split retry + durable failure.** The `split_queued → split_done`
+>    transition is no longer a single fire-and-forget submit. `split_payment`
+>    retries with exponential backoff (`SPLIT_MAX_RETRIES`), and on exhaustion
+>    stamps `error_reason='split_failed: …'` (via `mark_split_failed`) **without**
+>    moving `state` off its terminal value, so the funnel query in §5.5 is
+>    unaffected. This is crash-resilient, not crash-durable — a true
+>    `split_pending`/`split_attempts` queue (mirroring the refund worker in §1)
+>    is still deferred; see the schema note below.
+
 ---
 
 ## 2. Persistence schema

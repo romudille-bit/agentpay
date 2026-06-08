@@ -11,14 +11,118 @@ routes/discovery.py — Discovery + manifest endpoints.
   GET /sitemap.xml                     — sitemap covering all public URLs
 """
 
-from fastapi import APIRouter, HTTPException
+import logging
+import time
+from decimal import Decimal, InvalidOperation
+
+import httpx
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 import registry
 
+from gateway._limiter import limiter
+from gateway import radar
 from gateway.config import GATEWAY_URL, settings, stellar_caip2
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# ── Arbitrum x402 Radar ─────────────────────────────────────────────────────────
+# Curated, usage-ranked discovery scoped to the Arbitrum stack (Arbitrum One +
+# Sepolia + Robinhood Chain). Reuses the buyer-side router pipeline in
+# gateway/radar.py. Bazaar discovery is fetched async (httpx) and ranked by the
+# pure functions; results are cached briefly so a leaderboard refresh or a burst
+# of agents doesn't hammer the CDP endpoint.
+#
+# Cache is BOUNDED: this is a public, unauthenticated endpoint and the key is
+# attacker-controlled (need, budget, chain), so an unbounded dict would be a
+# memory-growth/DoS vector. Expired entries are swept on write and the dict is
+# capped at _RADAR_CACHE_MAX (oldest evicted).
+_RADAR_CACHE: dict[tuple, tuple[float, dict]] = {}
+_RADAR_TTL_SECS = 120
+_RADAR_CACHE_MAX = 256
+
+
+def _cache_get(key: tuple) -> dict | None:
+    hit = _RADAR_CACHE.get(key)
+    if not hit:
+        return None
+    if time.monotonic() - hit[0] >= _RADAR_TTL_SECS:
+        _RADAR_CACHE.pop(key, None)  # purge stale on access
+        return None
+    return hit[1]
+
+
+def _cache_put(key: tuple, value: dict) -> None:
+    now = time.monotonic()
+    # Sweep expired entries first.
+    for k in [k for k, (ts, _) in _RADAR_CACHE.items() if now - ts >= _RADAR_TTL_SECS]:
+        _RADAR_CACHE.pop(k, None)
+    # Bound size: evict the oldest if still at cap.
+    if len(_RADAR_CACHE) >= _RADAR_CACHE_MAX:
+        oldest = min(_RADAR_CACHE, key=lambda k: _RADAR_CACHE[k][0])
+        _RADAR_CACHE.pop(oldest, None)
+    _RADAR_CACHE[key] = (now, value)
+
+
+async def _fetch_bazaar_async(need: str) -> dict:
+    """Async Bazaar discovery fetch (httpx) — avoids blocking the event loop."""
+    import urllib.parse
+    url = f"{radar.BAZAAR_URL}?query={urllib.parse.quote(need)}"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.get(url, headers={"User-Agent": radar.UA, "Accept": "application/json"})
+        r.raise_for_status()
+        return r.json()
+
+
+@router.get("/discovery/arbitrum")
+@limiter.limit("30/minute")
+async def discovery_arbitrum(
+    request: Request,
+    need: str = Query("", description="What the agent needs, e.g. 'funding rates'"),
+    budget: float = Query(0.01, ge=0, description="Max USDC the agent will pay"),
+    chain: str = Query("arbitrum-stack",
+                       description="arbitrum-stack | arbitrum | arbitrum-sepolia | robinhood"),
+):
+    """Curated x402 discovery for the Arbitrum stack.
+
+    Returns ranked, junk-filtered candidates (and a single recommendation) for
+    `need` under `budget`, scoped to `chain`. This is the agent-facing surface;
+    the public leaderboard reads the same endpoint.
+    """
+    if not settings.RADAR_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        budget_dec = Decimal(str(budget))
+    except (InvalidOperation, ValueError):
+        raise HTTPException(status_code=422, detail="invalid budget")
+
+    key = (need.strip().lower(), str(budget_dec), chain.strip().lower())
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        data = await _fetch_bazaar_async(need)
+    except Exception as e:
+        # Log details server-side; return a generic message (don't leak upstream URL/error).
+        logger.warning("Radar: Bazaar discovery fetch failed: %s", e)
+        raise HTTPException(status_code=502, detail="discovery upstream unavailable")
+
+    if not isinstance(data, dict):
+        logger.warning("Radar: Bazaar returned non-dict payload: %s", type(data).__name__)
+        raise HTTPException(status_code=502, detail="discovery upstream returned unexpected payload")
+
+    try:
+        result = radar.rank_from_payload(data, need, budget_dec, chain=chain)
+    except Exception as e:
+        logger.exception("Radar: ranking failed: %s", e)
+        raise HTTPException(status_code=500, detail="discovery ranking failed")
+
+    _cache_put(key, result)
+    return result
 
 
 @router.get("/.well-known/agentpay.json")
@@ -28,8 +132,8 @@ async def well_known_agentpay():
     return {
         "name": "AgentPay",
         "version": "1.0",
-        "tagline": "Economic intelligence for autonomous agents",
-        "description": "17 free tools for AI agents — market data, DeFi, sentiment, whale tracking. Full session receipts on every call. No API keys, no USDC needed to start.",
+        "tagline": "The economic-intelligence layer for AI agents — spend control, not just a wallet.",
+        "description": "The economic-intelligence layer for AI agents — hard budget caps at the payment layer, cost-aware routing before every call, and a verifiable receipt after. 17 tools free to start. USDC on Base or Stellar, no keys.",
         "url": GATEWAY_URL,
         "payment_protocol": "x402",
         "payment_network": stellar_caip2(),
@@ -65,7 +169,7 @@ async def well_known_agent():
     paid_tools  = [t for t in tools if float(t.price_usdc) > 0]
     return {
         "name":        "AgentPay",
-        "description": "The economic intelligence layer for agent spend — agents reason about cost (price a plan before spending, route to the cheapest tool that works) under a hard budget cap. 17 free tools, no USDC to start. USDC on Stellar or Base.",
+        "description": "The economic-intelligence layer for AI agents — agents price a plan before spending, route to the cheapest tool that works, and stay under a hard budget cap, with a verifiable receipt after. 17 tools free to start. USDC on Base or Stellar, no keys.",
         "url":         GATEWAY_URL,
         "version":     "1.0",
 
@@ -136,7 +240,7 @@ async def well_known_l402_services():
     return {
         "version": "0.2.0",
         "name": "AgentPay",
-        "description": "17 free tools for AI agents. Session receipts on every call. No API keys, no USDC needed to start.",
+        "description": "The economic-intelligence layer for AI agents — budget-capped tool calls with a verifiable receipt on every call. 17 tools free to start. USDC on Base or Stellar, no keys.",
         "homepage": GATEWAY_URL,
         "protocol": "x402",
         "protocols": ["x402"],
@@ -174,7 +278,7 @@ async def well_known_x402():
         "x402Version": 1,
         "gateway": GATEWAY_URL,
         "name": "AgentPay",
-        "description": "Economic intelligence for autonomous agents. 17 free tools, session receipts, metered inference coming.",
+        "description": "The economic-intelligence layer for AI agents — budget-capped x402 spending with verifiable receipts. 17 tools free to start. USDC on Base or Stellar.",
         "accepts": [
             {
                 "scheme": "exact",

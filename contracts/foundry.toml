@@ -1,0 +1,16 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = ["lib"]
+solc = "0.8.24"
+# Pin to paris: solc 0.8.24 defaults to Shanghai (emits PUSH0). Robinhood Orbit
+# testnet's ArbOS version is unverified, so paris avoids a deploy that succeeds
+# but reverts on first call. Arbitrum One supports PUSH0 either way.
+evm_version = "paris"
+optimizer = true
+optimizer_runs = 200
+remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]
+
+# AgentPay — Arbitrum x402 Radar settlement contract.
+# Deployed to Arbitrum Sepolia (421614) and Robinhood Chain testnet (46630).

@@ -1,0 +1,10 @@
+# Foundry
+out/
+cache/
+broadcast/
+
+# Dependencies are fetched via `forge install` (see README); not committed.
+lib/
+
+# Env / secrets — never commit keys
+.env

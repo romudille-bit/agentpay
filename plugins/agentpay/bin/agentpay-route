@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-agent_router.py — Phase 2a: real buyer-side routing across the x402 marketplace.
+agentpay-route — Phase 2a: real buyer-side routing across the x402 marketplace.
 
 DISCOVER (Bazaar) → DECIDE (junk-filter → usage-quality rank → budget gate → price
-tiebreak) → ADVISE. Advise-only by default (peer-to-peed model: the agent pays the
+tiebreak) → ADVISE. Advise-only by default (peer-to-peer model: the agent pays the
 provider directly; this just tells it which one to pay). NO payment happens here.
 
 "Cheapest that's real and actually used," never "cheapest." Quality is borrowed from
 Bazaar's own `quality` block for cold-start; our own delivery telemetry layers on later.
 
 Run:
-  python3 tools/agent_router.py "funding rates"
-  python3 tools/agent_router.py "token security" --budget 0.004
+  agentpay-route "funding rates"
+  agentpay-route "token security" --budget 0.004
+  agentpay-route "funding rates" --chain arbitrum-stack
+
+NOTE: CHAIN_NETWORKS below is intentionally duplicated from gateway/radar.py
+(this script ships standalone in the plugin, no repo import). tests/test_radar.py
+asserts the two maps stay in sync — update both together.
 """
 
 import sys, json, urllib.request, urllib.parse
@@ -25,6 +30,47 @@ UA = "agentpay-router/0.1 (+https://agentpay.tools)"
 # Known stub-factory payTo addresses (from the 2026-06-03 competitor scan). Same wallet
 # stamping dozens of "distinct" tools = downrank the whole family.
 KNOWN_FACTORIES = {"0x2bb72231eed3".lower()}  # prefix match; Orbis
+
+# Chain filtering for the Arbitrum x402 Radar. Maps friendly chain keys (and the
+# "arbitrum-stack" group: Arbitrum One + Sepolia + Robinhood Chain) to the CAIP-2
+# network ids Bazaar advertises. Keeps the canonical copy in gateway/radar.py in
+# sync — this router ships standalone in the plugin, so the map is duplicated here.
+CHAIN_NETWORKS = {
+    "base":              {"eip155:8453"},
+    "base-sepolia":      {"eip155:84532"},
+    "arbitrum":          {"eip155:42161"},
+    "arbitrum-one":      {"eip155:42161"},
+    "arbitrum-sepolia":  {"eip155:421614"},
+    "robinhood":         {"eip155:46630"},
+    "robinhood-testnet": {"eip155:46630"},
+    "arbitrum-stack":    {"eip155:42161", "eip155:421614", "eip155:46630"},
+}
+_NETWORK_ALIASES = {
+    "base": "eip155:8453", "base-mainnet": "eip155:8453", "base-sepolia": "eip155:84532",
+    "arbitrum": "eip155:42161", "arbitrum-one": "eip155:42161",
+    "arbitrum-mainnet": "eip155:42161", "arbitrum-sepolia": "eip155:421614",
+    "robinhood": "eip155:46630", "robinhood-testnet": "eip155:46630",
+}
+
+
+def _norm_net(network):
+    n = (network or "").strip().lower()
+    return _NETWORK_ALIASES.get(n, n)
+
+
+def _networks_for(chain):
+    if not chain:
+        return None
+    key = chain.strip().lower()
+    return set(CHAIN_NETWORKS[key]) if key in CHAIN_NETWORKS else {_norm_net(key)}
+
+
+def filter_chain(cands, chain):
+    """Keep only candidates whose (normalized) network is in the chain group."""
+    nets = _networks_for(chain)
+    if nets is None:
+        return cands
+    return [c for c in cands if _norm_net(c.get("network", "")) in nets]
 
 
 def _fmt(x):
@@ -134,11 +180,19 @@ def decide(cands: list[dict], remaining: Decimal):
 
 
 # ── ADVISE ───────────────────────────────────────────────────────────────────
-def run(need: str, budget: Decimal):
-    print(f"\n  NEED   : {need}\n  BUDGET : {_fmt(budget)}\n")
+def run(need: str, budget: Decimal, chain: str | None = None):
+    label = f"  NEED   : {need}\n  BUDGET : {_fmt(budget)}"
+    if chain:
+        label += f"\n  CHAIN  : {chain}"
+    print(f"\n{label}\n")
     print("  1) DISCOVER (Coinbase Bazaar)")
     cands = discover(need)
-    print(f"       {len(cands)} candidate(s) found\n")
+    if chain:
+        before = len(cands)
+        cands = filter_chain(cands, chain)
+        print(f"       {before} found → {len(cands)} on {chain}\n")
+    else:
+        print(f"       {len(cands)} candidate(s) found\n")
 
     scored, rec = decide(cands, budget)
 
@@ -171,7 +225,16 @@ def run(need: str, budget: Decimal):
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:]]
     budget = Decimal("0.01")
+    chain = None
     if "--budget" in args:
-        i = args.index("--budget"); budget = Decimal(args[i + 1]); del args[i:i + 2]
+        i = args.index("--budget")
+        if i + 1 >= len(args):
+            print("error: --budget requires a value (e.g. --budget 0.004)"); sys.exit(2)
+        budget = Decimal(args[i + 1]); del args[i:i + 2]
+    if "--chain" in args:
+        i = args.index("--chain")
+        if i + 1 >= len(args):
+            print("error: --chain requires a value (e.g. --chain arbitrum-stack)"); sys.exit(2)
+        chain = args[i + 1]; del args[i:i + 2]
     need = " ".join(args) or "funding rates"
-    run(need, budget)
+    run(need, budget, chain)
