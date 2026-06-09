@@ -68,6 +68,21 @@ def _is_crawler(ua):
     return any(h in u for h in CRAWLER_UA_HINTS)
 
 
+# Known noise scanner — NOT a real buyer. As of 2026-06 a single `axios/1.14.0`
+# client hammers the gateway (esp. the Stellar session_create path), abandons
+# every 402, and never pays. Left in "real traffic" it dwarfs and skews every
+# signal (volume, chain split, abandonment), so it gets its own bucket and is
+# reported only as a side note. Add other confirmed-noise UAs here as found.
+SCANNER_UA_HINTS = [
+    "axios/1.14.0",
+]
+
+
+def _is_scanner(ua):
+    u = (ua or "").lower()
+    return any(h in u for h in SCANNER_UA_HINTS)
+
+
 def _fetch(url, key, since_iso):
     """Page through payment_logs (PostgREST caps each page at 1000)."""
     base = f"{url.rstrip('/')}/rest/v1/payment_logs"
@@ -117,15 +132,22 @@ def main():
         print(f"✗ Supabase query failed: {e}"); sys.exit(1)
 
     real = [r for r in rows if include_self or not _is_self(r.get("agent_address"))]
-    # Split crawler/indexer traffic from likely-human/agent traffic.
-    human = [r for r in real if not _is_crawler(r.get("user_agent"))]
-    crawler = [r for r in real if _is_crawler(r.get("user_agent"))]
+    # Split real traffic into: known noise scanner, crawlers/indexers, and the
+    # remainder (likely-human/agent). Scanner is bucketed first so it never lands
+    # in "real" or "crawler" counts. Pass --with-scanner to fold it back in.
+    keep_scanner = "--with-scanner" in sys.argv
+    scanner = [] if keep_scanner else [r for r in real if _is_scanner(r.get("user_agent"))]
+    rest    = real if keep_scanner else [r for r in real if not _is_scanner(r.get("user_agent"))]
+    human   = [r for r in rest if not _is_crawler(r.get("user_agent"))]
+    crawler = [r for r in rest if _is_crawler(r.get("user_agent"))]
 
     print(f"\n  AgentPay usage — last {days} day(s)  (since {since_iso})")
     print(f"  {'(including our own test traffic)' if include_self else '(real traffic only — self wallets excluded)'}")
     print("  " + "─" * 58)
     print(f"  total rows              : {len(rows)}")
     print(f"  after self-filter       : {len(real)}")
+    if scanner:
+        print(f"  └─ noise scanner        : {len(scanner)}   (axios/1.14.0 — abandons every 402, never pays; --with-scanner to include)")
     print(f"  └─ crawlers/indexers    : {len(crawler)}   (Bazaar/x402 directories probing — not users)")
     print(f"  └─ likely real traffic  : {len(human)}")
 
