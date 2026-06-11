@@ -4,7 +4,7 @@ services/supabase.py — Supabase REST helpers.
 Wraps the Supabase REST API in raw httpx — works with the sb_secret_ key
 format that the supabase-py SDK can't handle.
 
-PR #13 expanded this from the original log_payment helper into the
+This grew from the original log_payment helper into the
 persisted replay-state home. Functions are grouped:
 
     Replay protection
@@ -53,7 +53,7 @@ def sb_enabled() -> bool:
 
 
 # log_payment (the legacy "single INSERT at end of call_tool") was removed
-# in PR #14. The current pattern is:
+# The current pattern is:
 #   1. insert_pending_payment_log() at 402-issue time → state='pending' row
 #   2. update_payment_log_state() at each lifecycle transition (verified,
 #      split_done, payment_done, rejected, abandoned, refund_pending)
@@ -62,7 +62,7 @@ def sb_enabled() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Replay protection (PR #13 Group 1)
+# Replay protection
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # Two tables, both insert-only:
@@ -208,7 +208,7 @@ async def is_tx_hash_consumed(tx_hash: str, network: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pending challenges (PR #13 Group 2)
+# Pending challenges
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # Mirrors the in-memory _pending_challenges dict in gateway/x402.py. The
@@ -362,7 +362,7 @@ async def cleanup_expired_challenges() -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Faucet IP cooldown (PR #13 Group 3)
+# Faucet IP cooldown
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # Replaces the in-memory _FAUCET_IP_LOG dict in routes/faucet.py. Two
@@ -443,7 +443,7 @@ async def record_faucet_ip(ip: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# payment_logs lifecycle (PR #13 Group 4)
+# payment_logs lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # Foundation for #14 (payment_logs lifecycle state machine). This PR exposes
@@ -483,7 +483,7 @@ async def insert_pending_payment_log(
     All other fields are optional at insert time.
 
     `state` defaults to 'pending' — the normal pre-402 case for Stellar
-    where agent_address and tx_hash aren't known yet. PR #14 also uses
+    where agent_address and tx_hash aren't known yet. Also used
     state='payment_done' to insert a complete row in one round trip for
     the Base success path, where the original UUID-keyed pending row is
     stranded (x402-v2 doesn't carry payment_id back through
@@ -567,7 +567,7 @@ async def update_payment_log_state(
         error_reason              — on failures
         client_ip, user_agent     — populate late if they weren't at insert time
 
-    expected_state (PR #14a): optional WHERE filter. When provided, the
+    expected_state: optional WHERE filter. When provided, the
     PATCH only lands if the row's current state matches. This is the
     fix for the race where a fire-and-forget intermediate PATCH
     (e.g. 'verified') could arrive AFTER the awaited terminal PATCH
@@ -710,7 +710,7 @@ async def sweep_abandoned_pending() -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Refund worker (PR #12 — Option C from §1 of the Tier 2 design doc)
+# Refund worker
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # When a paid tool call fails post-verify, routes/tools.py:call_tool sets
@@ -722,7 +722,7 @@ async def sweep_abandoned_pending() -> int:
 #                  ──send_refund fails (1..4 attempts)──→ refund_pending
 #                  ──send_refund fails (5th attempt)────→ refund_failed (terminal)
 #
-# Retry count is persisted in the refund_attempts column (PR #12 migration).
+# Retry count is persisted in the refund_attempts column.
 # Cap is 5 attempts; at 60s/attempt that's ~5 min of retry window per row.
 #
 # Behaviour conventions:
@@ -733,7 +733,7 @@ async def sweep_abandoned_pending() -> int:
 #   increment_refund_attempt() — write, atomic increment of the counter
 #       using Postgres-side arithmetic via PostgREST.
 #   mark_refund_done() — write, terminal state transition with the refund
-#       tx_hash. State-guarded against double-write per PR #14a pattern.
+#       tx_hash. State-guarded against double-write.
 #   mark_refund_failed() — write, terminal state for retry exhaustion.
 #       Accepts both 'refund_pending' AND 'refund_failed' as expected
 #       state so a retry of the terminal write is a no-op rather than

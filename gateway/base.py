@@ -356,8 +356,8 @@ async def settle_base_payment(
         if not tx_hash or not payer:
             return {"success": False, "tx_hash": "", "payer": "", "network": "", "reason": "tx_hash_or_payer_missing"}
 
-        # Replay check — Supabase primary, in-memory fallback (PR #13e
-        # cutover). Composite PK (tx_hash, network) means the same hash
+        # Replay check — Supabase primary, in-memory fallback.
+        # Composite PK (tx_hash, network) means the same hash
         # on base-mainnet vs base-sepolia is treated as independent;
         # _used_base_tx_hashes has no network discriminator, so the
         # in-memory fallback is slightly less precise but only matters
@@ -476,7 +476,7 @@ async def settle_base_payment(
     logger.info(f"[BASE] Settle response: success={data.get('success')} tx={data.get('transaction','')[:20]}...")
 
     if data.get("success"):
-        # Schema-validate the CDP response before trusting it (Tier 2 #19).
+        # Schema-validate the CDP response before trusting it.
         # CDP has occasionally returned {"success": True} with missing or
         # malformed transaction/payer/network fields — silently propagating
         # empty values produced misleading downstream receipts (paid call

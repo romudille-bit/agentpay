@@ -54,8 +54,7 @@ class RefundPending(Exception):
     execution itself failed. The gateway has marked the row for refund;
     the agent's USDC is on its way back (or already arrived).
 
-    Introduced in agentpay-x402 v0.1.4 to surface the gateway PR #12
-    contract — the 502 response body now carries `payment_status`,
+    Surfaces the gateway's refund contract — the 502 response body carries `payment_status`,
     `refund_eta_seconds`, and `payment_id`, and this exception type
     lets callers branch on the failure mode without parsing JSON:
 

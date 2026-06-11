@@ -66,8 +66,8 @@ async def _keepalive_loop():
         await asyncio.sleep(300)  # 5 minutes
 
 
-# How often the cleanup task runs in the background (PR #13e cutover).
-# 10min is the sweet spot: pending_challenges have a 120s TTL, so worst-
+# How often the cleanup task runs in the background. 10min is the sweet
+# spot: pending_challenges have a 120s TTL, so worst-
 # case a row is ~12min stale before sweep. cleanup_expired_challenges()
 # deletes anything > 1h past expiry, so a real backlog needs the gateway
 # to be down for 50+ minutes before a row qualifies.
@@ -98,14 +98,14 @@ async def _cleanup_loop():
         await asyncio.sleep(_CLEANUP_INTERVAL_SECS)
 
 
-# How often the abandoned-pending sweep runs (PR #14).
+# How often the abandoned-pending sweep runs.
 # 5 min matches the 5-min cutoff in sb.sweep_abandoned_pending, so
 # worst case a stuck pending row spends ~10 min before transitioning
 # to 'abandoned'.
 _ABANDONED_SWEEP_INTERVAL_SECS = 300
 
 
-# How often the refund worker runs (PR #12).
+# How often the refund worker runs.
 # 60s is a balance between: tight enough that refunds feel ~real-time
 # from the agent SDK's perspective (refund_eta_seconds=60), loose enough
 # that 5 attempts × 60s = 5 minutes total retry budget per row before
@@ -115,7 +115,7 @@ _REFUND_WORKER_INTERVAL_SECS = 60
 
 
 async def _refund_worker_loop():
-    """Periodic on-chain refund worker (PR #12 — Option C, capstone).
+    """Periodic on-chain refund worker.
 
     Gated by REFUND_ENABLED. When the flag is False the loop isn't
     scheduled — refund_pending rows accumulate as analytics-only.
@@ -210,7 +210,7 @@ async def _refund_worker_loop():
 
 
 async def _abandoned_sweep_loop():
-    """Periodic PATCH pending → abandoned on payment_logs (PR #14).
+    """Periodic PATCH pending → abandoned on payment_logs.
 
     Pairs with sb.sweep_abandoned_pending (which UPDATEs rows where
     state='pending' AND created_at < now() - interval '5 min'). Without
@@ -238,7 +238,7 @@ async def _abandoned_sweep_loop():
 async def _hydrate_replay_state_from_supabase() -> None:
     """Warm the in-memory replay caches from Supabase at startup.
 
-    After the PR #13e cutover Supabase is primary, but the in-memory
+    Supabase is the primary replay store, but the in-memory
     sets/dicts stay as a graceful-degradation cache: if Supabase goes
     down mid-operation, reads fall back to these structures. Without
     hydration the cache is cold on every redeploy — a Supabase outage
@@ -446,8 +446,7 @@ def _log_config_banner() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan handler — replaces the deprecated
-    @app.on_event("startup") / "shutdown" callbacks (PR #16 surfaced the
-    deprecation warning). Same logic as before, just packaged in a single
+    @app.on_event("startup") / "shutdown" callbacks. Same logic, packaged in a single
     asynccontextmanager so we can hang shutdown drains off the post-yield
     half later (currently a no-op).
 
@@ -481,17 +480,15 @@ async def lifespan(app: FastAPI):
         logger.info("Supabase not configured — using in-memory registry")
     else:
         await _hydrate_tools_from_supabase()
-        # PR #13e cutover: warm the replay caches and start the periodic
-        # pending_challenges sweep. Both are best-effort and can't block
-        # startup.
+        # Warm the replay caches and start the periodic pending_challenges
+        # sweep. Both are best-effort and can't block startup.
         await _hydrate_replay_state_from_supabase()
         asyncio.create_task(_cleanup_loop())
-        # PR #14: periodic pending → abandoned sweep on payment_logs.
-        # Distinct from _cleanup_loop (different table, different
-        # semantics — see _abandoned_sweep_loop docstring).
+        # Periodic pending → abandoned sweep on payment_logs. Distinct from
+        # _cleanup_loop (different table — see _abandoned_sweep_loop docstring).
         asyncio.create_task(_abandoned_sweep_loop())
 
-        # PR #12: async on-chain refund worker, gated by REFUND_ENABLED.
+        # Async on-chain refund worker, gated by REFUND_ENABLED.
         # Picks up refund_pending rows, sends USDC back to the agent
         # on Stellar, transitions to refund_done or refund_failed.
         # Dark-launched at False by default so the state tracking can

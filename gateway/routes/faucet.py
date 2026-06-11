@@ -196,7 +196,7 @@ async def faucet_json(request: Request):
                 "docs": "https://github.com/romudille-bit/agentpay",
             },
         )
-    # ── IP cooldown — Supabase primary, in-memory fallback (PR #13e) ─────────
+    # ── IP cooldown — Supabase primary, in-memory fallback ───────────────────
     # Supabase keeps cooldown state across Railway redeploys; in-memory
     # is a graceful-degradation cache. If Supabase says "seen recently"
     # we 429 immediately. If not (or Supabase is unreachable),

@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     CDP_KEY_ID:     str = ""
     CDP_KEY_SECRET: str = ""
 
-    # PR #12: Async on-chain refund worker. When False (default),
+    # Async on-chain refund worker. When False (default),
     # tool-failure rows still get state='refund_pending' and the response
     # body still includes payment_status — but the background worker
     # does NOT attempt any on-chain refund. This dark-launch mode is the

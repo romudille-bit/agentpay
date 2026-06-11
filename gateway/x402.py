@@ -63,7 +63,7 @@ def _normalize_supabase_challenge(row: dict) -> dict:
     dict stores Unix floats so `time.time() > challenge["expires_at"]`
     works. Without this conversion we'd be comparing a float to a string
     — Python 3 raises TypeError, which would crash verify_and_fulfill on
-    every Supabase-served challenge (PR #13c-class bug).
+    every Supabase-served challenge.
 
     Defensive: if the timestamp is unparseable, treat as already-expired
     (returns 0.0 → fails the time.time() check → caller returns
@@ -107,7 +107,7 @@ def _normalize_supabase_challenge(row: dict) -> dict:
 async def _lookup_challenge(payment_id: str) -> Optional[dict]:
     """Dual-read challenge lookup — Supabase primary, in-memory fallback.
 
-    Per PR #13e (cutover), Supabase is the authoritative store. The
+    Supabase is the authoritative store. The
     in-memory dict survives as a hot cache for two reasons:
       1. Drain — challenges issued before the cutover deploy still only
          live in the dict on long-running workers. Fall through covers
@@ -269,7 +269,7 @@ async def verify_and_fulfill(
     tx_hash = parsed.get("tx_hash")
     network_label = f"stellar-{settings.STELLAR_NETWORK}"
 
-    # Look up challenge — Supabase primary, in-memory fallback (PR #13e).
+    # Look up challenge — Supabase primary, in-memory fallback.
     # See _lookup_challenge for the dual-read semantics. If Supabase has
     # the row, it wins; otherwise we drop through to the dict so in-flight
     # challenges issued by a previous deploy still resolve.
@@ -359,21 +359,17 @@ async def verify_and_fulfill(
     # exist, so the split would fail every time and spam the logs.
     developer_address = challenge_data.get("developer_address") or ""
     if developer_address and developer_address != settings.GATEWAY_PUBLIC_KEY:
-        # asyncio is imported at module level; do NOT add a local `import
-        # asyncio` here. Doing so binds `asyncio` as a function-local for
-        # the entire function body, which shadows the module import and
-        # raises UnboundLocalError at the earlier asyncio.create_task lines
-        # above (replay dual-writes). The deploy of PR #13b crashed every
-        # paid call until this was fixed. The TestVerifyAndFulfill class
-        # in tests/test_x402.py is the regression guard.
+        # Do NOT add a local `import asyncio` here — it shadows the module
+        # import and raises UnboundLocalError at the earlier create_task
+        # calls. This once crashed every paid call in production;
+        # tests/test_x402.py::TestVerifyAndFulfill is the regression guard.
         asyncio.create_task(
             split_payment(
                 tool_developer_address=developer_address,
                 total_amount_usdc=challenge_data["amount_usdc"],
                 gateway_fee_percent=settings.GATEWAY_FEE_PERCENT,
-                # PR #14: pass payment_id so split_payment can PATCH
-                # state='split_done' on the row once the split tx
-                # settles. Fire-and-forget all the way down.
+                # payment_id lets split_payment PATCH state='split_done'
+                # once the split tx settles. Fire-and-forget all the way down.
                 payment_id=payment_id,
             )
         )

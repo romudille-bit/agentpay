@@ -169,24 +169,17 @@ async def verify_payment(
          path. Agents must therefore hold a trivial XLM balance to cover
          the Stellar base fee on their own payment.
 
-    Tier 2 #17 broadened the fallback from 401-only to all-non-200 + all
-    exceptions. Previously, a 502 from the facilitator (or a network
-    timeout) would skip the Horizon fallback and return failure, even
-    though the payment may have been valid on-chain.
-
-    Tier 2 #18 added the STELLAR_FACILITATOR_ENABLED flag (default False).
-    When disabled, the OZ POST is skipped entirely and we go straight to
-    Horizon — saves ~15s of wasted timeout per verification in the common
-    case where OZ returns 401.
+    The fallback fires on ANY non-200 / exception (not just 401) so a
+    facilitator 5xx or timeout never fails a payment that is valid
+    on-chain. STELLAR_FACILITATOR_ENABLED=False (the default) skips the
+    OZ POST entirely — saves ~15s of wasted timeout per verification.
 
     Returns:
         {"verified": True, "tx_hash": "..."} on success
         {"verified": False, "reason": "..."} on failure
     """
-    # Tier 2 #18: skip the OZ POST entirely when disabled. Saves a wasted
-    # round-trip in production where OZ has been returning 401 since early
-    # 2026. The Horizon fallback (now bulletproof after #17) runs identically
-    # whether we got there via OZ-401 or via this short-circuit.
+    # Skip the OZ POST entirely when disabled — OZ has returned 401 since
+    # early 2026. The Horizon fallback runs identically either way.
     if not settings.STELLAR_FACILITATOR_ENABLED:
         if tx_hash:
             return await _verify_payment_horizon(
@@ -296,12 +289,9 @@ async def split_payment(
 
     Returns tx hash of the split payment.
 
-    PR #14: if `payment_id` is provided, fire-and-forget a PATCH on
-    `payment_logs` to mark the row as state='split_done' once the split
-    tx settles. Intermediate state — eventually-consistent per the Q3
-    decision in pr-14-plan.md. Not awaited because the caller (the
-    asyncio.create_task in verify_and_fulfill) already isn't awaiting
-    this whole function.
+    If `payment_id` is provided, fire-and-forget a PATCH marking the row
+    state='split_done' once the split tx settles (eventually-consistent;
+    the caller isn't awaiting this function anyway).
     """
     server = get_server()
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
@@ -388,12 +378,12 @@ async def split_payment(
     try:
         logger.info(f"Split sent {developer_share} USDC to {tool_developer_address}")
 
-        # PR #14: PATCH payment_logs.state='split_done'. Lazy import to
+        # PATCH payment_logs.state='split_done'. Lazy import to
         # avoid a circular import on module load (services.supabase
         # doesn't import stellar, but main.py imports both — direct
         # top-level import here would order-couple them).
         #
-        # PR #14a fix: expected_state='verified' guards against the race
+        # expected_state='verified' guards against the race
         # where this PATCH could land AFTER the route's awaited terminal
         # 'payment_done' PATCH and overwrite it. split_payment runs as
         # a fire-and-forget task scheduled from verify_and_fulfill — by
@@ -436,9 +426,8 @@ async def send_refund(
 ) -> dict:
     """Send USDC from the gateway wallet back to the agent.
 
-    PR #12: Option C from the Tier 2 design doc — pre-split rollback +
-    async on-chain refund. Called by main.py:_refund_worker_loop when
-    processing rows in state='refund_pending'.
+    Pre-split rollback + async on-chain refund. Called by
+    main.py:_refund_worker_loop for rows in state='refund_pending'.
 
     Structurally identical to split_payment but with:
       - destination = agent_address (not developer)

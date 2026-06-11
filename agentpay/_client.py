@@ -230,7 +230,7 @@ class AgentPayClient:
                     tx_hash = retry.headers.get("x-tx-hash", "") or ""
 
             if retry.status_code != 200:
-                # PR #12 contract (v0.1.4): on tool-failure-post-verify the
+                # Gateway refund contract: on tool-failure-post-verify the
                 # gateway now returns 502 with a structured body carrying
                 # payment_status, refund_eta_seconds, payment_id, and
                 # error_reason. Surface that as a typed RefundPending so
