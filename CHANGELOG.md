@@ -4,6 +4,23 @@ All notable changes to **agentpay-x402** (the `agentpay` Python SDK).
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.4] — 2026-06-11
+
+### Added
+- **`quickstart()` mints a Base/EVM wallet client-side** (when `eth_account`
+  is installed, i.e. `pip install "agentpay-x402[base]"`). The default paid
+  chain is Base, so the minted wallet now has a fundable `0x` address from the
+  first call instead of dead-ending on a Stellar-only wallet. The secret never
+  leaves the machine. New Session attributes: `base_public_key`,
+  `base_secret_key` (set only when minted — save it to reuse the wallet).
+- `POST /v1/agent/register` accepts `network="both"` and returns a `wallets`
+  object with both a Stellar and a Base wallet (gateway-side, for raw-API agents).
+
+### Changed
+- Underfunded payment failures (`op_underfunded`, missing trustline, unfunded
+  account) now raise `PaymentFailed` with the agent's own fundable address(es)
+  in the message, instead of a bare Stellar result code.
+
 ## [0.2.3] — 2026-06-01
 
 ### Changed

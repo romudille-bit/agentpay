@@ -44,7 +44,7 @@ from agentpay.client import (
 )
 from agentpay.budget_policy import budget_policy, BudgetDecision
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 __all__ = [
     "AgentWallet",
     "Session",
