@@ -138,12 +138,16 @@ def quickstart(
     # installed (`pip install "agentpay-x402[base]"`) — Stellar still works.
     minted_base_secret = None
     if not base_key:
-        try:
-            from eth_account import Account as _Account
-            acct = _Account.create()
-            base_key = minted_base_secret = "0x" + acct.key.hex()
-        except ImportError:
-            pass
+        import os as _os
+        if _os.environ.get("BASE_AGENT_KEY"):
+            pass  # AgentWallet picks the env key up itself — don't mint over it
+        else:
+            try:
+                from eth_account import Account as _Account
+                acct = _Account.create()
+                base_key = minted_base_secret = "0x" + acct.key.hex()
+            except ImportError:
+                pass
 
     try:
         wallet = AgentWallet(secret_key=minted_secret, network=net, base_key=base_key)
