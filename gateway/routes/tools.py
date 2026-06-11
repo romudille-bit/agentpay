@@ -8,16 +8,17 @@ routes/tools.py — Tool listing, lookup, payment, and registration endpoints.
   POST /tools/{name}/call    — full x402 flow: 402 → pay → execute
   POST /tools/register       — register a new tool
 
-The POST /tools/{name}/call handler is the heart of the gateway. Three
-states:
-  1. No payment header        → return 402 with Stellar + Base options.
-  2. X-Payment header         → verify Stellar tx, execute tool.
-  3. PAYMENT-SIGNATURE header → settle Base via CDP/JSON-RPC, execute tool.
+POST /tools/{name}/call is the heart of the gateway. call_tool() orchestrates
+four stages, each its own function:
+  _issue_402         — no payment header → 402 with Stellar + Base options
+  _settle_stellar    — X-Payment header → verify Stellar tx
+  _settle_base_path  — PAYMENT-SIGNATURE header → settle Base (CDP / JSON-RPC)
+  _execute_and_log   — run the tool, write the payment lifecycle, build response
 """
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request, Response
@@ -121,286 +122,279 @@ async def head_tool(tool_name: str):
     return Response(status_code=200, headers=headers)
 
 
-@router.post("/tools/{tool_name}/call")
-@limiter.limit("100/minute")
-async def call_tool(
-    tool_name: str,
-    body: ToolCallRequest,
-    request: Request,
-    x_payment: Optional[str] = Header(None),
-    x_agent_address: Optional[str] = Header(None),
-    payment_signature: Optional[str] = Header(None),   # x402 v2 Base/EVM
-):
+# ── Payment-flow stages (orchestrated by call_tool) ──────────────────────────
+
+def _base_402_option(tool, resource_url: str):
+    """Build the Base payment option + PAYMENT-REQUIRED header for a 402.
+
+    Returns (base_option, payment_required_header), both None when
+    BASE_GATEWAY_ADDRESS isn't configured.
     """
-    Main endpoint — call a paid MCP tool.
+    if not settings.BASE_GATEWAY_ADDRESS:
+        return None, None
 
-    Supports two payment paths:
-      Stellar — X-Payment: tx_hash=<hash>,from=<addr>,id=<payment_id>
-      Base    — PAYMENT-SIGNATURE: <base64(PaymentPayload JSON)>
-
-    Flow:
-      1. Neither header → return 402 advertising both options
-      2. X-Payment → verify Stellar tx, execute tool
-      3. PAYMENT-SIGNATURE → settle via CDP facilitator, execute tool
-    """
-    # Resolve legacy aliases (e.g. dex_liquidity → token_market_data) so POST
-    # honours the same alias map as GET /tools/{name}. Without this, agents
-    # calling the legacy name hit a 404 even though the alias resolver works
-    # for tool metadata.
-    resolved = _TOOL_ALIASES.get(tool_name, tool_name)
-    tool = registry.get_tool(resolved)
-    if not tool:
-        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    if not tool.active:
-        raise HTTPException(status_code=503, detail=f"Tool '{tool_name}' is currently unavailable")
-
-    agent_address = x_agent_address or body.agent_address
-    resource_url  = f"{GATEWAY_URL}/tools/{tool_name}/call"
-
-    # x402-v2 clients (incl. SDK <= 0.2.3) send the SAME base64 v2 payload in
-    # both X-PAYMENT (the x402 standard header) and PAYMENT-SIGNATURE. The
-    # legacy Stellar parser can't read it, so without this guard the request
-    # died with 'Invalid X-Payment header format' before the valid Base
-    # signature was ever considered. If X-Payment isn't a parseable Stellar
-    # proof and a PAYMENT-SIGNATURE is present, route to the Base path.
-    if x_payment and payment_signature and not parse_payment_header(x_payment):
-        x_payment = None
-
-    # ── Step 1: No payment → 402 with both Stellar + Base options ────────────
-    # Free tools (price_usdc == 0) issue a 402 too — they flow through the same
-    # lifecycle as $0 payments so every call gets a payment_logs row and a
-    # receipt (full visibility). The SDK skips on-chain settlement for $0 and
-    # verify_and_fulfill authorizes $0 challenges without requiring a tx.
-    if not x_payment and not payment_signature:
-        agent_short = (agent_address or "unknown")[:8]
-        logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=402_challenge")
-
-        challenge = issue_payment_challenge(
-            tool_name=tool_name,
-            price_usdc=tool.price_usdc,
-            developer_address=tool.developer_address,
-            request_data={"parameters": body.parameters},
-        )
-
-        # ── PR #14: pre-402 payment_logs INSERT ──────────────────────────────
-        # Insert a state='pending' row BEFORE returning the 402. Awaited and
-        # fail-closed: if Supabase is enabled but the INSERT fails, return
-        # 503 — we don't issue challenges we can't track. Closes the
-        # analytics gap from §5.1 of the design doc (abandoned challenges
-        # were previously invisible).
-        #
-        # Network is set to the Stellar default (the canonical UUID-keyed
-        # row); a Base payment will produce a second row keyed on tx_hash
-        # with network='base-...' since x402-v2 doesn't carry the UUID
-        # through PAYMENT-SIGNATURE. The Stellar pending row gets swept to
-        # 'abandoned' by _abandoned_sweep_loop in that case. Acceptable
-        # for now; correlating Base back to the UUID is a future PR.
-        if sb_enabled():
-            client_ip  = request.client.host if request.client else None
-            user_agent = request.headers.get("user-agent")
-            row_id = await insert_pending_payment_log(
-                payment_id=challenge.payment_id,
-                tool_name=resolved,
-                network=f"stellar-{settings.STELLAR_NETWORK}",
-                amount_usdc=tool.price_usdc,
-                developer_address=tool.developer_address or None,
-                client_ip=client_ip,
-                user_agent=user_agent,
-            )
-            if row_id is None:
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "Supabase write failure — challenge issuance refused. "
-                        "The gateway will not issue 402 challenges it cannot persist. "
-                        "Retry shortly."
-                    ),
-                )
-
-        # Build Base payment requirements (if configured)
-        base_option = None
-        payment_required_header = None
-        if settings.BASE_GATEWAY_ADDRESS:
-            base_req = base_pay.build_payment_requirements(
-                amount_usdc=tool.price_usdc,
-                pay_to=settings.BASE_GATEWAY_ADDRESS,
-                resource_url=resource_url,
-                network=settings.BASE_NETWORK,
-            )
-            base_option = {
-                "scheme":            base_req["scheme"],
-                "network":           base_req["network"],
-                "amount_atomic":     base_req["amount"],
-                "amount_usdc":       tool.price_usdc,
-                "asset":             base_req["asset"],
-                "pay_to":            settings.BASE_GATEWAY_ADDRESS,
-                "maxTimeoutSeconds": base_req["maxTimeoutSeconds"],
-                "instructions": (
-                    "Sign an EIP-3009 transferWithAuthorization for the amount above, "
-                    "encode as base64 JSON PaymentPayload, and retry with header "
-                    "PAYMENT-SIGNATURE: <base64_payload>"
-                ),
-            }
-            # Build outputSchema for Bazaar auto-indexing. Bazaar reads this
-            # from the PAYMENT-REQUIRED header on the first Base mainnet payment
-            # through the CDP facilitator. Without it the listing has price but
-            # no shape and ranks poorly.
-            output_schema = None
-            if tool.parameters or tool.response_example is not None:
-                output_schema = {
-                    "input":  tool.parameters or {},
-                    "output": tool.response_example,
-                }
-            payment_required_header = base_pay.build_payment_required_header(
-                requirements=base_req,
-                resource_url=resource_url,
-                tool_description=tool.description,
-                output_schema=output_schema,
-            )
-
-        headers = build_402_headers(challenge)
-        if payment_required_header:
-            headers["PAYMENT-REQUIRED"] = payment_required_header
-
-        body_content = {
-            "error":       "Payment required",
-            "x402Version": 2,
-            # ── Stellar option (backward-compatible) ──────────────────────────
-            "payment_id":  challenge.payment_id,
-            "amount_usdc": challenge.amount_usdc,
-            "pay_to":      challenge.gateway_address,
-            "asset":       "USDC",
-            "network":     settings.STELLAR_NETWORK,
-            "instructions": (
-                f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
-                f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
-                f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}. "
-                f"No Stellar wallet? Get a free funded testnet wallet instantly: {GATEWAY_URL}/faucet"
-            ),
-            # ── Structured options for multi-chain clients ────────────────────
-            "payment_options": {
-                "stellar": {
-                    "payment_id":  challenge.payment_id,
-                    "amount_usdc": challenge.amount_usdc,
-                    "pay_to":      challenge.gateway_address,
-                    "network":     settings.STELLAR_NETWORK,
-                    "asset":       "USDC",
-                    "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
-                },
-                **({"base": base_option} if base_option else {}),
-            },
+    base_req = base_pay.build_payment_requirements(
+        amount_usdc=tool.price_usdc,
+        pay_to=settings.BASE_GATEWAY_ADDRESS,
+        resource_url=resource_url,
+        network=settings.BASE_NETWORK,
+    )
+    base_option = {
+        "scheme":            base_req["scheme"],
+        "network":           base_req["network"],
+        "amount_atomic":     base_req["amount"],
+        "amount_usdc":       tool.price_usdc,
+        "asset":             base_req["asset"],
+        "pay_to":            settings.BASE_GATEWAY_ADDRESS,
+        "maxTimeoutSeconds": base_req["maxTimeoutSeconds"],
+        "instructions": (
+            "Sign an EIP-3009 transferWithAuthorization for the amount above, "
+            "encode as base64 JSON PaymentPayload, and retry with header "
+            "PAYMENT-SIGNATURE: <base64_payload>"
+        ),
+    }
+    # outputSchema feeds Bazaar auto-indexing via the PAYMENT-REQUIRED
+    # header; without it the listing has price but no shape.
+    output_schema = None
+    if tool.parameters or tool.response_example is not None:
+        output_schema = {
+            "input":  tool.parameters or {},
+            "output": tool.response_example,
         }
+    payment_required_header = base_pay.build_payment_required_header(
+        requirements=base_req,
+        resource_url=resource_url,
+        tool_description=tool.description,
+        output_schema=output_schema,
+    )
+    return base_option, payment_required_header
 
-        return JSONResponse(status_code=402, content=body_content, headers=headers)
 
-    # ── Step 2a: Stellar payment ───────────────────────────────────────────────
-    if x_payment:
-        if not agent_address:
-            raise HTTPException(status_code=400, detail="agent_address required (body or X-Agent-Address header)")
+async def _refund_and_502(tool_name: str, payment_id: str, exc: Exception) -> JSONResponse:
+    """Payment accepted on-chain but tool execution failed → refund_pending.
 
-        agent_short = (agent_address or "unknown")[:8]
-        logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... verifying X-Payment header")
-        auth = await verify_and_fulfill(payment_header=x_payment, agent_address=agent_address)
-        if not auth["authorized"]:
-            status = "REPLAY_ATTACK" if "replay" in auth["reason"].lower() else "FAILED"
-            logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status={status} reason={auth['reason']}")
+    The PATCH is awaited (terminal state); the background refund worker
+    picks the row up when REFUND_ENABLED. The 502 body carries
+    payment_status so SDK callers can branch (RefundPending exception).
+    """
+    logger.error(f"Tool execution error: {exc}")
+    await update_payment_log_state(
+        payment_id,
+        "refund_pending",
+        error_reason=f"tool_exec_failed: {str(exc)[:200]}",
+    )
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error":               "Tool execution failed",
+            "tool":                tool_name,
+            "payment_id":          payment_id,
+            "payment_status":      "refund_pending" if settings.REFUND_ENABLED else "refund_disabled",
+            "refund_eta_seconds":  60 if settings.REFUND_ENABLED else None,
+            "error_reason":        f"tool_exec_failed: {str(exc)[:200]}",
+        },
+    )
 
-            # PR #14: PATCH the pending row to 'rejected' with error_reason.
-            # AWAITED, not fire-and-forget. Per the Q3 decision in the
-            # PR #14 plan, terminal states (payment_done, rejected,
-            # refund_pending) are awaited so the analytics guarantee
-            # holds at response time. The original v1 of this code
-            # used asyncio.create_task — which loses the race on the
-            # rejected branch specifically because there's no
-            # downstream await before the return (unlike the verified
-            # PATCH, which gets a yield during tool execution). Caught
-            # by test_replay_attempt_marks_rejected failing on CI 3.10
-            # where the TestClient event loop closed before the
-            # scheduled task ran.
-            #
-            # The payment_id we PATCH on comes from the X-Payment header
-            # (parsed by verify_and_fulfill); if the header was malformed
-            # there's no UUID to PATCH and the pending row eventually
-            # becomes 'abandoned' via the sweep.
-            parsed = parse_payment_header(x_payment) or {}
-            rejected_pid = parsed.get("id")
-            if rejected_pid:
-                await update_payment_log_state(
-                    rejected_pid, "rejected", error_reason=auth["reason"],
-                )
 
-            return JSONResponse(
-                status_code=402,
-                content={"error": "Payment verification failed", "reason": auth["reason"]},
+async def _run_tool(tool, resolved: str, tool_name: str, parameters: dict):
+    """Execute the tool — proxy endpoint when configured, real APIs otherwise."""
+    if not tool.endpoint:
+        return await real_tool_response(resolved, parameters)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                tool.endpoint,
+                json={"parameters": parameters},
+                headers={"Content-Type": "application/json"},
             )
-        logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=OK tx={auth.get('tx_hash','')[:16]}")
+            if response.status_code != 200:
+                raise httpx.ConnectError("Tool server returned non-200")
+            return response.json()
+    except httpx.ConnectError:
+        logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
+        return await real_tool_response(resolved, parameters)
 
-        # PR #14: fire-and-forget PATCH to 'verified' (intermediate state,
-        # per Q3 decision in pr-14-plan.md). Captures the agent_address +
-        # tx_hash that arrived with the X-Payment header.
-        #
-        # PR #14a fix: expected_state='pending' guards against the race
-        # where this fire-and-forget PATCH arrives AFTER the awaited
-        # terminal payment_done PATCH at the end of this handler. Without
-        # the guard, ~half of calls in production stuck at 'verified'
-        # because the racing verified write landed after payment_done.
-        verified_pid = (parse_payment_header(x_payment) or {}).get("id")
-        if verified_pid:
-            asyncio.create_task(update_payment_log_state(
-                verified_pid, "verified",
-                expected_state="pending",
-                agent_address=agent_address,
-                tx_hash=auth.get("tx_hash"),
-            ))
 
-    # ── Step 2b: Base/EVM payment (Mode A: CDP facilitator, Mode B: on-chain tx) ─
-    elif payment_signature:
-        if not settings.BASE_GATEWAY_ADDRESS:
-            raise HTTPException(status_code=503, detail="Base payment not configured on this gateway")
+async def _issue_402(
+    tool, resolved: str, tool_name: str, body: ToolCallRequest,
+    request: Request, agent_address: Optional[str], resource_url: str,
+) -> JSONResponse:
+    """No payment header → issue a 402 challenge with Stellar + Base options.
 
-        base_req = base_pay.build_payment_requirements(
+    Free tools (price_usdc == 0) issue a 402 too — they flow through the same
+    lifecycle as $0 payments so every call gets a payment_logs row and a
+    receipt. The SDK skips on-chain settlement for $0 and verify_and_fulfill
+    authorizes $0 challenges without requiring a tx.
+    """
+    agent_short = (agent_address or "unknown")[:8]
+    logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=402_challenge")
+
+    challenge = issue_payment_challenge(
+        tool_name=tool_name,
+        price_usdc=tool.price_usdc,
+        developer_address=tool.developer_address,
+        request_data={"parameters": body.parameters},
+    )
+
+    # Pre-402 payment_logs INSERT — awaited and fail-closed: the gateway
+    # refuses to issue challenges it cannot track. Network defaults to
+    # Stellar on this UUID-keyed row; a Base settlement later produces a
+    # second row keyed on tx_hash (x402-v2 doesn't carry the UUID through
+    # PAYMENT-SIGNATURE) and this one gets swept to 'abandoned'.
+    if sb_enabled():
+        client_ip  = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+        row_id = await insert_pending_payment_log(
+            payment_id=challenge.payment_id,
+            tool_name=resolved,
+            network=f"stellar-{settings.STELLAR_NETWORK}",
             amount_usdc=tool.price_usdc,
-            pay_to=settings.BASE_GATEWAY_ADDRESS,
-            resource_url=resource_url,
-            network=settings.BASE_NETWORK,
+            developer_address=tool.developer_address or None,
+            client_ip=client_ip,
+            user_agent=user_agent,
         )
-        logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
-        result = await base_pay.settle_base_payment(
-            payment_signature, base_req, rpc_url=settings.BASE_RPC_URL
-        )
-        if not result["success"]:
-            status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"
-            logger.info(f"[PAYMENT] tool={tool_name} network=base status={status} reason={result['reason']}")
-            return JSONResponse(
-                status_code=402,
-                content={"error": "Base payment settlement failed", "reason": result["reason"]},
+        if row_id is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Supabase write failure — challenge issuance refused. "
+                    "The gateway will not issue 402 challenges it cannot persist. "
+                    "Retry shortly."
+                ),
             )
-        logger.info(f"[PAYMENT] tool={tool_name} network=base agent={result['payer'][:8]}... status=OK tx={result['tx_hash'][:16]}")
-        auth = {
-            "authorized": True,
-            "tx_hash":    result["tx_hash"],
-            "payer":      result["payer"],
-            "network":    result["network"],
-        }
-        # Use EVM payer address as agent_address for logging
-        agent_address = agent_address or result["payer"]
 
-    # ── Step 3: Payment verified → call the real tool ─────────────────────────
-    # Compute payment_id + receipt_network once; both the tool-failure and
-    # tool-success branches need them. For Stellar the payment_id is the
-    # UUID echoed back in the X-Payment header (matches the pre-402 row).
-    # For Base, the original UUID isn't carried through PAYMENT-SIGNATURE,
-    # so we key on tx_hash and the pre-402 UUID row stays at 'pending'
-    # until the periodic sweep flips it to 'abandoned'. Acceptable
-    # noise; correlating Base back to the UUID is a future protocol change.
-    if x_payment:
-        parsed = parse_payment_header(x_payment) or {}
-        payment_id = parsed.get("id") or auth.get("tx_hash", "")
-        is_base    = False
-    else:
-        payment_id = auth.get("tx_hash", "")
-        is_base    = True
+    base_option, payment_required_header = _base_402_option(tool, resource_url)
 
+    headers = build_402_headers(challenge)
+    if payment_required_header:
+        headers["PAYMENT-REQUIRED"] = payment_required_header
+
+    body_content = {
+        "error":       "Payment required",
+        "x402Version": 2,
+        # Stellar option (backward-compatible top-level fields)
+        "payment_id":  challenge.payment_id,
+        "amount_usdc": challenge.amount_usdc,
+        "pay_to":      challenge.gateway_address,
+        "asset":       "USDC",
+        "network":     settings.STELLAR_NETWORK,
+        "instructions": (
+            f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
+            f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
+            f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}. "
+            f"No Stellar wallet? Get a free funded testnet wallet instantly: {GATEWAY_URL}/faucet"
+        ),
+        # Structured options for multi-chain clients
+        "payment_options": {
+            "stellar": {
+                "payment_id":  challenge.payment_id,
+                "amount_usdc": challenge.amount_usdc,
+                "pay_to":      challenge.gateway_address,
+                "network":     settings.STELLAR_NETWORK,
+                "asset":       "USDC",
+                "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
+            },
+            **({"base": base_option} if base_option else {}),
+        },
+    }
+
+    return JSONResponse(status_code=402, content=body_content, headers=headers)
+
+
+async def _settle_stellar(
+    tool_name: str, x_payment: str, agent_address: Optional[str],
+) -> Union[dict, JSONResponse]:
+    """X-Payment header → verify the Stellar payment.
+
+    Returns the auth dict on success, or a JSONResponse (402) on rejection.
+    """
+    if not agent_address:
+        raise HTTPException(status_code=400, detail="agent_address required (body or X-Agent-Address header)")
+
+    agent_short = (agent_address or "unknown")[:8]
+    logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... verifying X-Payment header")
+    auth = await verify_and_fulfill(payment_header=x_payment, agent_address=agent_address)
+    if not auth["authorized"]:
+        status = "REPLAY_ATTACK" if "replay" in auth["reason"].lower() else "FAILED"
+        logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status={status} reason={auth['reason']}")
+
+        # Terminal states are AWAITED so analytics are consistent at response
+        # time. (A create_task here loses the race: there's no downstream
+        # await before the return.) If the header was malformed there's no
+        # UUID to PATCH; the pending row becomes 'abandoned' via the sweep.
+        rejected_pid = (parse_payment_header(x_payment) or {}).get("id")
+        if rejected_pid:
+            await update_payment_log_state(
+                rejected_pid, "rejected", error_reason=auth["reason"],
+            )
+
+        return JSONResponse(
+            status_code=402,
+            content={"error": "Payment verification failed", "reason": auth["reason"]},
+        )
+    logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=OK tx={auth.get('tx_hash','')[:16]}")
+
+    # Intermediate 'verified' PATCH — fire-and-forget. expected_state='pending'
+    # guards against this landing AFTER the awaited terminal payment_done
+    # PATCH (without it, rows stuck at 'verified' in production).
+    verified_pid = (parse_payment_header(x_payment) or {}).get("id")
+    if verified_pid:
+        asyncio.create_task(update_payment_log_state(
+            verified_pid, "verified",
+            expected_state="pending",
+            agent_address=agent_address,
+            tx_hash=auth.get("tx_hash"),
+        ))
+    return auth
+
+
+async def _settle_base_path(
+    tool, tool_name: str, payment_signature: str, resource_url: str,
+) -> Union[dict, JSONResponse]:
+    """PAYMENT-SIGNATURE header → settle on Base (Mode A: CDP, Mode B: JSON-RPC).
+
+    Returns the auth dict on success, or a JSONResponse (402) on rejection.
+    """
+    if not settings.BASE_GATEWAY_ADDRESS:
+        raise HTTPException(status_code=503, detail="Base payment not configured on this gateway")
+
+    base_req = base_pay.build_payment_requirements(
+        amount_usdc=tool.price_usdc,
+        pay_to=settings.BASE_GATEWAY_ADDRESS,
+        resource_url=resource_url,
+        network=settings.BASE_NETWORK,
+    )
+    logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
+    result = await base_pay.settle_base_payment(
+        payment_signature, base_req, rpc_url=settings.BASE_RPC_URL
+    )
+    if not result["success"]:
+        status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"
+        logger.info(f"[PAYMENT] tool={tool_name} network=base status={status} reason={result['reason']}")
+        return JSONResponse(
+            status_code=402,
+            content={"error": "Base payment settlement failed", "reason": result["reason"]},
+        )
+    logger.info(f"[PAYMENT] tool={tool_name} network=base agent={result['payer'][:8]}... status=OK tx={result['tx_hash'][:16]}")
+    return {
+        "authorized": True,
+        "tx_hash":    result["tx_hash"],
+        "payer":      result["payer"],
+        "network":    result["network"],
+    }
+
+
+async def _execute_and_log(
+    tool, resolved: str, tool_name: str, body: ToolCallRequest,
+    request: Request, auth: dict, agent_address: Optional[str],
+    payment_id: str, is_base: bool,
+) -> Union[dict, JSONResponse]:
+    """Payment verified → run the tool, write the payment lifecycle, respond.
+
+    For Stellar the payment_id is the UUID from the X-Payment header (matches
+    the pre-402 row). For Base it's the tx_hash; the pre-402 UUID row is
+    swept to 'abandoned' (x402-v2 doesn't echo the UUID back).
+    """
     receipt_network = auth.get("network") or f"stellar-{settings.STELLAR_NETWORK}"
     client_ip       = request.client.host if request.client else None
     user_agent_str  = request.headers.get("user-agent")
@@ -413,17 +407,11 @@ async def call_tool(
     except Exception:
         gateway_fee = None
 
-    # Use the resolved name for registry book-keeping so legacy aliases
-    # (e.g. dex_liquidity) credit the canonical tool.
+    # Resolved name so legacy aliases credit the canonical tool.
     registry.increment_call_count(resolved)
 
-    # For Base success, the original UUID-keyed pending row is stranded
-    # (x402-v2 doesn't carry the payment_id back). INSERT a second row
-    # keyed on tx_hash with state='verified' so the eventual terminal
-    # PATCH (payment_done / refund_pending) has somewhere to land. The
-    # pre-402 UUID row eventually becomes 'abandoned' via the sweep.
-    # Fire-and-forget for the same latency reasons as the Stellar
-    # 'verified' PATCH above.
+    # Base success strands the UUID-keyed pending row; INSERT a tx_hash-keyed
+    # 'verified' row so the terminal PATCH has somewhere to land.
     if is_base and sb_enabled():
         asyncio.create_task(insert_pending_payment_log(
             payment_id=payment_id,
@@ -440,56 +428,10 @@ async def call_tool(
         ))
 
     try:
-        if not tool.endpoint:
-            # No proxy endpoint configured — call real APIs directly
-            tool_result = await real_tool_response(resolved, body.parameters)
-        else:
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        tool.endpoint,
-                        json={"parameters": body.parameters},
-                        headers={"Content-Type": "application/json"},
-                    )
-                    if response.status_code != 200:
-                        raise httpx.ConnectError("Tool server returned non-200")
-                    tool_result = response.json()
-            except httpx.ConnectError:
-                logger.warning(f"Tool proxy unavailable for {tool_name}, calling real APIs")
-                tool_result = await real_tool_response(resolved, body.parameters)
+        tool_result = await _run_tool(tool, resolved, tool_name, body.parameters)
     except Exception as e:
-        # ── PR #14 + #12: tool failure post-verify → refund_pending ─────────
-        # The payment was accepted on-chain but the tool execution failed.
-        # PATCH the row to 'refund_pending' (awaited — terminal as far as
-        # the request handler is concerned; the background refund worker
-        # in main.py:lifespan picks it up from here when REFUND_ENABLED).
-        # error_reason captures what went wrong for analytics + post-mortem
-        # AND for the worker to log if the row eventually fails refund too.
-        logger.error(f"Tool execution error: {e}")
-        await update_payment_log_state(
-            payment_id,
-            "refund_pending",
-            error_reason=f"tool_exec_failed: {str(e)[:200]}",
-        )
-        # PR #12: structured 502 body. Existing clients that just check
-        # response.status_code keep seeing an error. New SDK versions
-        # (v0.1.4+) read the body to surface payment_status to user code:
-        #   payment_status="refund_pending"  → refund queued, will land in ~60s
-        #   payment_status="refund_disabled" → refund flag off; manual
-        #                                     reconciliation needed
-        return JSONResponse(
-            status_code=502,
-            content={
-                "error":               "Tool execution failed",
-                "tool":                tool_name,
-                "payment_id":          payment_id,
-                "payment_status":      "refund_pending" if settings.REFUND_ENABLED else "refund_disabled",
-                "refund_eta_seconds":  60 if settings.REFUND_ENABLED else None,
-                "error_reason":        f"tool_exec_failed: {str(e)[:200]}",
-            },
-        )
+        return await _refund_and_502(tool_name, payment_id, e)
 
-    # ── Step 4: Log transaction ───────────────────────────────────────────────
     append_transaction({
         "tool": tool_name,
         "amount_usdc": tool.price_usdc,
@@ -500,15 +442,8 @@ async def call_tool(
     agent_log = (agent_address or "unknown")[:8]
     logger.info(f"[CALL] tool={tool_name} agent={agent_log}... status=completed tx={tx_hash}")
 
-    # ── PR #14: terminal 'payment_done' PATCH ─────────────────────────────────
-    # Awaited (per Q3 decision: terminal states are awaited so analytics
-    # are guaranteed consistent at response time). Populates the
-    # state-machine columns introduced by #13a — network / client_ip /
-    # user_agent / gateway_fee_usdc / developer_address — which the
-    # pre-402 INSERT couldn't know yet at challenge-issue time.
-    #
-    # log_payment (the legacy single-INSERT helper) is gone; this PATCH
-    # is the single Supabase write on the happy path.
+    # Terminal 'payment_done' PATCH — awaited so analytics are consistent at
+    # response time. The single Supabase write on the happy path.
     await update_payment_log_state(
         payment_id,
         "payment_done",
@@ -530,6 +465,71 @@ async def call_tool(
             "network": receipt_network,
         },
     }
+
+
+@router.post("/tools/{tool_name}/call")
+@limiter.limit("100/minute")
+async def call_tool(
+    tool_name: str,
+    body: ToolCallRequest,
+    request: Request,
+    x_payment: Optional[str] = Header(None),
+    x_agent_address: Optional[str] = Header(None),
+    payment_signature: Optional[str] = Header(None),   # x402 v2 Base/EVM
+):
+    """
+    Main endpoint — call a paid MCP tool.
+
+    Supports two payment paths:
+      Stellar — X-Payment: tx_hash=<hash>,from=<addr>,id=<payment_id>
+      Base    — PAYMENT-SIGNATURE: <base64(PaymentPayload JSON)>
+
+    Flow:
+      1. Neither header → _issue_402 (advertise both options)
+      2. X-Payment → _settle_stellar, then _execute_and_log
+      3. PAYMENT-SIGNATURE → _settle_base_path, then _execute_and_log
+    """
+    resolved = _TOOL_ALIASES.get(tool_name, tool_name)
+    tool = registry.get_tool(resolved)
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    if not tool.active:
+        raise HTTPException(status_code=503, detail=f"Tool '{tool_name}' is currently unavailable")
+
+    agent_address = x_agent_address or body.agent_address
+    resource_url  = f"{GATEWAY_URL}/tools/{tool_name}/call"
+
+    # x402-v2 clients (incl. SDK <= 0.2.3) send the SAME base64 v2 payload in
+    # both X-PAYMENT and PAYMENT-SIGNATURE. If X-Payment isn't a parseable
+    # Stellar proof and a PAYMENT-SIGNATURE is present, route to Base instead
+    # of rejecting with 'Invalid X-Payment header format'.
+    if x_payment and payment_signature and not parse_payment_header(x_payment):
+        x_payment = None
+
+    if not x_payment and not payment_signature:
+        return await _issue_402(
+            tool, resolved, tool_name, body, request, agent_address, resource_url,
+        )
+
+    if x_payment:
+        auth = await _settle_stellar(tool_name, x_payment, agent_address)
+        if isinstance(auth, JSONResponse):
+            return auth
+        parsed = parse_payment_header(x_payment) or {}
+        payment_id = parsed.get("id") or auth.get("tx_hash", "")
+        is_base = False
+    else:
+        auth = await _settle_base_path(tool, tool_name, payment_signature, resource_url)
+        if isinstance(auth, JSONResponse):
+            return auth
+        agent_address = agent_address or auth["payer"]  # EVM payer for logging
+        payment_id = auth.get("tx_hash", "")
+        is_base = True
+
+    return await _execute_and_log(
+        tool, resolved, tool_name, body, request,
+        auth, agent_address, payment_id, is_base,
+    )
 
 
 @router.post("/tools/register")
