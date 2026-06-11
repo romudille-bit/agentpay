@@ -1,0 +1,28 @@
+{
+  "resources": [
+    {
+      "serviceName": "arb-funding-oracle",
+      "resource": {"url": "https://arb.example/funding"},
+      "accepts": [{"amount": 2000, "network": "eip155:42161", "payTo": "0xAAa1111111111111111111111111111111111111", "outputSchema": {"type": "object"}}],
+      "quality": {"l30DaysTotalCalls": 420, "l30DaysUniquePayers": 55, "lastCalledAt": "2026-06-06T00:00:00Z"}
+    },
+    {
+      "serviceName": "arb-sepolia-prices",
+      "resource": {"url": "https://arb.example/prices"},
+      "accepts": [{"amount": 1000, "network": "eip155:421614", "payTo": "0xBbb2222222222222222222222222222222222222", "outputSchema": {"type": "object"}}],
+      "quality": {"l30DaysTotalCalls": 12, "l30DaysUniquePayers": 3, "lastCalledAt": "2026-06-05T00:00:00Z"}
+    },
+    {
+      "serviceName": "base-only-tool",
+      "resource": {"url": "https://base.example/x"},
+      "accepts": [{"amount": 1000, "network": "eip155:8453", "payTo": "0xCcc3333333333333333333333333333333333333", "outputSchema": {"type": "object"}}],
+      "quality": {"l30DaysTotalCalls": 99999, "l30DaysUniquePayers": 9999, "lastCalledAt": "2026-06-06T00:00:00Z"}
+    },
+    {
+      "serviceName": "arb-stub-no-schema",
+      "resource": {"url": "https://arb.example/stub"},
+      "accepts": [{"amount": 500, "network": "eip155:42161", "payTo": "0xDdd4444444444444444444444444444444444444"}],
+      "quality": {"l30DaysTotalCalls": 0, "l30DaysUniquePayers": 0}
+    }
+  ]
+}

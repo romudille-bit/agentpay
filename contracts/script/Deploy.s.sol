@@ -31,7 +31,12 @@ contract Deploy is Script {
         address owner = vm.envOr("RADAR_OWNER", feeRecipient);
         if (owner == address(0)) owner = msg.sender;
 
+        // Guard before the downcast so a typo (e.g. 65537) can't silently wrap to a
+        // small valid fee; the contract also caps at 1500, this just fails earlier+clearer.
+        require(feeBps <= 1500, "RADAR_FEE_BPS must be <= 1500 (15%)");
+
         vm.startBroadcast();
+        // forge-lint: disable-next-line(unsafe-typecast)  — bounded by the require above
         radar = new RadarSplit(usdc, owner, feeRecipient, uint16(feeBps));
         vm.stopBroadcast();
 

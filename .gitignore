@@ -68,6 +68,8 @@ DEMO.md
 DISTRIBUTION_PLAN.md
 LAUNCH_KIT.md
 PHASE2_ROUTING.md
+SUBMISSION.md
+SUBMISSION_*.md
 
 # Build / packaging artifacts
 node_modules/
@@ -82,6 +84,8 @@ skills-lock.json
 tools/agent_loop_demo.py
 tools/demo_quickstart.py
 tools/demo_circle.py
+tools/radar_demo.py
+tools/demo.sh
 
 # Internal strategy/ops docs (kept off GitHub, like STRATEGY.md)
 COMPETITIVE_ACTION_AGENTCASH.md

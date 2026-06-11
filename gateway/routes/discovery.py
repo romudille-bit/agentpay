@@ -105,10 +105,16 @@ async def discovery_arbitrum(
         return cached
 
     try:
-        data = await _fetch_bazaar_async(need)
+        if settings.RADAR_DEMO_FIXTURE:
+            # Demo mode — serve a captured Bazaar payload (deterministic, offline).
+            import json as _json
+            import pathlib as _pathlib
+            data = _json.loads(_pathlib.Path(settings.RADAR_DEMO_FIXTURE).read_text())
+        else:
+            data = await _fetch_bazaar_async(need)
     except Exception as e:
         # Log details server-side; return a generic message (don't leak upstream URL/error).
-        logger.warning("Radar: Bazaar discovery fetch failed: %s", e)
+        logger.warning("Radar: discovery fetch failed: %s", e)
         raise HTTPException(status_code=502, detail="discovery upstream unavailable")
 
     if not isinstance(data, dict):
@@ -123,6 +129,114 @@ async def discovery_arbitrum(
 
     _cache_put(key, result)
     return result
+
+
+# ── Public leaderboard (the human "visibility" surface) ─────────────────────────
+# Self-contained HTML page that reads GET /discovery/arbitrum client-side and
+# renders a curated, usage-ranked board of x402 tools on the Arbitrum stack.
+# No build step, no external assets — served straight from the gateway.
+_RADAR_LEADERBOARD_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arbitrum x402 Radar — AgentPay</title>
+<style>
+  :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;--ac:#c3f53c;--ac2:#5ad1ff}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 18px 60px}
+  h1{font-size:24px;margin:0 0 4px}.sub{color:var(--mut);margin:0 0 22px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  input,select,button{background:var(--card);color:var(--fg);border:1px solid var(--line);
+    border-radius:9px;padding:9px 11px;font-size:14px}
+  input#need{flex:1;min-width:200px}
+  button{background:var(--ac);color:#0b0e11;border:none;font-weight:700;cursor:pointer}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px}
+  .chip{font-size:12px;color:var(--mut);border:1px solid var(--line);border-radius:20px;
+    padding:4px 10px;cursor:pointer;background:transparent}
+  .chip:hover{color:var(--fg);border-color:var(--ac)}
+  .rec{background:linear-gradient(180deg,#16201a,#13181d);border:1px solid #2c4a1f;
+    border-radius:12px;padding:14px 16px;margin-bottom:16px}
+  .rec .tag{color:var(--ac);font-size:12px;font-weight:700;letter-spacing:.04em}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  td.r,th.r{text-align:right}
+  .net{font-size:11px;color:var(--ac2);border:1px solid #1f3a45;border-radius:6px;padding:2px 6px;white-space:nowrap}
+  .name{font-weight:600}.url{color:var(--mut);font-size:12px;word-break:break-all}
+  .msg{color:var(--mut);padding:18px 2px}
+  a{color:var(--ac2)}.foot{color:var(--mut);font-size:12px;margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
+</style></head><body><div class="wrap">
+  <h1>Arbitrum x402 Radar</h1>
+  <p class="sub">The curated discovery layer for x402 tools on the Arbitrum stack —
+    Arbitrum One, Sepolia, and Robinhood Chain. Usage-ranked, stub-filtered.
+    Listed projects get paid at <b>0% gateway fee</b>.</p>
+  <div class="controls">
+    <input id="need" placeholder="What do you need? e.g. funding rates" value="funding rates">
+    <select id="chain">
+      <option value="arbitrum-stack">Arbitrum stack (all)</option>
+      <option value="arbitrum">Arbitrum One</option>
+      <option value="arbitrum-sepolia">Arbitrum Sepolia</option>
+      <option value="robinhood">Robinhood Chain</option>
+    </select>
+    <input id="budget" type="number" step="0.001" min="0" value="0.01" style="width:96px" title="max USDC">
+    <button id="go">Search</button>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div id="rec"></div>
+  <div id="out" class="msg">Loading…</div>
+  <div class="foot">Powered by AgentPay buyer-side routing ·
+    <a href="/discovery/arbitrum?need=funding%20rates&chain=arbitrum-stack">JSON API</a> ·
+    advise-only, no payment happens here.</div>
+</div>
+<script>
+const EX = ["funding rates","token security","token price","defi tvl","crypto news"];
+const chips = document.getElementById("chips");
+EX.forEach(q => { const b=document.createElement("span"); b.className="chip"; b.textContent=q;
+  b.onclick=()=>{document.getElementById("need").value=q; run();}; chips.appendChild(b); });
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function row(r,i){return `<tr><td class="r">${i+1}</td>
+  <td><div class="name">${esc(r.name)}</div><div class="url">${esc(r.url)}</div></td>
+  <td><span class="net">${esc(r.network)}</span></td>
+  <td class="r">${r.price_usd==null?"?":"$"+esc(r.price_usd)}</td>
+  <td class="r">${r.payers30d}/${r.calls30d}</td>
+  <td class="r">${r.quality}</td></tr>`;}
+async function run(){
+  const need=document.getElementById("need").value||"";
+  const chain=document.getElementById("chain").value;
+  const budget=document.getElementById("budget").value||"0.01";
+  const out=document.getElementById("out"); const recd=document.getElementById("rec");
+  out.className="msg"; out.textContent="Loading…"; recd.innerHTML="";
+  try{
+    const res=await fetch(`/discovery/arbitrum?need=${encodeURIComponent(need)}&chain=${chain}&budget=${budget}`);
+    if(!res.ok){out.textContent="Discovery unavailable ("+res.status+"). Try again shortly.";return;}
+    const d=await res.json(); const rows=d.results||[];
+    if(d.recommendation){const r=d.recommendation;
+      recd.innerHTML=`<div class="rec"><div class="tag">★ RECOMMENDED</div>
+        <div style="margin-top:4px"><span class="name">${esc(r.name)}</span> —
+        ${r.price_usd==null?"?":"$"+esc(r.price_usd)} on <span class="net">${esc(r.network)}</span></div>
+        <div class="url">${esc(r.url)} · ${r.payers30d} payers / ${r.calls30d} calls</div></div>`;}
+    if(!rows.length){out.className="msg";
+      out.textContent = (chain.startsWith("robinhood")
+        ? "Bazaar doesn't index Robinhood Chain — its tools appear via the AgentPay crawler."
+        : "No real, affordable tools found for this query on "+chain+".");return;}
+    out.className=""; out.innerHTML=`<table><thead><tr>
+      <th class="r">#</th><th>Tool</th><th>Network</th><th class="r">Price</th>
+      <th class="r">Payers/Calls</th><th class="r">Quality</th></tr></thead>
+      <tbody>${rows.map(row).join("")}</tbody></table>`;
+  }catch(e){out.className="msg";out.textContent="Could not reach discovery.";}
+}
+document.getElementById("go").onclick=run;
+document.getElementById("need").addEventListener("keydown",e=>{if(e.key==="Enter")run();});
+run();
+</script></body></html>"""
+
+
+@router.get("/radar", response_class=Response)
+async def radar_leaderboard():
+    """Public leaderboard for the Arbitrum x402 Radar (reads /discovery/arbitrum)."""
+    if not settings.RADAR_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=_RADAR_LEADERBOARD_HTML, media_type="text/html")
 
 
 @router.get("/.well-known/agentpay.json")

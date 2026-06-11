@@ -103,6 +103,12 @@ class Settings(BaseSettings):
     # the REFUND_ENABLED dark-launch pattern. Set RADAR_ENABLED=false to 404 it.
     RADAR_ENABLED: bool = True
 
+    # Demo mode: when set to a local JSON path, /discovery/arbitrum serves that
+    # captured Bazaar payload instead of calling live Bazaar. Used for deterministic
+    # demos/recordings (live Bazaar has few/no Arbitrum-stack tools yet). Empty =
+    # normal live behavior. Example: RADAR_DEMO_FIXTURE=tests/fixtures/bazaar.json
+    RADAR_DEMO_FIXTURE: str = ""
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
