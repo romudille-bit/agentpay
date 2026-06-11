@@ -609,3 +609,61 @@ class TestLifecycleStateMachine:
         body = r.json()
         assert body["payment_status"] == "refund_pending"
         assert body["refund_eta_seconds"] == 60
+
+
+# ── X-PAYMENT / PAYMENT-SIGNATURE header collision (Phase 1.1 follow-up) ─────
+#
+# x402-v2 clients (incl. SDK <= 0.2.3) send the same base64 v2 payload in BOTH
+# X-PAYMENT and PAYMENT-SIGNATURE. X-Payment used to win routing, fail the
+# legacy Stellar parse, and reject the call before the valid Base signature
+# was considered — no Mode A named-tool call could ever succeed.
+
+class TestHeaderCollision:
+
+    def _both_headers(self):
+        import base64, json
+        v2_payload = base64.b64encode(json.dumps(
+            {"x402Version": 2, "payload": {"signature": "0xfake"}}
+        ).encode()).decode()
+        return v2_payload
+
+    def test_v2_payload_in_both_headers_routes_to_base(
+        self, client, monkeypatch, patch_route_tool_response
+    ):
+        import gateway.routes.tools as rt
+
+        async def fake_settle(sig_header, requirements, rpc_url=""):
+            return {
+                "success": True,
+                "tx_hash": "0x" + "a" * 64,
+                "payer":   "0x" + "b" * 40,
+                "network": "eip155:8453",
+                "reason":  "ok",
+            }
+        monkeypatch.setattr(rt.base_pay, "settle_base_payment", fake_settle)
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        v2 = self._both_headers()
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"X-PAYMENT": v2, "PAYMENT-SIGNATURE": v2},
+        )
+        assert r.status_code == 200
+        assert r.json()["payment"]["network"] == "eip155:8453"
+
+    def test_valid_stellar_header_still_wins(
+        self, client, patch_route_verify, patch_route_tool_response
+    ):
+        # A real legacy Stellar proof must keep taking the Stellar path even
+        # if a PAYMENT-SIGNATURE is also present.
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}, "agent_address": "GAGENT"},
+            headers={
+                "X-Payment": "tx_hash=abc,from=GAGENT,id=uuid-1",
+                "PAYMENT-SIGNATURE": self._both_headers(),
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["payment"]["tx_hash"] == "abc"

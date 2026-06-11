@@ -157,6 +157,15 @@ async def call_tool(
     agent_address = x_agent_address or body.agent_address
     resource_url  = f"{GATEWAY_URL}/tools/{tool_name}/call"
 
+    # x402-v2 clients (incl. SDK <= 0.2.3) send the SAME base64 v2 payload in
+    # both X-PAYMENT (the x402 standard header) and PAYMENT-SIGNATURE. The
+    # legacy Stellar parser can't read it, so without this guard the request
+    # died with 'Invalid X-Payment header format' before the valid Base
+    # signature was ever considered. If X-Payment isn't a parseable Stellar
+    # proof and a PAYMENT-SIGNATURE is present, route to the Base path.
+    if x_payment and payment_signature and not parse_payment_header(x_payment):
+        x_payment = None
+
     # ── Step 1: No payment → 402 with both Stellar + Base options ────────────
     # Free tools (price_usdc == 0) issue a 402 too — they flow through the same
     # lifecycle as $0 payments so every call gets a payment_logs row and a

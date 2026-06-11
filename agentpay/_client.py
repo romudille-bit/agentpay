@@ -50,13 +50,17 @@ class AgentPayClient:
             f"  Settling on Base (EIP-3009, gasless) "
             f"{base_opt.get('amount_usdc')} USDC → {str(accept['payTo'])[:10]}..."
         )
-        x_payment = self.wallet.build_base_payment_signature(accept, url)
+        sig = self.wallet.build_base_payment_signature(accept, url)
+        # PAYMENT-SIGNATURE only. Sending the same payload in X-PAYMENT (the
+        # x402 standard header) collides with the gateway's legacy Stellar
+        # X-Payment header and got every Mode A named-tool call rejected with
+        # 'Invalid X-Payment header format'. This path only talks to AgentPay's
+        # own gateway; external x402 URLs go through _call_x402_url instead.
         return client.post(
             url,
             json=payload,
             headers={
-                "X-PAYMENT":         x_payment,
-                "PAYMENT-SIGNATURE": x_payment,
+                "PAYMENT-SIGNATURE": sig,
                 "X-Agent-Address":   self.wallet.base_address,
             },
         )
