@@ -721,7 +721,7 @@ class TestPreTradeCheckBazaar:
         assert r.status_code == 402
         header = r.headers.get("PAYMENT-REQUIRED")
         assert header, "PAYMENT-REQUIRED header missing"
-        payload = json.loads(base64.b64decode(header + "=="))
+        payload = json.loads(base64.b64decode(header + "=" * (-len(header) % 4)))
         assert payload["resource"]["serviceName"] == "AgentPay"
         assert "pre-trade-check" in payload["resource"]["tags"]
         assert "bazaar" in payload.get("extensions", {})
@@ -735,5 +735,6 @@ class TestPreTradeCheckBazaar:
         r = client.post("/tools/token_price/call",
                         json={"parameters": {"symbol": "ETH"}})
         assert r.status_code == 402
-        payload = json.loads(base64.b64decode(r.headers["PAYMENT-REQUIRED"] + "=="))
+        h = r.headers["PAYMENT-REQUIRED"]
+        payload = json.loads(base64.b64decode(h + "=" * (-len(h) % 4)))
         assert "extensions" not in payload

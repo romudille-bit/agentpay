@@ -106,7 +106,7 @@ def _build_cdp_jwt(key_id: str, key_secret_raw: str, uri: str) -> str:
         algorithm = "ES256"
     else:
         # Ed25519 seed — base64-encoded 32-byte raw key from CDP portal
-        seed = _base64.b64decode(secret + "==")   # pad to avoid truncation errors
+        seed = _base64.b64decode(secret + "=" * (-len(secret) % 4))  # pad only as needed (3.12+ rejects excess)
         private_key = Ed25519PrivateKey.from_private_bytes(seed[:32])
         algorithm = "EdDSA"
 
@@ -541,7 +541,7 @@ async def settle_base_payment(
     if ext_resp:
         import base64 as _b64, json as _json
         try:
-            decoded = _json.loads(_b64.b64decode(ext_resp + "=="))
+            decoded = _json.loads(_b64.b64decode(ext_resp + "=" * (-len(ext_resp) % 4)))
             logger.info(f"[BASE] Bazaar extension response: {decoded}")
         except Exception:
             logger.info(f"[BASE] EXTENSION-RESPONSES header: {ext_resp[:200]}")
