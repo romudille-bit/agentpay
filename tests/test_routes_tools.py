@@ -632,7 +632,7 @@ class TestHeaderCollision:
     ):
         import gateway.routes.tools as rt
 
-        async def fake_settle(sig_header, requirements, rpc_url=""):
+        async def fake_settle(sig_header, requirements, rpc_url="", **kwargs):
             return {
                 "success": True,
                 "tx_hash": "0x" + "a" * 64,
@@ -703,3 +703,37 @@ class TestWalletRateLimit:
             headers={"X-Agent-Address": "GWALLETBBBBBBBBBBBBBBBBBBBBBBBB"},
         )
         assert r.status_code == 402
+
+
+# ── Bazaar metadata on the live 402 (Phase A3) ───────────────────────────────
+
+class TestPreTradeCheckBazaar:
+    """Bazaar's validation crawl reads extensions.bazaar + serviceName/tags
+    from the LIVE 402 — without them the listing never leaves 'processing'."""
+
+    def test_402_carries_bazaar_extension(self, client, monkeypatch):
+        import base64, json
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post("/tools/pre_trade_check/call",
+                        json={"parameters": {"symbol": "ETH"}})
+        assert r.status_code == 402
+        header = r.headers.get("PAYMENT-REQUIRED")
+        assert header, "PAYMENT-REQUIRED header missing"
+        payload = json.loads(base64.b64decode(header + "=="))
+        assert payload["resource"]["serviceName"] == "AgentPay"
+        assert "pre-trade-check" in payload["resource"]["tags"]
+        assert "bazaar" in payload.get("extensions", {})
+        assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["verdict"]
+
+    def test_free_tool_402_has_no_bazaar_block(self, client, monkeypatch):
+        import base64, json
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post("/tools/token_price/call",
+                        json={"parameters": {"symbol": "ETH"}})
+        assert r.status_code == 402
+        payload = json.loads(base64.b64decode(r.headers["PAYMENT-REQUIRED"] + "=="))
+        assert "extensions" not in payload

@@ -293,7 +293,7 @@ async def well_known_agent():
         # Step 2: GET  /tools → discover all tools (17 free + session_create)
         # Step 3: POST /tools/{name}/call → call any tool; free tools settle
         #         $0 (no funding needed) but still produce a receipt.
-        # Paid path: POST /v1/session/create ($0.001) is the Bazaar-indexed
+        # Paid path: POST /v1/session/create ($0.01) is the Bazaar-indexed
         #         paid anchor; agents that discover AgentPay on Bazaar land there.
         "onboarding": {
             "register":         f"{GATEWAY_URL}/v1/agent/register",
@@ -476,7 +476,8 @@ AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well
 2. GET  /tools → list tools
 3. POST /tools/{{name}}/call → {{ result, receipt }}  (free tools settle $0)
 
-Paid anchor: POST /v1/session/create ($0.001, Bazaar-indexed) for agents arriving via Bazaar discovery.
+Paid anchors: POST /v1/session/create ($0.01, Bazaar-indexed) and pre_trade_check ($0.01 — one-call trade verdict: slippage at size, funding carry, OI crowding, security).
+Price any multi-tool plan BEFORE spending: POST /v1/plan/estimate (free, no wallet).
 
 ## Gateway
 

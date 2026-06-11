@@ -16,7 +16,7 @@ The developer sees all of it: spending patterns per agent, anomaly flags when so
 
 The result is an agent that doesn't just have a budget. It knows how to use one.
 
-**Start free:** 18 tools, no USDC needed, no wallet setup required.  
+**Start free:** 19 tools (17 free), no USDC needed, no wallet setup required.  
 **Live gateway:** `https://agentpay.tools`
 
 ---
@@ -54,7 +54,7 @@ Every call is session-tracked, and the cap is enforced **before** any payment is
 
 ---
 
-## 18 Tools (17 Free)
+## 19 Tools (17 Free + 2 Paid)
 
 Every call is session-tracked — you get a receipt showing every tool called, every cost, and every timestamp.
 
@@ -78,6 +78,7 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `yield_scanner` | `token`, `chain` (optional), `min_tvl` | top 10 pools by APY with protocol, tvl_usd, risk_level |
 | `dune_query` | `query_id`, `limit`, `fast_only` | rows[], columns[], row_count from Dune Analytics |
 | `session_create` | `agent_address`, `max_spend`, `label` | session_id, budget config, gateway_url, receipt — **$0.01** |
+| `pre_trade_check` | `symbol`, `size_usd`, `side`, `token_address?` | one-call trade verdict (ok/caution/avoid): slippage at YOUR size, side-aware funding carry, OI crowding, optional security — **$0.01** |
 
 ---
 
@@ -255,7 +256,7 @@ agent (Python SDK)
     ▼
 gateway (FastAPI on Railway)
     │
-    ├── registry/registry.py   — 18-tool catalog (17 free, session_create $0.001)
+    ├── registry/registry.py   — 19-tool catalog (17 free; session_create + pre_trade_check, $0.01 each)
     ├── gateway/stellar.py     — Stellar payment verification via Horizon
     ├── gateway/base.py        — Base payment verification via JSON-RPC
     └── gateway/services/tools_runtime.py — real API dispatchers

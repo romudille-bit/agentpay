@@ -74,6 +74,90 @@ _TOOL_ALIASES = {
 }
 
 
+# ── Bazaar discovery metadata, per paid tool ──────────────────────────────────
+# Bazaar's validation crawl reads extensions.bazaar + resource.serviceName/tags
+# from the LIVE 402, and indexing fires on a Mode A settle that carries the
+# extension. Tools listed here get both injected (mirrors routes/session.py).
+_TOOL_BAZAAR: dict[str, dict] = {
+    "pre_trade_check": {
+        "resource": {
+            "serviceName": "AgentPay",
+            "description": (
+                "One-call pre-trade sanity check for AI agents: live orderbook "
+                "slippage at YOUR size, side-aware funding carry, open-interest "
+                "crowding, and optional contract security — composed into a single "
+                "ok/caution/avoid verdict with per-factor reasons and raw data "
+                "embedded. Replaces four API integrations plus the judgment layer."
+            ),
+            # ≤5 tags, ≤32 chars each — own the trade-decision category.
+            "tags": ["pre-trade-check", "trade-risk", "slippage", "funding-rates", "agent-trading"],
+        },
+        "extension": {
+            "description": (
+                "Pre-trade sanity check: 'I want to long $X of SYMBOL — is now "
+                "sane?' Live slippage at your size + side-aware funding carry + "
+                "OI crowding + optional security scan → one ok/caution/avoid "
+                "verdict with per-factor breakdown and raw components embedded."
+            ),
+            "info": {
+                "input": {
+                    "type":     "http",
+                    "method":   "POST",
+                    "bodyType": "json",
+                    "body": {
+                        "parameters": {
+                            "symbol":   "ETH",
+                            "size_usd": 50000,
+                            "side":     "long",
+                        },
+                    },
+                },
+                "output": {
+                    "type": "json",
+                    "example": {
+                        "symbol": "ETH", "side": "long", "size_usd": 50000,
+                        "verdict": "ok",
+                        "factors": {
+                            "liquidity": {"level": "ok", "slippage_pct": 0.001,
+                                          "reason": "fills within 0.001% of best price"},
+                            "carry":     {"level": "ok", "median_funding_pct": 0.01,
+                                          "reason": "carry unremarkable"},
+                            "crowding":  {"level": "ok", "long_short_ratio": 1.2,
+                                          "reason": "positioning unremarkable"},
+                            "security":  {"level": "skipped",
+                                          "reason": "no token_address provided"},
+                        },
+                    },
+                },
+            },
+            "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "object",
+                        "properties": {
+                            "symbol":        {"type": "string"},
+                            "size_usd":      {"type": "number"},
+                            "side":          {"type": "string", "enum": ["long", "short"]},
+                            "token_address": {"type": "string"},
+                        },
+                        "required": ["symbol"],
+                    },
+                    "output": {
+                        "type": "object",
+                        "properties": {
+                            "verdict": {"type": "string", "enum": ["ok", "caution", "avoid"]},
+                            "factors": {"type": "object"},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/tools")
@@ -161,11 +245,14 @@ def _base_402_option(tool, resource_url: str):
             "input":  tool.parameters or {},
             "output": tool.response_example,
         }
+    bz = _TOOL_BAZAAR.get(tool.name, {})
     payment_required_header = base_pay.build_payment_required_header(
         requirements=base_req,
         resource_url=resource_url,
         tool_description=tool.description,
         output_schema=output_schema,
+        bazaar_resource=bz.get("resource"),
+        bazaar_extension=bz.get("extension"),
     )
     return base_option, payment_required_header
 
@@ -365,8 +452,14 @@ async def _settle_base_path(
         network=settings.BASE_NETWORK,
     )
     logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
+    bz = _TOOL_BAZAAR.get(tool.name, {})
     result = await base_pay.settle_base_payment(
-        payment_signature, base_req, rpc_url=settings.BASE_RPC_URL
+        payment_signature, base_req, rpc_url=settings.BASE_RPC_URL,
+        bazaar_resource=(
+            {"url": resource_url, "mimeType": "application/json", **bz["resource"]}
+            if bz.get("resource") else None
+        ),
+        bazaar_extension=bz.get("extension"),
     )
     if not result["success"]:
         status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"
