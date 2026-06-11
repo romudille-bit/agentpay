@@ -667,3 +667,39 @@ class TestHeaderCollision:
         )
         assert r.status_code == 200
         assert r.json()["payment"]["tx_hash"] == "abc"
+
+
+# ── Per-wallet rate limiting (Phase 1.3) ─────────────────────────────────────
+
+class TestWalletRateLimit:
+    """The /tools/{name}/call limit is keyed on the declared X-Agent-Address
+    (IP fallback), so one wallet can't dodge limits by rotating IPs and one
+    busy wallet doesn't starve others behind the same IP."""
+
+    def test_same_wallet_hits_limit(self, client):
+        wallet = "GRATELIMITWALLETAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        statuses = []
+        for _ in range(61):
+            r = client.post(
+                "/tools/token_price/call",
+                json={"parameters": {"symbol": "ETH"}},
+                headers={"X-Agent-Address": wallet},
+            )
+            statuses.append(r.status_code)
+        assert statuses[:60] == [402] * 60   # challenges issued normally
+        assert statuses[60] == 429           # 61st call from same wallet limited
+
+    def test_other_wallet_unaffected(self, client):
+        # Fill wallet A's bucket, then wallet B must still get a 402.
+        for _ in range(60):
+            client.post(
+                "/tools/token_price/call",
+                json={"parameters": {"symbol": "ETH"}},
+                headers={"X-Agent-Address": "GWALLETAAAAAAAAAAAAAAAAAAAAAAAA"},
+            )
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"X-Agent-Address": "GWALLETBBBBBBBBBBBBBBBBBBBBBBBB"},
+        )
+        assert r.status_code == 402

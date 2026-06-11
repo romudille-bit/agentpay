@@ -30,7 +30,7 @@ import registry
 from decimal import Decimal
 
 from gateway import base as base_pay
-from gateway._limiter import limiter
+from gateway._limiter import limiter, wallet_or_ip
 from gateway.config import GATEWAY_URL, settings
 from gateway.services.supabase import (
     insert_pending_payment_log,
@@ -468,7 +468,8 @@ async def _execute_and_log(
 
 
 @router.post("/tools/{tool_name}/call")
-@limiter.limit("100/minute")
+@limiter.limit("100/minute")                                        # per-IP
+@limiter.limit(settings.WALLET_RATE_LIMIT, key_func=wallet_or_ip)  # per-wallet
 async def call_tool(
     tool_name: str,
     body: ToolCallRequest,

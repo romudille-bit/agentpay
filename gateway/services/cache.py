@@ -22,6 +22,13 @@ CACHE_TTL: dict[str, int] = {
     "url_reader":         300,  # 5 minutes — page content rarely changes mid-session
     "web_search":         120,  # 2 minutes — search results can shift
     "market_snapshot":    60,   # 60 seconds — macro + crypto ticks frequently
+    "token_security":     3600, # 1 hour — contract scan results change rarely
+    "yield_scanner":      300,  # 5 minutes — pool APYs move slowly
+    "funding_rates":      60,   # funding updates hourly; 60s is conservative
+    "open_interest":      60,
+    "orderbook_depth":    15,   # shortest — depth is the most time-sensitive read
+    "crypto_news":        120,
+    "whale_activity":     60,
 }
 
 

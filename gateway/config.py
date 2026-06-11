@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # edge-traffic-based app sleeping is ever enabled on the service.
     KEEPALIVE_URL: str = ""
 
+    # Per-wallet rate limit on /tools/{name}/call, keyed on the declared
+    # X-Agent-Address (IP fallback). Runs alongside the per-IP limit.
+    WALLET_RATE_LIMIT: str = "60/minute"
+
     # OpenZeppelin x402 Facilitator (covers XLM gas fees — agents only need USDC)
     # Disabled by default since early 2026 — the OZ x402 channel returns 401
     # in production for all requests until credentials are wired up. With #18

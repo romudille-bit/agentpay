@@ -128,7 +128,9 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
         cached = cache_get(cache_key)
         if cached is not None:
             logger.debug(f"[CACHE] hit for {tool_name}")
-            return cached
+            # Copy so the stored entry is never mutated; the flag lets
+            # callers distinguish a cached read from a live one.
+            return {**cached, "cached": True}
     else:
         cache_key = None
 

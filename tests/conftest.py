@@ -35,6 +35,15 @@ def clear_x402_state():
     from gateway import x402
     x402._pending_challenges.clear()
     x402._completed_payments.clear()
+    # Rate-limit buckets are module-level too; without a reset, call_tool
+    # requests accumulated across the suite trip the per-wallet/per-IP
+    # limits in unrelated tests.
+    from gateway._limiter import limiter
+    limiter.reset()
+    # Response cache is module-level; a hit cached by one test must not
+    # change another test's expected upstream-call count.
+    from gateway.services import cache
+    cache._cache.clear()
     yield
     # Post-test cleanup is also automatic via the next test's autouse run,
     # but doing it here makes intent explicit and bounds memory if a test
