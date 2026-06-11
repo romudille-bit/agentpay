@@ -35,7 +35,7 @@ import { randomUUID } from 'crypto';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Ephemeral agent identity — free calls use it only for the `from=` field in

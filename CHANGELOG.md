@@ -4,6 +4,27 @@ All notable changes to **agentpay-x402** (the `agentpay` Python SDK).
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.5] — 2026-06-11
+
+### Added
+- **`Session.estimate_plan(steps, budget=None)`** — price a multi-tool plan
+  before spending anything, via the gateway's new free `POST /v1/plan/estimate`.
+  Returns per-step cost, total, fits-budget verdict (defaults to the session's
+  remaining budget), and a cheaper same-category alternative per paid step.
+
+### Changed
+- `AgentWallet.get_usdc_balance()` now raises `RuntimeError` when Horizon is
+  unreachable instead of returning `"0"` — an infra blip no longer silently
+  clamps `budget_policy()` spend caps to zero. `"0"` strictly means an
+  unfunded account or missing trustline.
+
+### Fixed
+- Underfunded errors also trigger the funding hint on Horizon's
+  `Resource Missing` (unfunded account); ImportError during Base settlement
+  now names the `[base]` extra to install.
+- `BASE_AGENT_KEY` env var takes precedence over client-side key minting in
+  `quickstart()`.
+
 ## [0.2.4] — 2026-06-11
 
 ### Added
