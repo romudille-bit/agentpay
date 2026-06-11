@@ -109,6 +109,8 @@ def quickstart(
             wallet = AgentWallet(secret_key=secret_key, network=net)
         s = Session(wallet, max_spend=max_spend, gateway_url=gw, prefer_chain=prefer_chain)
         s.session_token, s.free_tools, s.wallet_public_key = None, [], wallet.public_key
+        s.base_public_key = getattr(wallet, "base_address", None)
+        s.base_secret_key = None
         if not quiet:
             print(f"✓ AgentPay ready — your wallet {wallet.public_key[:10]}…, budget ${max_spend}.")
         return s
@@ -130,6 +132,19 @@ def quickstart(
     if not minted_secret:
         raise ValueError(f"register returned no wallet secret: {data}")
 
+    # Mint a Base/EVM key locally too (the default paid chain is Base, so a
+    # Stellar-only minted wallet dead-ends at the first paid call). Client-side
+    # so the secret never crosses the wire. Skipped when eth_account isn't
+    # installed (`pip install "agentpay-x402[base]"`) — Stellar still works.
+    minted_base_secret = None
+    if not base_key:
+        try:
+            from eth_account import Account as _Account
+            acct = _Account.create()
+            base_key = minted_base_secret = "0x" + acct.key.hex()
+        except ImportError:
+            pass
+
     try:
         wallet = AgentWallet(secret_key=minted_secret, network=net, base_key=base_key)
     except TypeError:
@@ -139,9 +154,15 @@ def quickstart(
     s.session_token     = data.get("session_token")
     s.free_tools        = data.get("free_tools", [])
     s.wallet_public_key = w.get("public_key")
+    s.base_public_key   = getattr(wallet, "base_address", None)
+    s.base_secret_key   = minted_base_secret    # None unless minted here — save it to reuse the wallet
     if not quiet:
         print(f"✓ AgentPay ready — minted wallet {s.wallet_public_key[:10] if s.wallet_public_key else ''}…, "
               f"{len(s.free_tools)} free tools, budget ${max_spend}.")
+        if s.base_public_key:
+            print(f"  Paid tools settle on Base: fund {s.base_public_key} with USDC to use them.")
+            if minted_base_secret:
+                print("  (Minted keys are ephemeral — save s.base_secret_key before funding.)")
         print("  Free tools need no funding. Fund this wallet (USDC) only to pay for tools.")
     return s
 

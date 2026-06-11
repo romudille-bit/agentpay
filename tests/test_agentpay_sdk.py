@@ -233,3 +233,118 @@ class TestPaymentFailedStillWorks:
                 client.call_tool("token_price", {"symbol": "ETH"})
 
         assert "op_underfunded" in str(exc_info.value)
+
+
+# ── Funding-wall hint on PaymentFailed (Phase 1.1) ───────────────────────────
+
+class TestFundingHint:
+    """Underfunded payment failures name the agent's own fundable
+    address(es) so the agent (or its human) knows exactly what to fund."""
+
+    def test_underfunded_names_stellar_address(self, fake_wallet):
+        fake_wallet.base_address = None
+        fake_wallet.pay.return_value = {
+            "success": False, "reason": "stellar:op_underfunded",
+        }
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(402, json=VALID_402)
+            )
+            with pytest.raises(PaymentFailed) as exc_info:
+                client.call_tool("token_price", {"symbol": "ETH"})
+        msg = str(exc_info.value)
+        assert fake_wallet.public_key in msg
+        assert "fund" in msg.lower()
+        assert "0x" not in msg  # no Base wallet → no Base hint
+
+    def test_underfunded_names_base_address_when_available(self, fake_wallet):
+        fake_wallet.base_address = "0x" + "b" * 40
+        fake_wallet.pay.return_value = {
+            "success": False, "reason": "stellar:op_underfunded",
+        }
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(402, json=VALID_402)
+            )
+            with pytest.raises(PaymentFailed) as exc_info:
+                client.call_tool("token_price", {"symbol": "ETH"})
+        msg = str(exc_info.value)
+        assert fake_wallet.base_address in msg
+
+    def test_non_funding_failure_keeps_plain_reason(self, fake_wallet):
+        fake_wallet.base_address = None
+        fake_wallet.pay.return_value = {
+            "success": False, "reason": "stellar:tx_bad_seq",
+        }
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(402, json=VALID_402)
+            )
+            with pytest.raises(PaymentFailed) as exc_info:
+                client.call_tool("token_price", {"symbol": "ETH"})
+        assert "fund" not in str(exc_info.value).lower()
+
+
+# ── quickstart() mints a Base/EVM key client-side (Phase 1.1) ────────────────
+
+class TestQuickstartEvmMint:
+
+    def test_quickstart_mints_base_key(self):
+        from stellar_sdk import Keypair
+        from agentpay.client import quickstart
+
+        kp = Keypair.random()
+        register_resp = {
+            "session_token": "tok-123",
+            "free_tools": ["token_price"],
+            "wallet": {
+                "network": "stellar",
+                "public_key": kp.public_key,
+                "secret_key": kp.secret,
+                "funded": False,
+            },
+        }
+        with respx.mock:
+            respx.post(f"{GATEWAY}/v1/agent/register").mock(
+                return_value=httpx.Response(200, json=register_resp)
+            )
+            s = quickstart(gateway_url=GATEWAY, quiet=True)
+
+        # eth_account is installed in the dev env, so a Base key is minted
+        # locally and the wallet can settle on the default paid chain.
+        assert s.base_public_key and s.base_public_key.startswith("0x")
+        assert len(s.base_public_key) == 42
+        assert s.base_secret_key and s.base_secret_key.startswith("0x")
+        assert s.wallet.base_address == s.base_public_key
+        assert s.wallet_public_key == kp.public_key
+
+    def test_quickstart_byo_base_key_not_overwritten(self):
+        from stellar_sdk import Keypair
+        from eth_account import Account
+        from agentpay.client import quickstart
+
+        kp = Keypair.random()
+        own = Account.create()
+        register_resp = {
+            "session_token": "tok-123",
+            "free_tools": [],
+            "wallet": {
+                "network": "stellar",
+                "public_key": kp.public_key,
+                "secret_key": kp.secret,
+                "funded": False,
+            },
+        }
+        with respx.mock:
+            respx.post(f"{GATEWAY}/v1/agent/register").mock(
+                return_value=httpx.Response(200, json=register_resp)
+            )
+            s = quickstart(
+                gateway_url=GATEWAY, quiet=True,
+                base_key="0x" + own.key.hex(),
+            )
+        assert s.base_public_key == own.address
+        assert s.base_secret_key is None  # brought, not minted — never echoed

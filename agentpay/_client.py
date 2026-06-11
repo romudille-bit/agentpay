@@ -187,7 +187,22 @@ class AgentPayClient:
                         memo=payment_id[:28],
                     )
                     if not payment["success"]:
-                        raise PaymentFailed(payment["reason"])
+                        reason = payment["reason"]
+                        # Funding wall: make "underfunded" actionable by
+                        # naming the agent's own fundable address(es).
+                        if any(k in reason.lower() for k in
+                               ("underfunded", "no_trust", "not found", "not_found")):
+                            hint = (
+                                f" To use paid tools, fund {self.wallet.public_key} "
+                                f"with USDC on Stellar {self.wallet.network}"
+                            )
+                            if getattr(self.wallet, "base_address", None):
+                                hint += (
+                                    f", or fund {self.wallet.base_address} "
+                                    f"with USDC on Base mainnet"
+                                )
+                            reason += "." + hint + "."
+                        raise PaymentFailed(reason)
                     tx_hash = payment["tx_hash"]
                     logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
                     proof_header = (

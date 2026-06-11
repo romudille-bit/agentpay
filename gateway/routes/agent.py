@@ -36,7 +36,7 @@ router = APIRouter()
 
 class AgentRegisterRequest(BaseModel):
     label: Optional[str] = None          # optional human/agent-readable label
-    network: str = "stellar"             # "stellar" (default) or "base"
+    network: str = "stellar"             # "stellar" (default), "base", or "both"
     max_spend: str = "0.10"              # suggested default session budget cap
 
 
@@ -78,11 +78,19 @@ async def register_agent(body: AgentRegisterRequest, request: Request):
     human step.
     """
     network = (body.network or "stellar").lower()
+    wallets: dict = {}
     if network == "base":
         wallet = _new_base_wallet()
         if wallet is None:
             # Fall back to Stellar rather than fail — agent still gets identity.
             wallet = _new_stellar_wallet()
+    elif network == "both":
+        # One call, both chains: Stellar stays the primary "wallet" for
+        # back-compat; the Base wallet (the default paid chain) rides in
+        # "wallets" so an agent can fund and pay without a second register.
+        wallet = _new_stellar_wallet()
+        base = _new_base_wallet()
+        wallets = {"stellar": wallet, **({"base": base} if base else {})}
     else:
         wallet = _new_stellar_wallet()
 
@@ -108,6 +116,7 @@ async def register_agent(body: AgentRegisterRequest, request: Request):
         "agent_id":      agent_id,
         "session_token": session_token,
         "wallet":        wallet,
+        **({"wallets": wallets} if wallets else {}),
         "max_spend":     body.max_spend,
         "label":         body.label,
         "gateway_url":   GATEWAY_URL,
