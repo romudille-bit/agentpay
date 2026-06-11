@@ -200,3 +200,42 @@ async def test_refund_worker_base_network_short_circuits(mocked_refund_deps):
     assert mocked_refund_deps["failed_calls"] == [
         ("pid-base", "base_refund_not_implemented"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_refund_worker_base_refund_used_when_key_configured(
+    mocked_refund_deps, monkeypatch,
+):
+    """With BASE_GATEWAY_SECRET_KEY set, base-network rows go through
+    send_base_refund instead of short-circuiting to refund_failed."""
+    from gateway.config import settings
+    monkeypatch.setattr(settings, "BASE_GATEWAY_SECRET_KEY", "0x" + "1" * 64)
+
+    base_calls = []
+
+    async def fake_base_refund(agent_address, amount_usdc, payment_id):
+        base_calls.append((agent_address, amount_usdc, payment_id))
+        return {"success": True, "tx_hash": "0xbase_refund_tx"}
+
+    import gateway.base as base_mod
+    monkeypatch.setattr(base_mod, "send_base_refund", fake_base_refund)
+
+    mocked_refund_deps["rows"] = [{
+        "payment_id":      "pid-base-ok",
+        "agent_address":   "0x" + "a" * 40,
+        "amount_usdc":     "0.01",
+        "network":         "base-mainnet",
+        "tool_name":       "session_create",
+        "refund_attempts": 0,
+    }]
+
+    from gateway.main import _refund_worker_loop
+    with pytest.raises(asyncio.CancelledError):
+        await _refund_worker_loop()
+
+    assert base_calls == [("0x" + "a" * 40, "0.01", "pid-base-ok")]
+    assert mocked_refund_deps["attempts"]["pid-base-ok"] == 1
+    assert mocked_refund_deps["done_calls"] == [("pid-base-ok", "0xbase_refund_tx")]
+    assert mocked_refund_deps["failed_calls"] == []
+    # Stellar send_refund untouched
+    assert mocked_refund_deps["send_results"] == []

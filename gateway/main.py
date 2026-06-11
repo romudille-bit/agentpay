@@ -164,10 +164,11 @@ async def _refund_worker_loop():
                 if not (payment_id and agent_address and amount_usdc):
                     continue
 
-                # Base refunds aren't implemented; short-circuit to
-                # refund_failed instead of looping forever on rows
-                # that can never succeed with the current code.
-                if network.startswith("base-"):
+                # Base refunds need an outgoing-capable Base wallet.
+                # Without BASE_GATEWAY_SECRET_KEY, short-circuit to
+                # refund_failed instead of looping forever.
+                is_base_row = network.startswith("base-")
+                if is_base_row and not settings.BASE_GATEWAY_SECRET_KEY:
                     await sb.mark_refund_failed(
                         payment_id,
                         "base_refund_not_implemented",
@@ -179,11 +180,19 @@ async def _refund_worker_loop():
                 await sb.increment_refund_attempt(payment_id)
                 this_attempt = attempts_so_far + 1
 
-                result = await send_refund(
-                    agent_address=agent_address,
-                    amount_usdc=amount_usdc,
-                    payment_id=payment_id,
-                )
+                if is_base_row:
+                    from gateway.base import send_base_refund
+                    result = await send_base_refund(
+                        agent_address=agent_address,
+                        amount_usdc=amount_usdc,
+                        payment_id=payment_id,
+                    )
+                else:
+                    result = await send_refund(
+                        agent_address=agent_address,
+                        amount_usdc=amount_usdc,
+                        payment_id=payment_id,
+                    )
                 if result.get("success"):
                     await sb.mark_refund_done(
                         payment_id, result.get("tx_hash", ""),

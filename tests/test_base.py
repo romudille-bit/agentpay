@@ -458,3 +458,74 @@ class TestPaymentRequiredHeader:
         decoded = json.loads(base64.b64decode(header))
         assert isinstance(decoded, dict)
         assert decoded["error"] == "Payment required"
+
+
+# ── send_base_refund (Phase 3.3, dark-launched) ──────────────────────────────
+
+class TestSendBaseRefund:
+
+    @pytest.mark.asyncio
+    async def test_no_key_short_circuits(self, monkeypatch):
+        from gateway.config import settings
+        from gateway.base import send_base_refund
+        monkeypatch.setattr(settings, "BASE_GATEWAY_SECRET_KEY", "")
+        r = await send_base_refund("0x" + "a" * 40, "0.01", "pid-1")
+        assert r["success"] is False
+        assert r["reason"] == "base_gateway_secret_not_configured"
+
+    @pytest.mark.asyncio
+    async def test_happy_path_signs_and_broadcasts(self, monkeypatch):
+        from eth_account import Account
+        from gateway.config import settings
+        from gateway.base import send_base_refund
+
+        acct = Account.create()
+        monkeypatch.setattr(settings, "BASE_GATEWAY_SECRET_KEY", "0x" + acct.key.hex())
+        monkeypatch.setattr(settings, "BASE_NETWORK", "base")
+        monkeypatch.setattr(settings, "BASE_RPC_URL", "https://rpc.test.invalid")
+
+        sent = {}
+
+        def rpc_side_effect(request):
+            body = json.loads(request.content)
+            method = body["method"]
+            if method == "eth_getTransactionCount":
+                result = "0x5"
+            elif method == "eth_gasPrice":
+                result = "0x3b9aca00"  # 1 gwei
+            elif method == "eth_sendRawTransaction":
+                sent["raw"] = body["params"][0]
+                result = "0x" + "f" * 64
+            else:
+                raise AssertionError(f"unexpected RPC method {method}")
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": result})
+
+        with respx.mock:
+            respx.post("https://rpc.test.invalid").mock(side_effect=rpc_side_effect)
+            r = await send_base_refund("0x" + "a" * 40, "0.01", "pid-2")
+
+        assert r["success"] is True
+        assert r["tx_hash"] == "0x" + "f" * 64
+        assert sent["raw"].startswith("0x")  # a signed raw tx was broadcast
+
+    @pytest.mark.asyncio
+    async def test_rpc_error_returns_failure(self, monkeypatch):
+        from eth_account import Account
+        from gateway.config import settings
+        from gateway.base import send_base_refund
+
+        acct = Account.create()
+        monkeypatch.setattr(settings, "BASE_GATEWAY_SECRET_KEY", "0x" + acct.key.hex())
+        monkeypatch.setattr(settings, "BASE_RPC_URL", "https://rpc.test.invalid")
+
+        with respx.mock:
+            respx.post("https://rpc.test.invalid").mock(
+                return_value=httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "error": {"code": -32000, "message": "insufficient funds"},
+                })
+            )
+            r = await send_base_refund("0x" + "a" * 40, "0.01", "pid-3")
+
+        assert r["success"] is False
+        assert "base_refund_failed" in r["reason"]

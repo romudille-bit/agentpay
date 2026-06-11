@@ -322,6 +322,90 @@ async def verify_base_tx(
     return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "no_matching_transfer_event"}
 
 
+async def _base_rpc(client: httpx.AsyncClient, rpc_url: str, method: str, params: list):
+    resp = await client.post(
+        rpc_url,
+        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        headers={"Content-Type": "application/json"},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "error" in data:
+        raise RuntimeError(f"rpc_{method}: {data['error']}")
+    return data["result"]
+
+
+async def send_base_refund(
+    agent_address: str,
+    amount_usdc: str,
+    payment_id: str,
+) -> dict:
+    """Send USDC from the gateway's Base wallet back to the agent.
+
+    The Base counterpart of stellar.send_refund, used by the refund worker
+    for rows with network='base-*'. Requires BASE_GATEWAY_SECRET_KEY; the
+    gateway pays the (sub-cent) Base gas.
+
+    Returns:
+      {"success": True,  "tx_hash": "0x...", "amount": "..."}  on success
+      {"success": False, "reason": "..."}                      on failure
+    """
+    from gateway.config import settings
+
+    if not settings.BASE_GATEWAY_SECRET_KEY:
+        return {"success": False, "reason": "base_gateway_secret_not_configured"}
+
+    try:
+        from eth_account import Account
+        account = Account.from_key(settings.BASE_GATEWAY_SECRET_KEY)
+
+        caip2, usdc_contract = get_chain_config(settings.BASE_NETWORK)
+        chain_id = int(caip2.split(":")[1])
+        amount_atomic = int(usdc_to_atomic(amount_usdc))
+
+        # ERC-20 transfer(address,uint256) calldata
+        calldata = (
+            bytes.fromhex("a9059cbb")
+            + bytes.fromhex(agent_address.removeprefix("0x").zfill(64))
+            + amount_atomic.to_bytes(32, "big")
+        )
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            nonce = int(await _base_rpc(
+                client, settings.BASE_RPC_URL,
+                "eth_getTransactionCount", [account.address, "latest"],
+            ), 16)
+            gas_price = int(await _base_rpc(
+                client, settings.BASE_RPC_URL, "eth_gasPrice", [],
+            ), 16)
+
+            tx = {
+                "chainId":  chain_id,
+                "nonce":    nonce,
+                "to":       usdc_contract,
+                "value":    0,
+                "data":     "0x" + calldata.hex(),
+                "gas":      65_000,
+                "gasPrice": gas_price,
+            }
+            signed = account.sign_transaction(tx)
+            tx_hash = await _base_rpc(
+                client, settings.BASE_RPC_URL,
+                "eth_sendRawTransaction", ["0x" + signed.raw_transaction.hex()],
+            )
+
+        logger.info(
+            f"[BASE-REFUND] sent {amount_usdc} USDC to {agent_address[:10]}... "
+            f"payment_id={payment_id[:8]}... tx={tx_hash[:16]}..."
+        )
+        return {"success": True, "tx_hash": tx_hash, "amount": amount_usdc}
+
+    except Exception as e:
+        reason = f"base_refund_failed: {str(e)[:160]}"
+        logger.error(f"[BASE-REFUND] FAILED payment_id={payment_id[:8]}... {reason}")
+        return {"success": False, "reason": reason}
+
+
 async def settle_base_payment(
     payment_signature_header: str,
     payment_requirements: dict,

@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     CDP_KEY_ID:     str = ""
     CDP_KEY_SECRET: str = ""
 
+    # Base gateway wallet PRIVATE key (0x...) — required only for OUTGOING
+    # Base transfers (refunds). Receiving/verifying needs just
+    # BASE_GATEWAY_ADDRESS. Unset = Base refunds short-circuit to
+    # refund_failed ('base_refund_not_implemented'), as before.
+    BASE_GATEWAY_SECRET_KEY: str = ""
+
     # Async on-chain refund worker. When False (default),
     # tool-failure rows still get state='refund_pending' and the response
     # body still includes payment_status — but the background worker
