@@ -51,9 +51,15 @@ HORIZON = "https://horizon-testnet.stellar.org"
 FACILITATOR = "https://channels.openzeppelin.com/x402"
 
 
-def _tx_response(successful=True):
-    """Canonical /transactions/{hash} response."""
-    return {"successful": successful, "hash": TX_HASH}
+def _tx_response(successful=True, memo=None, memo_type=None):
+    """Canonical /transactions/{hash} response. Pass memo/memo_type to
+    simulate a tx that carries (or mis-carries) the payment_id memo."""
+    resp = {"successful": successful, "hash": TX_HASH}
+    if memo_type is not None:
+        resp["memo_type"] = memo_type
+    if memo is not None:
+        resp["memo"] = memo
+    return resp
 
 
 def _payment_op(
@@ -290,6 +296,120 @@ class TestVerifyPaymentHorizon:
         assert result["verified"] is False
 
 
+# ── Memo → payment_id binding (Phase 0.1) ────────────────────────────────────
+
+PAYMENT_ID = "550e8400-e29b-41d4-a716-446655440000"
+
+
+class TestMemoBinding:
+    """The tx text memo must prefix-match the payment_id (28-byte
+    truncation tolerant) so a payment can't satisfy an unrelated challenge."""
+
+    def _mock_horizon(self, tx_json, op_amount="0.001"):
+        respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
+            return_value=httpx.Response(200, json=tx_json)
+        )
+        respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
+            return_value=httpx.Response(200, json=_ops_response(
+                _payment_op(amount=op_amount)
+            ))
+        )
+
+    @pytest.mark.asyncio
+    async def test_correct_truncated_memo_verifies(self, mock_settings):
+        # SDK sends payment_id[:28] as the text memo.
+        with respx.mock:
+            self._mock_horizon(_tx_response(memo=PAYMENT_ID[:28], memo_type="text"))
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+                payment_id=PAYMENT_ID,
+            )
+        assert result["verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_wrong_memo_rejected(self, mock_settings):
+        with respx.mock:
+            self._mock_horizon(_tx_response(memo="some-other-payment-id", memo_type="text"))
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+                payment_id=PAYMENT_ID,
+            )
+        assert result["verified"] is False
+        assert "memo_mismatch" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_absent_memo_rejected(self, mock_settings):
+        with respx.mock:
+            self._mock_horizon(_tx_response())
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+                payment_id=PAYMENT_ID,
+            )
+        assert result["verified"] is False
+        assert "memo_mismatch" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_non_text_memo_rejected(self, mock_settings):
+        with respx.mock:
+            self._mock_horizon(_tx_response(memo="12345", memo_type="id"))
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+                payment_id=PAYMENT_ID,
+            )
+        assert result["verified"] is False
+        assert "memo_mismatch" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_payment_id_skips_memo_check(self, mock_settings):
+        with respx.mock:
+            self._mock_horizon(_tx_response())
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+            )
+        assert result["verified"] is True
+
+
+# ── Overpayment observability (Phase 0.2) ────────────────────────────────────
+
+class TestOverpaymentFlag:
+    """Overpayments >2x required verify but carry an `overpaid` flag."""
+
+    @pytest.mark.asyncio
+    async def test_10x_overpay_verifies_with_flag(self, mock_settings):
+        with respx.mock:
+            respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
+                return_value=httpx.Response(
+                    200, json=_tx_response(memo=PAYMENT_ID[:28], memo_type="text")
+                )
+            )
+            respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
+                return_value=httpx.Response(200, json=_ops_response(
+                    _payment_op(amount="0.010")
+                ))
+            )
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+                payment_id=PAYMENT_ID,
+            )
+        assert result["verified"] is True
+        assert result.get("overpaid") is True
+
+    @pytest.mark.asyncio
+    async def test_exact_amount_has_no_flag(self, mock_settings):
+        with respx.mock:
+            respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
+                return_value=httpx.Response(200, json=_tx_response())
+            )
+            respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
+                return_value=httpx.Response(200, json=_ops_response(_payment_op()))
+            )
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+            )
+        assert result["verified"] is True
+        assert "overpaid" not in result
+
+
 # ── verify_payment: facilitator → Horizon fallthrough ────────────────────────
 
 class TestVerifyPayment:
@@ -305,7 +425,7 @@ class TestVerifyPayment:
                 return_value=httpx.Response(401, json={"error": "auth required"})
             )
             respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
-                return_value=httpx.Response(200, json=_tx_response())
+                return_value=httpx.Response(200, json=_tx_response(memo="some-payment-id", memo_type="text"))
             )
             respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
                 return_value=httpx.Response(200, json=_ops_response(_payment_op()))
@@ -348,7 +468,7 @@ class TestVerifyPayment:
                 })
             )
             respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
-                return_value=httpx.Response(200, json=_tx_response())
+                return_value=httpx.Response(200, json=_tx_response(memo="some-payment-id", memo_type="text"))
             )
             respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
                 return_value=httpx.Response(200, json=_ops_response(_payment_op()))
@@ -371,7 +491,7 @@ class TestVerifyPayment:
                 side_effect=httpx.ConnectError("facilitator down")
             )
             respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
-                return_value=httpx.Response(200, json=_tx_response())
+                return_value=httpx.Response(200, json=_tx_response(memo="some-payment-id", memo_type="text"))
             )
             respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
                 return_value=httpx.Response(200, json=_ops_response(_payment_op()))
@@ -414,7 +534,7 @@ class TestVerifyPayment:
                     return_value=httpx.Response(code)
                 )
                 respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
-                    return_value=httpx.Response(200, json=_tx_response())
+                    return_value=httpx.Response(200, json=_tx_response(memo="some-payment-id", memo_type="text"))
                 )
                 respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
                     return_value=httpx.Response(200, json=_ops_response(_payment_op()))
@@ -451,7 +571,7 @@ class TestFacilitatorDisabled:
             # test will fail. That's the assertion: with ENABLED=False we
             # should never hit the OZ endpoint.
             respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
-                return_value=httpx.Response(200, json=_tx_response())
+                return_value=httpx.Response(200, json=_tx_response(memo="some-payment-id", memo_type="text"))
             )
             respx.get(f"{HORIZON}/transactions/{TX_HASH}/operations").mock(
                 return_value=httpx.Response(200, json=_ops_response(_payment_op()))

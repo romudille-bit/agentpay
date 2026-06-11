@@ -306,8 +306,18 @@ async def verify_base_tx(
                 "success": False, "tx_hash": tx_hash, "payer": payer, "network": "",
                 "reason": f"insufficient_transfer: got {transferred}, need {required_amount_atomic}",
             }
+        # Accept overpayments but flag >2x for analytics (mirrors Stellar).
+        overpaid = required_amount_atomic > 0 and transferred > required_amount_atomic * 2
+        if overpaid:
+            logger.warning(
+                f"[BASE] overpaid tx {tx_hash[:20]}...: transferred={transferred}, "
+                f"required={required_amount_atomic}"
+            )
         logger.info(f"[BASE] On-chain tx verified: {tx_hash[:20]}... transferred={transferred}")
-        return {"success": True, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "ok"}
+        result = {"success": True, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "ok"}
+        if overpaid:
+            result["overpaid"] = True
+        return result
 
     return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "", "reason": "no_matching_transfer_event"}
 

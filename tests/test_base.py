@@ -237,6 +237,67 @@ def _mode_b_signature_header(tx_hash: str, payer: str) -> str:
     return base64.b64encode(json.dumps(payload).encode()).decode()
 
 
+# ── verify_base_tx: overpayment observability (Phase 0.2) ────────────────────
+
+TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+RPC_URL = "https://rpc.test.invalid"
+
+
+def _receipt(transferred: int) -> dict:
+    """eth_getTransactionReceipt result with one matching USDC Transfer log."""
+    return {
+        "status": "0x1",
+        "logs": [{
+            "topics": [
+                TRANSFER_SIG,
+                "0x" + VALID_PAYER.lower().lstrip("0x").zfill(64),
+                "0x" + PAYTO.lower().lstrip("0x").zfill(64),
+            ],
+            "data": "0x" + format(transferred, "x").zfill(64),
+        }],
+    }
+
+
+class TestVerifyBaseTxOverpayment:
+    """Overpayments > 2x required verify but carry an `overpaid` flag,
+    mirroring the Stellar path."""
+
+    async def _run(self, transferred: int, required: int) -> dict:
+        from gateway.base import verify_base_tx
+        with respx.mock:
+            respx.post(RPC_URL).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"jsonrpc": "2.0", "id": 1, "result": _receipt(transferred)},
+                )
+            )
+            return await verify_base_tx(
+                tx_hash=VALID_TX_HASH,
+                payer=VALID_PAYER,
+                required_amount_atomic=required,
+                pay_to=PAYTO,
+                rpc_url=RPC_URL,
+            )
+
+    @pytest.mark.asyncio
+    async def test_10x_overpay_verifies_with_flag(self):
+        result = await self._run(transferred=10_000, required=1_000)
+        assert result["success"] is True
+        assert result.get("overpaid") is True
+
+    @pytest.mark.asyncio
+    async def test_exact_amount_has_no_flag(self):
+        result = await self._run(transferred=1_000, required=1_000)
+        assert result["success"] is True
+        assert "overpaid" not in result
+
+    @pytest.mark.asyncio
+    async def test_underpay_still_rejected(self):
+        result = await self._run(transferred=500, required=1_000)
+        assert result["success"] is False
+        assert "insufficient_transfer" in result["reason"]
+
+
 class TestModeBReplayCutover:
 
     @pytest.mark.asyncio

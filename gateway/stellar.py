@@ -47,6 +47,7 @@ async def _verify_payment_horizon(
     from_address: str,
     to_address: str,
     amount_usdc: str,
+    payment_id: str = "",
 ) -> dict:
     """
     Direct Horizon verification — the actual production path on both mainnet
@@ -55,9 +56,11 @@ async def _verify_payment_horizon(
 
     Queries Horizon for the transaction and checks:
       - transaction exists and was successful
+      - tx text memo prefix-matches `payment_id` (when provided; memos
+        truncate at 28 bytes, SDK sends payment_id[:28])
       - contains a USDC payment from `from_address` to `to_address`
       - asset code is USDC with the correct issuer for this network
-      - amount paid >= amount_usdc required
+      - amount paid >= amount_usdc required (>2x flagged `overpaid`)
     """
     horizon_url = (
         "https://horizon-testnet.stellar.org"
@@ -82,6 +85,26 @@ async def _verify_payment_horizon(
             if not tx_data.get("successful", False):
                 return {"verified": False, "reason": "Transaction was not successful"}
 
+            # Bind the tx to this challenge via the text memo (the SDK and
+            # 402 instructions send payment_id as the memo).
+            if payment_id:
+                memo_type = tx_data.get("memo_type", "none")
+                memo = tx_data.get("memo") or ""
+                if (
+                    memo_type != "text"
+                    or not memo
+                    or not (payment_id.startswith(memo) or memo.startswith(payment_id))
+                ):
+                    logger.warning(
+                        f"memo_mismatch on {tx_hash[:16]}...: "
+                        f"memo_type={memo_type!r} memo={memo[:28]!r} "
+                        f"payment_id={payment_id[:8]}..."
+                    )
+                    return {
+                        "verified": False,
+                        "reason": "memo_mismatch: tx memo does not bind to this payment_id",
+                    }
+
             # Fetch operations for this transaction
             ops_resp = await client.get(f"{horizon_url}/transactions/{tx_hash}/operations")
             if ops_resp.status_code != 200:
@@ -103,8 +126,18 @@ async def _verify_payment_horizon(
                 paid = Decimal(op.get("amount", "0"))
                 if paid < required:
                     return {"verified": False, "reason": f"Paid {paid} USDC but {required} required"}
-                logger.info(f"Payment verified via Horizon (testnet fallback): {tx_hash}")
-                return {"verified": True, "tx_hash": tx_hash}
+                # Accept overpayments but flag >2x for analytics.
+                overpaid = required > 0 and paid > required * 2
+                if overpaid:
+                    logger.warning(
+                        f"overpaid tx {tx_hash[:16]}...: paid {paid} USDC, "
+                        f"required {required} (payment_id={payment_id[:8] or 'n/a'}...)"
+                    )
+                logger.info(f"Payment verified via Horizon: {tx_hash}")
+                result = {"verified": True, "tx_hash": tx_hash}
+                if overpaid:
+                    result["overpaid"] = True
+                return result
 
             return {"verified": False, "reason": "No matching USDC payment found in transaction"}
 
@@ -157,7 +190,7 @@ async def verify_payment(
     if not settings.STELLAR_FACILITATOR_ENABLED:
         if tx_hash:
             return await _verify_payment_horizon(
-                tx_hash, from_address, to_address, amount_usdc
+                tx_hash, from_address, to_address, amount_usdc, payment_id
             )
         return {
             "verified": False,
@@ -194,7 +227,7 @@ async def verify_payment(
                 )
                 if tx_hash:
                     return await _verify_payment_horizon(
-                        tx_hash, from_address, to_address, amount_usdc
+                        tx_hash, from_address, to_address, amount_usdc, payment_id
                     )
                 return {
                     "verified": False,
@@ -209,7 +242,7 @@ async def verify_payment(
                 if tx_hash:
                     logger.info(f"Falling back to direct Horizon verification for {tx_hash[:16]}...")
                     return await _verify_payment_horizon(
-                        tx_hash, from_address, to_address, amount_usdc
+                        tx_hash, from_address, to_address, amount_usdc, payment_id
                     )
                 return {"verified": False, "reason": reason}
 
@@ -244,7 +277,7 @@ async def verify_payment(
         logger.warning(f"Facilitator unreachable ({e}) — falling back to Horizon verification")
         if tx_hash:
             return await _verify_payment_horizon(
-                tx_hash, from_address, to_address, amount_usdc
+                tx_hash, from_address, to_address, amount_usdc, payment_id
             )
         return {"verified": False, "reason": f"Facilitator error: {e}"}
 
