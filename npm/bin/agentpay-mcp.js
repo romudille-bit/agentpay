@@ -367,6 +367,47 @@ const ROUTE_TOOL_DEF = {
   },
 };
 
+const ESTIMATE_PLAN_TOOL_DEF = {
+  name: 'estimate_plan',
+  description: [
+    'Price a multi-tool plan BEFORE spending anything. Submits the tool calls',
+    'an agent intends to make to the gateway\'s free /v1/plan/estimate and',
+    'returns per-step cost, total, a fits-budget verdict, and a cheaper',
+    'alternative per paid step. No payment, no wallet needed.',
+    '',
+    'Use when: planning a multi-step task with paid tools, "what would this',
+    'cost", "does this plan fit my budget", or before committing a Session cap.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      steps: {
+        type: 'array',
+        description: 'Tool names to price, in order, e.g. ["token_price", "dune_query", "session_create"]',
+        items: { type: 'string' },
+      },
+      budget: {
+        type: 'number',
+        description: 'Optional USDC budget for the fits_budget verdict, e.g. 0.05',
+      },
+    },
+    required: ['steps'],
+  },
+};
+
+async function estimatePlanTool(steps, budget) {
+  const body = { steps: steps.map((t) => ({ tool: t })) };
+  if (typeof budget === 'number') body.budget = String(budget);
+  const res = await fetch(`${GATEWAY_URL}/v1/plan/estimate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`gateway returned ${res.status}`);
+  return res.json();
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = await getTools();
 
@@ -386,11 +427,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     };
   });
 
-  return { tools: [...gatewayTools, ROUTE_TOOL_DEF] };
+  return { tools: [...gatewayTools, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF] };
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
+
+  if (name === 'estimate_plan') {
+    try {
+      const steps = args.steps;
+      if (!Array.isArray(steps) || steps.length === 0) {
+        throw new McpError(ErrorCode.InvalidParams, '`steps` is required and must be a non-empty array of tool names');
+      }
+      const result = await estimatePlanTool(steps, args.budget);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      if (err instanceof McpError) throw err;
+      return {
+        content: [{ type: 'text', text: `AgentPay estimate_plan error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
 
   // Handle route tool separately
   if (name === 'route') {

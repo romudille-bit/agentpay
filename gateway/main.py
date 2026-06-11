@@ -33,6 +33,7 @@ from gateway.routes.agent import router as agent_router
 from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
 from gateway.routes.infra import router as infra_router
+from gateway.routes.plan import router as plan_router
 from gateway.routes.session import router as session_router
 from gateway.routes.tools import router as tools_router
 from gateway.services import supabase as sb
@@ -527,6 +528,7 @@ app.add_middleware(
 
 # ── Mount routers ─────────────────────────────────────────────────────────────
 app.include_router(infra_router)
+app.include_router(plan_router)
 app.include_router(tools_router)
 app.include_router(session_router)
 app.include_router(discovery_router)

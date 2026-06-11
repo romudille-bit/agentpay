@@ -600,6 +600,42 @@ class Session:
             return {"name": fallback["name"], "price": _fmt(fallback["price_usdc"])}
         return None
 
+    def estimate_plan(self, steps, budget=None) -> dict:
+        """Price a multi-step plan BEFORE spending anything.
+
+        Calls the gateway's free POST /v1/plan/estimate — no payment, no
+        funded wallet needed. `steps` accepts tool names, (tool, params)
+        tuples, or {"tool":..., "params":...} dicts. `budget` defaults to
+        this session's remaining budget, so the verdict answers "does this
+        plan fit what I have left?".
+
+        Example:
+            plan = s.estimate_plan(["token_price", "dune_query", "session_create"])
+            if plan["fits_budget"]:
+                for step in plan["steps"]:
+                    s.call(step["tool"], {...})
+        """
+        norm = []
+        for step in steps:
+            if isinstance(step, str):
+                norm.append({"tool": step})
+            elif isinstance(step, dict):
+                norm.append({"tool": step["tool"], "params": step.get("params", {})})
+            else:  # (tool, params) tuple/list
+                norm.append({
+                    "tool": step[0],
+                    "params": step[1] if len(step) > 1 else {},
+                })
+        if budget is None:
+            budget = str(self.remaining_usd())
+        resp = httpx.post(
+            f"{self.gateway_url}/v1/plan/estimate",
+            json={"steps": norm, "budget": str(budget)},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def spending_summary(self) -> dict:
         """
         Developer-friendly session receipt — every call, cost, and timestamp.
