@@ -484,6 +484,58 @@ _TOOLS: dict[str, Tool] = {
         returns="sp500_price, sp500_change_pct, treasury_yield_10y, btc_price_usd, eth_price_usd, gas_standard_gwei, timestamp",
         response_example={"sp500_price": 5234.18, "sp500_change_pct": -0.42, "treasury_yield_10y": 4.31, "btc_price_usd": 67200.0, "eth_price_usd": 3450.0, "gas_standard_gwei": 5.2, "timestamp": "2026-05-26T12:00:00Z", "source": "yahoo_finance+coingecko+etherscan"},
     ),
+    "pre_trade_check": Tool(
+        name="pre_trade_check",
+        description=(
+            "One-call pre-trade sanity check: 'I want to long $X of SYMBOL — is now sane?' "
+            "Combines live orderbook slippage at YOUR size, cross-exchange funding (carry cost), "
+            "open-interest crowding, and optional contract security into a single ok/caution/avoid "
+            "verdict with a per-factor breakdown. Replaces four API integrations and the judgment "
+            "layer on top of them. Raw component data embedded so you can apply your own thresholds."
+        ),
+        endpoint="https://agentpay.tools/tools/pre_trade_check",
+        price_usdc="0.01",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Asset to check, e.g. 'ETH', 'BTC', 'SOL'",
+                },
+                "size_usd": {
+                    "type": "number",
+                    "description": "Intended position size in USD (drives the slippage check)",
+                    "default": 10000,
+                },
+                "side": {
+                    "type": "string",
+                    "enum": ["long", "short"],
+                    "description": "Trade direction (funding carry is side-aware)",
+                    "default": "long",
+                },
+                "token_address": {
+                    "type": "string",
+                    "description": "Optional ERC-20 contract address — adds a GoPlus security scan",
+                },
+            },
+            "required": ["symbol"],
+        },
+        category="trading",
+        triggers=["pre trade check", "should I trade", "is this trade sane", "trade check", "entry check", "before I buy", "slippage and funding", "trade readiness"],
+        use_when="An agent (or human) is about to enter a position and wants one verdict covering liquidity, carry, crowding, and security — instead of four raw feeds plus its own synthesis.",
+        returns="verdict (ok/caution/avoid), factors{liquidity,carry,crowding,security} each with level + reason, components{orderbook_depth,funding_rates,open_interest}, symbol, side, size_usd",
+        response_example={
+            "symbol": "ETH", "side": "long", "size_usd": 50000,
+            "verdict": "caution",
+            "factors": {
+                "liquidity": {"level": "ok", "slippage_pct": 0.011, "bucket_usd": 50000, "reason": "fills within 0.011% of best ask"},
+                "carry": {"level": "caution", "median_funding_pct": 0.062, "annualized_pct": 67.9, "reason": "longs paying elevated funding"},
+                "crowding": {"level": "ok", "long_short_ratio": 1.4, "oi_change_24h_pct": 3.2, "reason": "positioning unremarkable"},
+                "security": {"level": "skipped", "reason": "no token_address provided"},
+            },
+        },
+    ),
 }
 
 

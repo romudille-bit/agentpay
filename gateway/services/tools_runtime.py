@@ -170,6 +170,8 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_web_search(client, params)
             elif tool_name == "market_snapshot":
                 result = await _fetch_market_snapshot(client)
+            elif tool_name == "pre_trade_check":
+                result = await _fetch_pre_trade_check(params)
             else:
                 result = {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
@@ -1298,4 +1300,147 @@ async def _fetch_market_snapshot(client: httpx.AsyncClient) -> dict:
         "gas_standard_gwei": gas_val,
         "timestamp":         datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source":            "yahoo_finance+coingecko+etherscan",
+    }
+
+
+# ── pre_trade_check — composite bundle ($0.01) ────────────────────────────────
+
+_PTC_RANK = {"ok": 0, "unknown": 1, "caution": 1, "avoid": 2}
+
+
+def _ptc_liquidity(ob: dict, size_usd: float) -> dict:
+    if ob.get("error"):
+        return {"level": "unknown", "reason": f"orderbook unavailable: {ob['error']}"}
+    buckets = sorted(
+        [d for d in ob.get("depth", []) if d.get("notional_usd")],
+        key=lambda d: d["notional_usd"],
+    )
+    bucket = next((d for d in buckets if d["notional_usd"] >= size_usd),
+                  buckets[-1] if buckets else None)
+    slip = bucket.get("slippage_pct") if bucket else None
+    out = {
+        "bucket_usd":   bucket["notional_usd"] if bucket else None,
+        "slippage_pct": slip,
+        "spread_pct":   ob.get("spread_pct"),
+        "exchange":     ob.get("exchange"),
+    }
+    if bucket is None or slip is None or not bucket.get("executable", False):
+        out.update(level="avoid",
+                   reason=f"book can't absorb ~${size_usd:,.0f} without exhausting visible depth")
+    elif slip > 0.5:
+        out.update(level="avoid", reason=f"~{slip}% slippage at ${bucket['notional_usd']:,} — thin book")
+    elif slip > 0.1:
+        out.update(level="caution", reason=f"~{slip}% slippage at ${bucket['notional_usd']:,}")
+    else:
+        out.update(level="ok", reason=f"fills within {slip}% of best price")
+    return out
+
+
+def _ptc_carry(fr: dict, side: str) -> dict:
+    if fr.get("error") or not fr.get("rates"):
+        return {"level": "unknown", "reason": "funding rates unavailable"}
+    import statistics
+    rates = [r["funding_rate_pct"] for r in fr["rates"] if r.get("funding_rate_pct") is not None]
+    if not rates:
+        return {"level": "unknown", "reason": "no funding data for asset"}
+    med = statistics.median(rates)
+    ann = round(med * 3 * 365, 2)
+    out = {"median_funding_pct": round(med, 6), "annualized_pct": ann,
+           "venues": len(rates)}
+    # Funding is paid BY the crowded side: positive = longs pay, negative = shorts pay.
+    paying = (side == "long" and med > 0) or (side == "short" and med < 0)
+    mag = abs(med)
+    if paying and mag > 0.1:
+        out.update(level="avoid", reason=f"{side}s paying extreme funding ({med}%/8h ≈ {ann}%/yr)")
+    elif paying and mag > 0.05:
+        out.update(level="caution", reason=f"{side}s paying elevated funding ({med}%/8h)")
+    else:
+        out.update(level="ok", reason="carry unremarkable" if paying or mag <= 0.05
+                   else f"funding pays your side ({med}%/8h)")
+    return out
+
+
+def _ptc_crowding(oi: dict, side: str) -> dict:
+    if oi.get("error"):
+        return {"level": "unknown", "reason": "open interest unavailable"}
+    lsr  = oi.get("long_short_ratio")
+    ch24 = oi.get("oi_change_24h_pct")
+    out = {"long_short_ratio": lsr, "oi_change_24h_pct": ch24,
+           "total_oi_usd": oi.get("total_oi_usd")}
+    crowded_same_side = (
+        (side == "long" and lsr is not None and lsr > 2.5)
+        or (side == "short" and lsr is not None and lsr < 0.5)
+    )
+    oi_swinging = ch24 is not None and abs(ch24) > 20
+    if crowded_same_side and oi_swinging:
+        out.update(level="avoid", reason=f"crowded {side} (L/S {lsr}) with OI swinging {ch24}%/24h")
+    elif crowded_same_side:
+        out.update(level="caution", reason=f"positioning crowded on your side (L/S {lsr})")
+    elif oi_swinging:
+        out.update(level="caution", reason=f"open interest moved {ch24}% in 24h")
+    else:
+        out.update(level="ok", reason="positioning unremarkable")
+    return out
+
+
+def _ptc_security(sec: dict | None) -> dict:
+    if sec is None:
+        return {"level": "skipped", "reason": "no token_address provided"}
+    if sec.get("error"):
+        return {"level": "unknown", "reason": f"security scan unavailable: {sec['error']}"}
+    level = {"danger": "avoid", "caution": "caution", "safe": "ok"}.get(
+        sec.get("risk_level", ""), "unknown")
+    return {"level": level, "risk_level": sec.get("risk_level"),
+            "reason": f"GoPlus risk level: {sec.get('risk_level', 'unknown')}"}
+
+
+async def _fetch_pre_trade_check(params: dict) -> dict:
+    """Composite pre-trade sanity check (paid bundle, $0.01).
+
+    Components run through real_tool_response so each hits the response
+    cache; the bundle itself is computed fresh per call (size/side vary).
+    """
+    from datetime import datetime, timezone
+
+    symbol   = (params.get("symbol") or "ETH").strip().upper().replace("USDT", "") or "ETH"
+    size_usd = float(params.get("size_usd") or 10_000)
+    side     = (params.get("side") or "long").lower()
+    if side not in ("long", "short"):
+        side = "long"
+    token_address = (params.get("token_address") or "").strip()
+
+    jobs = {
+        "orderbook_depth": real_tool_response("orderbook_depth", {"symbol": symbol}),
+        "funding_rates":   real_tool_response("funding_rates",   {"asset": symbol}),
+        "open_interest":   real_tool_response("open_interest",   {"symbol": symbol}),
+    }
+    if token_address:
+        jobs["token_security"] = real_tool_response(
+            "token_security",
+            {"contract_address": token_address, "chain": params.get("chain", "ethereum")},
+        )
+    values = await asyncio.gather(*jobs.values(), return_exceptions=True)
+    comp = {
+        k: (v if isinstance(v, dict) else {"error": str(v)[:120]})
+        for k, v in zip(jobs.keys(), values)
+    }
+
+    factors = {
+        "liquidity": _ptc_liquidity(comp["orderbook_depth"], size_usd),
+        "carry":     _ptc_carry(comp["funding_rates"], side),
+        "crowding":  _ptc_crowding(comp["open_interest"], side),
+        "security":  _ptc_security(comp.get("token_security") if token_address else None),
+    }
+    considered = [f["level"] for f in factors.values() if f["level"] != "skipped"]
+    worst = max(considered, key=lambda lv: _PTC_RANK.get(lv, 1))
+    verdict = {0: "ok", 1: "caution", 2: "avoid"}[_PTC_RANK.get(worst, 1)]
+
+    return {
+        "symbol":     symbol,
+        "side":       side,
+        "size_usd":   size_usd,
+        "verdict":    verdict,
+        "factors":    factors,
+        "components": comp,
+        "checked_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
