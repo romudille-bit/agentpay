@@ -171,10 +171,13 @@ class AgentPayClient:
                             client, url, payload, base_opt, data
                         )
                     except Exception as e:
+                        msg = str(e)[:160]
+                        if isinstance(e, ImportError):
+                            msg += ' — install the Base extra: pip install "agentpay-x402[base]"'
                         if chain_is_explicit and prefer_chain == "base":
-                            raise PaymentFailed(f"base settlement failed: {str(e)[:160]}")
+                            raise PaymentFailed(f"base settlement failed: {msg}")
                         logger.warning(
-                            f"  Base settlement failed ({str(e)[:120]}) — falling back to Stellar"
+                            f"  Base settlement failed ({msg}) — falling back to Stellar"
                         )
                         retry = None
 
@@ -191,7 +194,8 @@ class AgentPayClient:
                         # Funding wall: make "underfunded" actionable by
                         # naming the agent's own fundable address(es).
                         if any(k in reason.lower() for k in
-                               ("underfunded", "no_trust", "not found", "not_found")):
+                               ("underfunded", "no_trust", "not found",
+                                "not_found", "resource missing")):
                             hint = (
                                 f" To use paid tools, fund {self.wallet.public_key} "
                                 f"with USDC on Stellar {self.wallet.network}"
