@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # Public gateway URL (used in faucet snippets, discovery endpoints)
     AGENTPAY_GATEWAY_URL: str = ""
 
+    # Keepalive ping target. Empty = localhost (keeps the worker warm without
+    # a round-trip through Railway's edge). Set to the public /health URL if
+    # edge-traffic-based app sleeping is ever enabled on the service.
+    KEEPALIVE_URL: str = ""
+
     # OpenZeppelin x402 Facilitator (covers XLM gas fees — agents only need USDC)
     # Disabled by default since early 2026 — the OZ x402 channel returns 401
     # in production for all requests until credentials are wired up. With #18

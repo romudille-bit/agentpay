@@ -47,12 +47,20 @@ logger = logging.getLogger(__name__)
 
 
 async def _keepalive_loop():
-    """Ping /health every 5 minutes to prevent Railway cold-start."""
+    """Ping /health every 5 minutes to prevent Railway cold-start.
+
+    Pings localhost — the point is to keep THIS worker's process warm, and
+    a local ping avoids a wasteful round-trip through Railway's edge (and
+    avoids local/testnet instances pinging the production URL).
+    """
     await asyncio.sleep(60)  # wait for full startup before first ping
+    # KEEPALIVE_URL env override: set to the public URL if Railway app
+    # sleeping (edge-traffic based) ever gets enabled on the service.
+    target = settings.KEEPALIVE_URL or f"http://localhost:{settings.PORT}/health"
     while True:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.get(f"{GATEWAY_URL}/health")
+                await client.get(target)
         except Exception:
             pass  # silent — keepalive is best-effort
         await asyncio.sleep(300)  # 5 minutes
