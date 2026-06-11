@@ -348,3 +348,29 @@ class TestQuickstartEvmMint:
             )
         assert s.base_public_key == own.address
         assert s.base_secret_key is None  # brought, not minted — never echoed
+
+
+# ── Balance check: empty vs unreachable (Phase 2.3) ──────────────────────────
+
+class TestBalanceErrorContract:
+
+    def _wallet(self):
+        from stellar_sdk import Keypair
+        from agentpay._wallet import AgentWallet
+        return AgentWallet(secret_key=Keypair.random().secret, network="testnet")
+
+    def test_unfunded_account_is_zero(self, monkeypatch):
+        from stellar_sdk.exceptions import NotFoundError
+        w = self._wallet()
+        def raise_not_found(_pk):
+            raise NotFoundError.__new__(NotFoundError)
+        monkeypatch.setattr(w.server, "load_account", raise_not_found)
+        assert w.get_usdc_balance() == "0"
+
+    def test_horizon_down_raises_not_zero(self, monkeypatch):
+        w = self._wallet()
+        def raise_conn(_pk):
+            raise ConnectionError("horizon unreachable")
+        monkeypatch.setattr(w.server, "load_account", raise_conn)
+        with pytest.raises(RuntimeError, match="balance check failed"):
+            w.get_usdc_balance()

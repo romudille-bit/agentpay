@@ -411,6 +411,38 @@ async def _hydrate_tools_from_supabase() -> None:
         logger.warning(f"Supabase unavailable ({e}) — using in-memory registry")
 
 
+def _validate_config() -> None:
+    """Fail fast on a misconfigured mainnet deploy instead of at first payment.
+
+    STELLAR_NETWORK defaults to testnet, so a missing env file silently
+    produces a testnet gateway — but a deliberate mainnet deploy without
+    wallet keys would advertise an empty pay_to on every 402 and fail every
+    split/refund. Refuse to boot instead.
+    """
+    if settings.STELLAR_NETWORK != "mainnet":
+        return
+    missing = [k for k in ("GATEWAY_PUBLIC_KEY", "GATEWAY_SECRET_KEY")
+               if not getattr(settings, k)]
+    if missing:
+        raise RuntimeError(
+            f"Mainnet gateway requires {', '.join(missing)} — "
+            f"set them in the environment or switch STELLAR_NETWORK to testnet."
+        )
+
+
+def _log_config_banner() -> None:
+    """One-line resolved-config banner so a wrong-network deploy is obvious."""
+    logger.info(
+        "[CONFIG] stellar=%s wallet=%s base=%s supabase=%s refunds=%s facilitator=%s",
+        settings.STELLAR_NETWORK,
+        (settings.GATEWAY_PUBLIC_KEY[:8] + "...") if settings.GATEWAY_PUBLIC_KEY else "UNSET",
+        settings.BASE_NETWORK if settings.BASE_GATEWAY_ADDRESS else "disabled",
+        "on" if sb_enabled() else "off",
+        "on" if settings.REFUND_ENABLED else "off",
+        "on" if settings.STELLAR_FACILITATOR_ENABLED else "off",
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan handler — replaces the deprecated
@@ -428,6 +460,9 @@ async def lifespan(app: FastAPI):
     exits.
     """
     # ── startup ──────────────────────────────────────────────────────────────
+    _validate_config()
+    _log_config_banner()
+
     # Scheduling the keepalive task can be disabled (e.g. by the test suite)
     # so the background ping doesn't fire at the production URL during
     # local imports. Default behaviour is unchanged. Accepts the common

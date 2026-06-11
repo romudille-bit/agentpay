@@ -202,14 +202,23 @@ class AgentWallet:
         return str(self._total_spent)
 
     def get_usdc_balance(self) -> str:
-        """Return current USDC balance."""
+        """Return current USDC balance.
+
+        '0' means genuinely empty (unfunded account / no trustline). An
+        unreachable Horizon raises RuntimeError instead of masquerading as
+        $0 — otherwise budget_policy() silently clamps the spend cap to
+        zero on an infra blip.
+        """
+        from stellar_sdk.exceptions import NotFoundError
         try:
             account = self.server.load_account(self.public_key)
-            for b in account.raw_data.get("balances", []):
-                if b.get("asset_code") == "USDC":
-                    return b.get("balance", "0")
+        except NotFoundError:
+            return "0"   # account not on-chain yet — genuinely unfunded
         except Exception as e:
-            logger.error(f"Balance check failed: {e}")
+            raise RuntimeError(f"balance check failed (Horizon): {e}") from e
+        for b in account.raw_data.get("balances", []):
+            if b.get("asset_code") == "USDC":
+                return b.get("balance", "0")
         return "0"
 
     def pay(self, destination: str, amount_usdc: str, memo: str = "") -> dict:

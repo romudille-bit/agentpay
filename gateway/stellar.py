@@ -522,25 +522,31 @@ async def send_refund(
 
 # ── Balance Check ─────────────────────────────────────────────────────────────
 
-async def get_usdc_balance(public_key: str) -> str:
+async def get_usdc_balance(public_key: str) -> str | None:
     """Return USDC balance for a Stellar address.
 
+    '0' means genuinely empty (unfunded account or no USDC trustline);
+    None means the balance is UNKNOWN (Horizon unreachable/5xx) — callers
+    must not treat an infra failure as an empty wallet.
+
     Async because stellar_sdk's Server.load_account is synchronous and would
-    otherwise block the event loop for 200-2000ms per call. Wrapping in
-    asyncio.to_thread offloads to a worker thread. Callers must `await`.
+    otherwise block the event loop for 200-2000ms per call.
     """
     server = get_server()
     try:
         account = await asyncio.to_thread(server.load_account, public_key)
-        for balance in account.raw_data.get("balances", []):
-            if (
-                balance.get("asset_code") == "USDC"
-                and balance.get("asset_issuer") in [
-                    settings.USDC_ISSUER_TESTNET,
-                    settings.USDC_ISSUER_MAINNET,
-                ]
-            ):
-                return balance.get("balance", "0")
-        return "0"
-    except Exception:
-        return "0"
+    except stellar_exceptions.NotFoundError:
+        return "0"   # account doesn't exist on-chain yet — genuinely unfunded
+    except Exception as e:
+        logger.warning(f"get_usdc_balance failed for {public_key[:8]}...: {e}")
+        return None
+    for balance in account.raw_data.get("balances", []):
+        if (
+            balance.get("asset_code") == "USDC"
+            and balance.get("asset_issuer") in [
+                settings.USDC_ISSUER_TESTNET,
+                settings.USDC_ISSUER_MAINNET,
+            ]
+        ):
+            return balance.get("balance", "0")
+    return "0"

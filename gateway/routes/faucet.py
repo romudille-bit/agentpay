@@ -100,7 +100,14 @@ async def _provision_wallet(base_url: str) -> dict:
     logger.info(f"[FAUCET] step=4/5 checking gateway balance and sending 0.05 USDC")
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
     from gateway.stellar import get_usdc_balance
-    gateway_usdc = Decimal(await get_usdc_balance(gateway_keypair.public_key))
+    raw_balance = await get_usdc_balance(gateway_keypair.public_key)
+    if raw_balance is None:
+        # Unknown balance (Horizon unreachable) is not the same as empty.
+        raise HTTPException(
+            status_code=503,
+            detail="Faucet balance check failed (Horizon unreachable) — try again shortly.",
+        )
+    gateway_usdc = Decimal(raw_balance)
     if gateway_usdc < Decimal("1"):
         raise HTTPException(
             status_code=503,

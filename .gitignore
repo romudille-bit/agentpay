@@ -17,6 +17,8 @@ venv/
 *.egg-info/
 dist/
 build/
+agentpay_x402-*/
+pytest-cache-files-*/
 
 # Logs + runtime artifacts
 *.log

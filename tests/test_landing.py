@@ -123,3 +123,30 @@ def test_landing_escapes_html_in_descriptions():
     html = render_landing([poisoned], "https://agentpay.tools")
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
+
+
+# ── Startup config validation (Phase 2.4) ────────────────────────────────────
+
+class TestValidateConfig:
+
+    def test_mainnet_without_keys_refuses_boot(self, monkeypatch):
+        from gateway import main as gw_main
+        monkeypatch.setattr(gw_main.settings, "STELLAR_NETWORK", "mainnet")
+        monkeypatch.setattr(gw_main.settings, "GATEWAY_PUBLIC_KEY", "")
+        monkeypatch.setattr(gw_main.settings, "GATEWAY_SECRET_KEY", "")
+        import pytest as _pytest
+        with _pytest.raises(RuntimeError, match="GATEWAY_PUBLIC_KEY"):
+            gw_main._validate_config()
+
+    def test_testnet_without_keys_boots(self, monkeypatch):
+        from gateway import main as gw_main
+        monkeypatch.setattr(gw_main.settings, "STELLAR_NETWORK", "testnet")
+        monkeypatch.setattr(gw_main.settings, "GATEWAY_SECRET_KEY", "")
+        gw_main._validate_config()  # no raise
+
+    def test_mainnet_with_keys_boots(self, monkeypatch):
+        from gateway import main as gw_main
+        monkeypatch.setattr(gw_main.settings, "STELLAR_NETWORK", "mainnet")
+        monkeypatch.setattr(gw_main.settings, "GATEWAY_PUBLIC_KEY", "G" + "A" * 55)
+        monkeypatch.setattr(gw_main.settings, "GATEWAY_SECRET_KEY", "S" + "A" * 55)
+        gw_main._validate_config()  # no raise
