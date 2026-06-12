@@ -36,6 +36,14 @@ from decimal import Decimal
 GATEWAY = os.environ.get("AGENTPAY_GATEWAY_URL", "https://agentpay.tools")
 TRADE_SIZE_USD = 25_000   # the notional the verdicts are priced at
 
+# Production (Railway) pip-installs agentpay-x402; a local dev run from the
+# repo has neither that nor the repo root on sys.path (python puts the
+# SCRIPT's directory there, not the cwd). Fall back to the repo checkout.
+try:
+    import agentpay  # noqa: F401
+except ModuleNotFoundError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 
 def log(msg: str) -> None:
     print(f"[analyst] {msg}", flush=True)
