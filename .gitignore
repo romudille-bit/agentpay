@@ -89,6 +89,9 @@ tools/demo_circle.py
 tools/radar_demo.py
 tools/demo.sh
 
+# Living progress tracker (working doc — Claude maintains it)
+TRACKER.html
+
 # Internal strategy/ops docs (kept off GitHub, like STRATEGY.md)
 COMPETITIVE_ACTION_AGENTCASH.md
 PARTNERSHIP_LANGCHAIN.md
