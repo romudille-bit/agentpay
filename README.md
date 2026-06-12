@@ -94,6 +94,10 @@ from agentpay import quickstart, BudgetExceeded
 # Budget caps are exact: max_spend=0.10 (float) == "0.10" (str).
 with quickstart(max_spend=0.10) as session:
 
+    # Price an entire multi-tool plan BEFORE spending anything (free, no wallet)
+    plan = session.estimate_plan(["token_price", "pre_trade_check", "session_create"])
+    plan["total_usdc"], plan["fits_budget"]   # per-step costs + cheaper alternatives inside
+
     # Reason about cost before committing (use the *_usd Decimals for comparisons)
     if session.would_exceed(session.tool_cost_usd("dune_query")):
         alt = session.suggest_cheaper("dune_query")   # {"name": ..., "price": ...}

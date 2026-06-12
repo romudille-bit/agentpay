@@ -123,7 +123,10 @@ def parse_resources(data: dict) -> list[dict]:
         accepts = r.get("accepts") or rd.get("accepts") or [{}]
         a = accepts[0] if accepts else {}
         try:
-            price = Decimal(str(int(a.get("amount", 0)))) / Decimal("1000000")
+            amount_atomic = int(a.get("amount", 0))
+            # 0/missing amount = "no usable price", NOT free — otherwise a
+            # stub with no price wins every price tiebreak.
+            price = (Decimal(amount_atomic) / Decimal("1000000")) if amount_atomic > 0 else None
         except (ValueError, TypeError):
             price = None
         ext = (r.get("extensions") or rd.get("extensions") or {}).get("bazaar") or {}
