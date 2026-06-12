@@ -529,3 +529,127 @@ class TestSendBaseRefund:
 
         assert r["success"] is False
         assert "base_refund_failed" in r["reason"]
+
+
+# ── Uncertain-settle recovery (paid-but-unserved fix, 2026-06-11) ────────────
+#
+# Live incident: CDP reported settle_exact_node_failure ("did not confirm in
+# time") but the transfer confirmed seconds later — the payer was charged and
+# got nothing, invisibly. On uncertain failures the gateway now verifies
+# on-chain before failing the call.
+
+RPC_URL_R = "https://rpc.recovery.invalid"
+TRANSFER_SIG_R = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def _transfer_log(payer, pay_to, amount_atomic, tx_hash):
+    return {
+        "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "topics": [
+            TRANSFER_SIG_R,
+            "0x" + payer.lower().removeprefix("0x").zfill(64),
+            "0x" + pay_to.lower().removeprefix("0x").zfill(64),
+        ],
+        "data": "0x" + format(amount_atomic, "x").zfill(64),
+        "transactionHash": tx_hash,
+    }
+
+
+class TestUncertainSettleRecovery:
+
+    @pytest.fixture(autouse=True)
+    def fast_recovery(self, monkeypatch):
+        import gateway.base as base_mod
+        monkeypatch.setattr(base_mod, "_RECOVER_ATTEMPTS", 2)
+        monkeypatch.setattr(base_mod, "_RECOVER_DELAY_SECS", 0.0)
+        base_mod._used_base_tx_hashes.clear()
+
+        async def supabase_record_ok(tx, net):
+            return True
+        monkeypatch.setattr(base_mod.sb, "record_tx_hash", supabase_record_ok)
+
+    def _rpc_side_effect(self, logs):
+        def side_effect(request):
+            body = json.loads(request.content)
+            if body["method"] == "eth_blockNumber":
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x1000"})
+            if body["method"] == "eth_getLogs":
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": logs})
+            raise AssertionError(body["method"])
+        return side_effect
+
+    @pytest.mark.asyncio
+    async def test_node_failure_recovers_when_tx_confirmed(self):
+        recovered_tx = "0x" + "7" * 64
+        with respx.mock:
+            respx.post(f"{CDP_URL}/settle").mock(
+                return_value=httpx.Response(500, json={
+                    "errorMessage": "transaction did not confirm in time: context deadline exceeded",
+                    "errorReason": "settle_exact_node_failure",
+                    "network": VALID_NETWORK,
+                    "payer": VALID_PAYER,
+                })
+            )
+            respx.post(RPC_URL_R).mock(side_effect=self._rpc_side_effect(
+                [_transfer_log(VALID_PAYER, PAYTO, 1000, recovered_tx)]
+            ))
+            result = await settle_base_payment(
+                _mode_a_signature_header(), _payment_requirements(), rpc_url=RPC_URL_R,
+            )
+        assert result["success"] is True
+        assert result["tx_hash"] == recovered_tx
+        assert result["reason"] == "ok_recovered"
+        assert result["payer"] == VALID_PAYER
+
+    @pytest.mark.asyncio
+    async def test_node_failure_without_onchain_tx_still_fails(self):
+        with respx.mock:
+            respx.post(f"{CDP_URL}/settle").mock(
+                return_value=httpx.Response(500, json={
+                    "errorReason": "settle_exact_node_failure",
+                    "errorMessage": "transaction did not confirm in time",
+                    "payer": VALID_PAYER,
+                })
+            )
+            respx.post(RPC_URL_R).mock(side_effect=self._rpc_side_effect([]))
+            result = await settle_base_payment(
+                _mode_a_signature_header(), _payment_requirements(), rpc_url=RPC_URL_R,
+            )
+        assert result["success"] is False
+        assert result["reason"] == "facilitator_http_500"
+
+    @pytest.mark.asyncio
+    async def test_recovered_tx_cannot_be_recovered_twice(self):
+        recovered_tx = "0x" + "8" * 64
+        with respx.mock:
+            respx.post(f"{CDP_URL}/settle").mock(
+                return_value=httpx.Response(500, json={
+                    "errorReason": "settle_exact_node_failure",
+                    "payer": VALID_PAYER,
+                })
+            )
+            respx.post(RPC_URL_R).mock(side_effect=self._rpc_side_effect(
+                [_transfer_log(VALID_PAYER, PAYTO, 1000, recovered_tx)]
+            ))
+            r1 = await settle_base_payment(
+                _mode_a_signature_header(), _payment_requirements(), rpc_url=RPC_URL_R,
+            )
+            r2 = await settle_base_payment(
+                _mode_a_signature_header(), _payment_requirements(), rpc_url=RPC_URL_R,
+            )
+        assert r1["success"] is True
+        assert r2["success"] is False  # same transfer can't pay twice
+
+    @pytest.mark.asyncio
+    async def test_unrelated_500_does_not_trigger_recovery(self):
+        with respx.mock:
+            respx.post(f"{CDP_URL}/settle").mock(
+                return_value=httpx.Response(500, json={
+                    "errorReason": "invalid_signature", "payer": VALID_PAYER,
+                })
+            )
+            # No RPC mock — recovery must NOT be attempted (would error if hit)
+            result = await settle_base_payment(
+                _mode_a_signature_header(), _payment_requirements(), rpc_url=RPC_URL_R,
+            )
+        assert result["success"] is False

@@ -406,6 +406,90 @@ async def send_base_refund(
         return {"success": False, "reason": reason}
 
 
+# CDP error signatures that mean "the tx may have confirmed anyway" — the
+# facilitator broadcast it but gave up waiting. Seen live 2026-06-11:
+# a settle reported settle_exact_node_failure while the transfer confirmed
+# ~seconds later, leaving the payer charged but unserved.
+_UNCERTAIN_SETTLE_REASONS = ("settle_exact_node_failure",)
+_UNCERTAIN_SETTLE_HINTS   = ("did not confirm in time", "context deadline exceeded")
+
+# Recovery poll knobs (overridable in tests)
+_RECOVER_ATTEMPTS = 5
+_RECOVER_DELAY_SECS = 4.0
+
+
+async def _recover_uncertain_settle(
+    payer: str,
+    pay_to: str,
+    required_amount_atomic: int,
+    rpc_url: str,
+    network_label: str,
+) -> dict | None:
+    """After an uncertain CDP failure, look for the confirmed transfer on-chain.
+
+    Polls eth_getLogs for a USDC Transfer(payer → pay_to, value >= required)
+    in the recent block window. Returns a success-shaped dict if found and
+    successfully consumed (replay-protected), else None.
+    """
+    if not (payer and pay_to and rpc_url):
+        return None
+    caip2, usdc_contract = get_chain_config(
+        "base" if network_label == "base-mainnet" else network_label
+    )
+    TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+    payer_padded  = "0x" + payer.lower().removeprefix("0x").zfill(64)
+    pay_to_padded = "0x" + pay_to.lower().removeprefix("0x").zfill(64)
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for attempt in range(_RECOVER_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(_RECOVER_DELAY_SECS)
+            try:
+                resp = await client.post(rpc_url, json={
+                    "jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": [],
+                })
+                latest = int(resp.json()["result"], 16)
+                resp = await client.post(rpc_url, json={
+                    "jsonrpc": "2.0", "id": 2, "method": "eth_getLogs",
+                    "params": [{
+                        "address":   usdc_contract,
+                        "topics":    [TRANSFER_SIG, payer_padded, pay_to_padded],
+                        # EIP-3009 authorizations are valid ≤300s; ~5min of blocks
+                        "fromBlock": hex(max(latest - 200, 0)),
+                        "toBlock":   "latest",
+                    }],
+                })
+                logs = resp.json().get("result") or []
+            except Exception as e:
+                logger.warning(f"[BASE] settle recovery RPC error: {e}")
+                continue
+
+            for log in logs:
+                raw = (log.get("data") or "0x").removeprefix("0x")
+                if not raw or int(raw, 16) < required_amount_atomic:
+                    continue
+                tx_hash = log.get("transactionHash", "")
+                # Replay-consume the recovered hash. Unlike normal Mode A
+                # (where CDP's EIP-3009 nonce check prevents reuse), recovery
+                # reads chain history — without this consume, re-sending the
+                # same PAYMENT-SIGNATURE would re-recover the same transfer.
+                if tx_hash in _used_base_tx_hashes:
+                    return None
+                _used_base_tx_hashes.add(tx_hash)
+                recorded = await sb.record_tx_hash(tx_hash, network_label)
+                if recorded is False:
+                    return None
+                logger.info(
+                    f"[BASE] settle RECOVERED on-chain: {tx_hash[:20]}... "
+                    f"(CDP reported failure but the transfer confirmed)"
+                )
+                return {
+                    "success": True, "tx_hash": tx_hash, "payer": payer,
+                    "network": caip2, "reason": "ok_recovered",
+                }
+    return None
+
+
 async def settle_base_payment(
     payment_signature_header: str,
     payment_requirements: dict,
@@ -548,6 +632,29 @@ async def settle_base_payment(
 
     if resp.status_code != 200:
         logger.warning(f"[BASE] Facilitator HTTP {resp.status_code}: {resp.text[:200]}")
+        # Uncertain failure: CDP may have broadcast the tx and timed out
+        # waiting — verify on-chain before charging the agent with nothing.
+        err_reason, err_msg, err_payer = "", "", ""
+        try:
+            err = resp.json()
+            err_reason = err.get("errorReason", "") or ""
+            err_msg    = err.get("errorMessage", "") or ""
+            err_payer  = err.get("payer", "") or ""
+        except Exception:
+            pass
+        if err_reason in _UNCERTAIN_SETTLE_REASONS or any(
+            h in err_msg for h in _UNCERTAIN_SETTLE_HINTS
+        ):
+            caip2 = payment_requirements.get("network", "")
+            recovered = await _recover_uncertain_settle(
+                payer=err_payer,
+                pay_to=payment_requirements.get("payTo", ""),
+                required_amount_atomic=int(payment_requirements.get("amount", "0") or 0),
+                rpc_url=rpc_url or "https://mainnet.base.org",
+                network_label=_network_label(caip2),
+            )
+            if recovered:
+                return recovered
         return {
             "success": False,
             "tx_hash": "",
@@ -597,6 +704,21 @@ async def settle_base_payment(
             "tx_hash": tx, "payer": payer, "network": network,
             "reason":  "ok",
         }
+
+    # Same uncertainty check for 200 + success:false responses.
+    if data.get("errorReason", "") in _UNCERTAIN_SETTLE_REASONS or any(
+        h in (data.get("errorMessage", "") or "") for h in _UNCERTAIN_SETTLE_HINTS
+    ):
+        caip2 = payment_requirements.get("network", "")
+        recovered = await _recover_uncertain_settle(
+            payer=data.get("payer", ""),
+            pay_to=payment_requirements.get("payTo", ""),
+            required_amount_atomic=int(payment_requirements.get("amount", "0") or 0),
+            rpc_url=rpc_url or "https://mainnet.base.org",
+            network_label=_network_label(caip2),
+        )
+        if recovered:
+            return recovered
 
     return {
         "success": False,
