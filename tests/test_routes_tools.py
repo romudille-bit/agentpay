@@ -757,3 +757,91 @@ class TestCallToolGet:
     def test_get_unknown_tool_404(self, client):
         r = client.get("/tools/not_a_tool/call")
         assert r.status_code == 404
+
+
+# ── Pure X-PAYMENT v2 clients (Coinbase-for-Agents readiness) ────────────────
+#
+# Standards-pure x402 clients send the v2 payload in X-PAYMENT and nothing
+# else. Before this fix the legacy Stellar parser rejected them with
+# 'Invalid X-Payment header format' — no spec-compliant client could pay.
+
+class TestPureV2Client:
+
+    def _v2(self, payload_dict):
+        import base64, json
+        return base64.b64encode(json.dumps(payload_dict).encode()).decode()
+
+    def test_x_payment_only_v2_routes_to_base(
+        self, client, monkeypatch, patch_route_tool_response
+    ):
+        import gateway.routes.tools as rt
+
+        async def fake_settle(sig_header, requirements, rpc_url="", **kwargs):
+            return {"success": True, "tx_hash": "0x" + "a" * 64,
+                    "payer": "0x" + "b" * 40, "network": "eip155:8453", "reason": "ok"}
+        monkeypatch.setattr(rt.base_pay, "settle_base_payment", fake_settle)
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"X-PAYMENT": self._v2({"x402Version": 2, "payload": {"signature": "0xsig"}})},
+        )
+        assert r.status_code == 200
+        assert r.json()["payment"]["network"] == "eip155:8453"
+
+    def test_x_payment_only_mode_b_routes_to_base(
+        self, client, monkeypatch, patch_route_tool_response
+    ):
+        import gateway.routes.tools as rt
+
+        async def fake_settle(sig_header, requirements, rpc_url="", **kwargs):
+            return {"success": True, "tx_hash": "0x" + "d" * 64,
+                    "payer": "0x" + "b" * 40, "network": "eip155:8453", "reason": "ok"}
+        monkeypatch.setattr(rt.base_pay, "settle_base_payment", fake_settle)
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"X-PAYMENT": self._v2({"tx_hash": "0x" + "d" * 64, "payer": "0x" + "b" * 40})},
+        )
+        assert r.status_code == 200
+
+    def test_garbage_x_payment_keeps_clear_legacy_error(self, client):
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}, "agent_address": "GAGENT"},
+            headers={"X-Payment": "complete garbage, no structure"},
+        )
+        assert r.status_code == 402
+        assert "Invalid X-Payment header format" in r.json()["reason"]
+
+    def test_legacy_stellar_header_unaffected(
+        self, client, patch_route_verify, patch_route_tool_response
+    ):
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}, "agent_address": "GAGENT"},
+            headers={"X-Payment": "tx_hash=abc,from=GAGENT,id=uuid-9"},
+        )
+        assert r.status_code == 200
+        assert r.json()["payment"]["tx_hash"] == "abc"
+
+    def test_session_route_accepts_pure_v2(self, client, monkeypatch):
+        import gateway.routes.session as sess
+
+        async def fake_settle(sig_header, requirements, rpc_url="", **kwargs):
+            return {"success": True, "tx_hash": "0x" + "e" * 64,
+                    "payer": "0x" + "b" * 40, "network": "eip155:8453", "reason": "ok"}
+        monkeypatch.setattr(sess, "settle_base_payment", fake_settle, raising=False)
+        monkeypatch.setattr(sess.base_pay, "settle_base_payment", fake_settle)
+        monkeypatch.setattr(sess.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post(
+            "/v1/session/create",
+            json={"max_spend": "0.10"},
+            headers={"X-PAYMENT": self._v2({"x402Version": 2, "payload": {"signature": "0xsig"}})},
+        )
+        assert r.status_code == 200
+        assert r.json().get("session_id")

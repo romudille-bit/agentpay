@@ -74,6 +74,30 @@ _TOOL_ALIASES = {
 }
 
 
+def normalize_payment_headers(
+    x_payment: Optional[str], payment_signature: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Route the x402 v2 payload to the Base path regardless of which header
+    carried it.
+
+    X-PAYMENT is the x402 STANDARD header — pure-spec clients (Coinbase for
+    Agents, x402 SDKs) send the base64 v2 payload there and nothing else.
+    AgentPay's legacy Stellar proof shares the same header name. Rules:
+      - X-Payment parses as a legacy Stellar proof → leave untouched.
+      - X-Payment is a v2 payload (alone or duplicated into
+        PAYMENT-SIGNATURE) → treat it as PAYMENT-SIGNATURE.
+      - X-Payment is garbage → leave it for the legacy path's clear error.
+    """
+    if not x_payment or parse_payment_header(x_payment):
+        return x_payment, payment_signature
+    if payment_signature:
+        return None, payment_signature          # duplicate of the v2 sig
+    decoded, _err = base_pay._decode_payment_signature(x_payment)
+    if isinstance(decoded, dict) and ("payload" in decoded or "tx_hash" in decoded):
+        return None, x_payment                  # standards-pure v2 client
+    return x_payment, payment_signature
+
+
 # ── Bazaar discovery metadata, per paid tool ──────────────────────────────────
 # Bazaar's validation crawl reads extensions.bazaar + resource.serviceName/tags
 # from the LIVE 402, and indexing fires on a Mode A settle that carries the
@@ -614,12 +638,7 @@ async def call_tool(
     agent_address = x_agent_address or body.agent_address
     resource_url  = f"{GATEWAY_URL}/tools/{tool_name}/call"
 
-    # x402-v2 clients (incl. SDK <= 0.2.3) send the SAME base64 v2 payload in
-    # both X-PAYMENT and PAYMENT-SIGNATURE. If X-Payment isn't a parseable
-    # Stellar proof and a PAYMENT-SIGNATURE is present, route to Base instead
-    # of rejecting with 'Invalid X-Payment header format'.
-    if x_payment and payment_signature and not parse_payment_header(x_payment):
-        x_payment = None
+    x_payment, payment_signature = normalize_payment_headers(x_payment, payment_signature)
 
     if not x_payment and not payment_signature:
         return await _issue_402(

@@ -321,6 +321,12 @@ async def create_session(
     agent_address = x_agent_address or body.agent_address
     resource_url  = SESSION_RESOURCE_URL
 
+    # Standards-pure x402 clients (Coinbase for Agents, x402 SDKs) send the
+    # v2 payload in X-PAYMENT alone; route it to the Base path instead of
+    # the legacy Stellar parser.
+    from gateway.routes.tools import normalize_payment_headers
+    x_payment, payment_signature = normalize_payment_headers(x_payment, payment_signature)
+
     # ── Step 1: No payment → 402 ──────────────────────────────────────────────
     if not x_payment and not payment_signature:
         agent_short = (agent_address or "unknown")[:8]
