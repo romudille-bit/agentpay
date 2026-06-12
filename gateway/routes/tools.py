@@ -154,28 +154,63 @@ _TOOL_BAZAAR: dict[str, dict] = {
                     },
                 },
             },
+            # Schema follows the Bazaar convention every indexed resource
+            # uses: `input` describes the HTTP REQUEST ENVELOPE (type/method/
+            # bodyType/body), not the bare tool params. Validation appears to
+            # enforce this shape — the params-only variant stayed stuck in
+            # 'processing' while session_create (envelope shape) indexed.
             "schema": {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
                 "properties": {
                     "input": {
                         "type": "object",
+                        "additionalProperties": False,
                         "properties": {
-                            "symbol":        {"type": "string"},
-                            "size_usd":      {"type": "number"},
-                            "side":          {"type": "string", "enum": ["long", "short"]},
-                            "token_address": {"type": "string"},
+                            "type":     {"const": "http", "type": "string"},
+                            "method":   {"enum": ["POST"], "type": "string"},
+                            "bodyType": {"enum": ["json", "form-data", "text"], "type": "string"},
+                            "body": {
+                                "type": "object",
+                                "properties": {
+                                    "parameters": {
+                                        "type": "object",
+                                        "properties": {
+                                            "symbol": {
+                                                "type": "string",
+                                                "description": "Asset to check, e.g. 'ETH', 'BTC', 'SOL'",
+                                            },
+                                            "size_usd": {
+                                                "type": "number",
+                                                "description": "Intended position size in USD (drives the slippage check; default 10000)",
+                                            },
+                                            "side": {
+                                                "type": "string",
+                                                "enum": ["long", "short"],
+                                                "description": "Trade direction (funding carry is side-aware; default long)",
+                                            },
+                                            "token_address": {
+                                                "type": "string",
+                                                "description": "Optional ERC-20 address — adds a GoPlus security scan",
+                                            },
+                                        },
+                                        "required": ["symbol"],
+                                    },
+                                },
+                            },
                         },
-                        "required": ["symbol"],
+                        "required": ["type", "bodyType", "body", "method"],
                     },
                     "output": {
                         "type": "object",
                         "properties": {
-                            "verdict": {"type": "string", "enum": ["ok", "caution", "avoid"]},
-                            "factors": {"type": "object"},
+                            "example": {"type": "object"},
+                            "type":    {"type": "string"},
                         },
+                        "required": ["type"],
                     },
                 },
+                "required": ["input"],
             },
         },
     },
