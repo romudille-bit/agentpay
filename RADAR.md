@@ -57,6 +57,14 @@ cd contracts && forge test                                # 18 tests (incl. fuzz
 - Returns: `{need, chain, budget_usd, count, results[], recommendation}` — each result has
   `name, url, price_usd, network, pay_to, payers30d, calls30d, quality, flags`.
 
+`POST /discovery/arbitrum/verify` — the third act: confirm a RadarSplit settlement.
+- Body: `{tx_hash, payment_id, payer, developer, amount_usdc, chain}`
+- Verifies the on-chain `Settled` event against the CANONICAL contract for the chain
+  (all fields, not just paymentId) and **consumes the tx hash** — one settlement can't
+  be presented twice.
+- Config: `RADAR_CONTRACT_<CHAIN>` + `RADAR_RPC_<CHAIN>` env vars (503 until set).
+- Returns `{success, reason, dev_amount, fee, tx_hash, chain, contract}`.
+
 ## Deploy
 
 See `contracts/DEPLOY.md` (Arbitrum Sepolia, step by step). Settlement is non-custodial;

@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 import registry
 
@@ -129,6 +130,91 @@ async def discovery_arbitrum(
 
     _cache_put(key, result)
     return result
+
+
+# ── Radar settlement verification ────────────────────────────────────────────
+# The third act of the Radar flow: discover → settle via RadarSplit → VERIFY.
+# Confirms the on-chain `Settled` event matches what the caller claims
+# (canonical contract, paymentId, payer, developer, amount) and consumes the
+# tx hash so one settlement can't be presented twice.
+
+_RADAR_CHAINS: dict[str, tuple[str, str]] = {
+    "arbitrum":         ("RADAR_CONTRACT_ARBITRUM", "RADAR_RPC_ARBITRUM"),
+    "arbitrum-sepolia": ("RADAR_CONTRACT_ARBITRUM_SEPOLIA", "RADAR_RPC_ARBITRUM_SEPOLIA"),
+    "robinhood":        ("RADAR_CONTRACT_ROBINHOOD", "RADAR_RPC_ROBINHOOD"),
+}
+
+# In-memory consume of verified radar txs (Supabase replay_tx_hashes is the
+# durable layer, keyed network=radar-<chain>).
+_consumed_radar_txs: set[str] = set()
+
+
+class RadarVerifyRequest(BaseModel):
+    tx_hash: str
+    payment_id: str           # bytes32 hex the settle was issued with
+    payer: str                # agent 0x address
+    developer: str            # listed project's pay_to
+    amount_usdc: str          # required total, e.g. "0.01"
+    chain: str = "arbitrum-sepolia"
+
+
+@router.post("/discovery/arbitrum/verify")
+@limiter.limit("30/minute")
+async def radar_verify(body: RadarVerifyRequest, request: Request):
+    """Verify a RadarSplit settlement on-chain and consume it (one-shot)."""
+    if not settings.RADAR_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    chain = body.chain.strip().lower()
+    attrs = _RADAR_CHAINS.get(chain)
+    if not attrs:
+        raise HTTPException(status_code=422, detail=f"unknown chain '{body.chain}'")
+    contract = getattr(settings, attrs[0])
+    rpc_url  = getattr(settings, attrs[1])
+    if not contract or not rpc_url:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Radar settlement verification not configured for '{chain}'",
+        )
+
+    tx_hash = body.tx_hash.strip().lower()
+    network_label = f"radar-{chain}"
+
+    # Replay pre-check (Supabase primary, in-memory fallback)
+    from gateway.services import supabase as sb
+    if tx_hash in _consumed_radar_txs or (
+        sb.sb_enabled() and await sb.is_tx_hash_consumed(tx_hash, network_label)
+    ):
+        return {"success": False, "reason": "already_verified (replay)", "tx_hash": tx_hash}
+
+    from gateway.base import usdc_to_atomic
+    from gateway.radar_settle import verify_radar_settlement
+    try:
+        required_atomic = int(usdc_to_atomic(body.amount_usdc))
+    except Exception:
+        raise HTTPException(status_code=422, detail=f"unparseable amount_usdc {body.amount_usdc!r}")
+
+    result = await verify_radar_settlement(
+        tx_hash=tx_hash,
+        contract=contract,
+        payment_id=body.payment_id,
+        payer=body.payer,
+        developer=body.developer,
+        required_amount_atomic=required_atomic,
+        rpc_url=rpc_url,
+    )
+
+    if result["success"]:
+        # Atomic consume — same pattern as the x402 paths: in-memory
+        # check-and-add, then awaited durable insert (409 = lost the race).
+        if tx_hash in _consumed_radar_txs:
+            return {"success": False, "reason": "already_verified (replay)", "tx_hash": tx_hash}
+        _consumed_radar_txs.add(tx_hash)
+        recorded = await sb.record_tx_hash(tx_hash, network_label)
+        if recorded is False:
+            return {"success": False, "reason": "already_verified (replay)", "tx_hash": tx_hash}
+
+    return {**result, "chain": chain, "contract": contract}
 
 
 # ── Public leaderboard (the human "visibility" surface) ─────────────────────────

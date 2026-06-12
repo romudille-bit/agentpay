@@ -124,6 +124,15 @@ class Settings(BaseSettings):
     # normal live behavior. Example: RADAR_DEMO_FIXTURE=tests/fixtures/bazaar.json
     RADAR_DEMO_FIXTURE: str = ""
 
+    # Canonical RadarSplit contract per chain (POST /discovery/arbitrum/verify).
+    # Empty = verification unavailable for that chain (503). Set after deploy.
+    RADAR_CONTRACT_ARBITRUM: str = ""
+    RADAR_CONTRACT_ARBITRUM_SEPOLIA: str = ""
+    RADAR_CONTRACT_ROBINHOOD: str = ""
+    RADAR_RPC_ARBITRUM: str = "https://arb1.arbitrum.io/rpc"
+    RADAR_RPC_ARBITRUM_SEPOLIA: str = "https://sepolia-rollup.arbitrum.io/rpc"
+    RADAR_RPC_ROBINHOOD: str = ""    # no stable public default yet
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
