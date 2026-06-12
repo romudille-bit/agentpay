@@ -374,3 +374,36 @@ class TestBalanceErrorContract:
         monkeypatch.setattr(w.server, "load_account", raise_conn)
         with pytest.raises(RuntimeError, match="balance check failed"):
             w.get_usdc_balance()
+
+
+# ── Base-disabled diagnostics (0.2.6 polish) ─────────────────────────────────
+
+class TestBaseDisabledReason:
+
+    def test_bad_base_key_records_reason(self):
+        from stellar_sdk import Keypair
+        from agentpay._wallet import AgentWallet
+        w = AgentWallet(secret_key=Keypair.random().secret, network="testnet",
+                        base_key="not-a-valid-key")
+        assert w.base_address is None
+        assert w.base_disabled_reason and "rejected" in w.base_disabled_reason
+
+    def test_funding_hint_includes_disabled_reason(self, fake_wallet):
+        fake_wallet.base_address = None
+        fake_wallet.base_disabled_reason = (
+            'eth_account not installed — run: pip install "agentpay-x402[base]" '
+            "(if you have a venv, make sure it's activated)"
+        )
+        fake_wallet.pay.return_value = {
+            "success": False, "reason": "stellar:Resource Missing",
+        }
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(402, json=VALID_402)
+            )
+            with pytest.raises(PaymentFailed) as exc_info:
+                client.call_tool("token_price", {"symbol": "ETH"})
+        msg = str(exc_info.value)
+        assert "Base settlement unavailable" in msg
+        assert "agentpay-x402[base]" in msg

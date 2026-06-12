@@ -162,6 +162,13 @@ class AgentPayClient:
                     and base_opt is not None
                     and getattr(self.wallet, "base_address", None)
                 )
+                # Say WHY we're skipping an offered Base option instead of
+                # silently degrading to Stellar (usually: missing [base]
+                # extra / venv not activated / no base_key).
+                if base_opt is not None and prefer_chain != "stellar" and not want_base:
+                    why = (getattr(self.wallet, "base_disabled_reason", None)
+                           or "no Base key configured (pass base_key= or set BASE_AGENT_KEY)")
+                    logger.warning(f"  402 offers Base but settling on Stellar — {why}")
                 if chain_is_explicit and prefer_chain == "base" and not want_base:
                     raise PaymentFailed(
                         f"chain='base' requested for '{tool_name}' but "
@@ -210,6 +217,9 @@ class AgentPayClient:
                                     f"with USDC on Base mainnet"
                                 )
                             reason += "." + hint + "."
+                            disabled = getattr(self.wallet, "base_disabled_reason", None)
+                            if disabled:
+                                reason += f" (Base settlement unavailable: {disabled})"
                         raise PaymentFailed(reason)
                     tx_hash = payment["tx_hash"]
                     logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")

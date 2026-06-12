@@ -4,6 +4,15 @@ All notable changes to **agentpay-x402** (the `agentpay` Python SDK).
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.6] — 2026-06-11
+
+### Changed
+- Base-unavailable diagnostics: when a 402 offers Base but the wallet can't
+  settle there, the SDK now says WHY (missing `[base]` extra / venv not
+  activated / bad key) — both as a warning at fallback time and inside the
+  `PaymentFailed` funding hint. Previously it silently degraded to Stellar
+  and surfaced only the Stellar error.
+
 ## [0.2.5] — 2026-06-11
 
 ### Added

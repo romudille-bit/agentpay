@@ -177,6 +177,9 @@ class AgentWallet:
         self._total_spent = Decimal("0")
 
         # ── Base/EVM wallet (optional) ────────────────────────────────────────
+        # base_disabled_reason records WHY Base is unavailable so payment
+        # errors can say so instead of silently degrading to Stellar.
+        self.base_disabled_reason: str | None = None
         _base_key = base_key or os.environ.get("BASE_AGENT_KEY")
         if _base_key:
             try:
@@ -184,7 +187,16 @@ class AgentWallet:
                 self._evm_account = _Account.from_key(_base_key)
                 self.base_address = self._evm_account.address
                 logger.info(f"Base wallet loaded: {self.base_address[:10]}...")
+            except ImportError:
+                self.base_disabled_reason = (
+                    "eth_account not installed — run: pip install \"agentpay-x402[base]\" "
+                    "(if you have a venv, make sure it's activated)"
+                )
+                logger.warning(f"Base wallet init failed: {self.base_disabled_reason}")
+                self._evm_account = None
+                self.base_address = None
             except Exception as e:
+                self.base_disabled_reason = f"Base key rejected: {str(e)[:120]}"
                 logger.warning(f"Base wallet init failed: {e} — Base payments disabled")
                 self._evm_account = None
                 self.base_address = None
