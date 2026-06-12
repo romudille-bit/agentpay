@@ -1,0 +1,15 @@
+# Railway config for the flagship analyst service ONLY.
+# The repo-root railway.toml is the gateway's (uvicorn + /health healthcheck);
+# this service is a run-and-exit cron job: no port, no healthcheck, and no
+# restart policy (a completed run must not be restarted — it would re-spend).
+#
+# In the Railway service settings, point "Config-as-code file path" at
+# agents/analyst/railway.toml so this file wins over the root one.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python run.py"
+restartPolicyType = "never"
+cronSchedule = "0 13 * * *"
