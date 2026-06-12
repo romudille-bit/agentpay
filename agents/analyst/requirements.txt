@@ -1,0 +1,1 @@
+agentpay-x402[base]==0.2.6
