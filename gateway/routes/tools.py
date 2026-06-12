@@ -560,6 +560,27 @@ async def _execute_and_log(
     }
 
 
+@router.get("/tools/{tool_name}/call")
+@limiter.limit("60/minute")
+async def call_tool_get(tool_name: str, request: Request):
+    """x402 discovery crawlers probe resources with GET — answer with the
+    same 402 challenge POST issues, so the validation crawl can read the
+    PAYMENT-REQUIRED header (incl. extensions.bazaar). Without this the
+    crawl gets a 405 and the listing never leaves 'processing' — the exact
+    failure session_create had before GET /v1/session/create existed.
+    """
+    resolved = _TOOL_ALIASES.get(tool_name, tool_name)
+    tool = registry.get_tool(resolved)
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    if not tool.active:
+        raise HTTPException(status_code=503, detail=f"Tool '{tool_name}' is currently unavailable")
+    return await _issue_402(
+        tool, resolved, tool_name, ToolCallRequest(), request,
+        None, f"{GATEWAY_URL}/tools/{tool_name}/call",
+    )
+
+
 @router.post("/tools/{tool_name}/call")
 @limiter.limit("100/minute")                                        # per-IP
 @limiter.limit(settings.WALLET_RATE_LIMIT, key_func=wallet_or_ip)  # per-wallet

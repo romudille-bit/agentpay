@@ -738,3 +738,22 @@ class TestPreTradeCheckBazaar:
         h = r.headers["PAYMENT-REQUIRED"]
         payload = json.loads(base64.b64decode(h + "=" * (-len(h) % 4)))
         assert "extensions" not in payload
+
+
+class TestCallToolGet:
+    """Discovery crawlers probe with GET — must get the 402, not a 405."""
+
+    def test_get_returns_402_with_bazaar_extension(self, client, monkeypatch):
+        import base64, json
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        r = client.get("/tools/pre_trade_check/call")
+        assert r.status_code == 402
+        h = r.headers["PAYMENT-REQUIRED"]
+        payload = json.loads(base64.b64decode(h + "=" * (-len(h) % 4)))
+        assert payload["resource"]["serviceName"] == "AgentPay"
+        assert "bazaar" in payload.get("extensions", {})
+
+    def test_get_unknown_tool_404(self, client):
+        r = client.get("/tools/not_a_tool/call")
+        assert r.status_code == 404
