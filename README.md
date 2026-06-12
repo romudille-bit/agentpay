@@ -207,7 +207,8 @@ npx -y @romudille/agentpay-mcp
 }
 ```
 
-Exposes the 17 free tools **and** a `route` tool (buyer-side routing). Listed on
+Exposes the 17 free tools **plus** `route` (buyer-side routing) and
+`estimate_plan` (price a multi-tool plan before spending). Listed on
 [Glama](https://glama.ai/mcp/servers/romudille-bit/agentpay).
 
 ### Buyer-side routing — find & pay for the best tool, within a budget
@@ -223,9 +224,18 @@ agentpay-route "funding rates" --budget 0.01   # ranked candidates + a recommend
 
 ---
 
-## Paid tool: session_create
+## Paid tools: session_create + pre_trade_check ($0.01 each)
 
-One tool costs money today: `session_create` ($0.001 USDC per session). It opens a budget-capped session with a hard `max_spend` limit — for autonomous agents that need spend enforcement across multiple calls. All 17 data tools remain free.
+Two tools cost money today. `session_create` opens a budget-capped session with a
+hard `max_spend` limit — for autonomous agents that need spend enforcement across
+multiple calls. `pre_trade_check` is the first **outcome bundle**: one call returns
+an ok/caution/avoid trade verdict from live orderbook slippage at your size,
+side-aware funding carry, open-interest crowding, and an optional contract security
+scan — with the per-factor breakdown and raw components embedded. All 17 data tools
+remain free.
+
+Price any plan before spending a cent (free, no wallet): `POST /v1/plan/estimate`,
+or `session.estimate_plan([...])` from the SDK.
 
 When metered inference ships, it works through the same Session interface — your agent checks cost, decides if it's worth it, and pays in USDC on Stellar or Base.
 
@@ -242,6 +252,14 @@ else:
 
 To fund a wallet for `session_create`: send USDC to a Stellar wallet (`S...` key, issuer `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`) or a Base wallet (`0x...`, contract `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
 
+### Eating our own dog food
+
+AgentPay's **flagship analyst agent** (`agents/analyst/`) runs daily on these exact
+rails as a real customer: it prices its plan with `estimate_plan`, gathers free
+intel, buys `pre_trade_check` verdicts on the majors under a hard $0.25 cap, and
+publishes a market note with an on-chain-verifiable receipt. The first best
+customer is the house.
+
 ---
 
 ## Architecture
@@ -253,7 +271,7 @@ agent (Python SDK)
     │
     │  POST /tools/{name}/call
     │  ← 200 {result: ...}              ← free tools return directly
-    │  ← 402 {payment_id, amount, ...}  ← paid tools (inference, coming soon)
+    │  ← 402 {payment_id, amount, ...}  ← paid tools (session_create, pre_trade_check)
     │  → USDC on Stellar (~3–5s) or Base (~2s)
     │  → retry with X-Payment header
     │  ← 200 {result: ...}
@@ -261,6 +279,8 @@ agent (Python SDK)
 gateway (FastAPI on Railway)
     │
     ├── registry/registry.py   — 19-tool catalog (17 free; session_create + pre_trade_check, $0.01 each)
+    ├── gateway/routes/plan.py — POST /v1/plan/estimate (free pre-flight plan pricing)
+    ├── gateway/radar.py       — Arbitrum x402 Radar discovery + settlement verify (see RADAR.md)
     ├── gateway/stellar.py     — Stellar payment verification via Horizon
     ├── gateway/base.py        — Base payment verification via JSON-RPC
     └── gateway/services/tools_runtime.py — real API dispatchers
