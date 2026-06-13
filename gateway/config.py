@@ -133,6 +133,18 @@ class Settings(BaseSettings):
     RADAR_RPC_ARBITRUM_SEPOLIA: str = "https://sepolia-rollup.arbitrum.io/rpc"
     RADAR_RPC_ROBINHOOD: str = ""    # no stable public default yet
 
+    # Public flagship receipt ledger (GET /ledger + GET /v1/ledger.json). Reads
+    # payment_logs for the flagship analyst agent's wallets and renders its run
+    # history, spend-vs-cap, and on-chain links — the live proof that an agent
+    # manages its own budget on AgentPay's rails. Additive, read-only, public,
+    # and behind a flag (default on) like RADAR_ENABLED so it can be 404'd without
+    # a redeploy. LEDGER_FLAGSHIP_ADDRESSES is a comma-separated allowlist of the
+    # agent's wallet addresses (its Base payer + its Stellar free-tier identity);
+    # empty = the built-in default pair in routes/ledger.py.
+    LEDGER_ENABLED: bool = True
+    LEDGER_FLAGSHIP_ADDRESSES: str = ""
+    LEDGER_RUN_CAP_USDC: str = "0.25"   # hard per-run cap the flagship runs under
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
