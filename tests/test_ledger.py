@@ -119,6 +119,130 @@ def test_empty_input():
     assert out["runs"] == []
 
 
+def test_parse_ts_variable_fractional_digits():
+    # 5-digit microseconds + offset (real Postgres shape) must parse, not drop.
+    assert ledger._parse_ts("2026-06-12T22:30:35.61428+00:00") is not None
+    assert ledger._parse_ts("2026-06-12T18:16:53.209657+00:00") is not None
+    assert ledger._parse_ts("2026-06-13T13:04:35Z") is not None
+    assert ledger._parse_ts("garbage") is None
+
+
+def test_four_hour_gap_splits_even_with_odd_timestamps():
+    rows = [
+        _free("2026-06-12T18:16:33.449487+00:00"),
+        _paid("2026-06-12T18:16:53.209657+00:00", "0xa"),
+        _free("2026-06-12T22:30:35.61428+00:00"),   # 5-digit micros
+        _paid("2026-06-12T22:30:41.243794+00:00", "0xb"),
+    ]
+    out = ledger.group_runs(rows)
+    assert out["totals"]["runs"] == 2
+
+
+def test_running_budget_drawdown():
+    out = ledger.group_runs(RUN_B, run_cap="0.25")
+    paid = out["runs"][0]["paid_calls"]
+    assert paid[0]["remaining_after_usdc"] == "0.24"
+    assert paid[1]["remaining_after_usdc"] == "0.23"
+    assert out["runs"][0]["remaining_usdc"] == "0.23"
+
+
+# ── execution timeline ───────────────────────────────────────────────────────
+
+def test_timeline_orders_all_calls_with_budget_drawdown():
+    out = ledger.group_runs(RUN_B, run_cap="0.25")
+    tl = out["runs"][0]["timeline"]
+    # 2 free + 2 paid = 4 steps, in execution order, numbered from 1
+    assert [s["step"] for s in tl] == [1, 2, 3, 4]
+    assert [s["kind"] for s in tl] == ["free", "free", "paid", "paid"]
+    # budget only draws down on paid steps
+    assert [s["remaining_usdc"] for s in tl] == ["0.25", "0.25", "0.24", "0.23"]
+    # purposes are human-readable, not bare tool names
+    assert tl[0]["purpose"] == "read market sentiment"        # fear_greed_index
+    assert tl[2]["purpose"] == "buy a trade-safety verdict"   # pre_trade_check
+    # paid steps carry their on-chain link
+    assert tl[2]["explorer_url"].startswith("https://basescan.org/tx/")
+    assert "explorer_url" not in tl[0]
+
+
+def test_timeline_unknown_tool_gets_fallback_purpose():
+    rows = [{"created_at": "2026-06-13T13:04:35+00:00", "tool_name": "mystery_tool",
+             "network": "stellar-mainnet", "amount_usdc": "0.000",
+             "state": "payment_done", "tx_hash": None, "agent_address": "G"}]
+    tl = ledger.group_runs(rows)["runs"][0]["timeline"]
+    assert tl[0]["purpose"] == "call mystery_tool"
+
+
+def test_attach_reasoning_includes_objective():
+    out = ledger.group_runs(RUN_B)
+    m = _meta("2026-06-13T13:04:40+00:00", {"BTC": {"verdict": "ok", "factors": {}}})
+    m["objective"] = {"symbols": ["BTC", "ETH"], "trade_size_usd": 25000,
+                      "side": "long", "cap_usdc": "0.25"}
+    ledger.attach_reasoning(out["runs"], [m])
+    assert out["runs"][0]["reasoning"]["objective"]["trade_size_usd"] == 25000
+
+
+# ── attach_reasoning (merge) ─────────────────────────────────────────────────
+
+def _meta(run_at, verdicts):
+    return {"run_at": run_at, "wallet": "0xe16", "max_spend": "0.25",
+            "plan": {"total_usdc": "0.02", "steps": ["a", "b"], "fits_budget": True},
+            "regime": "Fear & Greed 55 (Greed)", "context": "12 headlines (net bullish)",
+            "verdicts": verdicts, "skipped": {}, "receipt": {"spent": "$0.020"},
+            "free_intel": {"tools": ["crypto_news", "gas_tracker"]}, "note": "n"}
+
+
+def test_attach_reasoning_matches_by_time_window():
+    out = ledger.group_runs(RUN_A + RUN_B)
+    metas = [
+        _meta("2026-06-13T13:04:40+00:00", {"BTC": {"verdict": "ok", "factors": {}}}),
+        _meta("2026-06-12T18:16:40+00:00", {"ETH": {"verdict": "caution", "factors": {}}}),
+    ]
+    n = ledger.attach_reasoning(out["runs"], metas)
+    assert n == 2
+    assert out["runs"][0]["reasoning"]["regime"].startswith("Fear & Greed")
+    assert "BTC" in out["runs"][0]["reasoning"]["verdicts"]
+
+
+def test_attach_reasoning_no_match_leaves_runs_bare():
+    out = ledger.group_runs(RUN_B)
+    n = ledger.attach_reasoning(out["runs"], [_meta("2020-01-01T00:00:00+00:00", {})])
+    assert n == 0
+    assert "reasoning" not in out["runs"][0]
+
+
+# ── ingest endpoint ──────────────────────────────────────────────────────────
+
+def test_ingest_404_when_secret_unset(monkeypatch):
+    monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "")
+    from gateway.main import app
+    assert TestClient(app).post("/v1/flagship/run", json={}).status_code == 404
+
+
+def test_ingest_401_on_bad_secret(monkeypatch):
+    monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")
+    from gateway.main import app
+    r = TestClient(app).post("/v1/flagship/run", json={"run_at": "x"},
+                             headers={"X-Flagship-Secret": "wrong"})
+    assert r.status_code == 401
+
+
+def test_ingest_stores_with_valid_secret(monkeypatch):
+    monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")
+    captured = {}
+
+    async def _fake_insert(run):
+        captured.update(run)
+        return True
+    monkeypatch.setattr(ledger, "insert_flagship_run", _fake_insert)
+    from gateway.main import app
+    r = TestClient(app).post("/v1/flagship/run",
+                             json={"run_at_iso": "2026-06-13T13:04:40+00:00", "wallet": "0xe16"},
+                             headers={"X-Flagship-Secret": "s3cr3t"})
+    assert r.status_code == 200
+    assert r.json()["stored"] is True
+    assert captured["wallet"] == "0xe16"
+
+
 # ── route tests ──────────────────────────────────────────────────────────────
 
 def test_ledger_html_served(monkeypatch):
@@ -127,7 +251,8 @@ def test_ledger_html_served(monkeypatch):
     resp = c.get("/ledger")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "Flagship Ledger" in resp.text
+    assert "How an Agent Decides" in resp.text
+    assert "THE DECISION LOOP" in resp.text
 
 
 def test_ledger_json_shape(monkeypatch):

@@ -54,6 +54,29 @@ CREATE TABLE IF NOT EXISTS payment_logs (
 );
 """
 
+# One row per flagship analyst run. Feeds the reasoning shown on /ledger (the
+# plan estimate, regime read, per-verdict factor breakdown, and spend receipt).
+# Written by the gateway on POST /v1/flagship/run; read by GET /ledger.json.
+FLAGSHIP_RUNS_DDL = """
+CREATE TABLE IF NOT EXISTS flagship_runs (
+    id          SERIAL PRIMARY KEY,
+    run_at      TIMESTAMPTZ NOT NULL,
+    wallet      TEXT,
+    max_spend   TEXT,
+    objective   JSONB       DEFAULT '{}'::jsonb,
+    plan        JSONB       DEFAULT '{}'::jsonb,
+    regime      TEXT        DEFAULT '',
+    context     TEXT        DEFAULT '',
+    verdicts    JSONB       DEFAULT '{}'::jsonb,
+    skipped     JSONB       DEFAULT '{}'::jsonb,
+    receipt     JSONB       DEFAULT '{}'::jsonb,
+    free_intel  JSONB       DEFAULT '{}'::jsonb,
+    note        TEXT        DEFAULT '',
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_flagship_runs_run_at ON flagship_runs (run_at DESC);
+"""
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _headers() -> dict:
@@ -108,8 +131,9 @@ async def main():
         print("── Creating tables ──")
         tools_ok = await _run_sql(client, TOOLS_DDL, "CREATE TABLE tools")
         logs_ok  = await _run_sql(client, LOGS_DDL,  "CREATE TABLE payment_logs")
+        flagship_ok = await _run_sql(client, FLAGSHIP_RUNS_DDL, "CREATE TABLE flagship_runs")
 
-        if not (tools_ok and logs_ok):
+        if not (tools_ok and logs_ok and flagship_ok):
             print("""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 The REST SQL endpoint requires a service_role key.
@@ -120,6 +144,8 @@ Run the following SQL in your Supabase SQL Editor:
             print(TOOLS_DDL)
             print("── payment_logs ───────────────────────────────────────────")
             print(LOGS_DDL)
+            print("── flagship_runs ──────────────────────────────────────────")
+            print(FLAGSHIP_RUNS_DDL)
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             print("\nAfter running the SQL, re-run this script to seed the tools.")
             print("(Attempting seed anyway in case tables already exist…)\n")

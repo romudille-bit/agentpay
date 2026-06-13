@@ -849,6 +849,90 @@ async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Flagship runs (public ledger reasoning)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The flagship analyst agent POSTs a full run summary after each daily run
+# (POST /v1/flagship/run). It is stored here so /ledger can render WHY each call
+# happened — the plan estimate, regime read, per-verdict factor breakdown, and
+# the spending receipt — not just the on-chain payment_logs rows. One row per run.
+#
+# Table: flagship_runs (see db/migrate.py FLAGSHIP_RUNS_DDL). JSONB columns hold
+# the structured plan/verdicts/receipt/free_intel; run_at is the agent's run
+# timestamp (used to merge with the payment_logs-grouped runs on the ledger).
+#
+# Behaviour: best-effort. A missing table or Supabase blip logs + returns
+# False/[] so the ingest endpoint stays a no-op rather than failing the agent.
+
+
+async def insert_flagship_run(run: dict) -> bool:
+    """INSERT one flagship run summary. Returns True on success.
+
+    `run` is the agent's posted payload; only known columns are forwarded.
+    """
+    if not sb_enabled():
+        return False
+    payload = {
+        "run_at":     run.get("run_at_iso") or run.get("run_at"),
+        "wallet":     run.get("wallet"),
+        "max_spend":  run.get("max_spend"),
+        "objective":  run.get("objective") or {},
+        "plan":       run.get("plan") or {},
+        "regime":     run.get("regime") or "",
+        "context":    run.get("context") or "",
+        "verdicts":   run.get("verdicts") or {},
+        "skipped":    run.get("skipped") or {},
+        "receipt":    run.get("receipt") or {},
+        "free_intel": run.get("free_intel") or {},
+        "note":       run.get("note") or "",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/flagship_runs",
+                headers=sb_headers(),
+                json=payload,
+            )
+        if resp.status_code not in (200, 201, 204):
+            logger.error(
+                f"insert_flagship_run error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]}"
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"insert_flagship_run failure: {e}")
+        return False
+
+
+async def fetch_flagship_runs(limit: int = 200) -> list[dict]:
+    """SELECT flagship run summaries, newest first. [] on error/disabled/missing."""
+    if not sb_enabled():
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/flagship_runs",
+                headers={**sb_headers(), "Accept": "application/json"},
+                params={
+                    "select": "run_at,wallet,max_spend,objective,plan,regime,context,"
+                              "verdicts,skipped,receipt,free_intel,note",
+                    "order":  "run_at.desc",
+                    "limit":  str(limit),
+                },
+            )
+        if resp.status_code != 200:
+            # 404 = table not created yet; degrade silently to no reasoning.
+            if resp.status_code != 404:
+                logger.error(f"fetch_flagship_runs error: HTTP {resp.status_code}")
+            return []
+        return resp.json()
+    except Exception as e:
+        logger.error(f"fetch_flagship_runs failure: {e}")
+        return []
+
+
 async def mark_refund_failed(payment_id: str, error_reason: str) -> None:
     """Terminal sad-path transition after cap exhaustion. Filters by
     expected_state IN ('refund_pending', 'refund_failed') so a retry

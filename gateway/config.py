@@ -145,6 +145,13 @@ class Settings(BaseSettings):
     LEDGER_FLAGSHIP_ADDRESSES: str = ""
     LEDGER_RUN_CAP_USDC: str = "0.25"   # hard per-run cap the flagship runs under
 
+    # Shared secret that gates POST /v1/flagship/run — the flagship agent posts
+    # its run summary (plan, regime, verdicts, receipt, note) so /ledger can show
+    # the reasoning behind each call. The gateway holds the Supabase creds and
+    # does the write; the agent stays a credential-free HTTP customer. Empty =
+    # ingest endpoint disabled (404). Must match the agent's FLAGSHIP_INGEST_SECRET.
+    FLAGSHIP_INGEST_SECRET: str = ""
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
