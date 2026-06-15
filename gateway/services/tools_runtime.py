@@ -172,6 +172,8 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_market_snapshot(client)
             elif tool_name == "pre_trade_check":
                 result = await _fetch_pre_trade_check(params)
+            elif tool_name == "verified_route":
+                result = await _fetch_verified_route(client, params)
             else:
                 result = {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
@@ -1444,3 +1446,60 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
         "components": comp,
         "checked_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+
+
+# ── verified_route — the paid trust oracle ($0.01) ────────────────────────────
+
+async def _sweep_bazaar(client: httpx.AsyncClient, queries: list[str]) -> list[dict]:
+    """Fetch many Bazaar discovery queries concurrently; return raw payloads.
+
+    Failed queries are skipped (a flaky term must not sink the whole sweep).
+    A bare unfiltered call is prepended to catch resources no term matches.
+    """
+    import urllib.parse
+    from gateway import radar
+
+    async def _one(q: str | None) -> dict | None:
+        url = radar.BAZAAR_URL + (f"?query={urllib.parse.quote(q)}" if q else "")
+        try:
+            r = await client.get(url, headers={"User-Agent": radar.UA,
+                                               "Accept": "application/json"})
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            logger.debug(f"[verified_route] sweep query {q!r} failed: {e}")
+            return None
+
+    results = await asyncio.gather(*[_one(q) for q in ([None] + queries)])
+    return [d for d in results if d]
+
+
+async def _fetch_verified_route(client: httpx.AsyncClient, params: dict) -> dict:
+    """Paid buyer-side trust oracle ($0.01).
+
+    Sweeps the whole Bazaar catalog across many query terms, collapses sybil/
+    factory clusters (one wallet behind many "distinct" listings → one entry),
+    ranks the genuinely-used survivors, and returns a vetted recommendation +
+    ready-to-pay challenge. The thing an agent cannot do in a single query.
+    """
+    from decimal import Decimal, InvalidOperation
+    from gateway import radar
+
+    need  = (params.get("need") or "").strip()
+    chain = (params.get("chain") or "").strip() or None
+    try:
+        budget = Decimal(str(params.get("budget_usd", "1")))
+    except (InvalidOperation, ValueError, TypeError):
+        budget = Decimal("1")
+
+    # Bias the sweep toward the need: lead with the agent's own terms, then the
+    # broad default set (deduped, order-preserving) for full-catalog coverage.
+    need_terms = [t for t in need.lower().split() if len(t) > 2][:4]
+    queries = list(dict.fromkeys(need_terms + radar.SWEEP_QUERIES))
+
+    payloads = await _sweep_bazaar(client, queries)
+    if not payloads:
+        return {"error": "Bazaar discovery unavailable — no queries returned"}
+
+    return radar.verified_route_from_payloads(payloads, need=need, budget=budget,
+                                              chain=chain)

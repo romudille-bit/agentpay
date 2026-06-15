@@ -80,14 +80,14 @@ def patch_route_tool_response(monkeypatch):
 
 class TestListTools:
 
-    def test_returns_all_19_tools(self, client):
+    def test_returns_all_20_tools(self, client):
         r = client.get("/tools")
         assert r.status_code == 200
         body = r.json()
         assert "tools" in body
         assert "count" in body
-        assert body["count"] == 19
-        assert len(body["tools"]) == 19
+        assert body["count"] == 20
+        assert len(body["tools"]) == 20
 
     def test_each_tool_has_required_fields(self, client):
         r = client.get("/tools")

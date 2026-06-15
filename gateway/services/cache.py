@@ -29,6 +29,7 @@ CACHE_TTL: dict[str, int] = {
     "orderbook_depth":    15,   # shortest — depth is the most time-sensitive read
     "crypto_news":        120,
     "whale_activity":     60,
+    "verified_route":     120,  # multi-query catalog sweep is expensive; cache by need+budget+chain
 }
 
 

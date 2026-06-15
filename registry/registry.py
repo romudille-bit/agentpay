@@ -468,6 +468,64 @@ _TOOLS: dict[str, Tool] = {
             "sdk_hint": "Use `from agentpay import Session` to enforce the max_spend cap client-side.",
         },
     ),
+    "verified_route": Tool(
+        name="verified_route",
+        description=(
+            "Paid buyer-side trust oracle: 'I need X, budget $Y — which x402 tool is real?' "
+            "Sweeps the WHOLE x402 marketplace across many queries (a single search shows "
+            "only a slice), collapses sybil/factory clusters (one wallet stamping many "
+            "fake-distinct listings → one entry), ranks the genuinely-used survivors by "
+            "real unique-payer usage, and returns ONE vetted recommendation with a "
+            "ready-to-pay x402 challenge. The credit-bureau check an agent cannot do itself "
+            "in one query — pay $0.01 to avoid paying a scam or a dead stub."
+        ),
+        endpoint="https://agentpay.tools/tools/verified_route",
+        price_usdc="0.01",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {
+                "need": {
+                    "type": "string",
+                    "description": "What the agent needs, e.g. 'dex pair liquidity', 'crypto prices'",
+                },
+                "budget_usd": {
+                    "type": "number",
+                    "description": "Max USDC the agent will pay the downstream tool per call",
+                    "default": 1,
+                },
+                "chain": {
+                    "type": "string",
+                    "description": "Optional chain filter: 'base', 'arbitrum', 'arbitrum-stack'. Empty = all chains.",
+                    "default": "",
+                },
+            },
+            "required": ["need"],
+        },
+        category="routing",
+        triggers=["verified route", "which tool", "is this tool real", "vet tool", "trustworthy x402",
+                  "find a real tool", "avoid scam tool", "best x402 tool", "trust score", "vetted route"],
+        use_when="An agent is about to pay an unknown x402 tool and wants the real, used, non-sybil one under budget — not just the cheapest.",
+        returns="recommendation (with ready_to_pay), survivors[], catalog{scanned, real_providers, sybil_collapsed, biggest_factory}, vetting summary",
+        response_example={
+            "need": "dex pair liquidity",
+            "chain": None,
+            "budget_usd": "1",
+            "recommendation": {
+                "name": "Otto AI", "url": "https://otto.example/dex",
+                "price_usd": "0.001", "network": "eip155:8453",
+                "pay_to": "0x0e84ddedaae6a7", "payers30d": 200, "calls30d": 3246,
+                "quality": 3851, "flags": [],
+                "ready_to_pay": {"url": "https://otto.example/dex", "network": "eip155:8453",
+                                 "price_usd": "0.001", "accepts": {"scheme": "exact", "network": "eip155:8453"}},
+            },
+            "survivors": [],
+            "catalog": {"scanned": 117, "after_vetting": 114, "real_providers": 41,
+                        "unique_wallets": 38, "sybil_collapsed": 73,
+                        "biggest_factory": {"pay_to": "0x2bb72231eed3", "listings": 72}},
+            "vetting": "swept 17 queries → 117 listings → collapsed 73 sybil listings → 41 real providers",
+        },
+    ),
     "market_snapshot": Tool(
         name="market_snapshot",
         description="Fed rate, inflation proxy, S&P 500, BTC, ETH, and gas in one call. Replaces three separate API integrations with a single normalized response — the only tool that gives you macro + crypto in one shot.",

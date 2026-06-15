@@ -144,6 +144,9 @@ def parse_resources(data: dict) -> list[dict]:
             "calls30d": int(q.get("l30DaysTotalCalls", 0) or 0),
             "payers30d": int(q.get("l30DaysUniquePayers", 0) or 0),
             "last_called": q.get("lastCalledAt"),
+            # Raw first `accepts` entry so verified_route can hand the buyer a
+            # ready-to-pay x402 challenge without a second fetch.
+            "accepts": a,
         })
     return out
 
@@ -178,17 +181,27 @@ def _recency_days(iso: Optional[str]) -> Optional[int]:
         return None
 
 
-def decide(cands: list[dict], remaining: Decimal) -> tuple[list[dict], Optional[dict]]:
+def decide(cands: list[dict], remaining: Decimal,
+           usage_aware: bool = False) -> tuple[list[dict], Optional[dict]]:
     """Filter + rank. Returns (scored_with_verdicts, recommendation). Pure.
 
     Stages: junk-filter (no schema = stub; factory fingerprint) → budget gate →
     usage-quality score (unique_payers×3 + calls + recency bonus, factory
     downrank) → sort by quality desc, price asc.
+
+    `usage_aware` (verified_route uses True): a wallet with many listings is only
+    a "factory" if those listings are MOSTLY UNPROVEN. A trustworthy multi-product
+    provider (e.g. CMC) whose endpoints each have real payers is NOT a factory and
+    is never downranked for breadth. Known-trusted payTo addresses are always
+    exempt; known factory prefixes are always factories. Default False preserves
+    the legacy count-only behavior the Arbitrum radar + its tests rely on.
     """
     names_per_payto: dict[str, set] = {}
+    listings_per_payto: dict[str, list] = {}
     for c in cands:
         if c["pay_to"]:
             names_per_payto.setdefault(c["pay_to"], set()).add(c["name"])
+            listings_per_payto.setdefault(c["pay_to"], []).append(c)
 
     scored: list[dict] = []
     for c in cands:
@@ -198,8 +211,17 @@ def decide(cands: list[dict], remaining: Decimal) -> tuple[list[dict], Optional[
         # Stage 2 — junk filter
         if not c["has_schema"]:
             dropped, reason = True, "no usable schema (stub)"
-        is_factory = (len(names_per_payto.get(c["pay_to"], set())) >= 3) or any(
-            c["pay_to"].startswith(f) for f in KNOWN_FACTORIES)
+        pt = c["pay_to"]
+        known_factory = any(pt.startswith(f) for f in KNOWN_FACTORIES)
+        known_trusted = any(pt.startswith(t) for t in KNOWN_TRUSTED)
+        cluster = len(names_per_payto.get(pt, set())) >= FACTORY_MIN_NAMES
+        if usage_aware and cluster and not known_factory:
+            # Decide on USAGE, not raw endpoint count: a cluster is only a factory
+            # when most of its listings are unproven. Real providers keep breadth.
+            grp = listings_per_payto.get(pt, [])
+            proven = sum(1 for x in grp if x["payers30d"] >= PROVEN_PAYERS)
+            cluster = (proven / max(len(grp), 1)) < 0.5
+        is_factory = (known_factory or cluster) and not known_trusted
         if is_factory:
             flags.append("factory")
 
@@ -266,7 +288,7 @@ def _public(s: Optional[dict]) -> Optional[dict]:
     """Project a scored candidate down to the public discovery shape."""
     if not s:
         return None
-    return {
+    out = {
         "name": s["name"],
         "url": s["url"],
         "price_usd": (str(s["price_usd"]) if s["price_usd"] is not None else None),
@@ -277,4 +299,146 @@ def _public(s: Optional[dict]) -> Optional[dict]:
         "payers30d": s["payers30d"],
         "quality": s["quality"],
         "flags": s["flags"],
+    }
+    if s.get("collapsed_siblings"):
+        out["collapsed_siblings"] = s["collapsed_siblings"]
+    return out
+
+
+# ── verified_route — the PAID trust oracle ($0.01) ──────────────────────────────
+# The free `route`/`/discovery` path ranks ONE Bazaar query. verified_route does
+# the work an agent can't do in a single query: sweep the whole catalog across
+# many terms, collapse sybil/factory clusters (one wallet stamping many "distinct"
+# tools → one entry), and return the genuinely-distinct, actually-used survivors.
+# All pure functions below so they're unit-testable against captured payloads.
+
+# Default sweep terms for comprehensive discovery. Bazaar returns a slice per
+# query, so a fixed broad sweep + dedup approximates the full catalog.
+SWEEP_QUERIES = [
+    "api", "data", "crypto", "price", "ai", "search", "weather", "stock",
+    "news", "image", "trade", "defi", "token", "finance", "llm", "agent",
+]
+
+# Sybil/spam detection is USAGE-based, not endpoint-count based. A trustworthy
+# provider (e.g. CMC) may legitimately list many endpoints; what marks spam is a
+# long tail of barely-used listings under one wallet — not breadth itself.
+FACTORY_MIN_NAMES = 3   # min distinct listings under one wallet to even scrutinize it
+PROVEN_PAYERS     = 10  # a listing with >= this many 30d unique payers is a "real" tool
+SYBIL_TAIL_MIN    = 5   # collapse a wallet's UNPROVEN (<PROVEN_PAYERS) listings when >= this many
+
+# Known-trusted payTo addresses — never flagged factory, never collapsed, no
+# matter how many endpoints they list. Curated allowlist of reputable providers.
+# Prefix match (lowercased), same convention as KNOWN_FACTORIES.
+KNOWN_TRUSTED = {
+    "0x271189c860db25bc43173b0335784ad68a680908".lower(),  # CoinMarketCap x402
+}
+
+
+def merge_resources(payloads: Iterable[dict]) -> dict:
+    """Concatenate `resources` from many Bazaar payloads into one payload.
+
+    parse_resources dedups by url downstream, so plain concatenation is enough.
+    """
+    out: list[dict] = []
+    for d in payloads:
+        out.extend((d or {}).get("resources", []) or [])
+    return {"resources": out}
+
+
+def collapse_sybils(survivors: list[dict]) -> tuple[list[dict], dict]:
+    """Fold a wallet's UNPROVEN tail (not its breadth) into one entry.
+
+    Decision is usage-based, not count-based: within a wallet's listings, the
+    PROVEN ones (>= PROVEN_PAYERS unique payers) ALWAYS stay visible — a real
+    multi-product provider like CMC keeps every used endpoint. Only when a wallet
+    carries a long tail of >= SYBIL_TAIL_MIN unproven listings do those fold into
+    a single representative. Known-trusted wallets are never collapsed at all.
+    Returns (kept_sorted, stats). Pure.
+    """
+    by_payto: dict[str, list[dict]] = {}
+    no_payto: list[dict] = []
+    for s in survivors:
+        pt = s.get("pay_to")
+        if pt:
+            by_payto.setdefault(pt, []).append(s)
+        else:
+            no_payto.append(s)
+
+    kept: list[dict] = list(no_payto)
+    collapsed = 0
+    biggest = {"pay_to": None, "listings": 0}   # biggest collapsed unproven tail (= spam size)
+    for pt, group in by_payto.items():
+        trusted = any(pt.startswith(t) for t in KNOWN_TRUSTED)
+        unproven = [s for s in group if s["payers30d"] < PROVEN_PAYERS]
+        proven = [s for s in group if s["payers30d"] >= PROVEN_PAYERS]
+        if not trusted and len(unproven) >= SYBIL_TAIL_MIN:
+            kept.extend(proven)                       # real endpoints survive untouched
+            best = max(unproven, key=lambda s: s["quality"])
+            kept.append({**best, "collapsed_siblings": len(unproven) - 1})
+            collapsed += len(unproven) - 1
+            if len(unproven) > biggest["listings"]:
+                biggest = {"pay_to": pt, "listings": len(unproven)}
+        else:
+            kept.extend(group)                        # trusted, or no spam tail → keep all
+
+    kept.sort(key=lambda s: (-s["quality"],
+                             s["price_usd"] if s["price_usd"] is not None else Decimal("999")))
+    stats = {
+        "unique_wallets": len(by_payto) + (1 if no_payto else 0),
+        "sybil_collapsed": collapsed,
+        "biggest_factory": biggest if biggest["listings"] > 0 else None,
+    }
+    return kept, stats
+
+
+def _ready_to_pay(s: Optional[dict]) -> Optional[dict]:
+    """The buyer-facing 'how to pay this' block for the recommendation."""
+    if not s:
+        return None
+    return {"url": s["url"], "network": s["network_caip2"] or s["network"],
+            "price_usd": (str(s["price_usd"]) if s["price_usd"] is not None else None),
+            "accepts": s.get("accepts") or {}}
+
+
+def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decimal,
+                                 chain: Optional[str] = None,
+                                 extra: Optional[Iterable[dict]] = None) -> dict:
+    """Assemble the paid verified_route result from swept Bazaar payloads. Pure.
+
+    DISCOVER (merge+dedup many queries) → FILTER (chain) → DECIDE (junk/factory/
+    rank over the FULL set) → COLLAPSE (sybil clusters → one entry) → recommend.
+    """
+    merged = merge_resources(payloads)
+    cands = filter_chain(parse_resources(merged), chain)
+    if extra:
+        cands = cands + filter_chain(list(extra), chain)
+
+    scored, _ = decide(cands, budget, usage_aware=True)
+    survivors = [s for s in scored if not s["dropped"]]
+    kept, stats = collapse_sybils(survivors)
+    rec = kept[0] if kept else None
+
+    rec_pub = _public(rec)
+    if rec_pub:
+        rec_pub["ready_to_pay"] = _ready_to_pay(rec)
+
+    return {
+        "need": need,
+        "chain": chain,
+        "budget_usd": str(budget),
+        "recommendation": rec_pub,
+        "survivors": [_public(s) for s in kept],
+        "catalog": {
+            "scanned": len(cands),
+            "after_vetting": len(survivors),
+            "real_providers": len(kept),
+            "unique_wallets": stats["unique_wallets"],
+            "sybil_collapsed": stats["sybil_collapsed"],
+            "biggest_factory": stats["biggest_factory"],
+        },
+        "vetting": (
+            f"swept {len(payloads)} queries → {len(cands)} listings → "
+            f"collapsed {stats['sybil_collapsed']} sybil listings → "
+            f"{len(kept)} real providers"
+        ),
     }
