@@ -214,6 +214,117 @@ _TOOL_BAZAAR: dict[str, dict] = {
             },
         },
     },
+    "verified_route": {
+        "resource": {
+            "serviceName": "AgentPay",
+            "description": (
+                "Buyer-side trust oracle for the x402 marketplace: 'I need X, "
+                "budget $Y — which tool is real?' Sweeps the WHOLE catalog across "
+                "many queries, collapses sybil/factory clusters (one wallet "
+                "stamping many fake-distinct listings), ranks the genuinely-used "
+                "survivors by unique-payer usage, and returns one vetted pick with "
+                "a ready-to-pay challenge. The credit-bureau check an agent can't "
+                "do in a single query."
+            ),
+            # ≤5 tags, ≤32 chars each — own the routing/trust category, not data.
+            "tags": ["x402-routing", "trust-oracle", "sybil-detection",
+                     "tool-discovery", "agent-commerce"],
+        },
+        "extension": {
+            "description": (
+                "Vet before you pay a stranger: sweep the x402 catalog, collapse "
+                "sybil/factory listings, rank real providers by usage, and return "
+                "ONE recommendation under budget with a ready-to-pay x402 challenge "
+                "+ a catalog dossier (scanned / real_providers / sybil_collapsed / "
+                "biggest_factory)."
+            ),
+            "info": {
+                "input": {
+                    "type":     "http",
+                    "method":   "POST",
+                    "bodyType": "json",
+                    "body": {
+                        "parameters": {
+                            "need":       "dex pair liquidity",
+                            "budget_usd": 1,
+                            "chain":      "",
+                        },
+                    },
+                },
+                "output": {
+                    "type": "json",
+                    "example": {
+                        "need": "dex pair liquidity",
+                        "recommendation": {
+                            "name": "Otto AI", "url": "https://otto.example/dex",
+                            "price_usd": "0.001", "network": "eip155:8453",
+                            "payers30d": 200, "calls30d": 3246, "quality": 3851,
+                            "ready_to_pay": {"url": "https://otto.example/dex",
+                                             "network": "eip155:8453",
+                                             "accepts": {"scheme": "exact",
+                                                         "network": "eip155:8453"}},
+                        },
+                        "catalog": {"scanned": 117, "real_providers": 41,
+                                    "sybil_collapsed": 73,
+                                    "biggest_factory": {"pay_to": "0x2bb72231eed3",
+                                                        "listings": 72}},
+                        "vetting": "swept 17 queries → 117 listings → collapsed 73 "
+                                   "sybil listings → 41 real providers",
+                    },
+                },
+            },
+            # Same HTTP-envelope schema convention every indexed resource uses —
+            # `input` describes the REQUEST envelope, not the bare params.
+            "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "type":     {"const": "http", "type": "string"},
+                            "method":   {"enum": ["POST"], "type": "string"},
+                            "bodyType": {"enum": ["json", "form-data", "text"], "type": "string"},
+                            "body": {
+                                "type": "object",
+                                "properties": {
+                                    "parameters": {
+                                        "type": "object",
+                                        "properties": {
+                                            "need": {
+                                                "type": "string",
+                                                "description": "What the agent needs, e.g. 'dex pair liquidity', 'crypto prices'",
+                                            },
+                                            "budget_usd": {
+                                                "type": "number",
+                                                "description": "Max USDC to pay the downstream tool per call (default 1)",
+                                            },
+                                            "chain": {
+                                                "type": "string",
+                                                "description": "Optional chain filter: 'base', 'arbitrum'. Empty = all chains",
+                                            },
+                                        },
+                                        "required": ["need"],
+                                    },
+                                },
+                            },
+                        },
+                        "required": ["type", "bodyType", "body", "method"],
+                    },
+                    "output": {
+                        "type": "object",
+                        "properties": {
+                            "example": {"type": "object"},
+                            "type":    {"type": "string"},
+                        },
+                        "required": ["type"],
+                    },
+                },
+                "required": ["input"],
+            },
+        },
+    },
 }
 
 

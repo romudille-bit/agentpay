@@ -727,6 +727,24 @@ class TestPreTradeCheckBazaar:
         assert "bazaar" in payload.get("extensions", {})
         assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["verdict"]
 
+    def test_verified_route_402_carries_bazaar_extension(self, client, monkeypatch):
+        # verified_route must expose extensions.bazaar on its live 402 too, or it
+        # stays stuck in Bazaar 'processing' — the exact failure from session_create.
+        import base64, json
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post("/tools/verified_route/call",
+                        json={"parameters": {"need": "dex pair liquidity"}})
+        assert r.status_code == 402
+        header = r.headers.get("PAYMENT-REQUIRED")
+        assert header, "PAYMENT-REQUIRED header missing"
+        payload = json.loads(base64.b64decode(header + "=" * (-len(header) % 4)))
+        assert payload["resource"]["serviceName"] == "AgentPay"
+        assert "trust-oracle" in payload["resource"]["tags"]
+        assert "bazaar" in payload.get("extensions", {})
+        assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["recommendation"]
+
     def test_free_tool_402_has_no_bazaar_block(self, client, monkeypatch):
         import base64, json
         import gateway.routes.tools as rt
