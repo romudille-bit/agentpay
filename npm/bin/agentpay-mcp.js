@@ -351,21 +351,22 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
 
   const { survivors, recommendation } = decide(cands, budgetUsd);
 
+  // THIN PREVIEW: prove a real, used provider exists (name + usage stats + why),
+  // but WITHHOLD the actionable payload — provider URL + ready_to_pay x402
+  // challenge. Those are what the PAID verified_route sells; handing them out
+  // free here would let an agent pay the provider peer-to-peer and skip AgentPay.
   let rec = null;
   if (recommendation) {
     rec = {
       name: recommendation.name,
-      url: recommendation.url,
       price_usd: recommendation.priceUsd,
       network: recommendation.network,
       payers30d: recommendation.payers30d,
       calls30d: recommendation.calls30d,
       flags: recommendation.flags,
-      ready_to_pay: {
-        url: recommendation.url,
-        network: recommendation.network,
-        accepts: recommendation.acceptsEntry,
-      },
+      why: `real schema; ${recommendation.payers30d} unique payers / ${recommendation.calls30d} calls in 30d; fits the $${budgetUsd} budget`,
+      provider_url: 'withheld — returned by the paid verified_route',
+      ready_to_pay: 'withheld — returned by the paid verified_route',
     };
   }
 
@@ -376,21 +377,22 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
     scanned: cands.length,
     survivors: survivors.length,
     recommendation: rec,
+    // Names + stats only (no URLs) — proof the vetting works, not a usable list.
     top_survivors: survivors.slice(0, 5).map((s) => ({
-      name: s.name, url: s.url, price_usd: s.priceUsd, network: s.network,
+      name: s.name, price_usd: s.priceUsd, network: s.network,
       payers30d: s.payers30d, calls30d: s.calls30d, flags: s.flags,
     })),
-    vetting: `free keyless preview — single-query vet of '${need}': ${cands.length} listings → ${survivors.length} survivors`,
+    vetting: `free keyless PREVIEW — single-query vet of '${need}': ${cands.length} listings → ${survivors.length} survivors. Provider URL + ready-to-pay challenge are withheld.`,
     upgrade: [
-      'This MCP result is the keyless, single-query PREVIEW. The PAID verified_route',
-      '($0.01 on AgentPay) runs the FULL multi-query catalog sweep, usage-based',
-      'sybil-collapse (folds one-wallet factories), and a trust allowlist for the',
-      'authoritative pick + a settle-ready challenge.',
-      'Settle it with a wallet via the agentpay-x402 SDK:',
+      'This is the keyless, single-query PREVIEW: it proves a real, used provider',
+      'exists, but withholds the provider URL + ready-to-pay x402 challenge.',
+      'The PAID verified_route ($0.01) returns those AND runs the FULL multi-query',
+      'catalog sweep + usage-based sybil-collapse (folds one-wallet factories) +',
+      'trust allowlist — the authoritative pick you can settle immediately.',
+      'Get it with a wallet via the agentpay-x402 SDK:',
       '  pip install "agentpay-x402[base]"',
       '  s.call("verified_route", {"need": "' + need + '", "budget_usd": ' + budgetUsd + '})',
-      'Or pay the recommended provider directly using ready_to_pay above. No payment',
-      'happens in this MCP (it is keyless by design).',
+      'No payment happens in this MCP (it is keyless by design).',
     ].join(' '),
   };
 }
@@ -407,13 +409,14 @@ const VERIFIED_ROUTE_TOOL_DEF = {
   description: [
     'Buyer-side trust oracle for the x402 marketplace: "I need X, budget $Y — which',
     'tool is real?" Vets Coinbase Bazaar (discover → drop stubs/factory clones →',
-    'rank by real unique-payer usage → budget-gate), and returns a recommendation +',
-    'top survivors + ready_to_pay details (provider URL + x402 accepts entry).',
+    'rank by real unique-payer usage → budget-gate).',
     '',
-    'This MCP runs the KEYLESS, single-query PREVIEW (advise-only — no payment here).',
-    'The authoritative paid verified_route ($0.01) runs the full multi-query sweep +',
-    'usage-based sybil-collapse + trust allowlist; settle it with a wallet via the',
-    'agentpay-x402 SDK, or pay the recommended provider directly via ready_to_pay.',
+    'This MCP runs the KEYLESS, single-query PREVIEW: it returns the vetted pick',
+    '(name + usage stats + why) and survivor count to PROVE a real provider exists,',
+    'but WITHHOLDS the provider URL + ready-to-pay x402 challenge. To get those —',
+    'plus the full multi-query sweep + usage-based sybil-collapse + trust allowlist —',
+    'call the paid verified_route ($0.01) with a wallet via the agentpay-x402 SDK.',
+    'No payment happens here (keyless by design).',
     '',
     'Use when: "which x402 tool for X", "find a real/trustworthy paid API for X",',
     '"avoid a scam or dead stub", "vet this provider before I pay".',
