@@ -1,7 +1,7 @@
 {
   "name": "@romudille/agentpay-mcp",
-  "version": "2.2.0",
-  "description": "AgentPay — the economic-intelligence layer for AI agents: budget-capped tool calls with verifiable receipts, plus buyer-side x402 routing. 17 tools free to start. USDC on Base or Stellar, no keys.",
+  "version": "2.3.0",
+  "description": "AgentPay — the economic-intelligence layer for AI agents: budget-capped tool calls with verifiable receipts, plus verified_route buyer-side x402 trust routing. 17 tools free to start. USDC on Base or Stellar, no keys.",
   "type": "module",
   "bin": {
     "agentpay-mcp": "bin/agentpay-mcp.js"

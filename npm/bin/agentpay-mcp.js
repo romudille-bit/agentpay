@@ -3,7 +3,7 @@
  * agentpay-mcp.js — AgentPay MCP Server (Node-native, self-contained)
  *
  * Exposes AgentPay's 17 free tools as MCP tools via stdio transport,
- * plus a `route` tool for buyer-side x402 marketplace routing (MCP-2).
+ * plus `verified_route` / `route` for buyer-side x402 marketplace routing.
  * No Python, no repo checkout, no wallet — runs anywhere with Node ≥ 18.
  *
  * x402 free-flow (mirrors agentpay/_client.py):
@@ -11,10 +11,15 @@
  *   2. Retry with X-Payment: tx_hash=free:<id>,from=<addr>,id=<id>
  *   3. Return result["result"] to the MCP caller
  *
- * route(need, budget) — MCP-2:
- *   Discover across Coinbase Bazaar, junk-filter, usage-rank, budget-gate,
- *   price-tiebreak → return ranked candidates + recommendation + ready-to-pay
- *   details. Advise-only, keyless. No payment happens here.
+ * verified_route(need, budget_usd, chain) — MCP-4:
+ *   Keyless buyer-side trust preview, named to match the paid gateway tool +
+ *   Bazaar listing. Vets the marketplace (discover → junk-filter → usage-rank)
+ *   and returns a recommendation + ready_to_pay + an honest handoff: the PAID
+ *   verified_route ($0.01) runs the full multi-query sweep + usage-based sybil-
+ *   collapse + trust allowlist — settle it via the agentpay-x402 SDK. The MCP is
+ *   keyless and never settles a paid call itself.
+ *
+ * route(need, budget) — MCP-2 (legacy alias kept for back-compat).
  *
  * Usage:
  *   npx @romudille/agentpay-mcp
@@ -35,7 +40,7 @@ import { randomUUID } from 'crypto';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Ephemeral agent identity — free calls use it only for the `from=` field in
@@ -328,6 +333,68 @@ async function routeTool(need, budget) {
   };
 }
 
+// ── verified_route — keyless trust preview, named for the paid tool (MCP-4) ──
+
+const _CHAIN_CAIP = { base: 'eip155:8453', arbitrum: 'eip155:42161' };
+
+async function verifiedRouteTool(need, budgetUsd, chain) {
+  const data = await bazaarSearch(need);
+  let cands = discover(data);
+
+  if (chain) {
+    const want = chain.toLowerCase();
+    const caip = _CHAIN_CAIP[want] || want;
+    cands = cands.filter(
+      (c) => !c.network || c.network.toLowerCase().includes(caip) || c.network.toLowerCase().includes(want),
+    );
+  }
+
+  const { survivors, recommendation } = decide(cands, budgetUsd);
+
+  let rec = null;
+  if (recommendation) {
+    rec = {
+      name: recommendation.name,
+      url: recommendation.url,
+      price_usd: recommendation.priceUsd,
+      network: recommendation.network,
+      payers30d: recommendation.payers30d,
+      calls30d: recommendation.calls30d,
+      flags: recommendation.flags,
+      ready_to_pay: {
+        url: recommendation.url,
+        network: recommendation.network,
+        accepts: recommendation.acceptsEntry,
+      },
+    };
+  }
+
+  return {
+    need,
+    budget_usd: budgetUsd,
+    chain: chain || null,
+    scanned: cands.length,
+    survivors: survivors.length,
+    recommendation: rec,
+    top_survivors: survivors.slice(0, 5).map((s) => ({
+      name: s.name, url: s.url, price_usd: s.priceUsd, network: s.network,
+      payers30d: s.payers30d, calls30d: s.calls30d, flags: s.flags,
+    })),
+    vetting: `free keyless preview — single-query vet of '${need}': ${cands.length} listings → ${survivors.length} survivors`,
+    upgrade: [
+      'This MCP result is the keyless, single-query PREVIEW. The PAID verified_route',
+      '($0.01 on AgentPay) runs the FULL multi-query catalog sweep, usage-based',
+      'sybil-collapse (folds one-wallet factories), and a trust allowlist for the',
+      'authoritative pick + a settle-ready challenge.',
+      'Settle it with a wallet via the agentpay-x402 SDK:',
+      '  pip install "agentpay-x402[base]"',
+      '  s.call("verified_route", {"need": "' + need + '", "budget_usd": ' + budgetUsd + '})',
+      'Or pay the recommended provider directly using ready_to_pay above. No payment',
+      'happens in this MCP (it is keyless by design).',
+    ].join(' '),
+  };
+}
+
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
 const server = new Server(
@@ -335,20 +402,60 @@ const server = new Server(
   { capabilities: { tools: {} } },
 );
 
+const VERIFIED_ROUTE_TOOL_DEF = {
+  name: 'verified_route',
+  description: [
+    'Buyer-side trust oracle for the x402 marketplace: "I need X, budget $Y — which',
+    'tool is real?" Vets Coinbase Bazaar (discover → drop stubs/factory clones →',
+    'rank by real unique-payer usage → budget-gate), and returns a recommendation +',
+    'top survivors + ready_to_pay details (provider URL + x402 accepts entry).',
+    '',
+    'This MCP runs the KEYLESS, single-query PREVIEW (advise-only — no payment here).',
+    'The authoritative paid verified_route ($0.01) runs the full multi-query sweep +',
+    'usage-based sybil-collapse + trust allowlist; settle it with a wallet via the',
+    'agentpay-x402 SDK, or pay the recommended provider directly via ready_to_pay.',
+    '',
+    'Use when: "which x402 tool for X", "find a real/trustworthy paid API for X",',
+    '"avoid a scam or dead stub", "vet this provider before I pay".',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      need: {
+        type: 'string',
+        description: 'What you need, e.g. "dex pair liquidity", "funding rates", "token security"',
+      },
+      budget_usd: {
+        type: 'number',
+        description: 'Max USDC the agent will pay the downstream tool per call (default 0.01).',
+        default: DEFAULT_BUDGET,
+      },
+      chain: {
+        type: 'string',
+        description: 'Optional chain filter: "base", "arbitrum". Empty = all chains.',
+      },
+    },
+    required: ['need'],
+  },
+  annotations: {
+    title: 'Verified Route (x402 trust oracle, preview)',
+    readOnlyHint: true,
+    openWorldHint: true,
+  },
+};
+
 const ROUTE_TOOL_DEF = {
   name: 'route',
   description: [
-    'Find and judge the best paid x402 tool for a need, within a budget.',
-    'Discovers across Coinbase Bazaar, drops stubs (no schema / factory clones),',
-    'ranks survivors by real usage (unique payers × 3 + calls + recency bonus),',
-    'enforces the budget, price-tiebreaks quality-equal candidates.',
-    'Returns a ranked candidate list + a recommendation + ready-to-pay details',
-    '(the chosen provider URL and x402 accepts entry) so the agent can settle via',
-    'the agentpay-x402 SDK. Advise-only — no payment happens here.',
+    'Legacy alias of verified_route (kept for back-compat). Find and judge the best',
+    'paid x402 tool for a need, within a budget. Discovers across Coinbase Bazaar,',
+    'drops stubs (no schema / factory clones), ranks survivors by real usage',
+    '(unique payers × 3 + calls + recency bonus), enforces the budget, price-',
+    'tiebreaks quality-equal candidates. Returns ranked candidates + a recommendation',
+    '+ ready-to-pay details. Advise-only — no payment happens here. Prefer',
+    'verified_route (same vetting, matches the paid tool + Bazaar listing).',
     '',
-    'Use when: "which x402 tool for X", "find a paid API for X under $Y",',
-    '"compare these providers", or whenever an agent needs a paid capability',
-    'and must choose a provider without overpaying or hitting a stub.',
+    'Use when: "which x402 tool for X", "find a paid API for X under $Y".',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -364,6 +471,11 @@ const ROUTE_TOOL_DEF = {
       },
     },
     required: ['need'],
+  },
+  annotations: {
+    title: 'Route (x402 marketplace routing, legacy)',
+    readOnlyHint: true,
+    openWorldHint: true,
   },
 };
 
@@ -393,6 +505,11 @@ const ESTIMATE_PLAN_TOOL_DEF = {
     },
     required: ['steps'],
   },
+  annotations: {
+    title: 'Estimate Plan (pre-flight plan pricing)',
+    readOnlyHint: true,
+    openWorldHint: true,
+  },
 };
 
 async function estimatePlanTool(steps, budget) {
@@ -411,7 +528,10 @@ async function estimatePlanTool(steps, budget) {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = await getTools();
 
-  const gatewayTools = tools.map((t) => {
+  // Drop the gateway's PAID verified_route — it's superseded by the keyless
+  // VERIFIED_ROUTE_TOOL_DEF preview below (otherwise the list has a duplicate
+  // name, and the paid entry would just throw "use the SDK" when called).
+  const gatewayTools = tools.filter((t) => t.name !== 'verified_route').map((t) => {
     let description = t.description ?? '';
     if (t.use_when) description += `\n\nUse when: ${t.use_when}`;
     if (t.returns) description += `\nReturns: ${t.returns}`;
@@ -420,14 +540,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     }
     description += `\n\nPrice: $${t.price_usdc} USDC per call`;
 
+    // Directory requirement: every tool carries a human title + read/destructive
+    // hint. All AgentPay tools are read-only data/advice calls (the paid settle,
+    // when it happens, is driven by the SDK, not the tool's own side effects).
+    const title = t.name
+      .split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     return {
       name: t.name,
       description,
       inputSchema: t.parameters ?? { type: 'object', properties: {} },
+      annotations: { title, readOnlyHint: true, openWorldHint: true },
     };
   });
 
-  return { tools: [...gatewayTools, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF] };
+  return {
+    tools: [...gatewayTools, VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF],
+  };
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -450,7 +578,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  // Handle route tool separately
+  // verified_route — keyless trust preview (matches the paid tool + Bazaar listing)
+  if (name === 'verified_route') {
+    try {
+      const need = args.need;
+      if (!need || typeof need !== 'string') {
+        throw new McpError(ErrorCode.InvalidParams, '`need` is required and must be a string');
+      }
+      const budget = typeof args.budget_usd === 'number' ? args.budget_usd : DEFAULT_BUDGET;
+      const chain = typeof args.chain === 'string' ? args.chain : '';
+      const result = await verifiedRouteTool(need, budget, chain);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      if (err instanceof McpError) throw err;
+      return {
+        content: [{ type: 'text', text: `AgentPay verified_route error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // route — legacy alias (back-compat). Same vetting via routeTool.
   if (name === 'route') {
     try {
       const need = args.need;
@@ -488,7 +636,7 @@ async function main() {
   // Pre-fetch tools so the first list_tools responds instantly
   try {
     const tools = await getTools();
-    log(`AgentPay MCP v${VERSION}: loaded ${tools.length} tools from ${GATEWAY_URL} (+ route)`);
+    log(`AgentPay MCP v${VERSION}: loaded ${tools.length} tools from ${GATEWAY_URL} (+ verified_route, route, estimate_plan)`);
   } catch (err) {
     log(`AgentPay MCP v${VERSION}: could not pre-fetch tools (${err.message}) — will retry on first request`);
   }
