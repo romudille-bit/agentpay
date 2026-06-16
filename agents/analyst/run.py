@@ -336,15 +336,38 @@ def goal_strategy_spec(day: int, override: list[str] | None) -> dict:
     }
 
 
+def goal_verified_route(day: int, override: list[str] | None) -> dict:
+    """Daily buyer-side trust run — vet the x402 marketplace and settle ONE paid
+    verified_route ($0.01) under the cap. The autonomous, on-chain proof that an
+    agent pays for trust BEFORE it spends: sweep the catalog, collapse sybils,
+    return the real used provider. Free regime intel for context; the only paid
+    leg is the single verified_route call."""
+    need = os.environ.get("FLAGSHIP_VR_NEED", "").strip() or "dex pair liquidity"
+    gt = (f"Vet the x402 marketplace for '{need}' — pay verified_route for the "
+          f"real, used provider before trusting a stranger")
+    return {
+        "kind": "vetting",
+        "goal_text": gt,
+        "free_tools": [
+            ("fear_greed_index", {}), ("funding_rates", {}), ("market_snapshot", {}),
+        ],
+        "paid_symbols": [],                 # paid path = one verified_route call (in the branch)
+        "vr_need": need,
+        "objective": {"kind": "vetting", "goal_text": gt, "need": need},
+    }
+
+
 _GOAL_BUILDERS = {
     "pretrade_majors": goal_pretrade_majors,
     "regime_brief":    goal_regime_brief,
+    "verified_route":  goal_verified_route,
     "pretrade_alts":   goal_pretrade_alts,
     "crowding_watch":  goal_crowding_watch,
     "strategy_spec":   goal_strategy_spec,   # force-only; NOT in _ROTATION
 }
-# Interleaves paid/free across the 4-day cycle (honest mix).
-_ROTATION = ["pretrade_majors", "regime_brief", "pretrade_alts", "crowding_watch"]
+# Interleaves paid/free across the 5-day cycle (honest mix): two paid days
+# (pretrade_majors, verified_route) + pretrade_alts, with free regime/crowding.
+_ROTATION = ["pretrade_majors", "regime_brief", "verified_route", "pretrade_alts", "crowding_watch"]
 
 
 def select_goal(day_ordinal: int, force: str = "",
@@ -469,7 +492,7 @@ def main() -> int:
     # estimate_plan prices registry tools (verified_route included); external CMC
     # x402 calls aren't in the registry, so for the strategy goal the plan covers
     # the vetting step and the CMC legs are gated live by the session cap.
-    if spec["kind"] == "strategy":
+    if spec["kind"] in ("strategy", "vetting"):
         plan_steps = free_step_names + ["verified_route"]
     else:
         plan_steps = free_step_names + ["pre_trade_check"] * len(paid_symbols)
@@ -504,6 +527,10 @@ def main() -> int:
     if spec["kind"] == "strategy":
         return run_strategy(s, spec, intel_calls, run_at, run_at_iso,
                             wallet, max_spend, objective, plan)
+
+    if spec["kind"] == "vetting":
+        return run_vetting(s, spec, intel_calls, run_at, run_at_iso,
+                           wallet, max_spend, objective, plan)
 
     # Paid verdicts (only on pre_trade goals) — stop the moment the cap says stop
     verdicts: dict[str, dict] = {}
@@ -574,6 +601,65 @@ def main() -> int:
     # free-only goals (regime/crowding) succeed as long as they ran.
     if spec["kind"] == "pre_trade":
         return 0 if verdicts or not paid_symbols else 1
+    return 0
+
+
+def run_vetting(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, objective, plan):
+    """Daily buyer-side trust path (verified_route goal).
+
+    Free regime intel for context, then settle ONE paid verified_route ($0.01)
+    under the cap — the autonomous, on-chain proof that the agent vets the
+    marketplace before it pays a stranger. verified_route settles through the
+    gateway (a normal Base tx in payment_logs), so no off-gateway reconcile is
+    needed. Degrades gracefully if the cap or a payment failure blocks it.
+    """
+    from decimal import Decimal
+    from agentpay import PaymentFailed, RefundPending
+
+    def last(tool):
+        return next((c["data"] for c in reversed(intel_calls) if c["tool"] == tool), None)
+
+    PRICE = Decimal("0.01")
+    need = spec["vr_need"]
+
+    vetting = None
+    if not s.would_exceed(PRICE):
+        try:
+            vr = s.call("verified_route",
+                        {"need": need, "budget_usd": float(s.remaining_usd())})
+            vetting = vr.data
+            rec = (vetting or {}).get("recommendation") or {}
+            log(f"verified_route: {(vetting or {}).get('vetting')} | "
+                f"rec {rec.get('name')} ({rec.get('payers30d')} payers) | tx {getattr(vr, 'tx', None)}")
+        except (PaymentFailed, RefundPending) as e:
+            log(f"verified_route failed: {e}")
+    else:
+        log("verified_route skipped — cap reached")
+
+    regime_text = regime_line(last("fear_greed_index"), last("funding_rates"))
+    receipt = s.spending_summary()
+    rec = (vetting or {}).get("recommendation") or {}
+    note = (f"AgentPay flagship — {run_at}\nGoal: {spec['goal_text']}\n"
+            f"Regime: {regime_text}")
+    if vetting:
+        note += f"\nVetted: {vetting.get('vetting')}"
+        if rec.get("name"):
+            note += f" → {rec.get('name')} ({rec.get('payers30d')} payers)"
+    print("\n" + note + "\n", flush=True)
+    print("FLAGSHIP_VETTING " + json.dumps({
+        "run_at": run_at, "goal": spec["name"], "note": note,
+        "vetting": vetting, "receipt": receipt, "wallet": wallet.base_address,
+    }), flush=True)
+    log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
+        f"across {receipt['calls']} calls")
+
+    publish_run({
+        "run_at": run_at, "run_at_iso": run_at_iso, "wallet": wallet.base_address,
+        "max_spend": str(max_spend), "objective": objective, "plan": plan,
+        "regime": regime_text, "context": "",
+        "findings": {"vetting": vetting},
+        "receipt": receipt, "note": note,
+    })
     return 0
 
 

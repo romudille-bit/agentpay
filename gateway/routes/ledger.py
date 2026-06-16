@@ -784,6 +784,25 @@ function whatCameBack(rz){
     const fb = f.funding_bias? `<div class="bought2">Funding bias across venues: ${esc(f.funding_bias)}.</div>`:"";
     return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — perp positioning</div>${rows}${fb}</div>`;
   }
+  if(kind==="vetting"){
+    const vt=f.vetting||{}, rec=vt.recommendation||{}, cat=vt.catalog||{};
+    if(!vt.vetting && !rec.name && cat.scanned==null) return "";
+    const cells=[
+      rec.name? cell("Recommended", esc(rec.name)) : "",
+      rec.payers30d!=null? cell("Unique payers 30d", esc(String(rec.payers30d))):"",
+      rec.calls30d!=null? cell("Calls 30d", esc(String(rec.calls30d))):"",
+      cat.scanned!=null? cell("Catalog scanned", esc(String(cat.scanned))):"",
+      cat.real_providers!=null? cell("Real providers", esc(String(cat.real_providers))):"",
+      cat.sybil_collapsed!=null? cell("Sybils collapsed", esc(String(cat.sybil_collapsed))):"",
+    ].join("");
+    const big=(cat.biggest_factory&&cat.biggest_factory.listings)
+      ? `<div class="bought2">Biggest sybil factory: ${esc(String(cat.biggest_factory.listings))} listings from one wallet${cat.biggest_factory.pay_to?` (${esc(String(cat.biggest_factory.pay_to).slice(0,10))}…)`:""}.</div>`:"";
+    const capn=vt.vetting? `<div class="bought2">${esc(vt.vetting)}</div>`:"";
+    if(!cells && !capn) return "";
+    return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — vetted marketplace</div>`
+      +`<div class="vd"><div class="vhead"><span class="verd ok">VETTED</span> <b>verified_route</b> <span class="mut" style="font-size:11.5px">— the real, used provider (vet before you pay a stranger)</span></div></div>`
+      +`${cells?`<div class="readout">${cells}</div>`:""}${capn}${big}</div>`;
+  }
   if(kind==="strategy"){
     const sp=f.strategy_spec||{}, vt=f.vetting||{}, rec=vt.recommendation||{};
     const sig=sp.signal||{}, ex=sp.execution||{}, tok=(sp.universe&&sp.universe[0])||{};

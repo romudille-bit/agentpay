@@ -21,17 +21,25 @@ from agents.analyst.run import (
 
 class TestGoalRotation:
 
-    def test_rotation_cycles_four_goals(self):
-        names = [select_goal(d)["name"] for d in range(8)]
-        # 4-goal cycle repeats
-        assert names[:4] == ["pretrade_majors", "regime_brief", "pretrade_alts", "crowding_watch"]
-        assert names[4:] == names[:4]
+    def test_rotation_cycles_five_goals(self):
+        names = [select_goal(d)["name"] for d in range(10)]
+        # 5-goal cycle repeats (verified_route added at index 2)
+        assert names[:5] == ["pretrade_majors", "regime_brief", "verified_route",
+                             "pretrade_alts", "crowding_watch"]
+        assert names[5:] == names[:5]
 
     def test_paid_and_free_mix(self):
         majors = select_goal(0)
         regime = select_goal(1)
         assert majors["kind"] == "pre_trade" and majors["paid_symbols"] == ["BTC", "ETH"]
         assert regime["kind"] == "regime" and regime["paid_symbols"] == []
+
+    def test_verified_route_is_in_rotation(self):
+        vr = select_goal(2)   # verified_route at index 2
+        assert vr["name"] == "verified_route" and vr["kind"] == "vetting"
+        assert vr["paid_symbols"] == []       # the one paid leg is the verified_route call itself
+        assert vr["vr_need"]                  # carries a need to vet
+        assert vr["objective"]["kind"] == "vetting"
 
     def test_force_overrides_rotation(self):
         assert select_goal(0, force="crowding_watch")["name"] == "crowding_watch"
@@ -42,8 +50,8 @@ class TestGoalRotation:
         assert "SOL" in g["goal_text"]
 
     def test_alts_rotate(self):
-        a = select_goal(2)   # pretrade_alts at day 2
-        b = select_goal(6)   # next alt block
+        a = select_goal(3)   # pretrade_alts at index 3 (day 3)
+        b = select_goal(8)   # next alt block (day 8)
         assert a["kind"] == "pre_trade" and b["kind"] == "pre_trade"
         assert a["paid_symbols"] != b["paid_symbols"]
 
