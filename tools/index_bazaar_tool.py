@@ -146,12 +146,15 @@ if paid.status_code != 200:
         print(paid.text[:400])
     sys.exit(1)
 
-receipt = paid.json().get("receipt", {})
-tx = receipt.get("tx_hash", "")
+# A paid TOOL call nests settlement under `payment` (session_create uses
+# `receipt`); read payment first, fall back to receipt.
+resp = paid.json()
+pay = resp.get("payment") or resp.get("receipt") or {}
+tx = pay.get("tx_hash") or ""
 print(f"✓ Settled {TARGET_TOOL} on Base via CDP — Bazaar indexing should now fire.\n")
 print(f"  tx_hash : {tx}")
-print(f"  network : {receipt.get('network')}")
-print(f"  amount  : ${receipt.get('amount_usdc')} USDC")
+print(f"  network : {pay.get('network')}")
+print(f"  amount  : ${pay.get('amount_usdc', AMOUNT/1e6)} USDC")
 print(f"  verify  : https://basescan.org/tx/{tx}\n")
 print("Next:")
 print("  1) Railway logs for:  [BASE] Bazaar extension response: {...}")
