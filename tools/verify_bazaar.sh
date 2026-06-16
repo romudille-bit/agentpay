@@ -18,7 +18,9 @@ import sys, base64, json
 raw = sys.stdin.read().strip()
 if not raw:
     print("   ✗ no PAYMENT-REQUIRED header"); sys.exit(0)
-d = json.loads(base64.b64decode(raw + "=="))
+# Compute correct padding — never blindly append "==" (breaks payloads that are
+# already padded, e.g. verified_route's longer 402, while session_create worked).
+d = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)))
 ext = (d.get("extensions") or {}).get("bazaar")
 res = d.get("resource", {})
 print("   extensions.bazaar :", "✓ present" if ext else "✗ MISSING")
