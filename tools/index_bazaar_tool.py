@@ -58,9 +58,15 @@ GATEWAY_ADDR = "0xE8B25A72dD6aeF69515452a61AD231C7DF2843b7"
 CAIP2        = "eip155:8453"
 AMOUNT       = 10000   # $0.01 USDC (6 decimals) — paid tools are $0.01
 
-hex_key = os.environ.get("AGENT_BASE_KEY_TEST", "").strip().lower().removeprefix("0x")
+# Funded Base key: AGENT_BASE_KEY_TEST wins; else fall back to the flagship
+# wallet already in .env (FLAGSHIP_BASE_KEY / BASE_AGENT_KEY) so this is turnkey.
+_raw_key = (os.environ.get("AGENT_BASE_KEY_TEST")
+            or os.environ.get("FLAGSHIP_BASE_KEY")
+            or os.environ.get("BASE_AGENT_KEY") or "")
+hex_key = _raw_key.strip().lower().removeprefix("0x")
 if len(hex_key) != 64:
-    print("✗ AGENT_BASE_KEY_TEST not set (or not a 64-char hex key). Set it and retry.")
+    print("✗ No funded Base key found. Set AGENT_BASE_KEY_TEST=0x… (or have "
+          "FLAGSHIP_BASE_KEY in .env) and retry.")
     sys.exit(1)
 acct = Account.from_key("0x" + hex_key)
 print(f"\nGateway : {GATEWAY}")
