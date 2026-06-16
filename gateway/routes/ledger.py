@@ -311,13 +311,17 @@ def attach_reasoning(runs: list[dict], metas: list[dict]) -> int:
                 continue
             mt = _parse_ts(m.get("run_at") or "")
             if mt and lo <= mt.timestamp() <= hi:
+                obj = m.get("objective") or {}
                 run["reasoning"] = {
-                    "objective":  m.get("objective") or {},
+                    "objective":  obj,
+                    "kind":       obj.get("kind") or "pre_trade",
+                    "goal_text":  obj.get("goal_text") or "",
                     "plan":       m.get("plan") or {},
                     "regime":     m.get("regime") or "",
                     "context":    m.get("context") or "",
                     "verdicts":   m.get("verdicts") or {},
                     "skipped":    m.get("skipped") or {},
+                    "findings":   m.get("findings") or {},
                     "receipt":    m.get("receipt") or {},
                     "free_intel": m.get("free_intel") or {},
                     "note":       m.get("note") or "",
@@ -426,7 +430,7 @@ _LEDGER_HTML = r"""<!doctype html>
 <title>AgentPay — How an Agent Decides What to Spend</title>
 <style>
   :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;
-        --ok:#4ade80;--warn:#fbbf24;--ac:#c3f53c;--base:#4f7cff;--stellar:#f5c542}
+        --ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--ac:#c3f53c;--base:#4f7cff;--stellar:#f5c542}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
        font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -493,17 +497,33 @@ _LEDGER_HTML = r"""<!doctype html>
   .foot{color:var(--mut);font-size:12px;margin-top:22px}
   .foot a{color:var(--mut);text-decoration:underline}
   .mut{color:var(--mut)}
+  .posnote{color:#8a97a6;font-size:11.5px}
+  .vhead{display:flex;align-items:center;gap:8px;font-size:13px}
+  .subt{margin:7px 0 0;display:grid;gap:3px}
+  .subt .row{font-size:11.5px;color:var(--mut);display:flex;gap:8px;align-items:baseline}
+  .subt .tn2{min-width:120px;color:#9fb0c0}
+  .lvl{font-size:9.5px;border-radius:4px;padding:0 5px;letter-spacing:.02em}
+  .lvl.ok{background:rgba(74,222,128,.13);color:var(--ok)}
+  .lvl.caution{background:rgba(251,191,36,.13);color:var(--warn)}
+  .lvl.avoid{background:rgba(248,113,113,.14);color:var(--bad)}
+  .lvl.skipped{background:#1a2128;color:#6b7886}
+  .bought2{font-size:11.5px;color:#7e8a98;font-style:italic;margin-top:8px}
+  .readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:5px}
+  .rd{background:#10151a;border:1px solid #1a2128;border-radius:8px;padding:8px 10px}
+  .rd .l{font-size:10px;color:#6b7886;text-transform:uppercase;letter-spacing:.04em}
+  .rd .v{font-size:14px;color:var(--fg);margin-top:2px}
 </style></head><body><div class="wrap">
 
-<h1>AgentPay — How an Agent Decides What to Spend</h1>
-<p class="lede"><b>AgentPay is the economic-intelligence layer for AI agents.</b> Below, an
-autonomous market analyst runs live on it: every day it prices its plan <b>before</b>
-paying, then executes step by step under a hard USDC budget it cannot exceed — and
-every paid call leaves a verifiable on-chain receipt.</p>
-<div class="howto"><b>THE DECISION LOOP</b><span class="arw">·</span>
-  State a goal <span class="arw">→</span> Price the plan up front
-  <span class="arw">→</span> Does it fit the budget? <span class="arw">→</span>
-  Execute under the cap <span class="arw">→</span> Verifiable receipt</div>
+<h1>AgentPay — Budgeted Data Access for Autonomous Agents</h1>
+<p class="lede"><b>AgentPay gives an AI agent priced, capped, receipted access to live data tools.</b>
+Below, an autonomous analyst runs on it daily — each run it asks a <b>different real question</b>,
+prices the data plan <b>before</b> paying, spends only a few cents under a hard cap it cannot
+exceed, and leaves a verifiable on-chain receipt. The cap governs <b>data spend</b> — not any
+capital the strategy trades.</p>
+<div class="howto"><b>EACH RUN</b><span class="arw">·</span>
+  Ask a question <span class="arw">→</span> Price the data plan
+  <span class="arw">→</span> Does it fit the cap? <span class="arw">→</span>
+  Spend under the cap <span class="arw">→</span> What came back <span class="arw">→</span> Receipt</div>
 <p class="sub" id="sub"></p>
 
 <div class="kpis" id="kpis"></div>
@@ -527,16 +547,22 @@ function shortHash(h){ return h? h.slice(0,8)+"…"+h.slice(-6) : ""; }
 
 // ① the goal the agent set for itself this run
 function goalText(rz, run){
+  if(rz && rz.goal_text){
+    let t = esc(rz.goal_text);
+    const o = rz.objective||{};
+    if(o.trade_size_usd)
+      t += ` <span class="posnote">· position size $${num(o.trade_size_usd)} — capital, not the intel budget</span>`;
+    return t;
+  }
   const o=(rz&&rz.objective)||{};
   const syms=Array.isArray(o.symbols)&&o.symbols.length? o.symbols.join(", ") : null;
-  const cap=money(run.cap_usdc);
-  if(syms && o.trade_size_usd)
-    return `Decide whether ${esc(syms)} are safe to enter ${esc(o.side||"long")} at $${num(o.trade_size_usd)} notional — without exceeding a ${cap} budget.`;
-  const vk = rz? Object.keys(rz.verdicts||{}).concat(Object.keys(rz.skipped||{})) : [];
-  if(vk.length)
-    return `Decide whether ${esc(vk.join(", "))} are safe to enter — without exceeding a ${cap} budget.`;
-  return `Run the daily market check without exceeding a ${cap} budget.`;
+  if(syms) return `Screen ${esc(syms)} with live data, under a ${money(run.cap_usdc)} intel budget.`;
+  return `Gather market data under a ${money(run.cap_usdc)} intel budget.`;
 }
+function humanUsd(n){ n=Number(n); if(!isFinite(n)) return "—";
+  for(const [s,d] of [["T",1e12],["B",1e9],["M",1e6],["K",1e3]]) if(Math.abs(n)>=d) return "$"+(n/d).toFixed(1)+s;
+  return "$"+n.toFixed(0); }
+function cell(l,v){ return `<div class="rd"><div class="l">${esc(l)}</div><div class="v">${v}</div></div>`; }
 
 // ② plan + the pre-flight price check (the AgentPay decision moment)
 function planStep(rz, run){
@@ -544,13 +570,13 @@ function planStep(rz, run){
   const steps=Array.isArray(plan.steps)? plan.steps.length : (run.timeline||[]).length;
   if(plan.total_usdc!=null){
     const fit = plan.fits_budget===false
-      ? `<span class="verd caution">trimmed to fit</span>`
-      : `<span class="verd ok">fits the ${money(run.cap_usdc)} cap ✓</span>`;
-    return `<div class="dstep"><div class="dhead"><span class="dnum">1</span> Price the plan — before paying</div>
-      <div class="pexpl">Estimated all <b>${steps} calls</b> at <b>${money(plan.total_usdc)}</b> up front via <code>/v1/plan/estimate</code>, then checked it against the budget: ${fit}</div></div>`;
+      ? `<span class="lvl caution">trimmed to fit</span>`
+      : `<span class="lvl ok">fits the ${money(run.cap_usdc)} cap ✓</span>`;
+    return `<div class="dstep"><div class="dhead"><span class="dnum">1</span> Price the data plan — before paying</div>
+      <div class="pexpl">Estimated all <b>${steps} calls</b> at <b>${money(plan.total_usdc)}</b> up front via <code>/v1/plan/estimate</code>, then checked it against the cap: ${fit}</div></div>`;
   }
   return `<div class="dstep"><div class="dhead"><span class="dnum">1</span> Plan the run</div>
-    <div class="pexpl"><b>${steps} calls</b> planned — ${run.free_count} free intel + ${run.paid_count} paid verdict${run.paid_count===1?"":"s"}, under a ${money(run.cap_usdc)} cap.</div></div>`;
+    <div class="pexpl"><b>${steps} calls</b> planned — ${run.free_count} free + ${run.paid_count} paid, under a ${money(run.cap_usdc)} cap.</div></div>`;
 }
 
 // ③ execute the plan step by step, budget drawing down
@@ -567,23 +593,101 @@ function execStep(run){
       ${link}</li>`;
   }).join("");
   if(!items) return "";
-  return `<div class="dstep"><div class="dhead"><span class="dnum">2</span> Run it — step by step, under the cap</div>
+  return `<div class="dstep"><div class="dhead"><span class="dnum">2</span> Spend under the cap — step by step</div>
     <ul class="tl">${items}</ul></div>`;
 }
 
 // ④ the decision the spend bought
-function decideStep(rz){
-  if(!rz) return "";
-  const verds = Object.entries(rz.verdicts||{}).map(([sym,v])=>{
-    const factors=v.factors||{};
-    const worst=Object.entries(factors).filter(([n,f])=>["caution","avoid"].includes((f||{}).level)).map(([n,f])=>`${esc(n)}: ${esc((f||{}).reason||"")}`);
-    const lv=String(v.verdict||"?").toLowerCase();
-    const detail=worst.length?` <span class="mut">(${worst.join("; ")})</span>`:` <span class="mut">(all factors clear)</span>`;
-    return `<div class="vd"><span class="verd ${esc(lv)}">${esc(lv.toUpperCase())}</span> <b>${esc(sym)}</b>${detail}</div>`;
+function verdictCard(sym, v){
+  const lv = String(v.verdict||"?").toLowerCase();
+  const subs = (v.subtools||[]).map(s=>{
+    const lvl = (s.level||"skipped");
+    return `<div class="row"><span class="tn2">${esc(s.tool)}</span>
+      <span class="lvl ${esc(lvl)}">${esc(lvl)}</span><span>${esc(s.reading||"")}</span></div>`;
   }).join("");
-  const sk = Object.entries(rz.skipped||{}).map(([sym,why])=>`<div class="vd mut"><b>${esc(sym)}</b> skipped — ${esc(why)}</div>`).join("");
-  if(!verds && !sk) return "";
-  return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> Decide — what the spend bought</div><div class="verds">${verds}${sk}</div></div>`;
+  return `<div class="vd"><div class="vhead"><span class="verd ${esc(lv)}">${esc(lv.toUpperCase())}</span>
+    <b>${esc(sym)}</b> <span class="mut" style="font-size:11.5px">— safe to enter?</span></div>
+    <div class="subt">${subs}</div></div>`;
+}
+function verdictCardFromFull(sym, v){
+  const FT={liquidity:"orderbook_depth",carry:"funding_rates",crowding:"open_interest",security:"token_security"};
+  const subs=Object.entries(v.factors||{}).map(([factor,f])=>{
+    const lvl=(f||{}).level||"skipped";
+    return `<div class="row"><span class="tn2">${esc(FT[factor]||factor)}</span>
+      <span class="lvl ${esc(lvl)}">${esc(lvl)}</span><span>${esc((f||{}).reason||"")}</span></div>`;
+  }).join("");
+  const lv=String(v.verdict||"?").toLowerCase();
+  return `<div class="vd"><div class="vhead"><span class="verd ${esc(lv)}">${esc(lv.toUpperCase())}</span> <b>${esc(sym)}</b></div><div class="subt">${subs}</div></div>`;
+}
+function whatCameBack(rz){
+  if(!rz) return "";
+  const kind = rz.kind || "pre_trade";
+  const f = rz.findings||{};
+  if(kind==="pre_trade"){
+    const fv = (f.verdicts && Object.keys(f.verdicts).length) ? f.verdicts : null;
+    let body = fv
+      ? Object.entries(fv).map(([sym,v])=>verdictCard(sym,v)).join("")
+      : Object.entries(rz.verdicts||{}).map(([sym,v])=>verdictCardFromFull(sym,v)).join("");
+    const sk = Object.entries(rz.skipped||{}).map(([sym,why])=>`<div class="vd mut"><b>${esc(sym)}</b> skipped — ${esc(why)}</div>`).join("");
+    if(!body && !sk) return "";
+    const cap = `<div class="bought2">One $0.01 <code>pre_trade_check</code> fans out to order-book depth, funding, and open interest (plus a contract-security screen when there's a token) and returns one rules-based verdict — the synthesis the free calls don't do for you. It's a safety gate ("is it safe to enter"), not a buy signal.</div>`;
+    return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — the safety screen</div>${body}${sk}${cap}</div>`;
+  }
+  if(kind==="regime"){
+    const r=f.regime||{};
+    const cells=[
+      r.fear_greed!=null? cell("Fear & Greed", esc(String(r.fear_greed)+(r.fear_greed_label?" · "+r.fear_greed_label:""))):"",
+      r.funding_bias? cell("Funding", esc(r.funding_bias)):"",
+      r.headlines!=null? cell("Headlines", esc(String(r.headlines)+(r.news_sentiment?" · net "+r.news_sentiment:""))):"",
+      r.gas_gwei!=null? cell("ETH gas", esc(r.gas_gwei+" gwei")):"",
+      r.defi_tvl_usd!=null? cell("DeFi TVL", humanUsd(r.defi_tvl_usd)):"",
+      (r.defi_top&&r.defi_top.name)? cell("Largest protocol", esc(r.defi_top.name)+" · "+humanUsd(r.defi_top.tvl)):"",
+    ].join("");
+    if(!cells) return "";
+    return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — market regime</div><div class="readout">${cells}</div></div>`;
+  }
+  if(kind==="crowding"){
+    const c=f.crowding||{};
+    const rows=Object.entries(c).map(([sym,d])=>{
+      const cells=[
+        d.oi_usd!=null? cell("Open interest", humanUsd(d.oi_usd)):"",
+        d.oi_change_24h_pct!=null? cell("OI 24h", esc((d.oi_change_24h_pct>0?"+":"")+d.oi_change_24h_pct+"%")):"",
+        d.long_short_ratio!=null? cell("Long/short", esc(String(d.long_short_ratio))):"",
+        d.spread_pct!=null? cell("Spread", esc(d.spread_pct+"%")):"",
+      ].join("");
+      return `<div class="vd"><b>${esc(sym)}</b><div class="readout">${cells}</div></div>`;
+    }).join("");
+    if(!rows) return "";
+    const fb = f.funding_bias? `<div class="bought2">Funding bias across venues: ${esc(f.funding_bias)}.</div>`:"";
+    return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — perp positioning</div>${rows}${fb}</div>`;
+  }
+  if(kind==="strategy"){
+    const sp=f.strategy_spec||{}, vt=f.vetting||{}, rec=vt.recommendation||{};
+    const sig=sp.signal||{}, ex=sp.execution||{}, tok=(sp.universe&&sp.universe[0])||{};
+    // ① the buyer-side trust step — what verified_route vetted
+    const vet = (vt.vetting||rec.name)
+      ? `<div class="vd"><div class="vhead"><span class="verd ok">VETTED</span> <b>marketplace (verified_route)</b></div>`
+        + `<div class="subt">${esc(vt.vetting||"")}${rec.name?` &middot; pick <b>${esc(rec.name)}</b>${rec.payers30d!=null?" ("+esc(String(rec.payers30d))+" payers)":""}`:""}</div></div>`
+      : "";
+    // ② honest routing — paid only what isn't free
+    const rt=(sp.data_provenance||[]).map(r=>{
+      const cls = r.decision==="paid" ? "verd caution" : "verd ok";
+      return `<div class="subt"><span class="verd ${cls.split(" ")[1]}">${esc(String(r.decision||"").toUpperCase())}</span> ${esc(r.need)} — ${esc(r.why||r.source||"")}</div>`;
+    }).join("");
+    const routing = rt? `<div class="vd"><div class="vhead"><b>Routing — pay only what isn't free</b></div>${rt}</div>`:"";
+    // ③ the resulting backtestable spec
+    const cells=[
+      tok.symbol? cell("Token", esc(tok.symbol)+(tok.network?" · "+esc(tok.network):"")):"",
+      sig.fear_greed!=null? cell("Fear & Greed", esc(String(sig.fear_greed))):"",
+      sig.entry_bias? cell("Entry bias", esc(sig.entry_bias)):"",
+      ex.liquidity_usd!=null? cell("Pool liquidity", humanUsd(ex.liquidity_usd)):"",
+      ex.max_position_usd!=null? cell("Max position", money(ex.max_position_usd)):"",
+    ].join("");
+    const rule = sig.rule? `<div class="bought2">Spec (backtestable, not live trading): ${esc(sig.rule)}</div>`:"";
+    if(!vet && !routing && !cells) return "";
+    return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — ${esc(sp.name||"strategy spec")}</div>${vet}${routing}${cells?`<div class="readout">${cells}</div>`:""}${rule}</div>`;
+  }
+  return "";
 }
 
 async function run(){
@@ -597,29 +701,32 @@ async function run(){
       + (baseW? ` &middot; payer <code>${esc(shortHash(baseW))}</code>`:"")
       + ` &middot; cap <code>${money(d.run_cap_usdc)}</code>/run`;
     kpis.innerHTML = `
-      <div class="kpi"><div class="n">${t.runs||0}</div><div class="l">decision cycles</div></div>
-      <div class="kpi"><div class="n">${t.paid_calls||0}</div><div class="l">paid verdicts</div></div>
-      <div class="kpi"><div class="n">${t.free_calls||0}</div><div class="l">free intel calls</div></div>
-      <div class="kpi"><div class="n ac">${money(t.spent_usdc)}</div><div class="l">total USDC spent</div></div>`;
+      <div class="kpi"><div class="n">${t.runs||0}</div><div class="l">runs</div></div>
+      <div class="kpi"><div class="n">${t.paid_calls||0}</div><div class="l">paid data calls</div></div>
+      <div class="kpi"><div class="n">${t.free_calls||0}</div><div class="l">free data calls</div></div>
+      <div class="kpi"><div class="n ac">${money(t.spent_usdc)}</div><div class="l">total intel spent</div></div>`;
 
-    if(!(d.runs&&d.runs.length)){ runs.innerHTML='<div class="msg">No completed decision cycles recorded yet.</div>'; return; }
+    if(!(d.runs&&d.runs.length)){ runs.innerHTML='<div class="msg">No completed runs recorded yet.</div>'; return; }
     runs.innerHTML = d.runs.map(run=>{
       const cap=Number(run.cap_usdc||0), spent=Number(run.spent_usdc||0);
       const pct = cap>0? Math.min(100, Math.round(spent/cap*100)) : 0;
-      const capPill = run.under_cap? `<span class="pill cap">stayed under cap</span>` : `<span class="pill over">over cap</span>`;
+      const capPill = run.under_cap? `<span class="pill cap">under cap</span>` : `<span class="pill over">over cap</span>`;
       const rz = run.reasoning;
       const ctx = rz && (rz.regime||rz.context)
         ? `<div class="ctx">${esc([rz.regime, rz.context].filter(Boolean).join("  ·  "))}</div>` : "";
+      const receiptNote = run.paid_count>0
+        ? `${run.paid_count} verifiable on-chain receipt${run.paid_count===1?"":"s"}`
+        : `free run — no on-chain spend`;
       return `<div class="run">
-        <h2>Decision cycle <span class="when">${esc(fmtWhen(run.started))}</span> ${capPill}</h2>
-        <div class="goal"><span class="lbl">Goal</span>${goalText(rz, run)}</div>
+        <h2>Run <span class="when">${esc(fmtWhen(run.started))}</span> ${capPill}</h2>
+        <div class="goal"><span class="lbl">Asked</span>${goalText(rz, run)}</div>
         ${ctx}
         ${planStep(rz, run)}
         ${execStep(run)}
-        ${decideStep(rz)}
+        ${whatCameBack(rz)}
         <div class="receipt">
           <div class="spendbar"><i style="width:${pct}%"></i></div>
-          <div class="spendmeta">Receipt: <b>${money(run.spent_usdc)}</b> spent · <b>${money(run.remaining_usdc)}</b> left of the <b>${money(run.cap_usdc)}</b> cap · ${run.paid_count} verifiable on-chain receipt${run.paid_count===1?"":"s"}</div>
+          <div class="spendmeta">Receipt: <b>${money(run.spent_usdc)}</b> intel spent · <b>${money(run.remaining_usdc)}</b> left of the <b>${money(run.cap_usdc)}</b> cap · ${receiptNote}</div>
         </div>
       </div>`;
     }).join("");

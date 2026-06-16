@@ -883,6 +883,7 @@ async def insert_flagship_run(run: dict) -> bool:
         "context":    run.get("context") or "",
         "verdicts":   run.get("verdicts") or {},
         "skipped":    run.get("skipped") or {},
+        "findings":   run.get("findings") or {},
         "receipt":    run.get("receipt") or {},
         "free_intel": run.get("free_intel") or {},
         "note":       run.get("note") or "",
@@ -917,7 +918,7 @@ async def fetch_flagship_runs(limit: int = 200) -> list[dict]:
                 headers={**sb_headers(), "Accept": "application/json"},
                 params={
                     "select": "run_at,wallet,max_spend,objective,plan,regime,context,"
-                              "verdicts,skipped,receipt,free_intel,note",
+                              "verdicts,skipped,findings,receipt,free_intel,note",
                     "order":  "run_at.desc",
                     "limit":  str(limit),
                 },

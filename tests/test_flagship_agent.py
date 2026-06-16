@@ -6,13 +6,88 @@ note composition and regime logic are pinned here.
 """
 
 from agents.analyst.run import (
+    build_findings,
+    compact_verdict,
     compose_note,
     context_line,
     news_summary,
     regime_line,
+    select_goal,
+    _funding_bias,
     _human_usd,
     _tvl_total,
 )
+
+
+class TestGoalRotation:
+
+    def test_rotation_cycles_four_goals(self):
+        names = [select_goal(d)["name"] for d in range(8)]
+        # 4-goal cycle repeats
+        assert names[:4] == ["pretrade_majors", "regime_brief", "pretrade_alts", "crowding_watch"]
+        assert names[4:] == names[:4]
+
+    def test_paid_and_free_mix(self):
+        majors = select_goal(0)
+        regime = select_goal(1)
+        assert majors["kind"] == "pre_trade" and majors["paid_symbols"] == ["BTC", "ETH"]
+        assert regime["kind"] == "regime" and regime["paid_symbols"] == []
+
+    def test_force_overrides_rotation(self):
+        assert select_goal(0, force="crowding_watch")["name"] == "crowding_watch"
+
+    def test_symbols_override_on_pretrade(self):
+        g = select_goal(0, symbols_override=["SOL"])
+        assert g["paid_symbols"] == ["SOL"]
+        assert "SOL" in g["goal_text"]
+
+    def test_alts_rotate(self):
+        a = select_goal(2)   # pretrade_alts at day 2
+        b = select_goal(6)   # next alt block
+        assert a["kind"] == "pre_trade" and b["kind"] == "pre_trade"
+        assert a["paid_symbols"] != b["paid_symbols"]
+
+
+class TestFindings:
+
+    def test_compact_verdict_maps_factors_to_subtools(self):
+        v = {"verdict": "ok", "factors": {
+            "liquidity": {"level": "ok", "reason": "deep"},
+            "carry": {"level": "caution", "reason": "elevated"},
+            "security": {"level": "skipped", "reason": "no token_address"},
+        }}
+        c = compact_verdict(v)
+        assert c["verdict"] == "ok"
+        tools = {s["tool"]: s for s in c["subtools"]}
+        assert tools["orderbook_depth"]["reading"] == "deep"
+        assert tools["funding_rates"]["level"] == "caution"
+        assert tools["token_security"]["level"] == "skipped"
+
+    def test_build_findings_pre_trade(self):
+        f = build_findings("pre_trade", [], {"BTC": {"verdict": "ok", "factors": {}}})
+        assert "BTC" in f["verdicts"]
+
+    def test_build_findings_regime(self):
+        calls = [
+            {"tool": "fear_greed_index", "params": {}, "data": {"value": 61, "value_classification": "Greed"}},
+            {"tool": "gas_tracker", "params": {}, "data": {"standard_gwei": 2.4}},
+            {"tool": "defi_tvl", "params": {}, "data": {"tvl": 118_000_000_000.0}},
+        ]
+        r = build_findings("regime", calls, {})["regime"]
+        assert r["fear_greed"] == 61 and r["fear_greed_label"] == "Greed"
+        assert r["gas_gwei"] == 2.4 and r["defi_tvl_usd"] == 118_000_000_000.0
+
+    def test_build_findings_crowding_groups_by_symbol(self):
+        calls = [
+            {"tool": "open_interest", "params": {"symbol": "BTC"}, "data": {"total_oi_usd": 1e10, "oi_change_24h_pct": 3.2, "long_short_ratio": 1.1}},
+            {"tool": "orderbook_depth", "params": {"symbol": "BTC"}, "data": {"spread_pct": 0.01}},
+        ]
+        c = build_findings("crowding", calls, {})["crowding"]
+        assert c["BTC"]["oi_usd"] == 1e10 and c["BTC"]["spread_pct"] == 0.01
+
+    def test_funding_bias(self):
+        assert _funding_bias({"rates": [{"sentiment": "bearish"}, {"sentiment": "bearish"}, {"sentiment": "bullish"}]}) == "crowded-long"
+        assert _funding_bias({"rates": []}) is None
 
 
 class TestRegimeLine:

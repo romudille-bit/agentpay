@@ -251,8 +251,8 @@ def test_ledger_html_served(monkeypatch):
     resp = c.get("/ledger")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "How an Agent Decides" in resp.text
-    assert "THE DECISION LOOP" in resp.text
+    assert "Budgeted Data Access" in resp.text
+    assert "What came back" in resp.text
 
 
 def test_ledger_json_shape(monkeypatch):

@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS flagship_runs (
     context     TEXT        DEFAULT '',
     verdicts    JSONB       DEFAULT '{}'::jsonb,
     skipped     JSONB       DEFAULT '{}'::jsonb,
+    findings    JSONB       DEFAULT '{}'::jsonb,
     receipt     JSONB       DEFAULT '{}'::jsonb,
     free_intel  JSONB       DEFAULT '{}'::jsonb,
     note        TEXT        DEFAULT '',
