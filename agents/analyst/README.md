@@ -7,13 +7,39 @@ paid calls are the live proof (and the data behind `/ledger`).
 
 ## What a run does
 
-1. **Plan** the day's work: free intel (fear/greed, funding, market snapshot)
-   plus paid `pre_trade_check` verdicts on the majors.
-2. **Estimate** the whole plan via `POST /v1/plan/estimate` before spending;
-   trims paid steps if it doesn't fit the cap.
-3. **Execute** — free tools first, then buys verdicts until the cap says stop.
-4. **Publish** a market note + the spending receipt to stdout
-   (`FLAGSHIP_NOTE {json}` line is machine-readable for the ledger).
+Each day the agent rotates through a **5-goal cycle** (`day.toordinal() % 5`):
+`pretrade_majors` → `regime_brief` → `verified_route` → `pretrade_alts` →
+`crowding_watch`. Two paid days (`pretrade_majors`, `verified_route`) interleaved
+with free regime/crowding reads. `strategy_spec` (the BNB-hackathon backtest goal)
+is **force-only** (`FLAGSHIP_GOAL=strategy_spec`) — never auto-rotates, never
+auto-spends.
+
+1. **Plan** the day's work and **estimate** the whole plan via
+   `POST /v1/plan/estimate` before spending; trims paid steps if it doesn't fit the cap.
+2. **Execute** — free intel first (fear/greed, funding, market snapshot), then the
+   day's paid leg until the cap says stop:
+   - `pretrade_*` days buy `pre_trade_check` verdicts ($0.01 each).
+   - the **`verified_route`** day (`run_vetting`) buys ONE `verified_route` ($0.01):
+     vet the marketplace → return the real, used provider. The autonomous, on-chain
+     proof that the agent pays for trust before it spends.
+   - `strategy_spec` (`run_strategy`, force-only) chains verified_route + paid CMC
+     DEX data → a regime-gated mean-reversion spec **backtested over 180d with a
+     buy-and-hold benchmark** (`backtest.py`).
+3. **Publish** a market note + the spending receipt to stdout (`FLAGSHIP_NOTE` /
+   `FLAGSHIP_VETTING` / `FLAGSHIP_STRATEGY` JSON lines) **and** `POST /v1/flagship/run`
+   so `/ledger` can render the decision loop.
+
+## Ledger reasoning — required config
+
+The public `/ledger` shows on-chain receipts from `payment_logs` automatically, but
+the **decision cards** (goal, regime, verdicts, the verified_route VETTED card) only
+render when the run's reasoning is persisted. That needs:
+- the **`flagship_runs` table** in Supabase (`db/migrations/flagship_runs.sql`,
+  applied via the Supabase SQL Editor), and
+- **`FLAGSHIP_INGEST_SECRET`** set to the *same value* on BOTH the gateway and this
+  service. Unset on the gateway → `POST /v1/flagship/run` 404s → no reasoning stored
+  (`runs_with_reasoning: 0`). Verify: that endpoint returns 401 (not 404), and after a
+  run `/ledger.json` shows `runs_with_reasoning > 0`.
 
 ## Deploy (separate Railway service)
 

@@ -6,8 +6,12 @@ budget cap enforced at the payment layer, cost awareness before every call, and 
 verifiable receipt after.
 
 Self-contained Node MCP server (Node ≥ 18). No Python, no repo, no wallet, no API keys.
-17 free tools work out of the box, plus `route` — buyer-side x402 marketplace routing that
-finds the cheapest *real, actually-used* paid tool under a budget.
+17 free tools work out of the box, plus **`verified_route`** — a keyless buyer-side *trust
+preview* that vets the x402 marketplace (sweep → drop stubs & sybil factories → rank by real
+unique-payer usage) and names the real, used provider for your need. It withholds the
+ready-to-pay payload by design; the full multi-query sweep + ready-to-pay challenge come from
+the paid `verified_route` ($0.01) via the `agentpay-x402` SDK. (`route` is kept as a legacy
+alias; `estimate_plan` prices a multi-tool plan before you spend.)
 
 Gateway: `https://agentpay.tools`
 
