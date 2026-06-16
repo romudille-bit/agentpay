@@ -49,7 +49,27 @@ def _load_dotenv():
 
 _load_dotenv()
 
-GATEWAY      = os.environ.get("AGENTPAY_GATEWAY_URL", "https://agentpay.tools").rstrip("/")
+
+# Always target PRODUCTION for indexing (Bazaar needs the real CDP-settling
+# gateway). Deliberately IGNORE .env's AGENTPAY_GATEWAY_URL, which points at
+# localhost for dev — only an explicit DEMO_GATEWAY override wins. Mirrors
+# tools/index_bazaar.py's _pick_gateway().
+def _pick_gateway():
+    for g in [os.environ.get("DEMO_GATEWAY"),
+              "https://agentpay.tools",
+              "https://gateway-production-2cc2.up.railway.app"]:
+        if not g:
+            continue
+        g = g.rstrip("/")
+        try:
+            requests.get(f"{g}/health", timeout=8)
+            return g
+        except Exception:
+            continue
+    return "https://agentpay.tools"
+
+
+GATEWAY      = _pick_gateway()
 TARGET_TOOL  = os.environ.get("TARGET_TOOL", "verified_route").strip()
 TOOL_PARAMS  = json.loads(os.environ.get("TOOL_PARAMS", '{"need": "dex pair liquidity"}'))
 CALL_URL     = f"{GATEWAY}/tools/{TARGET_TOOL}/call"
