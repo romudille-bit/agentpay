@@ -7,7 +7,9 @@
 # Usage: ./tools/verify_bazaar.sh
 
 set -uo pipefail
-URL="https://agentpay.tools/v1/session/create"
+# Override URL to check any paid resource's live 402, e.g.:
+#   URL=https://agentpay.tools/tools/verified_route/call ./tools/verify_bazaar.sh
+URL="${URL:-https://agentpay.tools/v1/session/create}"
 SERVICE="${SERVICE:-gateway}"
 
 echo "1) LIVE 402 extension check ($URL)"
