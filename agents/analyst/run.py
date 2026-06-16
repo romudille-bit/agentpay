@@ -47,13 +47,86 @@ except ModuleNotFoundError:
 # strategy.py is a sibling module. Works both as a script (its dir is on path)
 # and as a package import (tests do `from agents.analyst import strategy`).
 try:
-    from agents.analyst import strategy
+    from agents.analyst import strategy, backtest
 except ModuleNotFoundError:
     import strategy  # type: ignore
+    import backtest  # type: ignore
 
 
 def log(msg: str) -> None:
     print(f"[analyst] {msg}", flush=True)
+
+
+# CoinGecko ids for the tokens we backtest (free historical OHLCV source).
+_COINGECKO_IDS = {
+    "BTC": "bitcoin", "ETH": "ethereum", "BNB": "binancecoin",
+    "SOL": "solana", "XRP": "ripple", "ADA": "cardano", "DOGE": "dogecoin",
+}
+
+
+def _fetch_history(symbol: str, days: int = 180) -> tuple[list[dict], dict]:
+    """Fetch free daily history for a backtest: token close + Fear & Greed.
+
+    Both are FREE public sources (honest routing: never pay for prices/regime).
+    Returns (bars, fg_by_date). Best-effort: any failure returns ([], {}) and the
+    spec ships without backtest results rather than failing the run.
+    """
+    import urllib.request
+    from datetime import date
+
+    def _get(url: str) -> dict | list | None:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "agentpay-flagship/2"})
+            with urllib.request.urlopen(req, timeout=12) as r:
+                return json.loads(r.read().decode())
+        except Exception as e:
+            log(f"history fetch failed ({url.split('?')[0]}): {e}")
+            return None
+
+    bars: list[dict] = []
+    cg_id = _COINGECKO_IDS.get(symbol.upper())
+    if cg_id:
+        cg = _get(f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart"
+                  f"?vs_currency=usd&days={days}&interval=daily")
+        prices = (cg or {}).get("prices") if isinstance(cg, dict) else None
+        for row in prices or []:
+            try:
+                ts_ms, px = row[0], row[1]
+                d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date().isoformat()
+                bars.append({"date": d, "close": float(px)})
+            except Exception:
+                continue
+        # market_chart can return two points for the same day at the boundary;
+        # keep the last close per date.
+        dedup: dict[str, dict] = {}
+        for b in bars:
+            dedup[b["date"]] = b
+        bars = [dedup[k] for k in sorted(dedup)]
+
+    fg_by_date: dict[str, int] = {}
+    fng = _get(f"https://api.alternative.me/fng/?limit={days}&format=json")
+    for row in (fng or {}).get("data", []) if isinstance(fng, dict) else []:
+        try:
+            d = datetime.fromtimestamp(int(row["timestamp"]), tz=timezone.utc).date().isoformat()
+            fg_by_date[d] = int(row["value"])
+        except Exception:
+            continue
+
+    return bars, fg_by_date
+
+
+def run_backtest(symbol: str) -> dict | None:
+    """Fetch free history and run the parameter sweep. Returns a compact summary
+    (best params + metrics) or None if data couldn't be gathered."""
+    bars, fg = _fetch_history(symbol)
+    if len(bars) < 30 or len(fg) < 30:
+        log(f"backtest skipped — insufficient history (bars={len(bars)}, fg={len(fg)})")
+        return None
+    summary = backtest.summarize(backtest.sweep(bars, fg))
+    log(f"backtest {symbol}: best {summary['best_params']} | "
+        f"return {summary['total_return_pct']}% | sharpe {summary['sharpe']} | "
+        f"maxDD {summary['max_drawdown_pct']}% | {summary['n_trades']} trades")
+    return summary
 
 
 # ── Note composition (pure — unit-tested) ─────────────────────────────────────
@@ -248,8 +321,8 @@ def goal_strategy_spec(day: int, override: list[str] | None) -> dict:
     on a random day."""
     syms = override or ["BTC", "ETH", "BNB"]
     target = (os.environ.get("FLAGSHIP_TARGET_TOKEN", "").strip() or "BNB").upper()
-    gt = (f"Build a backtestable strategy spec for {target}: free regime intel + "
-          f"vetted (verified_route) CMC DEX data")
+    gt = (f"Build & backtest a strategy spec for {target} on BSC/PancakeSwap: "
+          f"free regime intel + vetted (verified_route) CMC DEX data")
     return {
         "kind": "strategy",
         "goal_text": gt,
@@ -568,13 +641,17 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
         except Exception as e:
             log(f"CMC dex_pairs error: {e}")
 
-    # ── Assemble the backtestable spec (free regime + paid CMC data) ──
+    # ── Backtest the rule on free history (the cooked dish, not just a recipe) ──
+    bt_summary = run_backtest(target)
+
+    # ── Assemble the backtestable spec (free regime + paid CMC data + results) ──
     regime = strategy.regime_gate((last("fear_greed_index") or {}).get("value"),
                                   _funding_bias(last("funding_rates")))
     receipt = s.spending_summary()
     spec_out = strategy.build_strategy_spec(
         token=token, regime=regime, liquidity=liquidity,
         routing=routing, receipt=receipt, run_at=run_at,
+        backtest_results=bt_summary,
     )
 
     regime_text = regime_line(last("fear_greed_index"), last("funding_rates"))

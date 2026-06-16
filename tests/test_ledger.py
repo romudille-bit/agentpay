@@ -210,6 +210,62 @@ def test_attach_reasoning_no_match_leaves_runs_bare():
     assert "reasoning" not in out["runs"][0]
 
 
+# ── reconcile_from_receipt (off-gateway CMC spend) ───────────────────────────
+
+def _strat_paid(ts, tx, tool="verified_route"):
+    return {"created_at": ts, "tool_name": tool, "network": "eip155:8453",
+            "amount_usdc": "0.01", "state": "payment_done", "tx_hash": tx,
+            "agent_address": "0xe1601C10B8d4DbF71E0c592B779520380174bc3A"}
+
+
+def test_reconcile_adds_offgateway_cmc_legs_from_receipt():
+    # payment_logs sees only the gateway verified_route leg; the two direct CMC
+    # x402 legs settle off-gateway and never land here.
+    rows = [
+        _free("2026-06-15T13:04:35+00:00", "fear_greed_index"),
+        _strat_paid("2026-06-15T13:04:50+00:00", "0xroutehash"),
+    ]
+    out = ledger.group_runs(rows, run_cap="0.25")
+    assert out["runs"][0]["paid_count"] == 1          # before reconcile
+
+    meta = {
+        "run_at": "2026-06-15T13:04:40+00:00",
+        "objective": {"kind": "strategy"},
+        "receipt": {
+            "calls": 4, "spent": "$0.030", "budget": "$0.250",
+            "breakdown": [
+                {"tool": "fear_greed_index", "cost": "$0.000", "tx_hash": "", "network": ""},
+                {"tool": "verified_route", "cost": "$0.010", "tx_hash": "0xroutehash", "network": "eip155:8453"},
+                {"tool": "https://pro-api.coinmarketcap.com/x402/v1/dex/search?q=BNB",
+                 "cost": "$0.010", "tx_hash": "0xcmcsearch", "network": "base"},
+                {"tool": "https://pro-api.coinmarketcap.com/x402/v4/dex/pairs/quotes/latest?contract_address=0xbb",
+                 "cost": "$0.010", "tx_hash": "0xcmcpairs", "network": "base"},
+            ],
+        },
+    }
+    assert ledger.attach_reasoning(out["runs"], [meta]) == 1
+    assert ledger.reconcile_from_receipt(out["runs"]) == 1
+
+    run = out["runs"][0]
+    assert run["reconciled_from_receipt"] is True
+    assert run["paid_count"] == 3                      # verified_route + 2 CMC legs
+    assert run["free_count"] == 1
+    assert run["spent_usdc"] == "0.03"                 # timeline now matches the receipt
+    tools = [s["tool"] for s in run["timeline"]]
+    assert "cmc_dex_search" in tools and "cmc_dex_pairs" in tools
+    cmc = next(s for s in run["timeline"] if s["tool"] == "cmc_dex_search")
+    assert cmc["kind"] == "paid" and "basescan.org/tx/0xcmcsearch" in cmc["explorer_url"]
+
+
+def test_reconcile_skips_non_strategy_runs():
+    out = ledger.group_runs(RUN_B, run_cap="0.25")
+    meta = {"run_at": "2026-06-13T13:04:40+00:00", "objective": {"kind": "pre_trade"},
+            "receipt": {"breakdown": [{"tool": "x", "cost": "$0.010",
+                                       "tx_hash": "0xz", "network": "base"}]}}
+    ledger.attach_reasoning(out["runs"], [meta])
+    assert ledger.reconcile_from_receipt(out["runs"]) == 0
+
+
 # ── ingest endpoint ──────────────────────────────────────────────────────────
 
 def test_ingest_404_when_secret_unset(monkeypatch):

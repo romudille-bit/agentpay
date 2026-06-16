@@ -81,11 +81,31 @@ _TOOL_PURPOSE = {
     "dune_query":        "run an on-chain query",
     "session_create":    "open a spending session",
     "pre_trade_check":   "buy a trade-safety verdict",
+    "verified_route":    "vet the marketplace before paying",
 }
+
+# Off-gateway x402 endpoints the agent pays directly (not registry tools, so
+# they never carry a clean tool name). Matched by substring on the call's URL.
+_URL_PURPOSE = [
+    ("/dex/search", ("cmc_dex_search", "search CMC for the DEX token")),
+    ("/dex/pairs",  ("cmc_dex_pairs", "buy CMC DEX pair liquidity")),
+    ("coinmarketcap.com", ("cmc_x402", "pull vetted CMC market data")),
+]
 
 
 def _purpose(tool: str | None) -> str:
     return _TOOL_PURPOSE.get(tool or "", f"call {tool}")
+
+
+def _label_external(tool: str | None) -> tuple[str, str]:
+    """Map an off-gateway x402 URL (e.g. a CMC endpoint) to a (short_name,
+    purpose) pair so it reads cleanly in the timeline instead of as a raw URL."""
+    t = tool or ""
+    for needle, label in _URL_PURPOSE:
+        if needle in t:
+            return label
+    short = t.rsplit("/", 1)[-1] or t
+    return (short, f"call {short}")
 
 
 def _build_timeline(free_calls: list[dict], paid_calls: list[dict],
@@ -159,6 +179,17 @@ def _explorer_url(network: str, tx_hash: str | None) -> str | None:
 def _dec(amount: str | None) -> Decimal:
     try:
         return Decimal(str(amount or "0"))
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
+def _money_to_dec(value) -> Decimal:
+    """Parse an SDK receipt money string like '$0.010' (or a number) to Decimal."""
+    if value is None:
+        return Decimal("0")
+    s = str(value).strip().lstrip("$").replace(",", "")
+    try:
+        return Decimal(s or "0")
     except (InvalidOperation, ValueError):
         return Decimal("0")
 
@@ -332,6 +363,93 @@ def attach_reasoning(runs: list[dict], metas: list[dict]) -> int:
     return enriched
 
 
+def reconcile_from_receipt(runs: list[dict]) -> int:
+    """Rebuild a strategy run's timeline from its SDK receipt breakdown.
+
+    PURE — mutates `runs` in place; returns the count reconciled. The
+    payment_logs-derived timeline only sees calls that settle THROUGH the
+    gateway, so a strategy run's direct CMC x402 legs (paid agent→CMC, off
+    gateway) are invisible to it — the timeline then under-reports what the
+    run's own receipt records. The SDK's `spending_summary().breakdown` is the
+    authoritative per-call ledger (every call, cost, tx, chain — gateway AND
+    off-gateway), in execution order. Rebuilding from it makes the timeline,
+    paid-call list, and spend totals match the receipt by construction.
+
+    Scoped to strategy runs (where the off-gateway legs occur); other runs keep
+    their on-chain payment_logs view untouched.
+    """
+    reconciled = 0
+    for run in runs:
+        rz = run.get("reasoning") or {}
+        if (rz.get("kind") or "") != "strategy":
+            continue
+        breakdown = (rz.get("receipt") or {}).get("breakdown")
+        if not isinstance(breakdown, list) or not breakdown:
+            continue
+
+        cap = _dec(run.get("cap_usdc"))
+        steps: list[dict] = []
+        paid_calls: list[dict] = []
+        spent = Decimal("0")
+        free_count = paid_count = 0
+
+        for i, e in enumerate(breakdown, start=1):
+            raw_tool = e.get("tool")
+            external = bool(raw_tool) and ("://" in raw_tool or "/" in raw_tool)
+            name, purpose = (_label_external(raw_tool) if external
+                             else (raw_tool, _purpose(raw_tool)))
+            amt = _money_to_dec(e.get("cost"))
+            spent += amt
+            step = {
+                "step": i, "tool": name, "purpose": purpose,
+                "cost_usdc": f"{amt:.2f}",
+                "running_spent_usdc": f"{spent:.2f}",
+                "remaining_usdc": f"{(cap - spent):.2f}",
+            }
+            if amt > 0:
+                net = _norm_network(e.get("network"))
+                tx = e.get("tx_hash") or None
+                explorer = _explorer_url(net, tx)
+                step.update({"kind": "paid", "network": net,
+                             "tx_hash": tx, "explorer_url": explorer})
+                paid_calls.append({
+                    "tool": name, "amount_usdc": f"{amt:.2f}", "network": net,
+                    "tx_hash": tx, "explorer_url": explorer,
+                    "spent_after_usdc": f"{spent:.2f}",
+                    "remaining_after_usdc": f"{(cap - spent):.2f}",
+                })
+                paid_count += 1
+            else:
+                step["kind"] = "free"
+                free_count += 1
+            steps.append(step)
+
+        run["timeline"] = steps
+        run["paid_calls"] = paid_calls
+        run["paid_count"] = paid_count
+        run["free_count"] = free_count
+        run["spent_usdc"] = f"{spent:.2f}"
+        run["remaining_usdc"] = f"{(cap - spent):.2f}"
+        run["under_cap"] = spent <= cap
+        run["reconciled_from_receipt"] = True
+        reconciled += 1
+    return reconciled
+
+
+def _recompute_totals(data: dict) -> None:
+    """Recompute top-level totals after reconciliation so /ledger.json's headline
+    numbers match the (possibly reconciled) per-run spend. PURE; mutates `data`."""
+    runs = data.get("runs") or []
+    spent = sum((_dec(r.get("spent_usdc")) for r in runs), Decimal("0"))
+    data["totals"] = {
+        **data.get("totals", {}),
+        "runs": len(runs),
+        "paid_calls": sum(int(r.get("paid_count") or 0) for r in runs),
+        "free_calls": sum(int(r.get("free_count") or 0) for r in runs),
+        "spent_usdc": f"{spent:.2f}",
+    }
+
+
 async def _fetch_flagship_rows() -> list[dict]:
     """Read completed payment_logs rows for the flagship's wallet allowlist."""
     if not sb_enabled():
@@ -371,6 +489,11 @@ async def ledger_json():
     data = group_runs(rows, run_cap=settings.LEDGER_RUN_CAP_USDC)
     metas = await fetch_flagship_runs()
     data["runs_with_reasoning"] = attach_reasoning(data["runs"], metas)
+    # Reconcile off-gateway (e.g. direct CMC x402) spend into strategy-run
+    # timelines from the authoritative SDK receipt, then refresh headline totals.
+    data["runs_reconciled"] = reconcile_from_receipt(data["runs"])
+    if data["runs_reconciled"]:
+        _recompute_totals(data)
     addrs = _flagship_addresses()
     data["agent"] = "AgentPay flagship analyst"
     data["description"] = (
@@ -683,9 +806,45 @@ function whatCameBack(rz){
       ex.liquidity_usd!=null? cell("Pool liquidity", humanUsd(ex.liquidity_usd)):"",
       ex.max_position_usd!=null? cell("Max position", money(ex.max_position_usd)):"",
     ].join("");
-    const rule = sig.rule? `<div class="bought2">Spec (backtestable, not live trading): ${esc(sig.rule)}</div>`:"";
-    if(!vet && !routing && !cells) return "";
-    return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — ${esc(sp.name||"strategy spec")}</div>${vet}${routing}${cells?`<div class="readout">${cells}</div>`:""}${rule}</div>`;
+    // ④ the executed backtest — results, not just a spec template
+    const bt=(sp.backtest&&sp.backtest.results)||null;
+    let btCard="";
+    if(bt){
+      const bp=bt.best_params||{};
+      const pct=v=>v==null?"—":(Number(v)>0?"+":"")+v+"%";
+      const btCells=[
+        cell("Return (180d)", pct(bt.total_return_pct)),
+        cell("Sharpe", esc(String(bt.sharpe==null?"—":bt.sharpe))),
+        cell("Max drawdown", bt.max_drawdown_pct==null?"—":"−"+bt.max_drawdown_pct+"%"),
+        cell("Win rate", bt.win_rate_pct==null?"—":bt.win_rate_pct+"%"),
+        cell("Trades", esc(String(bt.n_trades==null?"—":bt.n_trades))),
+        cell("Exposure", bt.exposure_pct==null?"—":bt.exposure_pct+"%"),
+      ].join("");
+      const params=`fear ≤ ${esc(String(bp.fear_entry))} · exit ≥ ${esc(String(bp.greed_exit))} · hold ≤ ${esc(String(bp.hold_days_max))}d`;
+      // vs buy-and-hold — the honest yardstick (risk-adjusted, not vs zero)
+      const bm=bt.benchmark||null, ed=bt.edge||null;
+      let vsHold="";
+      if(bm && ed){
+        const sign=v=>v==null?"—":(Number(v)>0?"+":"")+v;
+        const winR=ed.beats_hold_return, winS=ed.beats_hold_sharpe, winD=ed.lower_drawdown;
+        const verdict = (winS && (winR||winD))
+          ? `<span class="verd ok">BEATS HOLD</span>`
+          : (winR||winS||winD) ? `<span class="verd caution">MIXED vs HOLD</span>`
+          : `<span class="verd avoid">TRAILS HOLD</span>`;
+        vsHold=`<div class="subt" style="margin-top:9px">`
+          +`<div class="row"><span class="tn2">vs buy &amp; hold</span>${verdict}</div>`
+          +`<div class="row"><span class="tn2">return</span><span>${sign(bt.total_return_pct)}% strategy · ${sign(bm.total_return_pct)}% hold <b style="color:var(--fg)">(${sign(ed.excess_return_pct)}% edge)</b></span></div>`
+          +`<div class="row"><span class="tn2">Sharpe</span><span>${esc(String(bt.sharpe))} strategy · ${esc(String(bm.sharpe))} hold <b style="color:var(--fg)">(${sign(ed.excess_sharpe)} edge)</b></span></div>`
+          +`<div class="row"><span class="tn2">max drawdown</span><span>${esc(String(bt.max_drawdown_pct))}% strategy · ${esc(String(bm.max_drawdown_pct))}% hold <b style="color:var(--fg)">(${sign(ed.drawdown_reduction_pct)}% safer)</b></span></div>`
+          +`</div>`;
+      }
+      btCard=`<div class="vd"><div class="vhead"><span class="verd ok">BACKTESTED</span> <b>best params</b>`
+        +`<span class="mut" style="font-size:11.5px">— ${params} · ${esc(String(bt.combos_tested||0))} combos swept on ${esc(String(bt.bars||0))} daily bars</span></div>`
+        +`<div class="readout">${btCells}</div>${vsHold}</div>`;
+    }
+    const rule = sig.rule? `<div class="bought2">Rule (${bt?"backtested on 180d history":"backtestable"}, not live trading): ${esc(sig.rule)}</div>`:"";
+    if(!vet && !routing && !cells && !btCard) return "";
+    return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — ${esc(sp.name||"strategy spec")}</div>${vet}${routing}${cells?`<div class="readout">${cells}</div>`:""}${btCard}${rule}</div>`;
   }
   return "";
 }
