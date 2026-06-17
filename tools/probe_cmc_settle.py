@@ -32,16 +32,21 @@ except FileNotFoundError:
 sys.path.insert(0, ROOT)
 from agentpay import AgentWallet, Session, PaymentFailed  # noqa: E402
 
-stellar = os.environ.get("FLAGSHIP_STELLAR_SECRET", "").strip()
 base = (os.environ.get("FLAGSHIP_BASE_KEY")
-        or os.environ.get("AGENT_BASE_KEY_TEST") or "").strip()
-
-if not stellar:
-    print("✗ FLAGSHIP_STELLAR_SECRET not in .env (the SDK wallet needs a Stellar identity).")
-    sys.exit(1)
+        or os.environ.get("AGENT_BASE_KEY_TEST")
+        or os.environ.get("BASE_AGENT_KEY") or "").strip()
 if not base:
-    print("✗ No funded Base key in .env (FLAGSHIP_BASE_KEY or AGENT_BASE_KEY_TEST).")
+    print("✗ No funded Base key in .env (FLAGSHIP_BASE_KEY / AGENT_BASE_KEY_TEST / BASE_AGENT_KEY).")
     sys.exit(1)
+
+# The settle is Base-only, so the Stellar key is just the wallet identity. Use any
+# Stellar secret in .env; otherwise mint an ephemeral one (never used to pay).
+stellar = (os.environ.get("FLAGSHIP_STELLAR_SECRET")
+           or os.environ.get("AGENT_STELLAR_KEY_TEST") or "").strip()
+if not stellar:
+    from stellar_sdk import Keypair
+    stellar = Keypair.random().secret
+    print("(no Stellar secret in .env — using an ephemeral identity; payment settles on Base)")
 
 wallet = AgentWallet(secret_key=stellar, network="mainnet", base_key=base)
 print(f"Base payer : {wallet.base_address}")
