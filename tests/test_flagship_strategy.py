@@ -54,6 +54,20 @@ def test_parse_dex_search_tolerates_shapes():
     assert strategy.parse_dex_search({}) == []
 
 
+def test_parse_dex_search_live_cmc_format():
+    # Live CMC shape (2026-06): data.tks[] with abbreviated keys incl. liquidity,
+    # so one dex_search yields token + price + liquidity (no dex_pairs needed).
+    data = {"data": {"total": 1, "tks": [
+        {"plt": "BSC", "n": "Wrapped BNB", "s": "WBNB", "addr": "0xbb4c",
+         "pu": "602.38", "liq": 54590188.7, "v24h": 1.1e8}]}}
+    out = strategy.parse_dex_search(data)
+    assert out and out[0]["symbol"] == "WBNB"
+    assert out[0]["address"] == "0xbb4c"
+    assert out[0]["network"] == "BSC"
+    assert out[0]["price_usd"] == 602.38
+    assert out[0]["liquidity_usd"] == 54590188.7
+
+
 def test_parse_dex_pair_extracts_liquidity():
     data = {"data": [{"contract_address": "0xpair",
                       "quote": [{"price": 1.23, "liquidity": 5_000_000, "volume_24h": 99}]}]}

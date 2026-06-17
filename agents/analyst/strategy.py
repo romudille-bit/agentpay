@@ -113,23 +113,40 @@ def paid_needs(needs: list[str]) -> list[str]:
 def parse_dex_search(data: dict | None) -> list[dict]:
     """Pull a compact list of DEX matches from a CMC dex/search response.
 
-    CMC wraps results in a `data` envelope; shapes vary, so be tolerant and
-    extract only the fields we use (name, symbol, address, network)."""
+    Live CMC shape (2026-06): {"data": {"tks": [{"n","s","addr","plt","pu","liq",
+    "v24h",...}]}} — abbreviated keys: n=name, s=symbol, addr=contract, plt=chain,
+    pu=price_usd, liq=liquidity_usd, v24h=volume. The result carries price +
+    liquidity so ONE paid dex_search settles the whole DEX-data need (no separate
+    paid dex_pairs call). Tolerant of older/full key names too."""
     if not isinstance(data, dict):
         return []
-    rows = data.get("data") or data.get("results") or []
-    if isinstance(rows, dict):                      # some endpoints key by id
-        rows = list(rows.values())
+    env = data.get("data")
+    if isinstance(env, dict):
+        rows = env.get("tks") or env.get("tokens") or env.get("results") or []
+    elif isinstance(env, list):
+        rows = env
+    else:
+        rows = data.get("results") or []
+
+    def _num(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
     out = []
     for r in rows if isinstance(rows, list) else []:
         if not isinstance(r, dict):
             continue
         out.append({
-            "name":    r.get("name") or r.get("base_asset_name"),
-            "symbol":  r.get("symbol") or r.get("base_asset_symbol"),
-            "address": r.get("contract_address") or r.get("address")
-                       or r.get("base_asset_contract_address"),
-            "network": r.get("network_slug") or r.get("network") or r.get("platform"),
+            "name":          r.get("n") or r.get("name") or r.get("base_asset_name"),
+            "symbol":        r.get("s") or r.get("symbol") or r.get("base_asset_symbol"),
+            "address":       r.get("addr") or r.get("contract_address") or r.get("address")
+                             or r.get("base_asset_contract_address"),
+            "network":       r.get("plt") or r.get("network_slug") or r.get("network") or r.get("platform"),
+            "price_usd":     _num(r.get("pu") or r.get("price")),
+            "liquidity_usd": _num(r.get("liq") or r.get("liquidity")),
+            "volume_24h":    _num(r.get("v24h") or r.get("volume_24h")),
         })
     return out
 

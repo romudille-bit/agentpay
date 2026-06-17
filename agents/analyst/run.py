@@ -699,7 +699,10 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
         except (PaymentFailed, RefundPending) as e:
             log(f"verified_route failed: {e}")
 
-    # ── Consume CMC DEX data — the paid leg with no free equivalent ──
+    # ── Consume CMC DEX data — the ONE paid leg with no free equivalent ──
+    # dex_search returns token + price + liquidity in a single response, so a
+    # single $0.01 call settles the whole DEX-data need (honest routing: don't
+    # pay twice — no separate dex_pairs call).
     token = {"symbol": target, "name": target, "address": None, "network": None}
     liquidity: dict = {}
     cmc_calls: list[dict] = []
@@ -710,22 +713,18 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
             cmc_calls.append({"endpoint": "dex_search", "matches": len(matches),
                               "tx": getattr(r, "tx", None)})
             if matches:
-                token = {**token, **{k: v for k, v in matches[0].items() if v}}
-            log(f"CMC dex_search '{target}': {len(matches)} matches | tx {getattr(r, 'tx', None)}")
+                m0 = matches[0]
+                token = {**token, **{k: v for k, v in m0.items()
+                                     if v and k in ("name", "symbol", "address", "network")}}
+                liquidity = {"liquidity_usd": m0.get("liquidity_usd"),
+                             "price_usd": m0.get("price_usd"),
+                             "volume_24h": m0.get("volume_24h")}
+            log(f"CMC dex_search '{target}': {len(matches)} matches | "
+                f"liq {liquidity.get('liquidity_usd')} | tx {getattr(r, 'tx', None)}")
         except (PaymentFailed, RefundPending) as e:
             log(f"CMC dex_search failed: {e}")
         except Exception as e:
             log(f"CMC dex_search error: {e}")
-    if token.get("address") and not s.would_exceed(PRICE):
-        try:
-            r = s.call(strategy.cmc_url("dex_pairs", {"contract_address": token["address"]}))
-            liquidity = strategy.parse_dex_pair(r.data)
-            cmc_calls.append({"endpoint": "dex_pairs", "tx": getattr(r, "tx", None)})
-            log(f"CMC dex_pairs: liquidity {liquidity.get('liquidity_usd')} | tx {getattr(r, 'tx', None)}")
-        except (PaymentFailed, RefundPending) as e:
-            log(f"CMC dex_pairs failed: {e}")
-        except Exception as e:
-            log(f"CMC dex_pairs error: {e}")
 
     # ── Backtest the rule on free history (the cooked dish, not just a recipe) ──
     bt_summary = run_backtest(target)
