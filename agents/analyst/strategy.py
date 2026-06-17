@@ -36,7 +36,9 @@ CMC_X402 = {
     "dex_search": "/x402/v1/dex/search",
     "dex_pairs":  "/x402/v4/dex/pairs/quotes/latest",
 }
-CMC_X402_PAYTO = "0x271189c860DB25bC43173B0335784aD68a680908"
+# Reference only — the SDK reads payTo from the LIVE 402's `accepts` array, not
+# this constant. CMC rotated it (was 0x2711…0908; live 0x3C5f… as of 2026-06-17).
+CMC_X402_PAYTO = "0x3C5f3a6cE224BB89D72f5EB4232ecC27F67B3eeA"
 
 
 def cmc_url(endpoint: str, params: Optional[dict] = None) -> str:
