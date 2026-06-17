@@ -837,9 +837,13 @@ class Session:
 
         with httpx.Client(timeout=60.0) as client:
             # ── First request — probe for 402 ─────────────────────────────────
+            # Default POST (AgentPay's own tools); GET-only servers (e.g. CMC's
+            # DEX endpoints) answer 405 → re-probe with GET.
             logger.info(f"→ x402 external call: {url}")
             try:
                 resp = client.post(url, json=params)
+                if resp.status_code == 405:
+                    resp = client.get(url)
             except Exception as e:
                 raise Exception(f"External x402 call failed: {e}")
 
@@ -862,6 +866,17 @@ class Session:
             # signing the request URL → "resource ... does not match" rejection.
             # Prefer the 402's resource.url; fall back to the query-stripped URL.
             resource_for_payment = (data.get("resource") or {}).get("url") or url.split("?", 1)[0]
+            # HTTP method the server serves the resource with. CMC's DEX endpoints
+            # declare GET (query params in the URL); AgentPay's own tools use POST.
+            # Read it from the 402's bazaar extension; default POST.
+            req_method = "POST"
+            try:
+                _inp = (((data.get("extensions") or {}).get("bazaar") or {}).get("info") or {}).get("input") or {}
+                _m = str(_inp.get("method") or "").upper()
+                if _m in ("GET", "POST"):
+                    req_method = _m
+            except Exception:
+                pass
             accepts = data.get("accepts", []) or []
             if not accepts:
                 # AgentPay's own endpoints use the native 'payment_options' shape,
@@ -962,15 +977,13 @@ class Session:
                     raise PaymentFailed(f"evm:could not sign x402 payment: {str(e)[:160]}")
                 payer_address = self.wallet.base_address
 
-                retry = client.post(
-                    url,
-                    json=params,
-                    headers={
-                        "X-PAYMENT":         x_payment,   # x402 v2 standard header
-                        "PAYMENT-SIGNATURE": x_payment,   # alias some gateways use
-                        "X-Agent-Address":   payer_address,
-                    },
-                )
+                _headers = {
+                    "X-PAYMENT":         x_payment,   # x402 v2 standard header
+                    "PAYMENT-SIGNATURE": x_payment,   # alias some gateways use
+                    "X-Agent-Address":   payer_address,
+                }
+                retry = (client.get(url, headers=_headers) if req_method == "GET"
+                         else client.post(url, json=params, headers=_headers))
                 if retry.status_code != 200:
                     # No broadcast happened — no USDC left the wallet.
                     raise Exception(
@@ -999,11 +1012,9 @@ class Session:
                     "payload":     {"signature": tx_hash, "from": payer_address},
                 }
                 x_payment = base64.b64encode(json.dumps(proof_payload).encode()).decode()
-                retry = client.post(
-                    url,
-                    json=params,
-                    headers={"X-Payment": x_payment, "X-Agent-Address": payer_address},
-                )
+                _headers = {"X-Payment": x_payment, "X-Agent-Address": payer_address}
+                retry = (client.get(url, headers=_headers) if req_method == "GET"
+                         else client.post(url, json=params, headers=_headers))
                 if retry.status_code != 200:
                     raise Exception(
                         f"External x402 call failed after payment: {retry.status_code} {retry.text[:200]}"
