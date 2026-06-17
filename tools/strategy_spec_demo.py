@@ -37,7 +37,9 @@ os.environ.setdefault("FLAGSHIP_BASE_KEY",
 os.environ["FLAGSHIP_GOAL"] = "strategy_spec"
 os.environ.setdefault("FLAGSHIP_TARGET_TOKEN", "BNB")
 os.environ.setdefault("FLAGSHIP_MAX_SPEND", "0.10")
-os.environ.setdefault("AGENTPAY_GATEWAY_URL", "https://agentpay.tools")
+# FORCE production — .env sets AGENTPAY_GATEWAY_URL=localhost for dev, but this
+# demo must hit the real gateway (setdefault would lose to the .env value).
+os.environ["AGENTPAY_GATEWAY_URL"] = os.environ.get("DEMO_GATEWAY") or "https://agentpay.tools"
 
 if not os.environ.get("FLAGSHIP_BASE_KEY"):
     print("✗ No funded Base key (FLAGSHIP_BASE_KEY / AGENT_BASE_KEY_TEST) in .env.")
