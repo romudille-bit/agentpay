@@ -4,6 +4,23 @@ All notable changes to **agentpay-x402** (the `agentpay` Python SDK).
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.7] — 2026-06-17
+
+### Fixed
+- **External x402 URLs now work against GET + query-param endpoints** (e.g.
+  CoinMarketCap's keyless DEX x402 endpoints). Two fixes to `_call_x402_url`:
+  - **Canonical resource**: the signed payment's `resource` now uses the URL the
+    server declares in its 402 (`resource.url`), not our request URL with query
+    params. Servers like CMC declare the bare path (`…/dex/search`) while we
+    request `…?q=BNB`; signing the request URL caused a "resource in payment
+    header does not match required resource" rejection (off-chain, no funds lost).
+  - **HTTP method**: the flow was POST-only; GET-only resources answered 405 after
+    payment. The probe now retries as GET on a 405, the server's method is read
+    from the 402's `extensions.bazaar.info.input.method` (default POST), and the
+    paid retry is issued with that method (GET → query params + `X-PAYMENT` header).
+  Verified live: a $0.01 settle to CMC `dex/search` now returns DEX data. AgentPay's
+  own POST tools are unaffected.
+
 ## [0.2.6] — 2026-06-11
 
 ### Changed
