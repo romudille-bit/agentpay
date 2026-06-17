@@ -856,6 +856,12 @@ class Session:
                 data = resp.json()
             except Exception:
                 raise Exception(f"Could not parse 402 response from {url}: {resp.text[:200]}")
+            # The signed payment's `resource` MUST match what the server declared
+            # in its 402, not our request URL. Servers like CMC declare the bare
+            # path (…/dex/search) while we request with query params (…?q=BNB) —
+            # signing the request URL → "resource ... does not match" rejection.
+            # Prefer the 402's resource.url; fall back to the query-stripped URL.
+            resource_for_payment = (data.get("resource") or {}).get("url") or url.split("?", 1)[0]
             accepts = data.get("accepts", []) or []
             if not accepts:
                 # AgentPay's own endpoints use the native 'payment_options' shape,
@@ -951,7 +957,7 @@ class Session:
                 # against CDP-facilitator tools.)
                 logger.info(f"  402 — signing {amount_usdc} USDC auth for {pay_to[:10]}... (Base, off-chain)")
                 try:
-                    x_payment = self.wallet.build_base_payment_signature(base_accept, url)
+                    x_payment = self.wallet.build_base_payment_signature(base_accept, resource_for_payment)
                 except Exception as e:
                     raise PaymentFailed(f"evm:could not sign x402 payment: {str(e)[:160]}")
                 payer_address = self.wallet.base_address
