@@ -22,13 +22,13 @@ Copy the skill folder into your agent's skills directory:
 cp -r skills/strategy-spec /path/to/your/skills/directory/
 ```
 
-The single paid step uses CoinMarketCap **x402** (pay-per-request, **no API key**):
+The single paid step (CMC x402 `dex/search`, **no CMC API key**) is settled through the **AgentPay SDK** — which adds the hard budget cap, the on-chain receipt, honest routing, and `verified_route` vetting on top of the raw payment:
 
 ```bash
-npm install @x402/axios @x402/evm viem
+pip install "agentpay-x402[base]"
 ```
 
-Fund a Base wallet with a little USDC (~$0.01 per run) + ETH for gas. See [skills/strategy-spec/SKILL.md](skills/strategy-spec/SKILL.md) for the full workflow.
+Fund a Base wallet with a little USDC (~$0.01 per run) + ETH for gas, set `BASE_AGENT_KEY`, and the skill's one paid call is `s.call("https://pro.coinmarketcap.com/x402/v1/dex/search?q=BNB")`. See [skills/strategy-spec/SKILL.md](skills/strategy-spec/SKILL.md) for the full workflow. *(Any x402 client works against CMC directly — but you lose the cap/receipt/routing layer AgentPay adds.)*
 
 ## Sponsor stack
 

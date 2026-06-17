@@ -17,17 +17,18 @@ This skill's distinctive principle is **honest routing**: before fetching anythi
 
 ## Prerequisites
 
-The single paid step uses CoinMarketCap's **x402** pay-per-request DEX endpoint — **no API key required**:
-
-1. **Node 18+** (or any x402-aware HTTP client)
-2. A **Base wallet** with a private key you control
-3. **~$0.01 USDC on Base** per run (one DEX call) + a little ETH for gas
+The single paid step uses CoinMarketCap's **x402** pay-per-request DEX endpoint (**no API key required**), settled through the **AgentPay SDK** — which is what makes this an *economic-intelligence* skill, not just a payment: AgentPay enforces a hard budget cap, returns a verifiable on-chain receipt, applies the honest-routing decision, and can vet the provider with `verified_route` before paying.
 
 ```bash
-npm install @x402/axios @x402/evm viem
+pip install "agentpay-x402[base]"
 ```
 
+1. A **Base wallet** with ~**$0.01 USDC** per run (one DEX call) + a little ETH for gas
+2. Set `BASE_AGENT_KEY` (your funded Base private key) in the environment
+
 Everything else (prices, Fear & Greed, funding, OHLCV history) is fetched from **free** sources — by design.
+
+> Vendor-neutral fallback: any x402 client works against CMC's endpoint (e.g. Coinbase's `@x402/axios @x402/evm viem`), but you lose the cap, receipt, and routing layer AgentPay adds.
 
 ## Core principle — honest routing
 
@@ -53,15 +54,22 @@ Fetch the **Fear & Greed Index** and **perp funding** for the majors. Classify t
 
 Funding gate: if perp funding is crowded-long, suppress new longs (avoid buying a crowded trade).
 
-### Step 2 — Resolve the token + liquidity (PAID — the one CMC call)
+### Step 2 — Resolve the token + liquidity (PAID — the one CMC call, via AgentPay)
 
-Call the CMC x402 DEX search endpoint for the target token (e.g. BNB / WBNB on BSC):
+Settle one CMC x402 DEX-search call **through the AgentPay SDK** — it charges the $0.01 against the hard cap and returns a receipt:
 
+```python
+from agentpay import quickstart
+
+s = quickstart(max_spend=0.10)   # hard budget cap; uses your funded BASE_AGENT_KEY for the paid leg
+# Optional: vet the marketplace before paying a stranger —
+#   s.call("verified_route", {"need": "dex pair liquidity", "budget_usd": 0.05})
+r = s.call("https://pro.coinmarketcap.com/x402/v1/dex/search?q=BNB")   # $0.01 USDC on Base, no CMC API key
+print(r.data["data"]["tks"][0])     # token, price, liquidity
+print(s.spending_summary())         # verifiable receipt: each call, cost, tx, chain
 ```
-GET https://pro.coinmarketcap.com/x402/v1/dex/search?q=BNB
-```
 
-x402 signs and pays the $0.01 USDC automatically on Base. The response (`data.tks[]`) carries the token (`n`, `s`, `addr`, `plt`), price (`pu`), and **pool liquidity (`liq`)** — everything the spec needs from one paid call. Use the top BSC/PancakeSwap match.
+AgentPay signs and pays the EIP-3009 USDC authorization on Base automatically. The response (`data.tks[]`) carries the token (`n`, `s`, `addr`, `plt`), price (`pu`), and **pool liquidity (`liq`)** — everything the spec needs from one paid call. Use the top BSC/PancakeSwap match.
 
 ### Step 3 — Define the strategy rule
 
