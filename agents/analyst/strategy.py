@@ -70,10 +70,10 @@ ROUTING_RULES: list[dict] = [
     {
         "need": "dex_pair_liquidity",
         "decision": "paid",
-        "source": "cmc:dex_pairs",
+        "source": "cmc:dex_search",
         "why": "no free AgentPay equivalent (orderbook_depth is CEX-only); CMC's "
-               "normalized DEX pair data — incl. PancakeSwap pools on BSC — is "
-               "the vetted source",
+               "DEX data (PancakeSwap pools on BSC) returns liquidity in the SAME "
+               "dex_search response — one paid CMC leg covers both DEX needs",
     },
     {
         "need": "dex_token_discovery",

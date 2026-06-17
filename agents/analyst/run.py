@@ -743,10 +743,14 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
     note = (f"AgentPay flagship v2 — {run_at}\nGoal: {spec['goal_text']}\n"
             f"Regime: {regime_text}\n"
             f"Strategy: {spec_out['name']} (entry_bias={regime['entry_bias']})")
+    # Trim the survivor list for output/persistence — the recommendation + catalog
+    # carry the proof; the full 60+ list bloats the payload (and the ledger row).
+    vetting_pub = (dict(vetting, survivors=(vetting.get("survivors") or [])[:8])
+                   if isinstance(vetting, dict) else vetting)
     print("\n" + note + "\n", flush=True)
     print("FLAGSHIP_STRATEGY " + json.dumps({
         "run_at": run_at, "goal": spec["name"], "note": note,
-        "strategy_spec": spec_out, "vetting": vetting, "cmc_calls": cmc_calls,
+        "strategy_spec": spec_out, "vetting": vetting_pub, "cmc_calls": cmc_calls,
         "receipt": receipt, "wallet": wallet.base_address,
     }), flush=True)
     log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
@@ -756,7 +760,7 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
         "run_at": run_at, "run_at_iso": run_at_iso, "wallet": wallet.base_address,
         "max_spend": str(max_spend), "objective": objective, "plan": plan,
         "regime": regime_text, "context": "",
-        "findings": {"strategy_spec": spec_out, "vetting": vetting},
+        "findings": {"strategy_spec": spec_out, "vetting": vetting_pub},
         "receipt": receipt, "note": note,
     })
     return 0
