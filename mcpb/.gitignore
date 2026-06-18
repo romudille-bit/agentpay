@@ -1,0 +1,6 @@
+# MCPB build outputs — source of truth is npm/bin/agentpay-mcp.js; build.sh assembles these.
+server/
+node_modules/
+package-lock.json
+*.mcpb
+package.json

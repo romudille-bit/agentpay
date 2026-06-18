@@ -1,0 +1,48 @@
+{
+  "manifest_version": "0.2",
+  "name": "agentpay",
+  "display_name": "AgentPay",
+  "version": "2.3.0",
+  "description": "Economic-intelligence layer for AI agents: budget-capped crypto/data tools with verifiable receipts, plus verified_route — a buyer-side x402 trust oracle. 17 free tools, no API keys, no wallet.",
+  "long_description": "AgentPay gives an AI agent priced, capped, receipted access to live crypto and market-data tools over the x402 protocol. 17 tools are free out of the box (no API keys, no wallet, no USDC). It also exposes verified_route, a keyless buyer-side trust preview that vets the x402 marketplace (sweeps listings, collapses sybil/factory clusters, ranks by real usage) and names the real, used provider for a need — with the full paid version settled through the agentpay-x402 SDK. Free tools run with an ephemeral identity; no private keys ever leave the user's machine.",
+  "author": {
+    "name": "romudille",
+    "email": "romudille@gmail.com",
+    "url": "https://agentpay.tools"
+  },
+  "homepage": "https://agentpay.tools",
+  "documentation": "https://github.com/romudille-bit/agentpay",
+  "support": "https://github.com/romudille-bit/agentpay/issues",
+  "license": "MIT",
+  "keywords": ["x402", "crypto", "ai-agents", "agent-payments", "coinmarketcap", "defi", "trust-oracle"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "AGENTPAY_GATEWAY_URL": "https://agentpay.tools"
+      }
+    }
+  },
+  "tools": [
+    { "name": "verified_route", "description": "Buyer-side x402 trust oracle: 'I need X, budget $Y — which tool is real?' Vets the marketplace, collapses sybils, returns the real, used provider." },
+    { "name": "estimate_plan", "description": "Price a multi-tool plan before spending (per-step cost, total, fits-budget verdict)." },
+    { "name": "token_price", "description": "Live token price (CoinGecko)." },
+    { "name": "market_snapshot", "description": "Macro + crypto in one call: rates, S&P, BTC, ETH, gas." },
+    { "name": "fear_greed_index", "description": "Crypto Fear & Greed index." },
+    { "name": "funding_rates", "description": "Perp funding rates across Binance, Bybit, OKX." },
+    { "name": "token_security", "description": "Contract security screen (GoPlus)." },
+    { "name": "defi_tvl", "description": "DeFi TVL by protocol/chain (DeFiLlama)." }
+  ],
+  "tools_generated": true,
+  "privacy_policies": ["https://agentpay.tools/privacy"],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}
