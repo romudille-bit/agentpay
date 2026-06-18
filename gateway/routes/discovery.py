@@ -562,7 +562,7 @@ AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well
 2. GET  /tools → list tools
 3. POST /tools/{{name}}/call → {{ result, receipt }}  (free tools settle $0)
 
-Paid anchors: POST /v1/session/create ($0.01, Bazaar-indexed) and pre_trade_check ($0.01 — one-call trade verdict: slippage at size, funding carry, OI crowding, security).
+Paid anchors (all $0.01, Bazaar-indexed): POST /v1/session/create (budget-capped session); pre_trade_check (one-call trade verdict — slippage at size, funding carry, OI crowding, security); verified_route (buyer-side trust oracle — sweeps the x402 marketplace, collapses sybils, returns one vetted, ready-to-pay provider).
 Price any multi-tool plan BEFORE spending: POST /v1/plan/estimate (free, no wallet).
 
 ## Gateway
