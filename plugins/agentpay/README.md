@@ -33,4 +33,12 @@ Then `/reload-plugins`. No keys or accounts needed to route.
 - Delivery-quality signal from AgentPay's own routing telemetry (Bazaar gives usage; we add
   "did it actually deliver").
 
+## Privacy Policy
+
+AgentPay is built for autonomous agents and does not collect names, emails, or other personal
+identifiers. It processes tool-call metadata (wallet address, tool name, parameters, amount, tx
+hash, timestamp) to enforce budget caps and produce receipts, and forwards requests to upstream
+public data providers and payment facilitators. Full policy:
+**https://agentpay.tools/privacy**
+
 Home: https://agentpay.tools · SDK: `pip install agentpay-x402`

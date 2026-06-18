@@ -85,4 +85,11 @@ print(s.call("token_price", {"symbol": "ETH"}).data["price_usd"])
 print(s.spending_summary())                 # receipt: every call, cost, tx, chain
 ```
 
+## Privacy Policy
+
+AgentPay is built for autonomous agents and does not collect names, emails, or other personal
+identifiers. The MCP server can run keyless (ephemeral identity). It processes tool-call metadata
+(wallet address, tool name, parameters, amount, tx hash, timestamp) to operate the service and
+forwards requests to upstream public data providers. Full policy: **https://agentpay.tools/privacy**
+
 GitHub: https://github.com/romudille-bit/agentpay

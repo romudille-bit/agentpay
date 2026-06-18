@@ -612,3 +612,74 @@ async def sitemap():
 {loc_tags}
 </urlset>"""
     return Response(content=xml, media_type="application/xml")
+
+
+# ── Privacy policy — required for the Anthropic Connectors Directory + plugin
+# listing ("missing or incomplete privacy policies result in immediate rejection").
+# Plain string (not an f-string) so the CSS braces are literal.
+_PRIVACY_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentPay — Privacy Policy</title>
+<style>
+  :root{--bg:#0b0e11;--fg:#e7edf3;--mut:#8a97a6;--ac:#4ade80;--line:#222a31}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:16px/1.65 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:40px 20px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:18px;margin:28px 0 8px;color:var(--ac)}
+  .upd{color:var(--mut);font-size:13px;margin:0 0 8px}
+  p,li{color:#cdd6df}
+  a{color:var(--ac)} code{background:#1a2128;border-radius:4px;padding:1px 5px;font-size:13px}
+  ul{padding-left:20px}
+</style></head><body><div class="wrap">
+<h1>AgentPay — Privacy Policy</h1>
+<p class="upd">Last updated: 2026-06-18</p>
+<p>AgentPay is an x402 payment gateway and economic-intelligence layer for AI agents. This policy
+explains what data AgentPay processes when an agent (or its operator) uses our tools, MCP server,
+SDK, or gateway at <code>agentpay.tools</code>. AgentPay is built for autonomous agents, not human
+end users, and we do <b>not</b> collect names, emails, or other personal identifiers.</p>
+
+<h2>What we process</h2>
+<ul>
+<li><b>Agent wallet address &amp; session identifiers</b> — the public Stellar/Base address and
+session token, used to enforce budget caps, route payments, and produce receipts. We never receive
+your private keys; payments are signed client-side.</li>
+<li><b>Tool-call metadata</b> — the tool name, the parameters you send (e.g. a token symbol), the
+amount, on-chain transaction hash, network, and timestamp — recorded in our usage/payment logs.</li>
+<li><b>Network/technical data</b> — request IP address and user-agent, used for rate limiting and
+abuse prevention.</li>
+</ul>
+
+<h2>On-chain data</h2>
+<p>Payments settle on public blockchains (Stellar, Base). On-chain transactions — addresses,
+amounts, and tx hashes — are public by nature and outside AgentPay's control. The public receipt
+ledger (<code>/ledger</code>) displays only the AgentPay flagship agent's own on-chain activity.</p>
+
+<h2>Third parties</h2>
+<p>To fulfill a tool call, AgentPay forwards the necessary request parameters to upstream public
+data providers (including CoinGecko, Binance, Bybit, OKX, CoinMarketCap, Etherscan, DeFiLlama,
+GoPlus, Dune Analytics, alternative.me, Reddit, and Jina) and to payment facilitators (Coinbase
+CDP for Base; Stellar Horizon). Each has its own privacy policy. Usage and payment logs are stored
+with our database provider, Supabase. We do not sell data, and we do not use it for advertising.</p>
+
+<h2>Storage &amp; retention</h2>
+<p>Usage and payment logs are stored to operate the service (budget enforcement, receipts, and
+aggregate analytics) and retained only as long as needed for those purposes and any legal or
+accounting obligations.</p>
+
+<h2>Your choices</h2>
+<p>Free tools require no funded wallet and the MCP server can run with an ephemeral identity. You
+control which tools you call and what parameters you send.</p>
+
+<h2>Changes</h2>
+<p>We may update this policy; material changes will be reflected by the "Last updated" date above.</p>
+
+<h2>Contact</h2>
+<p>Questions about this policy: <a href="mailto:romudille@gmail.com">romudille@gmail.com</a>.</p>
+</div></body></html>"""
+
+
+@router.get("/privacy", response_class=Response)
+async def privacy():
+    return Response(content=_PRIVACY_HTML, media_type="text/html")
