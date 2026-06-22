@@ -1,4 +1,11 @@
-# AgentPay — ![tests](https://github.com/romudille-bit/agentpay/actions/workflows/test.yml/badge.svg)
+# AgentPay
+
+[![Tests](https://github.com/romudille-bit/agentpay/actions/workflows/test.yml/badge.svg)](https://github.com/romudille-bit/agentpay/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/agentpay-x402?color=blue)](https://pypi.org/project/agentpay-x402/)
+[![Python](https://img.shields.io/pypi/pyversions/agentpay-x402)](https://pypi.org/project/agentpay-x402/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![MCP](https://img.shields.io/npm/v/%40romudille%2Fagentpay-mcp?label=mcp&color=orange)](https://www.npmjs.com/package/@romudille/agentpay-mcp)
+[![Live gateway](https://img.shields.io/badge/gateway-agentpay.tools-black)](https://agentpay.tools)
 
 *Most agent-payment tools are a wallet — they move money. AgentPay is the layer that decides whether to spend it at all.*
 
