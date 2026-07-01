@@ -440,7 +440,12 @@ async def create_session(
             "payer":      result["payer"],
             "network":    result["network"],
         }
-        agent_address = agent_address or result["payer"]
+        # The settle result's payer is VERIFIED (Mode A: CDP-attested EIP-3009
+        # signer; Mode B: bound to the Transfer log's from-topic). The body/
+        # header-declared agent_address is NOT — real buyers were logged as
+        # docs-example addresses (0x742d35Cc…, 0x0000…0) they'd copy-pasted
+        # into the request body. Verified payer wins; declared is fallback.
+        agent_address = result["payer"] or agent_address
 
     # ── Step 3: Payment verified → create session ─────────────────────────────
     if x_payment:

@@ -994,3 +994,73 @@ class TestFreeToolStandardV2:
         base_opt = r.json()["payment_options"]["base"]
         assert "FREE" in base_opt["instructions"]
         assert "without any on-chain settlement" in base_opt["instructions"]
+
+
+# ── Verified payer wins over declared agent_address (Base paths) ─────────────
+#
+# Real buyers were logged under docs-example addresses (0x742d35Cc…, 0x0000…0)
+# because the self-declared body/header agent_address took priority over the
+# settle result's verified payer. See FUNNEL_FINDINGS_2026-07.md Finding 3.
+
+class TestVerifiedPayerWins:
+
+    VERIFIED_PAYER = "0x" + "9c" * 20
+    DECLARED_JUNK  = "0x742d35Cc6634C0532925a3b844Bc9e7595f42bE5"
+
+    def _v2(self):
+        import base64, json
+        return base64.b64encode(json.dumps(
+            {"x402Version": 2, "payload": {"signature": "0xsig"}}
+        ).encode()).decode()
+
+    @pytest.fixture
+    def fake_base_settle(self, monkeypatch):
+        import gateway.routes.tools as rt
+
+        async def fake_settle(sig_header, requirements, rpc_url="", **kwargs):
+            return {"success": True, "tx_hash": "0x" + "77" * 32,
+                    "payer": self.VERIFIED_PAYER, "network": "eip155:8453",
+                    "reason": "ok"}
+        monkeypatch.setattr(rt.base_pay, "settle_base_payment", fake_settle)
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+    def test_declared_junk_does_not_override_verified_payer_on_paid_tool(
+        self, client, patch_route_tool_response, fake_base_settle, monkeypatch
+    ):
+        # Capture what the lifecycle write records as agent_address.
+        import gateway.routes.tools as rt
+        recorded = {}
+
+        async def spy_update(payment_id, state, **fields):
+            if state == "payment_done":
+                recorded.update(fields)
+            return True
+        monkeypatch.setattr(rt, "update_payment_log_state", spy_update)
+
+        r = client.post(
+            "/tools/pre_trade_check/call",
+            json={"parameters": {"symbol": "ETH", "size_usd": 1000, "side": "long"},
+                  "agent_address": self.DECLARED_JUNK},
+            headers={"PAYMENT-SIGNATURE": self._v2()},
+        )
+        assert r.status_code == 200
+        assert recorded.get("agent_address") == self.VERIFIED_PAYER
+
+    def test_session_route_records_verified_payer(self, client, monkeypatch):
+        import gateway.routes.session as sess
+
+        async def fake_settle(sig_header, requirements, rpc_url="", **kwargs):
+            return {"success": True, "tx_hash": "0x" + "88" * 32,
+                    "payer": self.VERIFIED_PAYER, "network": "eip155:8453",
+                    "reason": "ok"}
+        monkeypatch.setattr(sess.base_pay, "settle_base_payment", fake_settle)
+        monkeypatch.setattr(sess.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post(
+            "/v1/session/create",
+            json={"max_spend": "0.10",
+                  "agent_address": "0x0000000000000000000000000000000000000000"},
+            headers={"PAYMENT-SIGNATURE": self._v2()},
+        )
+        assert r.status_code == 200
+        assert r.json()["agent_address"] == self.VERIFIED_PAYER

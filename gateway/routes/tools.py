@@ -913,13 +913,22 @@ async def call_tool(
             _is_free_tool = False
         if _is_free_tool:
             # Wall E fix: standard v2 payload on a $0 tool — accept as the
-            # free proof, never attempt a real settlement of $0.
+            # free proof, never attempt a real settlement of $0. Nothing is
+            # verified on a $0 call, so the declared address may keep priority.
             auth = await _settle_free_v2(tool_name, payment_signature)
+            if isinstance(auth, JSONResponse):
+                return auth
+            agent_address = agent_address or auth["payer"]
         else:
             auth = await _settle_base_path(tool, tool_name, payment_signature, resource_url)
-        if isinstance(auth, JSONResponse):
-            return auth
-        agent_address = agent_address or auth["payer"]  # EVM payer for logging
+            if isinstance(auth, JSONResponse):
+                return auth
+            # The settle result's payer is VERIFIED (Mode A: CDP-attested
+            # EIP-3009 signer; Mode B: bound to the Transfer log's from-topic).
+            # The declared agent_address is NOT — real buyers were logged as
+            # docs-example addresses (0x742d35Cc…, 0x0000…0) copy-pasted into
+            # the request. Verified payer wins; declared is fallback.
+            agent_address = auth["payer"] or agent_address
         payment_id = auth.get("tx_hash", "")
         is_base = True
 
