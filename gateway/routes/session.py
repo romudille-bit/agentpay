@@ -508,4 +508,19 @@ async def create_session(
             "amount_usdc": SESSION_PRICE_USDC,
         },
         "sdk_hint": "Use `from agentpay import Session` to enforce the max_spend cap client-side.",
+        # In-band upsell — buyers are wallets, not emails; the response
+        # payload is the only channel that reliably reaches them.
+        "related": {
+            "hint": ("Price any multi-tool plan for free before spending: "
+                     "POST /v1/plan/estimate"),
+            "paid_tools": [
+                {"tool": "verified_route", "price_usdc": "0.01",
+                 "why": ("usage-vetted pick of the best x402 provider for any "
+                         "need — sybil tails collapsed, ready-to-pay challenge "
+                         "included")},
+                {"tool": "pre_trade_check", "price_usdc": "0.01",
+                 "why": ("one-call ok/caution/avoid trade verdict: live "
+                         "slippage at your size + funding + OI + security")},
+            ],
+        },
     }

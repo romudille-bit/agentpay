@@ -1064,3 +1064,72 @@ class TestVerifiedPayerWins:
         )
         assert r.status_code == 200
         assert r.json()["agent_address"] == self.VERIFIED_PAYER
+
+
+# ── In-band upsell block on paid responses ───────────────────────────────────
+
+class TestPaidResponseUpsell:
+
+    def _v2(self):
+        import base64, json
+        return base64.b64encode(json.dumps(
+            {"x402Version": 2, "payload": {"signature": "0xsig"}}
+        ).encode()).decode()
+
+    @pytest.fixture
+    def fake_base_settle(self, monkeypatch):
+        import gateway.routes.tools as rt
+
+        async def fake_settle(sig_header, requirements, rpc_url="", **kwargs):
+            return {"success": True, "tx_hash": "0x" + "55" * 32,
+                    "payer": "0x" + "9c" * 20, "network": "eip155:8453",
+                    "reason": "ok"}
+        monkeypatch.setattr(rt.base_pay, "settle_base_payment", fake_settle)
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+    def test_paid_tool_response_carries_related_block(
+        self, client, patch_route_tool_response, fake_base_settle
+    ):
+        r = client.post(
+            "/tools/pre_trade_check/call",
+            json={"parameters": {"symbol": "ETH", "size_usd": 1000, "side": "long"}},
+            headers={"PAYMENT-SIGNATURE": self._v2()},
+        )
+        assert r.status_code == 200
+        rel = r.json()["related"]
+        assert "plan/estimate" in rel["hint"]
+        names = {t["tool"] for t in rel["paid_tools"]}
+        assert names == {"verified_route", "session_create"}
+
+    def test_free_tool_response_has_no_related_block(
+        self, client, patch_route_verify, patch_route_tool_response
+    ):
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}, "agent_address": "GAGENT"},
+            headers={"X-Payment": "tx_hash=free:uuid-88,from=GAGENT,id=uuid-88"},
+        )
+        assert r.status_code == 200
+        assert "related" not in r.json()
+
+    def test_session_create_response_carries_related_block(
+        self, client, monkeypatch
+    ):
+        import gateway.routes.session as sess
+
+        async def fake_settle(sig_header, requirements, rpc_url="", **kwargs):
+            return {"success": True, "tx_hash": "0x" + "66" * 32,
+                    "payer": "0x" + "9c" * 20, "network": "eip155:8453",
+                    "reason": "ok"}
+        monkeypatch.setattr(sess.base_pay, "settle_base_payment", fake_settle)
+        monkeypatch.setattr(sess.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post(
+            "/v1/session/create",
+            json={"max_spend": "0.10"},
+            headers={"PAYMENT-SIGNATURE": self._v2()},
+        )
+        assert r.status_code == 200
+        rel = r.json()["related"]
+        names = {t["tool"] for t in rel["paid_tools"]}
+        assert names == {"verified_route", "pre_trade_check"}

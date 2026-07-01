@@ -77,6 +77,33 @@ _TOOL_ALIASES = {
 }
 
 
+# ── In-band upsell (paid responses only) ─────────────────────────────────────
+# Paying buyers are wallets, not emails — the response payload is the ONLY
+# channel that reliably reaches them. Every paid response carries one compact,
+# deterministic pointer to the complementary paid tools + the free plan
+# estimator. Kept off free responses (200x the volume; don't nag).
+_RELATED_HINT = (
+    "Price any multi-tool plan for free before spending: "
+    "POST /v1/plan/estimate"
+)
+_PAID_RELATED: dict[str, list[dict]] = {
+    "verified_route": [
+        {"tool": "pre_trade_check", "price_usdc": "0.01",
+         "why": ("one-call ok/caution/avoid trade verdict: live slippage at "
+                 "your size + side-aware funding + OI crowding + security")},
+        {"tool": "session_create", "price_usdc": "0.01",
+         "why": "hard multi-call spend cap with a verifiable receipt ledger"},
+    ],
+    "pre_trade_check": [
+        {"tool": "verified_route", "price_usdc": "0.01",
+         "why": ("usage-vetted pick of the best x402 provider for any need — "
+                 "sybil tails collapsed, ready-to-pay challenge included")},
+        {"tool": "session_create", "price_usdc": "0.01",
+         "why": "hard multi-call spend cap with a verifiable receipt ledger"},
+    ],
+}
+
+
 def normalize_payment_headers(
     x_payment: Optional[str], payment_signature: Optional[str],
 ) -> tuple[Optional[str], Optional[str]]:
@@ -826,7 +853,7 @@ async def _execute_and_log(
         user_agent=user_agent_str,
     )
 
-    return {
+    response = {
         "tool": tool_name,
         "result": tool_result,
         "payment": {
@@ -835,6 +862,10 @@ async def _execute_and_log(
             "network": receipt_network,
         },
     }
+    related = _PAID_RELATED.get(resolved)
+    if related:
+        response["related"] = {"hint": _RELATED_HINT, "paid_tools": related}
+    return response
 
 
 @router.get("/tools/{tool_name}/call")
