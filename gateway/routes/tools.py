@@ -13,6 +13,8 @@ four stages, each its own function:
   _issue_402         — no payment header → 402 with Stellar + Base options
   _settle_stellar    — X-Payment header → verify Stellar tx
   _settle_base_path  — PAYMENT-SIGNATURE header → settle Base (CDP / JSON-RPC)
+  _settle_free_v2    — PAYMENT-SIGNATURE on a $0 tool → accept standard x402
+                       payload as the free proof, no on-chain settlement
   _execute_and_log   — run the tool, write the payment lifecycle, build response
 """
 
@@ -34,6 +36,7 @@ from gateway._limiter import limiter, wallet_or_ip
 from gateway.config import GATEWAY_URL, settings
 from gateway.services.supabase import (
     insert_pending_payment_log,
+    record_tx_hash,
     sb_enabled,
     update_payment_log_state,
 )
@@ -402,9 +405,19 @@ def _base_402_option(tool, resource_url: str):
         "pay_to":            settings.BASE_GATEWAY_ADDRESS,
         "maxTimeoutSeconds": base_req["maxTimeoutSeconds"],
         "instructions": (
-            "Sign an EIP-3009 transferWithAuthorization for the amount above, "
-            "encode as base64 JSON PaymentPayload, and retry with header "
-            "PAYMENT-SIGNATURE: <base64_payload>"
+            (
+                "This tool is FREE ($0). Sign a standard $0 EIP-3009 "
+                "transferWithAuthorization, encode as base64 JSON PaymentPayload, "
+                "and retry with header X-PAYMENT or PAYMENT-SIGNATURE — the "
+                "gateway accepts it without any on-chain settlement (no funds "
+                "move, no gas). No wallet balance required."
+            )
+            if Decimal(str(tool.price_usdc or "0")) == 0
+            else (
+                "Sign an EIP-3009 transferWithAuthorization for the amount above, "
+                "encode as base64 JSON PaymentPayload, and retry with header "
+                "PAYMENT-SIGNATURE: <base64_payload>"
+            )
         ),
     }
     # outputSchema feeds Bazaar auto-indexing via the PAYMENT-REQUIRED
@@ -647,6 +660,100 @@ async def _settle_base_path(
     }
 
 
+# In-memory fast guard for _settle_free_v2 nonce consumption (mirrors
+# _used_base_tx_hashes in gateway/base.py — single-process guard when
+# Supabase is disabled/unreachable).
+_used_free_v2_nonces: set[str] = set()
+
+
+async def _settle_free_v2(
+    tool_name: str, payment_signature: str,
+) -> Union[dict, JSONResponse]:
+    """PAYMENT-SIGNATURE on a FREE ($0) tool → fulfil WITHOUT on-chain settlement.
+
+    Wall E fix (2026-07-01). Standards-pure x402 clients (x402-fetch, Coinbase
+    for Agents, plain-`node` agents) can't speak AgentPay's `free:<id>`
+    X-Payment dialect. They read the 402's PAYMENT-REQUIRED accepts, sign a $0
+    EIP-3009 authorization, and send the standard base64 v2 payload. Routing
+    that into _settle_base_path attempts a real CDP/JSON-RPC settlement of a
+    $0 transfer, which always fails — ~6k free calls/month bounced on this
+    (see FUNNEL_FINDINGS_2026-07.md).
+
+    There is no money to verify on a $0 challenge, so a well-formed v2 payload
+    IS the free proof: consume its EIP-3009 nonce for replay/dedup (atomic
+    in-memory check-and-add + awaited insert-only record_tx_hash, same pattern
+    as the paid paths) and hand back an auth dict. The full payment_logs
+    lifecycle is preserved exactly like the paid Base path: the pre-402 UUID
+    row is swept to 'abandoned', _execute_and_log inserts a tx-keyed row and
+    PATCHes it to payment_done. Nothing moves on-chain — the unsettled
+    authorization simply expires (EIP-3009 validity ≤300s).
+
+    Payer identity is self-reported (signature not recovered) — the same trust
+    level as the SDK free flow's `from=` field. NEVER route priced tools here.
+    """
+    payload, err = base_pay._decode_payment_signature(payment_signature)
+    if err or not isinstance(payload, dict):
+        return JSONResponse(
+            status_code=402,
+            content={"error": "Free-tool payment payload invalid",
+                     "reason": err or "not_a_json_object"},
+        )
+
+    authorization = {}
+    inner = payload.get("payload")
+    if isinstance(inner, dict) and isinstance(inner.get("authorization"), dict):
+        authorization = inner["authorization"]
+
+    payer = str(authorization.get("from") or payload.get("payer") or "")
+    # Mode A payloads carry a unique EIP-3009 nonce; Mode B ones a tx_hash.
+    # Either is a usable dedup key. Cap length defensively (DB column hygiene).
+    nonce = str(authorization.get("nonce") or payload.get("tx_hash") or "")[:80]
+    if not nonce:
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error":  "Free-tool payment payload invalid",
+                "reason": "missing_authorization_nonce",
+                "hint":   ("This tool is free ($0). Sign a standard $0 EIP-3009 "
+                           "authorization from the PAYMENT-REQUIRED accepts and retry "
+                           "with X-PAYMENT or PAYMENT-SIGNATURE; it is accepted "
+                           "without on-chain settlement."),
+            },
+        )
+
+    free_key = f"free:{nonce}"
+    # Atomic consume — in-memory check-and-add (no await in between), then the
+    # awaited insert-only record. A 409 (record_tx_hash → False) means another
+    # worker already consumed this nonce → replay.
+    if free_key in _used_free_v2_nonces:
+        return JSONResponse(
+            status_code=402,
+            content={"error": "Payment verification failed",
+                     "reason": "Payment already used (replay attack)"},
+        )
+    _used_free_v2_nonces.add(free_key)
+    if sb_enabled():
+        recorded = await record_tx_hash(free_key, "free")
+        if recorded is False:
+            return JSONResponse(
+                status_code=402,
+                content={"error": "Payment verification failed",
+                         "reason": "Payment already used (replay attack)"},
+            )
+
+    network = str(payload.get("network") or "free")
+    logger.info(
+        f"[PAYMENT] tool={tool_name} network=free-v2 agent={(payer or 'unknown')[:8]}... "
+        f"status=OK (standard $0 payload, no settlement) key={free_key[:20]}"
+    )
+    return {
+        "authorized": True,
+        "tx_hash":    free_key,
+        "payer":      payer or "v2-free-unknown",
+        "network":    network,
+    }
+
+
 async def _execute_and_log(
     tool, resolved: str, tool_name: str, body: ToolCallRequest,
     request: Request, auth: dict, agent_address: Optional[str],
@@ -772,7 +879,8 @@ async def call_tool(
     Flow:
       1. Neither header → _issue_402 (advertise both options)
       2. X-Payment → _settle_stellar, then _execute_and_log
-      3. PAYMENT-SIGNATURE → _settle_base_path, then _execute_and_log
+      3. PAYMENT-SIGNATURE + $0 tool → _settle_free_v2 (no on-chain settle)
+      4. PAYMENT-SIGNATURE → _settle_base_path, then _execute_and_log
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
     tool = registry.get_tool(resolved)
@@ -799,7 +907,16 @@ async def call_tool(
         payment_id = parsed.get("id") or auth.get("tx_hash", "")
         is_base = False
     else:
-        auth = await _settle_base_path(tool, tool_name, payment_signature, resource_url)
+        try:
+            _is_free_tool = Decimal(str(tool.price_usdc or "0")) == 0
+        except Exception:
+            _is_free_tool = False
+        if _is_free_tool:
+            # Wall E fix: standard v2 payload on a $0 tool — accept as the
+            # free proof, never attempt a real settlement of $0.
+            auth = await _settle_free_v2(tool_name, payment_signature)
+        else:
+            auth = await _settle_base_path(tool, tool_name, payment_signature, resource_url)
         if isinstance(auth, JSONResponse):
             return auth
         agent_address = agent_address or auth["payer"]  # EVM payer for logging

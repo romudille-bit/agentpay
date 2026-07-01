@@ -54,6 +54,8 @@ exchange_wallet_audit.md
 usage_reports/
 
 # Internal strategy + copy docs
+GRANT_STACKS.md
+RADAR_PAYAI_SPEC.md
 STRATEGY.md
 COPY_UPDATES.md
 twitter_positioning_v1.md
@@ -93,6 +95,7 @@ tools/demo.sh
 TRACKER.html
 
 # Internal strategy/ops docs (kept off GitHub, like STRATEGY.md)
+FUNNEL_FINDINGS_*.md
 COMPETITIVE_ACTION_AGENTCASH.md
 PARTNERSHIP_LANGCHAIN.md
 CLOUDFLARE_WAF_SKIP.md

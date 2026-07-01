@@ -643,10 +643,13 @@ class TestHeaderCollision:
         monkeypatch.setattr(rt.base_pay, "settle_base_payment", fake_settle)
         monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
 
+        # PAID tool: free ($0) tools now route v2 payloads to _settle_free_v2
+        # (wall E fix), so the base-settle routing must be pinned on a priced
+        # tool.
         v2 = self._both_headers()
         r = client.post(
-            "/tools/token_price/call",
-            json={"parameters": {"symbol": "ETH"}},
+            "/tools/pre_trade_check/call",
+            json={"parameters": {"symbol": "ETH", "size_usd": 1000, "side": "long"}},
             headers={"X-PAYMENT": v2, "PAYMENT-SIGNATURE": v2},
         )
         assert r.status_code == 200
@@ -800,9 +803,11 @@ class TestPureV2Client:
         monkeypatch.setattr(rt.base_pay, "settle_base_payment", fake_settle)
         monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
 
+        # PAID tool: $0 tools now route v2 payloads to _settle_free_v2
+        # (wall E fix), so base-settle routing is pinned on a priced tool.
         r = client.post(
-            "/tools/token_price/call",
-            json={"parameters": {"symbol": "ETH"}},
+            "/tools/pre_trade_check/call",
+            json={"parameters": {"symbol": "ETH", "size_usd": 1000, "side": "long"}},
             headers={"X-PAYMENT": self._v2({"x402Version": 2, "payload": {"signature": "0xsig"}})},
         )
         assert r.status_code == 200
@@ -820,8 +825,8 @@ class TestPureV2Client:
         monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
 
         r = client.post(
-            "/tools/token_price/call",
-            json={"parameters": {"symbol": "ETH"}},
+            "/tools/pre_trade_check/call",
+            json={"parameters": {"symbol": "ETH", "size_usd": 1000, "side": "long"}},
             headers={"X-PAYMENT": self._v2({"tx_hash": "0x" + "d" * 64, "payer": "0x" + "b" * 40})},
         )
         assert r.status_code == 200
@@ -863,3 +868,129 @@ class TestPureV2Client:
         )
         assert r.status_code == 200
         assert r.json().get("session_id")
+
+
+# ── Wall E fix: standard x402 v2 payloads complete FREE ($0) tools ───────────
+#
+# Standards-pure clients can't speak the `free:<id>` X-Payment dialect. A
+# well-formed v2 payload on a $0 tool must be accepted as the free proof
+# WITHOUT any on-chain settlement attempt, with nonce-based replay protection
+# and the normal payment lifecycle. See FUNNEL_FINDINGS_2026-07.md.
+
+class TestFreeToolStandardV2:
+
+    @staticmethod
+    def _v2_payload(nonce: str, value: str = "0"):
+        import base64, json
+        return base64.b64encode(json.dumps({
+            "x402Version": 2,
+            "scheme":      "exact",
+            "network":     "eip155:8453",
+            "payload": {
+                "signature": "0x" + "f" * 130,
+                "authorization": {
+                    "from":        "0x" + "1" * 40,
+                    "to":          "0x" + "2" * 40,
+                    "value":       value,
+                    "nonce":       nonce,
+                    "validAfter":  "0",
+                    "validBefore": "9999999999",
+                },
+            },
+        }).encode()).decode()
+
+    @pytest.fixture
+    def forbid_base_settle(self, monkeypatch):
+        """settle_base_payment must NEVER be called for a $0 tool."""
+        import gateway.routes.tools as rt
+
+        async def explode(*a, **kw):  # pragma: no cover - failure signal
+            raise AssertionError("settle_base_payment called for a FREE tool")
+        monkeypatch.setattr(rt.base_pay, "settle_base_payment", explode)
+
+    def test_standard_v2_payload_completes_free_tool(
+        self, client, patch_route_tool_response, forbid_base_settle
+    ):
+        nonce = "0x" + "ab" * 32
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"PAYMENT-SIGNATURE": self._v2_payload(nonce)},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["payment"]["tx_hash"].startswith("free:")
+        assert body["payment"]["network"] == "eip155:8453"
+        assert body["payment"]["amount_usdc"] == "0.000"
+        assert body["result"]["mocked"] is True
+
+    def test_v2_payload_in_x_payment_header_also_works(
+        self, client, patch_route_tool_response, forbid_base_settle
+    ):
+        # Standards-pure clients send X-PAYMENT only; normalize_payment_headers
+        # must route it into the free path for $0 tools.
+        nonce = "0x" + "cd" * 32
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"X-PAYMENT": self._v2_payload(nonce)},
+        )
+        assert r.status_code == 200
+        assert r.json()["payment"]["tx_hash"] == f"free:{nonce}"
+
+    def test_nonce_replay_rejected(
+        self, client, patch_route_tool_response, forbid_base_settle
+    ):
+        nonce = "0x" + "ee" * 32
+        payload = self._v2_payload(nonce)
+        r1 = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"PAYMENT-SIGNATURE": payload},
+        )
+        assert r1.status_code == 200
+        r2 = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"PAYMENT-SIGNATURE": payload},
+        )
+        assert r2.status_code == 402
+        assert "replay" in r2.json()["reason"].lower()
+
+    def test_payload_without_nonce_rejected_with_hint(
+        self, client, patch_route_tool_response, forbid_base_settle
+    ):
+        import base64, json
+        bare = base64.b64encode(json.dumps(
+            {"x402Version": 2, "payload": {"signature": "0xfake"}}
+        ).encode()).decode()
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={"PAYMENT-SIGNATURE": bare},
+        )
+        assert r.status_code == 402
+        body = r.json()
+        assert body["reason"] == "missing_authorization_nonce"
+        assert "free" in body["hint"].lower()
+
+    def test_sdk_free_dialect_still_works(
+        self, client, patch_route_verify, patch_route_tool_response
+    ):
+        # The proprietary free:<id> X-Payment flow (SDK + MCP) is untouched.
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}, "agent_address": "GAGENT"},
+            headers={"X-Payment": "tx_hash=free:uuid-77,from=GAGENT,id=uuid-77"},
+        )
+        assert r.status_code == 200
+        assert r.json()["payment"]["tx_hash"] == "free:uuid-77"
+
+    def test_free_402_advertises_no_settlement_needed(self, client, monkeypatch):
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        r = client.post("/tools/token_price/call", json={"parameters": {"symbol": "ETH"}})
+        assert r.status_code == 402
+        base_opt = r.json()["payment_options"]["base"]
+        assert "FREE" in base_opt["instructions"]
+        assert "without any on-chain settlement" in base_opt["instructions"]
