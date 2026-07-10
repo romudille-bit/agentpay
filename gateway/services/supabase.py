@@ -958,6 +958,7 @@ _PROBE_COLUMNS = (
 _SCORE_COLUMNS = (
     "resource_url", "window_days", "paid_probes", "delivery_rate",
     "delivery_factor", "latency_p50_ms", "last_ok_at", "last_fail_at", "flags",
+    "mpp_option", "price_usdc",
 )
 
 

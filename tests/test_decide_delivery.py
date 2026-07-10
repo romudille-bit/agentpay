@@ -174,3 +174,33 @@ def test_verified_route_skips_flagged_rec_and_carries_why():
     listed = {s["url"]: s for s in out["survivors"]}
     assert radar.FLAG_NO_DELIVERY in listed["https://thief.x/t"]["flags"]
     assert listed["https://thief.x/t"]["why"].startswith("⚠ took payment")
+
+
+class TestMppLabel:
+    """AGE-8 [MR-3]: label rides the why line + public shape; never affects rank."""
+
+    def test_mpp_in_why_and_public(self):
+        c = _cand("https://mpp.x/t", payers=10, calls=30)
+        row = _score_row("https://mpp.x/t")
+        row["https://mpp.x/t"]["mpp_option"] = True
+        scored, _ = radar.decide([c], BUDGET, scores=row)
+        assert scored[0]["why"].endswith("also payable via MPP/Tempo")
+        assert radar._public(scored[0])["mpp_option"] is True
+
+    def test_mpp_does_not_change_quality(self):
+        c = _cand("https://mpp.x/t", payers=10, calls=30)
+        base = _score_row("https://mpp.x/t", factor=1.0)
+        with_mpp = {k: dict(v, mpp_option=True) for k, v in base.items()}
+        q_plain = radar.decide([c], BUDGET, scores=base)[0][0]["quality"]
+        q_mpp = radar.decide([c], BUDGET, scores=with_mpp)[0][0]["quality"]
+        assert q_plain == q_mpp
+
+    def test_mpp_label_alongside_no_delivery_flag(self):
+        c = _cand("https://bad.x/t")
+        row = _score_row("https://bad.x/t", flags=[radar.FLAG_NO_DELIVERY],
+                         last_fail="2026-07-03T05:00:00+00:00")
+        row["https://bad.x/t"]["mpp_option"] = True
+        scored, rec = radar.decide([c], BUDGET, scores=row)
+        assert scored[0]["why"] == ("⚠ took payment without delivering on "
+                                    "2026-07-03 · also payable via MPP/Tempo")
+        assert rec is None

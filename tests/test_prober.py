@@ -261,3 +261,31 @@ class TestScore:
 ])
 def test_paid_but_no_data(settle, http, expected):
     assert probe.paid_but_no_data(settle, http) is expected
+
+
+class TestScoreMppAndPrice:
+    """AGE-8: [MR-3] mpp label + last-known price aggregate into score rows."""
+
+    def test_mpp_aggregates_from_free_probes(self):
+        rows = probe.score([
+            probe_row(probe_type="free", settle_ok=None, http_ok=None,
+                      response_nonempty=None) | {"mpp_option": True},
+            probe_row(days_ago=1),
+        ], now=NOW)
+        assert rows[0]["mpp_option"] is True
+
+    def test_no_mpp_when_never_advertised(self):
+        rows = probe.score([probe_row()], now=NOW)
+        assert rows[0]["mpp_option"] is False
+
+    def test_price_is_last_known(self):
+        rows = probe.score([
+            probe_row(days_ago=5) | {"price_usdc": "0.01"},
+            probe_row(days_ago=1) | {"price_usdc": "0.02"},   # newer wins
+            probe_row(days_ago=0),                            # no price → ignored
+        ], now=NOW)
+        assert rows[0]["price_usdc"] == "0.02"
+
+    def test_price_none_when_unknown(self):
+        rows = probe.score([probe_row()], now=NOW)
+        assert rows[0]["price_usdc"] is None

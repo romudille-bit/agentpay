@@ -208,19 +208,26 @@ def _usage_q(payers: int, calls: int, rec_days: Optional[int]) -> int:
 
 
 def _delivery_why(row: dict) -> str:
-    """One human line from a service_scores row (the Prober's public output)."""
+    """One human line from a service_scores row (the Prober's public output).
+    [MR-3]: the MPP/Tempo label rides along — known from free T0 probes, so it
+    can appear even when a service has no paid probes yet."""
+    parts: list[str] = []
     if FLAG_NO_DELIVERY in (row.get("flags") or []):
         failed_at = str(row.get("last_fail_at") or "")[:10]
-        return ("⚠ took payment without delivering"
-                + (f" on {failed_at}" if failed_at else ""))
-    n = row.get("paid_probes") or 0
-    rate = row.get("delivery_rate")
-    if not n or rate is None:
-        return ""
-    pct = f"{float(rate) * 100:.0f}%"
-    p50 = row.get("latency_p50_ms")
-    lat = f", median {int(p50)}ms" if isinstance(p50, (int, float)) else ""
-    return f"probed {n}× in {row.get('window_days', 30)}d, {pct} delivered{lat}"
+        parts.append("⚠ took payment without delivering"
+                     + (f" on {failed_at}" if failed_at else ""))
+    else:
+        n = row.get("paid_probes") or 0
+        rate = row.get("delivery_rate")
+        if n and rate is not None:
+            pct = f"{float(rate) * 100:.0f}%"
+            p50 = row.get("latency_p50_ms")
+            lat = f", median {int(p50)}ms" if isinstance(p50, (int, float)) else ""
+            parts.append(f"probed {n}× in {row.get('window_days', 30)}d, "
+                         f"{pct} delivered{lat}")
+    if row.get("mpp_option"):
+        parts.append("also payable via MPP/Tempo")
+    return " · ".join(parts)
 
 
 def decide(cands: list[dict], remaining: Decimal,
@@ -311,6 +318,7 @@ def decide(cands: list[dict], remaining: Decimal,
                            "paid_probes": score_row.get("paid_probes"),
                            "latency_p50_ms": score_row.get("latency_p50_ms"),
                        } if score_row else None),
+                       "mpp_option": bool(score_row.get("mpp_option")),
                        "why": delivery_why})
 
     survivors = [s for s in scored if not s["dropped"]]
@@ -381,6 +389,8 @@ def _public(s: Optional[dict]) -> Optional[dict]:
         out["why"] = s["why"]
     if s.get("delivery"):
         out["delivery"] = s["delivery"]
+    if s.get("mpp_option"):
+        out["mpp_option"] = True   # [MR-3] label only — never settled by us
     return out
 
 

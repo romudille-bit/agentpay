@@ -293,6 +293,13 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
                            if isinstance(p.get("latency_ms"), (int, float)))
         oks = [_parse_ts(p.get("probed_at")) for p in paid if _delivered(p)]
         fails = [_parse_ts(p.get("probed_at")) for p in paid if not _delivered(p)]
+        # [MR-3] MPP/Tempo label: known from FREE probes too (T0 parses every
+        # live 402), so it aggregates over ALL window probes, not just paid.
+        mpp = any(p.get("mpp_option") for p in group)
+        # Last-known advertised price — lets estimate_plan price external legs.
+        priced = [p for p in group if p.get("price_usdc") is not None]
+        priced.sort(key=lambda p: _parse_ts(p.get("probed_at"))
+                    or datetime.min.replace(tzinfo=timezone.utc))
         rows.append({
             "resource_url": url,
             "window_days": window_days,
@@ -303,6 +310,8 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
             "last_ok_at": max(d for d in oks if d).isoformat() if any(oks) else None,
             "last_fail_at": max(d for d in fails if d).isoformat() if any(fails) else None,
             "flags": flags,
+            "mpp_option": mpp,
+            "price_usdc": priced[-1]["price_usdc"] if priced else None,
         })
     return rows
 

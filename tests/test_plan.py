@@ -85,3 +85,69 @@ class TestEstimatePlan:
         })
         assert r.status_code == 200
         assert "budget_error" in r.json()
+
+
+class TestExternalSteps:
+    """AGE-8: external x402 URLs annotated (and priced) from Prober telemetry."""
+
+    URL = "https://api.ext.example/tools/search"
+
+    def _scores(self, **over):
+        row = {"resource_url": self.URL, "window_days": 30, "paid_probes": 4,
+               "delivery_rate": 1.0, "delivery_factor": 1.15,
+               "latency_p50_ms": 700, "flags": [], "mpp_option": True,
+               "price_usdc": "0.02", "last_fail_at": None}
+        row.update(over)
+        return {self.URL: row}
+
+    def _patch(self, monkeypatch, scores):
+        from gateway.services import supabase
+
+        async def _fake():
+            return scores
+        monkeypatch.setattr(supabase, "fetch_service_scores", _fake)
+
+    def test_probed_external_step_priced_and_labeled(self, client, monkeypatch):
+        self._patch(monkeypatch, self._scores())
+        r = client.post("/v1/plan/estimate", json={
+            "steps": [{"tool": "token_price"}, {"tool": self.URL}],
+            "budget": "0.05",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        step = body["steps"][1]
+        assert step["external"] is True and step["probed"] is True
+        assert step["mpp_option"] is True                 # [MR-3] label
+        assert step["price_usdc"] == "0.02"
+        assert step["price_source"] == "prober_last_seen_402"
+        assert "probed 4×" in step["why"]
+        assert "also payable via MPP/Tempo" in step["why"]
+        from decimal import Decimal
+        assert Decimal(body["total_usdc"]) == Decimal("0.02")   # external leg priced
+        assert body["fits_budget"] is True
+
+    def test_unprobed_external_step_annotated_not_priced(self, client, monkeypatch):
+        self._patch(monkeypatch, {})
+        r = client.post("/v1/plan/estimate", json={"steps": [{"tool": self.URL}]})
+        step = r.json()["steps"][0]
+        assert step["external"] is True and step["probed"] is False
+        assert "price_usdc" not in step
+        assert r.json()["total_usdc"] == "0"
+
+    def test_registry_only_plan_never_fetches_scores(self, client, monkeypatch):
+        from gateway.services import supabase
+
+        async def _boom():
+            raise AssertionError("fetch_service_scores must not be called")
+        monkeypatch.setattr(supabase, "fetch_service_scores", _boom)
+        r = client.post("/v1/plan/estimate", json={"steps": [{"tool": "token_price"}]})
+        assert r.status_code == 200
+
+    def test_mpp_only_metadata_without_paid_probes(self, client, monkeypatch):
+        # T0-only knowledge: no paid probes yet, but MPP label + price known.
+        self._patch(monkeypatch, self._scores(paid_probes=0, delivery_rate=None,
+                                              delivery_factor=1.0))
+        r = client.post("/v1/plan/estimate", json={"steps": [{"tool": self.URL}]})
+        step = r.json()["steps"][0]
+        assert step["mpp_option"] is True
+        assert step["why"] == "also payable via MPP/Tempo"

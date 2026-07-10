@@ -50,8 +50,14 @@ CREATE TABLE IF NOT EXISTS service_scores (
     last_ok_at      timestamptz,
     last_fail_at    timestamptz,
     flags           jsonb DEFAULT '[]'::jsonb,
+    mpp_option      boolean DEFAULT false,   -- [MR-3] MPP/Tempo advertised (AGE-8)
+    price_usdc      numeric,                 -- last-known advertised price (AGE-8)
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
+
+-- AGE-8 addendum — idempotent for tables created before these columns existed.
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS mpp_option boolean DEFAULT false;
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS price_usdc numeric;
 
 -- RLS: raw probes private, scores public-read (the gateway's secret key
 -- bypasses RLS for all reads/writes either way).

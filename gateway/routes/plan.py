@@ -50,19 +50,63 @@ def _cheapest_alternative(tool) -> Optional[dict]:
     return {"tool": best.name, "price_usdc": best.price_usdc}
 
 
+def _external_step(url: str, score_row: Optional[dict]) -> tuple[dict, Optional[Decimal]]:
+    """Annotate an external x402 URL step from the Prober's service_scores
+    (AGE-8 / [MR-3]). Returns (entry, price) — price only when the Prober has
+    seen the live 402 (last-known advertised amount), letting a plan cover
+    external legs the registry can't price."""
+    entry: dict = {"tool": url, "exists": True, "external": True}
+    if not score_row:
+        entry["probed"] = False
+        return entry, None
+    entry["probed"] = True
+    from gateway.radar import _delivery_why
+    why = _delivery_why(score_row)
+    if why:
+        entry["why"] = why
+    if score_row.get("mpp_option"):
+        entry["mpp_option"] = True     # label only — never settled by us
+    if score_row.get("delivery_factor") is not None:
+        entry["delivery_factor"] = score_row["delivery_factor"]
+    price = None
+    raw = score_row.get("price_usdc")
+    if raw is not None:
+        try:
+            price = Decimal(str(raw))
+            entry["price_usdc"] = format(price.normalize(), "f")
+            entry["free"] = price == 0
+            entry["price_source"] = "prober_last_seen_402"
+        except (InvalidOperation, ValueError):
+            price = None
+    return entry, price
+
+
 @router.post("/v1/plan/estimate")
 @limiter.limit("60/minute")
 async def estimate_plan(body: PlanEstimateRequest, request: Request):
     """Price a plan of tool calls without executing or paying for anything.
 
     Unknown tools don't fail the request — they come back with
-    exists=false so the agent can re-plan around them.
+    exists=false so the agent can re-plan around them. External x402 URLs
+    are annotated (and priced when possible) from the Prober's telemetry.
     """
     steps_out = []
     total = Decimal("0")
     unknown = 0
 
+    # Prober scores — fetched once, only when the plan has external URL steps.
+    scores: dict = {}
+    if any(s.tool.startswith(("http://", "https://")) for s in body.steps):
+        from gateway.services.supabase import fetch_service_scores
+        scores = await fetch_service_scores()
+
     for step in body.steps:
+        if step.tool.startswith(("http://", "https://")):
+            entry, price = _external_step(step.tool, scores.get(step.tool))
+            if price is not None:
+                total += price
+            steps_out.append(entry)
+            continue
         resolved = _TOOL_ALIASES.get(step.tool, step.tool)
         tool = registry.get_tool(resolved)
         if tool is None or not tool.active:
