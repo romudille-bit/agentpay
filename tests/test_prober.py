@@ -91,7 +91,8 @@ class TestT0Checks:
     def test_wellformed_402(self):
         r = probe.t0_checks(402, WELLFORMED_402, Decimal("0.01"))
         assert r == {"alive": True, "x402_wellformed": True,
-                     "price_matches": True, "mpp_option": False}
+                     "price_matches": True, "mpp_option": False,
+                     "usdg_option": False}
 
     def test_dead_endpoint(self):
         r = probe.t0_checks(None, None)
@@ -289,3 +290,31 @@ class TestScoreMppAndPrice:
     def test_price_none_when_unknown(self):
         rows = probe.score([probe_row()], now=NOW)
         assert rows[0]["price_usdc"] is None
+
+
+class TestUsdgLabel:
+    """AGE-18: USDG/Robinhood Chain label — exact mirror of the MPP label."""
+
+    def test_usdg_detected_by_network(self):
+        body = {"accepts": [WELLFORMED_402["accepts"][0],
+                            {"network": "eip155:46630", "amount": "10000",
+                             "asset": "0xusdg"}]}
+        assert probe.t0_checks(402, body)["usdg_option"] is True
+
+    def test_usdg_detected_by_asset_name(self):
+        body = {"accepts": [WELLFORMED_402["accepts"][0]],
+                "payment_options": [{"network": "robinhood", "amount": "10000",
+                                     "asset": "USDG"}]}
+        assert probe.t0_checks(402, body)["usdg_option"] is True
+
+    def test_no_usdg_on_plain_base(self):
+        assert probe.t0_checks(402, WELLFORMED_402)["usdg_option"] is False
+
+    def test_usdg_aggregates_into_score(self):
+        rows = probe.score([
+            probe_row(probe_type="free", settle_ok=None, http_ok=None,
+                      response_nonempty=None) | {"usdg_option": True},
+            probe_row(days_ago=1),
+        ], now=NOW)
+        assert rows[0]["usdg_option"] is True
+        assert rows[0]["mpp_option"] is False

@@ -66,6 +66,8 @@ def _external_step(url: str, score_row: Optional[dict]) -> tuple[dict, Optional[
         entry["why"] = why
     if score_row.get("mpp_option"):
         entry["mpp_option"] = True     # label only — never settled by us
+    if score_row.get("usdg_option"):
+        entry["usdg_option"] = True    # label only — never settled by us
     if score_row.get("delivery_factor") is not None:
         entry["delivery_factor"] = score_row["delivery_factor"]
     price = None

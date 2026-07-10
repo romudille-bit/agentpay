@@ -204,3 +204,14 @@ class TestMppLabel:
         assert scored[0]["why"] == ("⚠ took payment without delivering on "
                                     "2026-07-03 · also payable via MPP/Tempo")
         assert rec is None
+
+
+def test_usdg_label_in_why_and_public():
+    """AGE-18: rides the why line + public shape, never affects rank."""
+    c = _cand("https://rh.x/t", payers=10, calls=30)
+    row = _score_row("https://rh.x/t", factor=1.0)
+    row["https://rh.x/t"]["usdg_option"] = True
+    scored, _ = radar.decide([c], BUDGET, scores=row)
+    assert scored[0]["why"].endswith("also payable in USDG on Robinhood Chain")
+    assert radar._public(scored[0])["usdg_option"] is True
+    assert scored[0]["quality"] == 80          # label never changes rank

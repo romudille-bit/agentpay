@@ -130,14 +130,24 @@ def _option_sane(opt: dict) -> bool:
 
 
 _MPP_MARKERS = ("mpp", "tempo")
+_USDG_MARKERS = ("usdg", "eip155:46630", "robinhood")
+
+
+def _option_hay(opt: dict) -> str:
+    return " ".join(
+        str(opt.get(k, "")) for k in ("network", "scheme", "rail", "chain", "asset", "protocol")
+    ).lower()
 
 
 def _is_mpp_option(opt: dict) -> bool:
     """[MR-3] Does this option advertise MPP/Tempo? Detection only, never settled."""
-    hay = " ".join(
-        str(opt.get(k, "")) for k in ("network", "scheme", "rail", "chain", "asset", "protocol")
-    ).lower()
-    return any(m in hay for m in _MPP_MARKERS)
+    return any(m in _option_hay(opt) for m in _MPP_MARKERS)
+
+
+def _is_usdg_option(opt: dict) -> bool:
+    """AGE-18: USDG / Robinhood Chain (eip155:46630) option. Detection only,
+    never settled — same rail-agnostic stance as the MPP label."""
+    return any(m in _option_hay(opt) for m in _USDG_MARKERS)
 
 
 def t0_checks(status_code: Optional[int], body: dict | str | None,
@@ -175,6 +185,7 @@ def t0_checks(status_code: Optional[int], body: dict | str | None,
         "x402_wellformed": wellformed,
         "price_matches": price_matches,
         "mpp_option": any(_is_mpp_option(o) for o in opts),
+        "usdg_option": any(_is_usdg_option(o) for o in opts),
     }
 
 
@@ -296,6 +307,7 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
         # [MR-3] MPP/Tempo label: known from FREE probes too (T0 parses every
         # live 402), so it aggregates over ALL window probes, not just paid.
         mpp = any(p.get("mpp_option") for p in group)
+        usdg = any(p.get("usdg_option") for p in group)
         # Last-known advertised price — lets estimate_plan price external legs.
         priced = [p for p in group if p.get("price_usdc") is not None]
         priced.sort(key=lambda p: _parse_ts(p.get("probed_at"))
@@ -311,6 +323,7 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
             "last_fail_at": max(d for d in fails if d).isoformat() if any(fails) else None,
             "flags": flags,
             "mpp_option": mpp,
+            "usdg_option": usdg,
             "price_usdc": priced[-1]["price_usdc"] if priced else None,
         })
     return rows

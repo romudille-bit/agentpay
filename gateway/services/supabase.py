@@ -951,6 +951,7 @@ async def fetch_flagship_runs(limit: int = 200) -> list[dict]:
 _PROBE_COLUMNS = (
     "probed_at", "resource_url", "pay_to", "network", "price_usdc",
     "probe_type", "alive", "x402_wellformed", "price_matches", "mpp_option",
+    "usdg_option",
     "settle_ok", "http_ok", "latency_ms", "response_nonempty", "schema_ok",
     "tx_hash", "error",
 )
@@ -958,7 +959,7 @@ _PROBE_COLUMNS = (
 _SCORE_COLUMNS = (
     "resource_url", "window_days", "paid_probes", "delivery_rate",
     "delivery_factor", "latency_p50_ms", "last_ok_at", "last_fail_at", "flags",
-    "mpp_option", "price_usdc",
+    "mpp_option", "usdg_option", "price_usdc",
 )
 
 

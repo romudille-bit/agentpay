@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS service_probes (
     x402_wellformed   boolean,
     price_matches     boolean,
     mpp_option        boolean,                  -- [MR-3] MPP/Tempo advertised (detection only)
+    usdg_option       boolean,                  -- AGE-18: USDG/Robinhood Chain advertised (detection only)
     settle_ok         boolean,
     http_ok           boolean,
     latency_ms        integer,
@@ -51,12 +52,15 @@ CREATE TABLE IF NOT EXISTS service_scores (
     last_fail_at    timestamptz,
     flags           jsonb DEFAULT '[]'::jsonb,
     mpp_option      boolean DEFAULT false,   -- [MR-3] MPP/Tempo advertised (AGE-8)
+    usdg_option     boolean DEFAULT false,   -- USDG/Robinhood Chain advertised (AGE-18)
     price_usdc      numeric,                 -- last-known advertised price (AGE-8)
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
--- AGE-8 addendum — idempotent for tables created before these columns existed.
+-- AGE-8/AGE-18 addenda — idempotent for tables created before these columns.
+ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS usdg_option boolean;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS mpp_option boolean DEFAULT false;
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS usdg_option boolean DEFAULT false;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS price_usdc numeric;
 
 -- RLS: raw probes private, scores public-read (the gateway's secret key

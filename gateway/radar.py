@@ -227,6 +227,8 @@ def _delivery_why(row: dict) -> str:
                          f"{pct} delivered{lat}")
     if row.get("mpp_option"):
         parts.append("also payable via MPP/Tempo")
+    if row.get("usdg_option"):
+        parts.append("also payable in USDG on Robinhood Chain")
     return " · ".join(parts)
 
 
@@ -319,6 +321,7 @@ def decide(cands: list[dict], remaining: Decimal,
                            "latency_p50_ms": score_row.get("latency_p50_ms"),
                        } if score_row else None),
                        "mpp_option": bool(score_row.get("mpp_option")),
+                       "usdg_option": bool(score_row.get("usdg_option")),
                        "why": delivery_why})
 
     survivors = [s for s in scored if not s["dropped"]]
@@ -391,6 +394,8 @@ def _public(s: Optional[dict]) -> Optional[dict]:
         out["delivery"] = s["delivery"]
     if s.get("mpp_option"):
         out["mpp_option"] = True   # [MR-3] label only — never settled by us
+    if s.get("usdg_option"):
+        out["usdg_option"] = True  # AGE-18 label only — never settled by us
     return out
 
 
