@@ -21,7 +21,7 @@ import hmac
 import logging
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from agents.prober.probe import score
 from gateway.config import settings
@@ -78,6 +78,107 @@ async def scores_json():
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+# ── Public leaderboard (the human surface for /scores.json) ──────────────────
+# Self-contained HTML, same pattern/style as /radar: no build step, no external
+# assets; fetches /scores.json client-side. Honest about early data — the
+# prober runs Mon/Thu, so the table grows every sweep.
+_PROBES_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x402 Delivery Scores — AgentPay Prober</title>
+<style>
+  :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;--ac:#c3f53c;--ac2:#5ad1ff;--bad:#ff6b6b}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 18px 60px}
+  h1{font-size:24px;margin:0 0 4px}.sub{color:var(--mut);margin:0 0 18px}
+  .stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+  .stat b{display:block;font-size:20px}.stat span{color:var(--mut);font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  td.r,th.r{text-align:right}
+  .url{color:var(--mut);font-size:12px;word-break:break-all}
+  .why{color:var(--mut);font-size:12px;margin-top:2px}
+  .badge{font-size:12px;font-weight:700;border-radius:6px;padding:2px 8px;white-space:nowrap}
+  .up{color:var(--ac);border:1px solid #2c4a1f}
+  .neutral{color:var(--mut);border:1px solid var(--line)}
+  .down{color:var(--bad);border:1px solid #4a1f1f}
+  .flag{color:var(--bad);font-size:11px;border:1px solid #4a1f1f;border-radius:6px;padding:2px 6px}
+  .rail{color:var(--ac2);font-size:11px;border:1px solid #1f3a45;border-radius:6px;padding:2px 6px}
+  .note{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:10px 14px;color:var(--mut);font-size:13px;margin-bottom:18px}
+  .msg{color:var(--mut);padding:18px 2px}
+  a{color:var(--ac2)}.foot{color:var(--mut);font-size:12px;margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
+</style></head><body><div class="wrap">
+  <h1>x402 Delivery Scores</h1>
+  <p class="sub">The AgentPay Prober pays x402 services with real USDC and scores whether
+  they actually deliver. Usage stats say what's popular — paying says what works.</p>
+  <div class="stats" id="stats"></div>
+  <div class="note">Early data, growing fast: the Prober sweeps the marketplace every
+  Monday &amp; Thursday. Unprobed services rank neutral (factor 1.00) — absence of
+  data never penalizes anyone. These scores feed
+  <code>verified_route</code> ranking directly.</div>
+  <div id="board" class="msg">Loading scores…</div>
+  <div class="foot">Raw JSON: <a href="/scores.json">/scores.json</a> ·
+    Methodology: paid probes over a 30-day window; delivered = payment settled ∧ HTTP 200 ∧
+    non-empty response ∧ advertised schema matched. Factor: ≥90% → 1.15 boost · 50–90% → sliding ·
+    &lt;50% → 0.25 · took-payment-without-delivering → flagged, never recommended.
+    Negative flags are backed by on-chain tx evidence. ·
+    <a href="/ledger">Receipt ledger</a> · <a href="/llms.txt">About AgentPay</a></div>
+</div>
+<script>
+(async () => {
+  const board = document.getElementById('board');
+  try {
+    const d = await (await fetch('/scores.json')).json();
+    const svcs = d.services || [];
+    const probed = svcs.filter(s => (s.paid_probes || 0) > 0);
+    const flagged = svcs.filter(s => (s.flags || []).length > 0);
+    const boosted = svcs.filter(s => (s.delivery_factor || 1) > 1);
+    document.getElementById('stats').innerHTML = [
+      ['' + svcs.length, 'services tracked'],
+      ['' + probed.length, 'paid-probed (30d)'],
+      ['' + boosted.length, 'proven deliverers'],
+      ['' + flagged.length, 'flagged'],
+    ].map(([b, s]) => `<div class="stat"><b>${b}</b><span>${s}</span></div>`).join('');
+    if (!svcs.length) { board.innerHTML = '<p class="msg">No scores yet — first sweep lands Monday 05:00 UTC.</p>'; return; }
+    const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const badge = f => f > 1 ? `<span class="badge up">${f.toFixed(2)}×</span>`
+      : f < 1 ? `<span class="badge down">${f.toFixed(2)}×</span>`
+      : `<span class="badge neutral">1.00×</span>`;
+    board.innerHTML = `<table><thead><tr>
+      <th>Service</th><th class="r">Delivery</th><th class="r">Factor</th>
+      <th class="r">p50</th><th class="r">Price</th><th>Rails / flags</th>
+      </tr></thead><tbody>` + svcs.map(s => {
+        const rate = s.delivery_rate == null ? '<span class="url">unprobed</span>'
+          : Math.round(s.delivery_rate * 100) + '%';
+        const extras = [
+          s.mpp_option ? '<span class="rail">MPP/Tempo</span>' : '',
+          s.usdg_option ? '<span class="rail">USDG</span>' : '',
+          ...(s.flags || []).map(f => `<span class="flag">${esc(f)}</span>`),
+        ].filter(Boolean).join(' ') || '<span class="url">—</span>';
+        return `<tr><td><div class="url">${esc(s.resource_url)}</div>
+          ${s.why ? `<div class="why">${esc(s.why)}</div>` : ''}</td>
+          <td class="r">${rate}</td>
+          <td class="r">${badge(Number(s.delivery_factor) || 1)}</td>
+          <td class="r">${s.latency_p50_ms != null ? esc(s.latency_p50_ms) + 'ms' : '—'}</td>
+          <td class="r">${s.price_usdc != null ? '$' + esc(s.price_usdc) : '—'}</td>
+          <td>${extras}</td></tr>`;
+      }).join('') + '</tbody></table>';
+  } catch (e) { board.innerHTML = '<p class="msg">Could not load scores — try <a href="/scores.json">/scores.json</a>.</p>'; }
+})();
+</script></body></html>"""
+
+
+@router.get("/probes", response_class=Response)
+async def probes_page():
+    """Public delivery-scores leaderboard — the human surface for /scores.json."""
+    return Response(content=_PROBES_HTML, media_type="text/html",
+                    headers={"Cache-Control": "no-store"})
 
 
 @router.post("/v1/prober/run")

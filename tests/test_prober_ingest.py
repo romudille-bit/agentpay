@@ -194,3 +194,12 @@ def test_scores_json_empty_ok(monkeypatch):
     r = _client().get("/scores.json")
     assert r.status_code == 200
     assert r.json()["count"] == 0
+
+
+def test_probes_page_serves_html():
+    r = _client().get("/probes")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "x402 Delivery Scores" in r.text
+    assert "/scores.json" in r.text          # fetches the JSON client-side
+    assert r.headers["cache-control"] == "no-store"
