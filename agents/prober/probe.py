@@ -320,7 +320,10 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
 
     rows: list[dict] = []
     for url, group in sorted(by_url.items()):
-        paid = [p for p in group if p.get("probe_type") == "paid"]
+        # skipped = unscoreable (cap reached, buyer-side params/method
+        # rejection before any payment) — raw evidence only, never delivery.
+        paid = [p for p in group
+                if p.get("probe_type") == "paid" and not p.get("skipped")]
         n = len(paid)
         delivered = sum(1 for p in paid if _delivered(p))
         rate = (delivered / n) if n else None

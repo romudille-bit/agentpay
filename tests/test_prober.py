@@ -352,3 +352,16 @@ class TestHeaderOnly402:
                                 "amount": "10000", "asset": "pathUSD"}]}
         hdr = {"PAYMENT-REQUIRED": self._b64(payload)}
         assert probe.t0_checks(402, None, headers=hdr)["mpp_option"] is True
+
+
+def test_score_ignores_skipped_rows():
+    """Skipped (unscoreable) paid rows never enter delivery_rate — a
+    buyer-side rejection must not downrank the seller (2026-07-10 incident:
+    13 sellers scored 0.25 from our own generic-params 400s)."""
+    rows = probe.score([
+        probe_row() | {"skipped": True, "settle_ok": None, "http_ok": None,
+                       "response_nonempty": None},
+    ], now=NOW)
+    assert rows[0]["paid_probes"] == 0
+    assert rows[0]["delivery_rate"] is None
+    assert rows[0]["delivery_factor"] == 1.0

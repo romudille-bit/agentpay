@@ -354,7 +354,11 @@ def main() -> int:
     log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
         f"across {receipt['calls']} calls")
 
-    ingest = publish_run(probes, {
+    # Skipped rows are local diagnostics only: service_probes has no
+    # `skipped` column, so a stored one is indistinguishable from a real
+    # failed probe and would poison every future window rescore.
+    storable = [p for p in probes if not p.get("skipped")]
+    ingest = publish_run(storable, {
         "run_at": run_at, "run_at_iso": run_at_iso, "wallet": wallet.base_address,
         "max_spend": str(max_spend),
         "objective": {"kind": "probe_sweep", "goal_text":
