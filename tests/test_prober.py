@@ -64,7 +64,9 @@ class TestSelectCandidates:
         ranked = {"n": [cand(url=f"https://x.com/{i}", pay_to=f"0x{i}") for i in range(3)]}
         recent = [cand(url="https://rec.com/tool", pay_to="0xrec")]
         sel = probe.select_candidates(ranked, recent, max_paid=1)
-        assert sel["t1"] == [recent[0]]  # freshness guarantee outranks sweep order
+        # freshness guarantee outranks sweep order
+        assert [c["url"] for c in sel["t1"]] == ["https://rec.com/tool"]
+        assert sel["t1"][0]["need"] == "recently recommended"
 
     def test_deterministic_across_dict_order(self):
         r1 = {"b": [cand(url="https://b.com/x", pay_to="0xb")],
@@ -365,3 +367,28 @@ def test_score_ignores_skipped_rows():
     assert rows[0]["paid_probes"] == 0
     assert rows[0]["delivery_rate"] is None
     assert rows[0]["delivery_factor"] == 1.0
+
+
+class TestNameAndNeed:
+    """AGE-20: readable identity — Bazaar serviceName + discovery need flow
+    from selection through score rows."""
+
+    def test_select_annotates_need(self):
+        ranked = {"web search": [cand(url="https://a.com/x", pay_to="0xa")]}
+        recent = [cand(url="https://rec.com/t", pay_to="0xr")]
+        sel = probe.select_candidates(ranked, recent)
+        by_url = {c["url"]: c for c in sel["t0"]}
+        assert by_url["https://a.com/x"]["need"] == "web search"
+        assert by_url["https://rec.com/t"]["need"] == "recently recommended"
+
+    def test_score_carries_last_known_name_and_need(self):
+        rows = probe.score([
+            probe_row(days_ago=2) | {"name": "Old Name", "need": "news"},
+            probe_row(days_ago=0) | {"name": "StableFinance", "need": "news"},
+        ], now=NOW)
+        assert rows[0]["name"] == "StableFinance"
+        assert rows[0]["need"] == "news"
+
+    def test_score_name_none_when_unknown(self):
+        rows = probe.score([probe_row()], now=NOW)
+        assert rows[0]["name"] is None and rows[0]["need"] is None

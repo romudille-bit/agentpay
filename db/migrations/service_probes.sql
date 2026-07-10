@@ -57,11 +57,15 @@ CREATE TABLE IF NOT EXISTS service_scores (
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
--- AGE-8/AGE-18 addenda — idempotent for tables created before these columns.
+-- AGE-8/AGE-18/AGE-20 addenda — idempotent for tables created before these columns.
 ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS usdg_option boolean;
+ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS name text;   -- Bazaar serviceName
+ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS need text;   -- discovery category
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS mpp_option boolean DEFAULT false;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS usdg_option boolean DEFAULT false;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS price_usdc numeric;
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS name text;
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS need text;
 
 -- RLS: raw probes private, scores public-read (the gateway's secret key
 -- bypasses RLS for all reads/writes either way).

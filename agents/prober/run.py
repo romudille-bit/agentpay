@@ -208,6 +208,7 @@ def _probe_row(cand: dict, probe_type: str, **fields) -> dict:
         "probed_at": datetime.now(timezone.utc).isoformat(),
         "resource_url": cand["url"],
         "name": cand.get("name"),
+        "need": cand.get("need"),
         "pay_to": cand.get("pay_to"),
         "network": cand.get("network"),
         "price_usdc": str(price) if price is not None else None,

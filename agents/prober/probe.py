@@ -70,23 +70,24 @@ def select_candidates(
     t0: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(cand: dict, paid_eligible: bool) -> None:
+    def add(cand: dict, need: Optional[str]) -> None:
         if not cand or not cand.get("url"):
             return
         key = _dedup_key(cand)
         if key in seen:
             return
         seen.add(key)
+        cand = {**cand, "need": need}   # human category for scores/leaderboard
         t0.append(cand)
-        if paid_eligible and len(paid) < max_paid:
+        if len(paid) < max_paid:
             paid.append(cand)
 
     # Recent recommendations FIRST — the freshness guarantee outranks sweep order.
     for cand in recent:
-        add(cand, paid_eligible=True)
+        add(cand, need="recently recommended")
     for need in sorted(ranked):
         for cand in ranked[need][:top_k]:
-            add(cand, paid_eligible=True)
+            add(cand, need=need)
 
     return {"t1": paid, "t0": t0}
 
@@ -338,6 +339,9 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
         # [MR-3] MPP/Tempo label: known from FREE probes too (T0 parses every
         # live 402), so it aggregates over ALL window probes, not just paid.
         mpp = any(p.get("mpp_option") for p in group)
+        # Human-readable identity: last-known serviceName + discovery need.
+        named = [p for p in group if p.get("name")]
+        needed = [p for p in group if p.get("need")]
         usdg = any(p.get("usdg_option") for p in group)
         # Last-known advertised price — lets estimate_plan price external legs.
         priced = [p for p in group if p.get("price_usdc") is not None]
@@ -345,6 +349,8 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
                     or datetime.min.replace(tzinfo=timezone.utc))
         rows.append({
             "resource_url": url,
+            "name": named[-1]["name"] if named else None,
+            "need": needed[-1]["need"] if needed else None,
             "window_days": window_days,
             "paid_probes": n,
             "delivery_rate": round(rate, 4) if rate is not None else None,

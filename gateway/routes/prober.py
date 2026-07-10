@@ -55,6 +55,8 @@ async def scores_json():
         row = scores[url]
         services.append({
             "resource_url": url,
+            "name": row.get("name") or url.split("//")[-1].split("/")[0],
+            "need": row.get("need"),
             "window_days": row.get("window_days", 30),
             "paid_probes": row.get("paid_probes"),
             "delivery_rate": row.get("delivery_rate"),
@@ -102,6 +104,9 @@ _PROBES_HTML = """<!doctype html>
   th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
   td.r,th.r{text-align:right}
   .url{color:var(--mut);font-size:12px;word-break:break-all}
+  .name{font-weight:600}
+  .need{color:var(--mut);font-size:11px;border:1px solid var(--line);border-radius:20px;
+    padding:1px 8px;margin-left:6px;vertical-align:middle}
   .why{color:var(--mut);font-size:12px;margin-top:2px}
   .badge{font-size:12px;font-weight:700;border-radius:6px;padding:2px 8px;white-space:nowrap}
   .up{color:var(--ac);border:1px solid #2c4a1f}
@@ -161,7 +166,9 @@ _PROBES_HTML = """<!doctype html>
           s.usdg_option ? '<span class="rail">USDG</span>' : '',
           ...(s.flags || []).map(f => `<span class="flag">${esc(f)}</span>`),
         ].filter(Boolean).join(' ') || '<span class="url">—</span>';
-        return `<tr><td><div class="url">${esc(s.resource_url)}</div>
+        return `<tr><td><div><span class="name">${esc(s.name || '')}</span>
+          ${s.need ? `<span class="need">${esc(s.need)}</span>` : ''}</div>
+          <div class="url">${esc(s.resource_url)}</div>
           ${s.why ? `<div class="why">${esc(s.why)}</div>` : ''}</td>
           <td class="r">${rate}</td>
           <td class="r">${badge(Number(s.delivery_factor) || 1)}</td>

@@ -949,7 +949,7 @@ async def fetch_flagship_runs(limit: int = 200) -> list[dict]:
 # Columns forwarded to service_probes — anything else in a posted row is
 # dropped (the runner also carries name/skipped fields the table doesn't).
 _PROBE_COLUMNS = (
-    "probed_at", "resource_url", "pay_to", "network", "price_usdc",
+    "probed_at", "resource_url", "name", "need", "pay_to", "network", "price_usdc",
     "probe_type", "alive", "x402_wellformed", "price_matches", "mpp_option",
     "usdg_option",
     "settle_ok", "http_ok", "latency_ms", "response_nonempty", "schema_ok",
@@ -957,7 +957,7 @@ _PROBE_COLUMNS = (
 )
 
 _SCORE_COLUMNS = (
-    "resource_url", "window_days", "paid_probes", "delivery_rate",
+    "resource_url", "name", "need", "window_days", "paid_probes", "delivery_rate",
     "delivery_factor", "latency_p50_ms", "last_ok_at", "last_fail_at", "flags",
     "mpp_option", "usdg_option", "price_usdc",
 )
