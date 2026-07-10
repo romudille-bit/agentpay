@@ -934,6 +934,141 @@ async def fetch_flagship_runs(limit: int = 200) -> list[dict]:
         return []
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Active Prober — service_probes / service_scores (AGE-6)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Tables: db/migrations/service_probes.sql. Raw probes are PRIVATE (evidence
+# for negative flags: tx hash + error snapshot); scores are PUBLIC-read.
+# Written by the gateway on POST /v1/prober/run (the prober itself is a
+# credential-free HTTP customer, same pattern as the flagship ingest).
+#
+# Behaviour: best-effort. A missing table or Supabase blip logs + returns
+# False/[] so a prober ingest never hard-fails over storage.
+
+# Columns forwarded to service_probes — anything else in a posted row is
+# dropped (the runner also carries name/skipped fields the table doesn't).
+_PROBE_COLUMNS = (
+    "probed_at", "resource_url", "pay_to", "network", "price_usdc",
+    "probe_type", "alive", "x402_wellformed", "price_matches", "mpp_option",
+    "settle_ok", "http_ok", "latency_ms", "response_nonempty", "schema_ok",
+    "tx_hash", "error",
+)
+
+_SCORE_COLUMNS = (
+    "resource_url", "window_days", "paid_probes", "delivery_rate",
+    "delivery_factor", "latency_p50_ms", "last_ok_at", "last_fail_at", "flags",
+)
+
+
+async def insert_service_probes(rows: list[dict]) -> bool:
+    """Bulk-INSERT raw probe rows. Returns True on success."""
+    if not rows:
+        return True          # nothing to write = vacuous success
+    if not sb_enabled():
+        return False
+    payload = [{k: r.get(k) for k in _PROBE_COLUMNS} for r in rows
+               if r.get("resource_url")]
+    if not payload:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/service_probes",
+                headers=sb_headers(),
+                json=payload,
+            )
+        if resp.status_code not in (200, 201, 204):
+            logger.error(f"insert_service_probes error: HTTP {resp.status_code} "
+                         f"body={resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"insert_service_probes failure: {e}")
+        return False
+
+
+async def fetch_service_probes(window_days: int = 30, limit: int = 5000) -> list[dict]:
+    """SELECT probe rows inside the scoring window, newest first.
+    [] on error/disabled/missing — the caller then scores this run's rows only."""
+    if not sb_enabled():
+        return []
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/service_probes",
+                headers={**sb_headers(), "Accept": "application/json"},
+                params={
+                    "select":    ",".join(_PROBE_COLUMNS),
+                    "probed_at": f"gte.{cutoff}",
+                    "order":     "probed_at.desc",
+                    "limit":     str(limit),
+                },
+            )
+        if resp.status_code != 200:
+            if resp.status_code != 404:   # 404 = table not created yet
+                logger.error(f"fetch_service_probes error: HTTP {resp.status_code}")
+            return []
+        return resp.json()
+    except Exception as e:
+        logger.error(f"fetch_service_probes failure: {e}")
+        return []
+
+
+async def upsert_service_scores(rows: list[dict]) -> bool:
+    """UPSERT score rows on resource_url (merge-duplicates). Returns True on
+    success. updated_at is stamped here, not by the caller."""
+    if not sb_enabled() or not rows:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    payload = [{**{k: r.get(k) for k in _SCORE_COLUMNS}, "updated_at": now}
+               for r in rows if r.get("resource_url")]
+    if not payload:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/service_scores",
+                headers={**sb_headers(),
+                         "Prefer": "resolution=merge-duplicates,return=minimal"},
+                params={"on_conflict": "resource_url"},
+                json=payload,
+            )
+        if resp.status_code not in (200, 201, 204):
+            logger.error(f"upsert_service_scores error: HTTP {resp.status_code} "
+                         f"body={resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"upsert_service_scores failure: {e}")
+        return False
+
+
+async def fetch_service_scores() -> dict[str, dict]:
+    """SELECT all score rows keyed by resource_url — the input dict decide()
+    joins on (AGE-7). {} on error/disabled/missing (decide() then treats every
+    service as unprobed = neutral factor 1.0)."""
+    if not sb_enabled():
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/service_scores",
+                headers={**sb_headers(), "Accept": "application/json"},
+                params={"select": ",".join(_SCORE_COLUMNS) + ",updated_at"},
+            )
+        if resp.status_code != 200:
+            if resp.status_code != 404:
+                logger.error(f"fetch_service_scores error: HTTP {resp.status_code}")
+            return {}
+        return {r["resource_url"]: r for r in resp.json() if r.get("resource_url")}
+    except Exception as e:
+        logger.error(f"fetch_service_scores failure: {e}")
+        return {}
+
+
 async def mark_refund_failed(payment_id: str, error_reason: str) -> None:
     """Terminal sad-path transition after cap exhaustion. Filters by
     expected_state IN ('refund_pending', 'refund_failed') so a retry

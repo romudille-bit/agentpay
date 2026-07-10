@@ -208,28 +208,36 @@ def _probe_row(cand: dict, probe_type: str, **fields) -> dict:
 
 # ── PUBLISH ────────────────────────────────────────────────────────────────────
 
-def publish_run(payload: dict) -> bool:
-    """POST the sweep to the gateway's flagship ingest (goal="probe_sweep") so
-    /ledger shows the reasoning next to the probes' real receipts. Best-effort;
-    no-op when FLAGSHIP_INGEST_SECRET is unset."""
+def publish_run(probes: list[dict], run: dict) -> dict | None:
+    """POST the sweep to the gateway's prober ingest: raw rows land in
+    service_probes, the gateway rebuilds service_scores over the FULL 30d
+    window (it holds the history; this runner only has today's rows), and
+    the flagship-style `run` summary feeds /ledger reasoning.
+
+    Returns the ingest response (incl. authoritative window scores) or None.
+    Best-effort; no-op when FLAGSHIP_INGEST_SECRET is unset."""
     secret = os.environ.get("FLAGSHIP_INGEST_SECRET", "")
     if not secret:
         log("ingest skipped — FLAGSHIP_INGEST_SECRET unset")
-        return False
+        return None
     try:
         req = urllib.request.Request(
-            f"{GATEWAY}/v1/flagship/run",
-            data=json.dumps(payload).encode(),
+            f"{GATEWAY}/v1/prober/run",
+            data=json.dumps({"probes": probes, "run": run}, default=str).encode(),
             headers={"Content-Type": "application/json", "X-Flagship-Secret": secret},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = json.loads(resp.read().decode())
             ok = 200 <= resp.status < 300
-        log(f"ingest {'ok' if ok else 'failed'} → /v1/flagship/run")
-        return ok
+        log(f"ingest {'ok' if ok else 'partial'} → /v1/prober/run | "
+            f"probes_stored={body.get('probes_stored')} "
+            f"scores_stored={body.get('scores_stored')} "
+            f"window_rows={body.get('window_rows')}")
+        return body
     except Exception as e:
         log(f"ingest failed: {e}")
-        return False
+        return None
 
 
 # ── The run ────────────────────────────────────────────────────────────────────
@@ -291,7 +299,9 @@ def main() -> int:
                 f"| tx {row.get('tx_hash')}")
     probes.extend(paid_rows)
 
-    # 4. SCORE (this run's rows; 30d history joins in once AGE-6 lands)
+    # 4. SCORE — local pass over this run's rows for the note/log; the
+    # AUTHORITATIVE scores are rebuilt gateway-side over the full 30d window
+    # at ingest (the runner is credential-free and holds no history).
     scores = probe.score(probes)
     flagged = [r for r in scores if probe.FLAG_NO_DELIVERY in r["flags"]]
     for r in flagged:
@@ -312,7 +322,7 @@ def main() -> int:
     log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
         f"across {receipt['calls']} calls")
 
-    publish_run({
+    ingest = publish_run(probes, {
         "run_at": run_at, "run_at_iso": run_at_iso, "wallet": wallet.base_address,
         "max_spend": str(max_spend),
         "objective": {"kind": "probe_sweep", "goal_text":
@@ -320,12 +330,17 @@ def main() -> int:
                       "needs": needs, "cap_usdc": str(max_spend)},
         "plan": {}, "regime": "", "context": "",
         "findings": {"probe_sweep": {
-            "probes": probes, "scores": scores,
+            "scores": scores,
             "t0": {"total": len(sel["t0"]), "alive": t0_alive,
                    "wellformed": t0_wf, "mpp_options": t0_mpp},
         }},
         "receipt": receipt, "note": note,
     })
+    if ingest and ingest.get("scores"):
+        window_flagged = [r for r in ingest["scores"]
+                          if probe.FLAG_NO_DELIVERY in (r.get("flags") or [])]
+        log(f"window scores: {len(ingest['scores'])} services, "
+            f"{len(window_flagged)} flagged {probe.FLAG_NO_DELIVERY}")
     return 0
 
 
