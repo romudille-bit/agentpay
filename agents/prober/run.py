@@ -224,7 +224,11 @@ def publish_run(probes: list[dict], run: dict) -> dict | None:
         req = urllib.request.Request(
             f"{GATEWAY}/v1/prober/run",
             data=json.dumps({"probes": probes, "run": run}, default=str).encode(),
-            headers={"Content-Type": "application/json", "X-Flagship-Secret": secret},
+            headers={"Content-Type": "application/json",
+                     "X-Flagship-Secret": secret,
+                     # Cloudflare 403s python-urllib's default UA (live
+                     # incident, first sweep 2026-07-10) — send ours.
+                     "User-Agent": PROBE_UA},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
@@ -301,10 +305,20 @@ def main() -> int:
         row = probe_paid(s, cand)
         paid_rows.append(row)
         if not row.get("skipped"):
+            err = f" | err: {row['error']}" if row.get("error") else ""
             log(f"T1 {cand['name']}: settle={row.get('settle_ok')} "
                 f"http={row.get('http_ok')} nonempty={row.get('response_nonempty')} "
                 f"schema={row.get('schema_ok')} {row.get('latency_ms')}ms "
-                f"| tx {row.get('tx_hash')}")
+                f"| tx {row.get('tx_hash')}{err}")
+
+    # Systemic buyer-side guard: if EVERY paid attempt failed to settle, the
+    # problem is almost certainly ours (SDK, wallet, funds, network) — abort
+    # without publishing rather than scoring 15 innocent sellers 0.0.
+    attempted = [r for r in paid_rows if not r.get("skipped")]
+    if attempted and not any(r.get("settle_ok") for r in attempted):
+        log(f"FATAL: 0/{len(attempted)} paid probes settled — treating as a "
+            "buyer-side systemic failure; NOT publishing seller scores")
+        return 1
     probes.extend(paid_rows)
 
     # 4. SCORE — local pass over this run's rows for the note/log; the
