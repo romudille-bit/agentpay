@@ -7,5 +7,8 @@ pydantic==2.7.0
 pydantic-settings==2.4.0
 slowapi==0.1.9
 eth-account>=0.11.0   # EVM wallet — Base mainnet x402 payments
+x402[evm]>=0.1.0      # EIP-3009 Mode-A signing for EXTERNAL x402 URLs (SDK
+                      # _wallet.py pay path; the prober's T1 probes need this —
+                      # without it every settle fails. Live incident 2026-07-10)
 PyJWT>=2.8.0          # CDP Facilitator JWT auth (ES256)
 cryptography>=42.0.0  # EC key loading for CDP JWT signing
