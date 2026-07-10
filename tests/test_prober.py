@@ -392,3 +392,9 @@ class TestNameAndNeed:
     def test_score_name_none_when_unknown(self):
         rows = probe.score([probe_row()], now=NOW)
         assert rows[0]["name"] is None and rows[0]["need"] is None
+
+    def test_score_carries_network(self):
+        rows = probe.score([
+            probe_row() | {"network": "eip155:8453"},
+        ], now=NOW)
+        assert rows[0]["network"] == "eip155:8453"

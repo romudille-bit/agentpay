@@ -339,9 +339,11 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
         # [MR-3] MPP/Tempo label: known from FREE probes too (T0 parses every
         # live 402), so it aggregates over ALL window probes, not just paid.
         mpp = any(p.get("mpp_option") for p in group)
-        # Human-readable identity: last-known serviceName + discovery need.
+        # Human-readable identity: last-known serviceName + discovery need +
+        # settlement network (from the service's advertised accepts).
         named = [p for p in group if p.get("name")]
         needed = [p for p in group if p.get("need")]
+        networked = [p for p in group if p.get("network")]
         usdg = any(p.get("usdg_option") for p in group)
         # Last-known advertised price — lets estimate_plan price external legs.
         priced = [p for p in group if p.get("price_usdc") is not None]
@@ -351,6 +353,7 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
             "resource_url": url,
             "name": named[-1]["name"] if named else None,
             "need": needed[-1]["need"] if needed else None,
+            "network": networked[-1]["network"] if networked else None,
             "window_days": window_days,
             "paid_probes": n,
             "delivery_rate": round(rate, 4) if rate is not None else None,

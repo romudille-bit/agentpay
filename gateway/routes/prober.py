@@ -57,6 +57,7 @@ async def scores_json():
             "resource_url": url,
             "name": row.get("name") or url.split("//")[-1].split("/")[0],
             "need": row.get("need"),
+            "network": row.get("network"),
             "window_days": row.get("window_days", 30),
             "paid_probes": row.get("paid_probes"),
             "delivery_rate": row.get("delivery_rate"),
@@ -152,6 +153,10 @@ _PROBES_HTML = """<!doctype html>
     ].map(([b, s]) => `<div class="stat"><b>${b}</b><span>${s}</span></div>`).join('');
     if (!svcs.length) { board.innerHTML = '<p class="msg">No scores yet — first sweep lands Monday 05:00 UTC.</p>'; return; }
     const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const CHAINS = {'eip155:8453':'Base','eip155:84532':'Base Sepolia',
+      'eip155:42161':'Arbitrum','eip155:46630':'Robinhood','stellar':'Stellar',
+      'stellar-mainnet':'Stellar'};
+    const chain = n => n ? (CHAINS[String(n).toLowerCase()] || n) : null;
     const badge = f => f > 1 ? `<span class="badge up">${f.toFixed(2)}×</span>`
       : f < 1 ? `<span class="badge down">${f.toFixed(2)}×</span>`
       : `<span class="badge neutral">1.00×</span>`;
@@ -162,6 +167,7 @@ _PROBES_HTML = """<!doctype html>
         const rate = s.delivery_rate == null ? '<span class="url">unprobed</span>'
           : Math.round(s.delivery_rate * 100) + '%';
         const extras = [
+          chain(s.network) ? `<span class="rail">${esc(chain(s.network))}</span>` : '',
           s.mpp_option ? '<span class="rail">MPP/Tempo</span>' : '',
           s.usdg_option ? '<span class="rail">USDG</span>' : '',
           ...(s.flags || []).map(f => `<span class="flag">${esc(f)}</span>`),

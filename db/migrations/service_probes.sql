@@ -66,6 +66,7 @@ ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS usdg_option boolean DEFAULT 
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS price_usdc numeric;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS name text;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS need text;
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS network text;  -- settlement chain (CAIP-2)
 
 -- RLS: raw probes private, scores public-read (the gateway's secret key
 -- bypasses RLS for all reads/writes either way).
