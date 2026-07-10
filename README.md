@@ -86,6 +86,7 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `dune_query` | `query_id`, `limit`, `fast_only` | rows[], columns[], row_count from Dune Analytics |
 | `session_create` | `agent_address`, `max_spend`, `label` | session_id, budget config, gateway_url, receipt — **$0.01** |
 | `pre_trade_check` | `symbol`, `size_usd`, `side`, `token_address?` | one-call trade verdict (ok/caution/avoid): slippage at YOUR size, side-aware funding carry, OI crowding, optional security — **$0.01** |
+- [JMT x402 Agent Tools](https://jmt-x402-proxy.jmthomasofficial.workers.dev) — 25 paid x402 endpoints on Base mainnet: web search, AI analysis, crypto/stock data, SEC filings, company intel, news, sentiment, macro dashboard. $0.001-$0.15/call USDC. Local LLM-powered.
 
 ---
 
