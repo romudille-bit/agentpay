@@ -123,7 +123,12 @@ async def discovery_arbitrum(
         raise HTTPException(status_code=502, detail="discovery upstream returned unexpected payload")
 
     try:
-        result = radar.rank_from_payload(data, need, budget_dec, chain=chain)
+        # Prober delivery scores (AGE-7): best-effort — {} = every service
+        # unprobed = neutral factor, so a Supabase blip never breaks discovery.
+        from gateway.services.supabase import fetch_service_scores
+        scores = await fetch_service_scores()
+        result = radar.rank_from_payload(data, need, budget_dec, chain=chain,
+                                         scores=scores)
     except Exception as e:
         logger.exception("Radar: ranking failed: %s", e)
         raise HTTPException(status_code=500, detail="discovery ranking failed")

@@ -1501,5 +1501,10 @@ async def _fetch_verified_route(client: httpx.AsyncClient, params: dict) -> dict
     if not payloads:
         return {"error": "Bazaar discovery unavailable — no queries returned"}
 
+    # Delivery scores from the Prober (AGE-6/7): unprobed = neutral factor 1.0;
+    # a service flagged took_payment_no_delivery is listed but never recommended.
+    from gateway.services.supabase import fetch_service_scores
+    scores = await fetch_service_scores()
+
     return radar.verified_route_from_payloads(payloads, need=need, budget=budget,
-                                              chain=chain)
+                                              chain=chain, scores=scores)

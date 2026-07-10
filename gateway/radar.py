@@ -181,13 +181,57 @@ def _recency_days(iso: Optional[str]) -> Optional[int]:
         return None
 
 
+# Any paid_but_no_data probe in the scoring window → this flag on the score
+# row (agents/prober/probe.py) → hard-drop from recommendation here (still
+# listed, flagged). Mirror of probe.FLAG_NO_DELIVERY — kept as a literal so
+# radar.py stays importable without the agents package.
+FLAG_NO_DELIVERY = "took_payment_no_delivery"
+
+# [MR-2] single-payer wash volume: calls capped at this multiple of unique
+# payers in usage_q, and flagged above it. 342 calls from 1 payer ranks like
+# ~20 calls, not like a popular tool.
+CALLS_PER_PAYER_CAP = 20
+
+
+def _usage_q(payers: int, calls: int, rec_days: Optional[int]) -> int:
+    """[MR-2] Usage quality with unique payers dominant.
+
+    payers×5 + calls-capped-at-payers×20 + recency bonus. Raw call volume
+    can't buy rank: a wallet pumping calls through one payer caps out, while
+    every additional distinct payer is worth 5. Zero payers = zero volume
+    credit (wash traffic with no distinct buyers scores only recency).
+    """
+    q = payers * 5 + min(calls, payers * CALLS_PER_PAYER_CAP)
+    if rec_days is not None and rec_days <= 7:
+        q += 5
+    return q
+
+
+def _delivery_why(row: dict) -> str:
+    """One human line from a service_scores row (the Prober's public output)."""
+    if FLAG_NO_DELIVERY in (row.get("flags") or []):
+        failed_at = str(row.get("last_fail_at") or "")[:10]
+        return ("⚠ took payment without delivering"
+                + (f" on {failed_at}" if failed_at else ""))
+    n = row.get("paid_probes") or 0
+    rate = row.get("delivery_rate")
+    if not n or rate is None:
+        return ""
+    pct = f"{float(rate) * 100:.0f}%"
+    p50 = row.get("latency_p50_ms")
+    lat = f", median {int(p50)}ms" if isinstance(p50, (int, float)) else ""
+    return f"probed {n}× in {row.get('window_days', 30)}d, {pct} delivered{lat}"
+
+
 def decide(cands: list[dict], remaining: Decimal,
-           usage_aware: bool = False) -> tuple[list[dict], Optional[dict]]:
+           usage_aware: bool = False,
+           scores: Optional[dict] = None) -> tuple[list[dict], Optional[dict]]:
     """Filter + rank. Returns (scored_with_verdicts, recommendation). Pure.
 
     Stages: junk-filter (no schema = stub; factory fingerprint) → budget gate →
-    usage-quality score (unique_payers×3 + calls + recency bonus, factory
-    downrank) → sort by quality desc, price asc.
+    usage-quality score ([MR-2]: unique payers dominant — payers×5 + capped
+    calls + recency, factory downrank) → delivery factor (×score row from the
+    Prober, join on resource URL) → sort by quality desc, price asc.
 
     `usage_aware` (verified_route uses True): a wallet with many listings is only
     a "factory" if those listings are MOSTLY UNPROVEN. A trustworthy multi-product
@@ -195,7 +239,13 @@ def decide(cands: list[dict], remaining: Decimal,
     is never downranked for breadth. Known-trusted payTo addresses are always
     exempt; known factory prefixes are always factories. Default False preserves
     the legacy count-only behavior the Arbitrum radar + its tests rely on.
-    """
+
+    `scores` (PROBER_SPEC): {resource_url: service_scores row}. Unprobed
+    services get factor 1.0 (never punish absence of data); a row carrying
+    took_payment_no_delivery is HARD-DROPPED from the recommendation while
+    staying listed + flagged. The function stays pure — callers fetch the
+    dict (gateway: services.supabase.fetch_service_scores)."""
+    scores = scores or {}
     names_per_payto: dict[str, set] = {}
     listings_per_payto: dict[str, list] = {}
     for c in cands:
@@ -231,38 +281,61 @@ def decide(cands: list[dict], remaining: Decimal,
                 f"{c['price_usd']} > budget {remaining}"
                 if c["price_usd"] is not None else "no usable price")
 
-        # Stage 3 — usage quality
+        # Stage 3 — usage quality ([MR-2] payers dominant)
         rec_days = _recency_days(c["last_called"])
-        q = c["payers30d"] * 3 + c["calls30d"]
-        if rec_days is not None and rec_days <= 7:
-            q += 5
+        q = _usage_q(c["payers30d"], c["calls30d"], rec_days)
         if is_factory:
             q = q // 4
         if c["payers30d"] == 0 and c["calls30d"] == 0:
             flags.append("unproven(0/0)")
+        if c["calls30d"] > max(c["payers30d"], 1) * CALLS_PER_PAYER_CAP:
+            flags.append("single_payer_volume")
+
+        # Stage 4 — delivery factor (the Prober's axis; unprobed = neutral)
+        score_row = scores.get(c["url"]) or {}
+        try:
+            factor = float(score_row.get("delivery_factor", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            factor = 1.0
+        if factor != 1.0:
+            q = int(q * factor)
+        if FLAG_NO_DELIVERY in (score_row.get("flags") or []):
+            flags.append(FLAG_NO_DELIVERY)
+        delivery_why = _delivery_why(score_row) if score_row else ""
 
         scored.append({**c, "flags": flags, "dropped": dropped,
-                       "drop_reason": reason, "quality": q, "rec_days": rec_days})
+                       "drop_reason": reason, "quality": q, "rec_days": rec_days,
+                       "delivery": ({
+                           "factor": factor,
+                           "rate": score_row.get("delivery_rate"),
+                           "paid_probes": score_row.get("paid_probes"),
+                           "latency_p50_ms": score_row.get("latency_p50_ms"),
+                       } if score_row else None),
+                       "why": delivery_why})
 
     survivors = [s for s in scored if not s["dropped"]]
     survivors.sort(key=lambda s: (-s["quality"], s["price_usd"]))
-    recommendation = survivors[0] if survivors else None
+    # took_payment_no_delivery is listed but NEVER recommended.
+    recommendation = next((s for s in survivors
+                           if FLAG_NO_DELIVERY not in s["flags"]), None)
     return scored, recommendation
 
 
 def rank_from_payload(data: dict, need: str, budget: Decimal,
                       chain: Optional[str] = None,
-                      extra: Optional[Iterable[dict]] = None) -> dict:
+                      extra: Optional[Iterable[dict]] = None,
+                      scores: Optional[dict] = None) -> dict:
     """Assemble a JSON-able Radar result from an already-fetched Bazaar payload.
 
     Pure (no I/O) so the async gateway can fetch with httpx and hand the payload
     here. `extra` lets the Robinhood crawler (Day 2b) inject candidates Bazaar
-    can't see; they flow through the same chain filter + ranking.
+    can't see; they flow through the same chain filter + ranking. `scores` is
+    the Prober's service_scores dict (see decide()).
     """
     cands = filter_chain(parse_resources(data), chain)
     if extra:
         cands = cands + filter_chain(list(extra), chain)
-    scored, rec = decide(cands, budget)
+    scored, rec = decide(cands, budget, scores=scores)
     survivors = [s for s in scored if not s["dropped"]]
     survivors.sort(key=lambda s: (-s["quality"], s["price_usd"]))
     return {
@@ -276,12 +349,14 @@ def rank_from_payload(data: dict, need: str, budget: Decimal,
 
 
 def rank(need: str, budget: Decimal, chain: Optional[str] = None,
-         fetch: Callable[[str], dict] = _default_get) -> dict:
+         fetch: Callable[[str], dict] = _default_get,
+         scores: Optional[dict] = None) -> dict:
     """End-to-end (sync): fetch Bazaar → rank_from_payload. Used by the CLI path.
 
     The async gateway path calls `rank_from_payload` directly with an httpx fetch.
     """
-    return rank_from_payload(fetch_bazaar(need, fetch=fetch), need, budget, chain)
+    return rank_from_payload(fetch_bazaar(need, fetch=fetch), need, budget, chain,
+                             scores=scores)
 
 
 def _public(s: Optional[dict]) -> Optional[dict]:
@@ -302,6 +377,10 @@ def _public(s: Optional[dict]) -> Optional[dict]:
     }
     if s.get("collapsed_siblings"):
         out["collapsed_siblings"] = s["collapsed_siblings"]
+    if s.get("why"):
+        out["why"] = s["why"]
+    if s.get("delivery"):
+        out["delivery"] = s["delivery"]
     return out
 
 
@@ -402,21 +481,24 @@ def _ready_to_pay(s: Optional[dict]) -> Optional[dict]:
 
 def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decimal,
                                  chain: Optional[str] = None,
-                                 extra: Optional[Iterable[dict]] = None) -> dict:
+                                 extra: Optional[Iterable[dict]] = None,
+                                 scores: Optional[dict] = None) -> dict:
     """Assemble the paid verified_route result from swept Bazaar payloads. Pure.
 
     DISCOVER (merge+dedup many queries) → FILTER (chain) → DECIDE (junk/factory/
-    rank over the FULL set) → COLLAPSE (sybil clusters → one entry) → recommend.
+    rank over the FULL set, delivery factor joined from `scores`) → COLLAPSE
+    (sybil clusters → one entry) → recommend (never a service flagged
+    took_payment_no_delivery — listed, not recommended).
     """
     merged = merge_resources(payloads)
     cands = filter_chain(parse_resources(merged), chain)
     if extra:
         cands = cands + filter_chain(list(extra), chain)
 
-    scored, _ = decide(cands, budget, usage_aware=True)
+    scored, _ = decide(cands, budget, usage_aware=True, scores=scores)
     survivors = [s for s in scored if not s["dropped"]]
     kept, stats = collapse_sybils(survivors)
-    rec = kept[0] if kept else None
+    rec = next((s for s in kept if FLAG_NO_DELIVERY not in s["flags"]), None)
 
     rec_pub = _public(rec)
     if rec_pub:
