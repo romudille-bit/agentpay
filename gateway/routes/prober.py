@@ -36,6 +36,50 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/scores.json")
+async def scores_json():
+    """Public delivery scores — the Prober's findings (AGE-20 stage 1).
+
+    One row per probed x402 service: delivery rate/factor over the 30d
+    window, p50 latency, rail labels (MPP/USDG), flags, last-known price,
+    and the human why line verified_route shows. The raw probe evidence
+    stays private (tx hash + response snapshots back every negative flag);
+    these scores are the public asset. No-store: reflect fresh sweeps."""
+    from gateway.radar import _delivery_why
+    from gateway.services.supabase import fetch_service_scores
+
+    scores = await fetch_service_scores()
+    services = []
+    for url in sorted(scores, key=lambda u: (
+            -(float(scores[u].get("delivery_factor") or 1.0)), u)):
+        row = scores[url]
+        services.append({
+            "resource_url": url,
+            "window_days": row.get("window_days", 30),
+            "paid_probes": row.get("paid_probes"),
+            "delivery_rate": row.get("delivery_rate"),
+            "delivery_factor": row.get("delivery_factor"),
+            "latency_p50_ms": row.get("latency_p50_ms"),
+            "flags": row.get("flags") or [],
+            "mpp_option": bool(row.get("mpp_option")),
+            "usdg_option": bool(row.get("usdg_option")),
+            "price_usdc": row.get("price_usdc"),
+            "last_ok_at": row.get("last_ok_at"),
+            "last_fail_at": row.get("last_fail_at"),
+            "why": _delivery_why(row),
+        })
+    return JSONResponse(
+        {
+            "about": ("AgentPay Active Prober — paid delivery-quality probes "
+                      "of the x402 marketplace. Unprobed services are neutral "
+                      "(factor 1.0); these scores feed verified_route ranking."),
+            "count": len(services),
+            "services": services,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/v1/prober/run")
 async def prober_ingest(request: Request,
                         x_flagship_secret: str | None = Header(default=None)):

@@ -150,3 +150,47 @@ def test_non_dict_probe_rows_are_skipped(monkeypatch):
                        headers=SECRET_HDR)
     assert r.status_code == 200
     assert len(calls["probes"]) == 1
+
+
+# ── GET /scores.json (AGE-20 stage 1) ────────────────────────────────────────
+
+def test_scores_json_public_shape(monkeypatch):
+    async def _fake_scores():
+        return {
+            "https://good.x/t": {
+                "resource_url": "https://good.x/t", "window_days": 30,
+                "paid_probes": 2, "delivery_rate": 1.0, "delivery_factor": 1.15,
+                "latency_p50_ms": 1667, "flags": [], "mpp_option": False,
+                "usdg_option": False, "price_usdc": "0.02",
+                "last_ok_at": "2026-07-10T18:40:32+00:00", "last_fail_at": None,
+            },
+            "https://dead.x/t": {
+                "resource_url": "https://dead.x/t", "window_days": 30,
+                "paid_probes": 1, "delivery_rate": 0.0, "delivery_factor": 0.25,
+                "latency_p50_ms": 17, "flags": [], "mpp_option": False,
+                "usdg_option": False, "price_usdc": "0.05",
+                "last_ok_at": None, "last_fail_at": "2026-07-10T18:40:38+00:00",
+            },
+        }
+    from gateway.services import supabase
+    monkeypatch.setattr(prober, "fetch_service_scores", _fake_scores, raising=False)
+    monkeypatch.setattr(supabase, "fetch_service_scores", _fake_scores)
+    r = _client().get("/scores.json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 2
+    # sorted by factor desc — the delivering service leads
+    assert body["services"][0]["resource_url"] == "https://good.x/t"
+    assert body["services"][0]["why"].startswith("probed 2×")
+    assert body["services"][1]["delivery_factor"] == 0.25
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_scores_json_empty_ok(monkeypatch):
+    async def _empty():
+        return {}
+    from gateway.services import supabase
+    monkeypatch.setattr(supabase, "fetch_service_scores", _empty)
+    r = _client().get("/scores.json")
+    assert r.status_code == 200
+    assert r.json()["count"] == 0
