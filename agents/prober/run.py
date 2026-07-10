@@ -264,6 +264,14 @@ def main() -> int:
     # Fresh identity per run unless pinned — the funded key is Base-only.
     stellar_secret = os.environ.get("PROBER_STELLAR_SECRET", "") or Keypair.random().secret
     wallet = AgentWallet(secret_key=stellar_secret, network="mainnet", base_key=base_key)
+    if not wallet.base_address:
+        # A broken BUYER-side wallet must never produce probe rows: every T1
+        # would fail at settle and innocent sellers would be scored 0.0/0.25.
+        # (Live incident, first dry run 2026-07-10: an address was passed
+        # instead of a private key.) Fail loudly instead.
+        log(f"FATAL: Base wallet unavailable ({wallet.base_disabled_reason}) — "
+            "PROBER_BASE_KEY must be the 0x… PRIVATE key (66 chars), not the address")
+        return 1
     s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend)
     run_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     run_at_iso = datetime.now(timezone.utc).isoformat()
