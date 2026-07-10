@@ -1,0 +1,20 @@
+# Railway config for the PROBER service ONLY (AGE-9).
+# Same pattern as agents/analyst/railway.toml (run-and-exit cron: no port,
+# no healthcheck, never restart — a completed run must not re-spend), with
+# ONE difference: this service builds from the REPO ROOT, not this subdir,
+# because run.py imports gateway.radar (rank/decide) and the in-tree
+# agentpay SDK. In the Railway service settings:
+#   - Root Directory: leave at repo root (do NOT set agents/prober)
+#   - Config-as-code file path: agents/prober/railway.toml
+# Deps come from the root requirements.txt (stellar-sdk, eth-account, httpx).
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python agents/prober/run.py"
+restartPolicyType = "never"
+# Mon + Thu 05:00 UTC — offset from the analyst's 13:00 UTC daily run.
+# The ±jitter comes from PROBER_JITTER_MAX_S in env (run.py sleeps 0..max),
+# not from cron, so the schedule itself stays deterministic.
+cronSchedule = "0 5 * * 1,4"
