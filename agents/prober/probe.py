@@ -29,6 +29,29 @@ DEFAULT_NEEDS = [
     "wallet screening", "news", "market data", "pdf ocr",
 ]
 
+# Plausible request params per need — generic {} gets rejected pre-payment by
+# most services ("supply `symbol`…"), making probes unscoreable. These cover
+# the common param spellings; unknown keys are ignored by most handlers.
+# (First sweep 2026-07-10: 13/15 probes were unscoreable for exactly this.)
+NEED_PARAMS: dict[str, dict] = {
+    "web search":      {"q": "bitcoin etf inflows", "query": "bitcoin etf inflows"},
+    "token price":     {"symbol": "ETH", "token": "ETH"},
+    "twitter data":    {"q": "x402", "query": "x402", "username": "coinbase", "name": "coinbase"},
+    "llm inference":   {"model": "default",
+                        "messages": [{"role": "user", "content": "Reply with the word ok."}],
+                        "max_tokens": 16},
+    "wallet screening": {"address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                         "wallet": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"},
+    "news":            {"q": "crypto", "query": "crypto", "currencies": "BTC,ETH"},
+    "market data":     {"symbol": "BTC", "token": "BTC"},
+    "pdf ocr":         {"url": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"},
+}
+
+
+def params_for(need: Optional[str]) -> dict:
+    """Best-guess request params for a candidate's discovery need. PURE."""
+    return dict(NEED_PARAMS.get(need or "", {}))
+
 TOP_K_PER_NEED = 3          # survivors taken per need from rank()
 DEFAULT_MAX_PAID = 15       # PROBER_MAX_PAID_PROBES default
 WINDOW_DAYS = 30            # scoring window
@@ -88,6 +111,18 @@ def select_candidates(
     for need in sorted(ranked):
         for cand in ranked[need][:top_k]:
             add(cand, need=need)
+    # T0 breadth: free probes cost nothing, so the WHOLE survivor list gets a
+    # T0 check (alive / wellformed / price / rails) — only the top-k enter the
+    # paid set. This is what makes the leaderboard grow faster than the budget.
+    for need in sorted(ranked):
+        for cand in ranked[need][top_k:]:
+            if not cand or not cand.get("url"):
+                continue
+            key = _dedup_key(cand)
+            if key in seen:
+                continue
+            seen.add(key)
+            t0.append({**cand, "need": need})
 
     return {"t1": paid, "t0": t0}
 

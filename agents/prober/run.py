@@ -166,7 +166,9 @@ def probe_paid(session, cand: dict) -> dict:
     data = None
     t0 = time.monotonic()
     try:
-        r = session.call(cand["url"])
+        # Plausible params by discovery need — generic {} is rejected
+        # pre-payment by most real services (first-sweep finding).
+        r = session.call(cand["url"], probe.params_for(cand.get("need")))
         latency_ms = int((time.monotonic() - t0) * 1000)
         settle_ok = http_ok = True
         data = getattr(r, "data", r)

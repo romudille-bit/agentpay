@@ -46,8 +46,8 @@ class TestSelectCandidates:
             "token price": [cand(url=f"https://b.com/{i}", pay_to=f"0xb{i}") for i in range(5)],
         }
         sel = probe.select_candidates(ranked, max_paid=4, top_k=3)
-        # 3 per need enter t0; paid capped at 4
-        assert len(sel["t0"]) == 6
+        # ALL survivors get a free T0 check; paid set = top-3/need, capped at 4
+        assert len(sel["t0"]) == 10
         assert len(sel["t1"]) == 4
 
     def test_dedup_by_host_and_payto(self):
@@ -398,3 +398,23 @@ class TestNameAndNeed:
             probe_row() | {"network": "eip155:8453"},
         ], now=NOW)
         assert rows[0]["network"] == "eip155:8453"
+
+
+class TestT0BreadthAndParams:
+    def test_t0_covers_all_survivors_paid_stays_topk(self):
+        ranked = {"n": [cand(url=f"https://s{i}.com/x", pay_to=f"0x{i}")
+                        for i in range(10)]}
+        sel = probe.select_candidates(ranked, top_k=3, max_paid=15)
+        assert len(sel["t0"]) == 10       # every survivor gets a free check
+        assert len(sel["t1"]) == 3        # only top-k spend money
+
+    def test_params_for_known_and_unknown_needs(self):
+        assert probe.params_for("token price")["symbol"] == "ETH"
+        assert "messages" in probe.params_for("llm inference")
+        assert probe.params_for("something else") == {}
+        assert probe.params_for(None) == {}
+
+    def test_params_for_returns_a_copy(self):
+        p = probe.params_for("news")
+        p["q"] = "mutated"
+        assert probe.params_for("news")["q"] == "crypto"

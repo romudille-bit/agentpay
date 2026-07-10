@@ -129,7 +129,9 @@ _PROBES_HTML = """<!doctype html>
   data never penalizes anyone. These scores feed
   <code>verified_route</code> ranking directly.</div>
   <div id="board" class="msg">Loading scores…</div>
-  <div class="foot">Raw JSON: <a href="/scores.json">/scores.json</a> ·
+  <div class="foot">AgentPay's own tools are deliberately excluded — a trust
+    oracle must not score itself (they're health-checked independently via
+    x402scout). · Raw JSON: <a href="/scores.json">/scores.json</a> ·
     Methodology: paid probes over a 30-day window; delivered = payment settled ∧ HTTP 200 ∧
     non-empty response ∧ advertised schema matched. Factor: ≥90% → 1.15 boost · 50–90% → sliding ·
     &lt;50% → 0.25 · took-payment-without-delivering → flagged, never recommended.
@@ -154,9 +156,17 @@ _PROBES_HTML = """<!doctype html>
     if (!svcs.length) { board.innerHTML = '<p class="msg">No scores yet — first sweep lands Monday 05:00 UTC.</p>'; return; }
     const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     const CHAINS = {'eip155:8453':'Base','eip155:84532':'Base Sepolia',
-      'eip155:42161':'Arbitrum','eip155:46630':'Robinhood','stellar':'Stellar',
-      'stellar-mainnet':'Stellar'};
-    const chain = n => n ? (CHAINS[String(n).toLowerCase()] || n) : null;
+      'eip155:1':'Ethereum','eip155:137':'Polygon','eip155:43114':'Avalanche',
+      'eip155:42161':'Arbitrum','eip155:46630':'Robinhood'};
+    const chain = n => {
+      if (!n) return null;
+      const k = String(n).toLowerCase();
+      if (CHAINS[k]) return CHAINS[k];
+      if (k.startsWith('solana')) return 'Solana';
+      if (k.startsWith('stellar')) return 'Stellar';
+      if (k.startsWith('eip155:')) return 'EVM ' + k.slice(7);
+      return k.length > 14 ? k.slice(0, 12) + '…' : n;   // never a wall of hash
+    };
     const badge = f => f > 1 ? `<span class="badge up">${f.toFixed(2)}×</span>`
       : f < 1 ? `<span class="badge down">${f.toFixed(2)}×</span>`
       : `<span class="badge neutral">1.00×</span>`;
