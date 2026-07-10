@@ -407,3 +407,27 @@ class TestBaseDisabledReason:
         msg = str(exc_info.value)
         assert "Base settlement unavailable" in msg
         assert "agentpay-x402[base]" in msg
+
+
+class TestPaymentRequiredHeaderDecode:
+    """AGE-9: _decode_payment_required_header — x402 v2 header fallback for
+    external 402s whose body carries no accepts."""
+
+    def test_base64_header(self):
+        import base64, json
+        from agentpay._wallet import _decode_payment_required_header
+        payload = {"accepts": [{"network": "eip155:8453", "amount": "10000"}]}
+        raw = base64.b64encode(json.dumps(payload).encode()).decode()
+        assert _decode_payment_required_header({"PAYMENT-REQUIRED": raw}) == payload
+
+    def test_raw_json_and_casing(self):
+        import json
+        from agentpay._wallet import _decode_payment_required_header
+        payload = {"accepts": []}
+        assert _decode_payment_required_header(
+            {"x-payment-required": json.dumps(payload)}) == payload
+
+    def test_absent_or_garbage_is_none(self):
+        from agentpay._wallet import _decode_payment_required_header
+        assert _decode_payment_required_header({}) is None
+        assert _decode_payment_required_header({"PAYMENT-REQUIRED": "%%%"}) is None

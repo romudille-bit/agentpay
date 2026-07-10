@@ -134,18 +134,19 @@ def recent_recommendations(days: int = 7) -> list[dict]:
 # ── Probes (I/O) ───────────────────────────────────────────────────────────────
 
 def probe_free(cand: dict) -> dict:
-    """T0: GET the resource, judge the live 402. Never pays."""
-    status, body = None, None
+    """T0: GET the resource, judge the live 402 (body + PAYMENT-REQUIRED
+    header). Never pays."""
+    status, body, headers = None, None, None
     error = None
     try:
         req = urllib.request.Request(cand["url"], headers={"User-Agent": PROBE_UA})
         with urllib.request.urlopen(req, timeout=15) as r:
-            status, body = r.status, r.read().decode(errors="replace")
+            status, body, headers = r.status, r.read().decode(errors="replace"), dict(r.headers)
     except urllib.error.HTTPError as e:  # 402 arrives here
-        status, body = e.code, e.read().decode(errors="replace")
+        status, body, headers = e.code, e.read().decode(errors="replace"), dict(e.headers)
     except Exception as e:
         error = str(e)[:200]
-    checks = probe.t0_checks(status, body, cand.get("price_usd"))
+    checks = probe.t0_checks(status, body, cand.get("price_usd"), headers=headers)
     return _probe_row(cand, "free", error=error, **checks)
 
 
@@ -181,6 +182,15 @@ def probe_paid(session, cand: dict) -> dict:
     except Exception as e:
         latency_ms = int((time.monotonic() - t0) * 1000)
         error = str(e)[:200]
+
+    # Pre-payment request rejections (400/404/405/422 before OR instead of a
+    # settle) are OUR generic-params/method problem, not the seller's delivery
+    # — no money moved, so the probe is unscoreable. Mark skipped: it stays in
+    # the raw evidence but never enters delivery_rate.
+    if error and not settle_ok and (
+        "no payment settled): 4" in error or "Expected 200 or 402" in error
+    ):
+        return _probe_row(cand, "paid", error=error, skipped=True)
 
     out_schema = (cand.get("accepts") or {}).get("outputSchema")
     checks = probe.t1_evaluate(data, out_schema) if http_ok else \

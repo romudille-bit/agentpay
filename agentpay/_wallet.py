@@ -476,6 +476,35 @@ def _wrap_result(r):
     return ToolResult(r) if isinstance(r, dict) and not isinstance(r, ToolResult) else r
 
 
+def _decode_payment_required_header(headers) -> dict | None:
+    """Decode an x402 v2 PAYMENT-REQUIRED (or X-PAYMENT-REQUIRED) header.
+
+    The header carries the payment-required payload as base64-encoded JSON
+    (some servers send raw JSON). Returns the payload dict, or None when the
+    header is absent/undecodable. `headers` is any case-insensitive mapping
+    (httpx.Headers) or a plain dict."""
+    raw = None
+    try:
+        raw = headers.get("PAYMENT-REQUIRED") or headers.get("X-PAYMENT-REQUIRED")
+    except Exception:
+        pass
+    if not raw and isinstance(headers, dict):   # plain dict, unknown casing
+        lowered = {str(k).lower(): v for k, v in headers.items()}
+        raw = lowered.get("payment-required") or lowered.get("x-payment-required")
+    if not raw:
+        return None
+    for decode in (
+        lambda s: json.loads(base64.b64decode(s + "=" * (-len(s) % 4))),
+        json.loads,
+    ):
+        try:
+            payload = decode(raw)
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            continue
+    return None
+
+
 class Session:
     """
     Budget-aware session for multi-tool agent tasks.
@@ -859,7 +888,18 @@ class Session:
             try:
                 data = resp.json()
             except Exception:
-                raise Exception(f"Could not parse 402 response from {url}: {resp.text[:200]}")
+                data = None
+            # x402 v2: requirements also (or ONLY) ride the PAYMENT-REQUIRED
+            # header as base64 JSON — many sellers send an empty/minimal body
+            # (first prober sweep 2026-07-10: 10/15 live 402s were header-only).
+            # Non-empty body keys win over the header's.
+            hdr_payload = _decode_payment_required_header(resp.headers)
+            if not isinstance(data, dict):
+                if hdr_payload is None:
+                    raise Exception(f"Could not parse 402 response from {url}: {resp.text[:200]}")
+                data = hdr_payload
+            elif hdr_payload and not (data.get("accepts") or []):
+                data = {**hdr_payload, **{k: v for k, v in data.items() if v}}
             # The signed payment's `resource` MUST match what the server declared
             # in its 402, not our request URL. Servers like CMC declare the bare
             # path (…/dex/search) while we request with query params (…?q=BNB) —

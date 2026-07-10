@@ -318,3 +318,37 @@ class TestUsdgLabel:
         ], now=NOW)
         assert rows[0]["usdg_option"] is True
         assert rows[0]["mpp_option"] is False
+
+
+class TestHeaderOnly402:
+    """First live sweep (2026-07-10): 10/15 sellers put payment requirements
+    ONLY in the PAYMENT-REQUIRED header (base64 x402 v2), empty body."""
+
+    def _b64(self, payload):
+        import base64, json
+        return base64.b64encode(json.dumps(payload).encode()).decode()
+
+    def test_header_only_402_is_wellformed(self):
+        hdr = {"PAYMENT-REQUIRED": self._b64(WELLFORMED_402)}
+        r = probe.t0_checks(402, "{}", Decimal("0.01"), headers=hdr)
+        assert r["x402_wellformed"] is True
+        assert r["price_matches"] is True
+
+    def test_header_case_insensitive_and_x_prefixed(self):
+        hdr = {"x-payment-required": self._b64(WELLFORMED_402)}
+        assert probe.t0_checks(402, None, headers=hdr)["x402_wellformed"] is True
+
+    def test_raw_json_header_tolerated(self):
+        import json
+        hdr = {"PAYMENT-REQUIRED": json.dumps(WELLFORMED_402)}
+        assert probe.t0_checks(402, None, headers=hdr)["x402_wellformed"] is True
+
+    def test_garbage_header_ignored(self):
+        assert probe.t0_checks(402, None,
+                               headers={"PAYMENT-REQUIRED": "%%%"})["x402_wellformed"] is False
+
+    def test_mpp_detected_from_header(self):
+        payload = {"accepts": [{"network": "tempo", "scheme": "mpp",
+                                "amount": "10000", "asset": "pathUSD"}]}
+        hdr = {"PAYMENT-REQUIRED": self._b64(payload)}
+        assert probe.t0_checks(402, None, headers=hdr)["mpp_option"] is True

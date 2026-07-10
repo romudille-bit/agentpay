@@ -150,12 +150,38 @@ def _is_usdg_option(opt: dict) -> bool:
     return any(m in _option_hay(opt) for m in _USDG_MARKERS)
 
 
+def _decode_payment_required(headers: dict | None) -> dict | None:
+    """x402 v2 PAYMENT-REQUIRED / X-PAYMENT-REQUIRED header → payload dict.
+    Base64 JSON per spec (raw JSON tolerated). None when absent/undecodable.
+    Many sellers send the requirements ONLY here, with an empty body — the
+    first live sweep (2026-07-10) found 10/15 such 402s."""
+    if not headers:
+        return None
+    import base64
+    lowered = {str(k).lower(): v for k, v in headers.items()}
+    raw = lowered.get("payment-required") or lowered.get("x-payment-required")
+    if not raw:
+        return None
+    for decode in (
+        lambda s: json.loads(base64.b64decode(s + "=" * (-len(s) % 4))),
+        json.loads,
+    ):
+        try:
+            payload = decode(raw)
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            continue
+    return None
+
+
 def t0_checks(status_code: Optional[int], body: dict | str | None,
-              catalog_price_usd: Decimal | str | None = None) -> dict:
+              catalog_price_usd: Decimal | str | None = None,
+              headers: dict | None = None) -> dict:
     """Evaluate one free probe. PURE.
 
     alive          — endpoint responded at all (any HTTP status)
     x402_wellformed— 402 returned AND at least one sane payment option parses
+                     (from the body OR the PAYMENT-REQUIRED header)
     price_matches  — 402 amount == catalog amount (price honesty!); None when
                      either side is unknown (never penalize missing data)
     mpp_option     — [MR-3] an MPP/Tempo option is advertised (label only)
@@ -167,6 +193,8 @@ def t0_checks(status_code: Optional[int], body: dict | str | None,
         except (ValueError, TypeError):
             body = None
     opts = _parse_accepts(body) if status_code == 402 else []
+    if status_code == 402:
+        opts.extend(_parse_accepts(_decode_payment_required(headers)))
     sane = [o for o in opts if _option_sane(o)]
     wellformed = status_code == 402 and bool(sane)
 
