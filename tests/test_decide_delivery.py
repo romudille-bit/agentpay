@@ -215,3 +215,18 @@ def test_usdg_label_in_why_and_public():
     assert scored[0]["why"].endswith("also payable in USDG on Robinhood Chain")
     assert radar._public(scored[0])["usdg_option"] is True
     assert scored[0]["quality"] == 80          # label never changes rank
+
+
+def test_unconfirmed_no_delivery_drops_rec_without_public_accusation():
+    """AGE-11 split policy: an UNCONFIRMED no-delivery flag protects buyers
+    (never recommended) but the why-line carries no accusation."""
+    flaky = _cand("https://flaky.x/t", payers=100, calls=900, pay_to="0x111")
+    modest = _cand("https://modest.x/t", payers=5, calls=10, pay_to="0x222")
+    scores = _score_row("https://flaky.x/t", factor=0.25, rate=0.5, probes=2,
+                        flags=[radar.FLAG_NO_DELIVERY_UNCONFIRMED])
+    scored, rec = radar.decide([flaky, modest], BUDGET, scores=scores)
+    assert rec["url"] == "https://modest.x/t"        # protection immediate
+    flaky_row = next(s for s in scored if s["url"] == "https://flaky.x/t")
+    assert radar.FLAG_NO_DELIVERY_UNCONFIRMED in flaky_row["flags"]
+    assert "took payment" not in flaky_row["why"]    # no public accusation
+    assert flaky_row["why"].startswith("probed 2×")  # factual stats still shown

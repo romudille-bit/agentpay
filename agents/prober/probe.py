@@ -64,6 +64,13 @@ GOOD_RATE = 0.9
 BAD_RATE = 0.5
 
 FLAG_NO_DELIVERY = "took_payment_no_delivery"
+# One paid_but_no_data = unconfirmed (could be a transient outage that hit our
+# probe window). It already hard-drops the service from recommendations —
+# buyers are protected immediately — but the PUBLIC accusation ("took payment
+# without delivering") waits for a second failure on a separate run.
+# AGE-11 decision (Valeria, 2026-07-11): protection immediate, accusation
+# confirmed.
+FLAG_NO_DELIVERY_UNCONFIRMED = "no_delivery_unconfirmed"
 
 
 # ── SELECT ─────────────────────────────────────────────────────────────────────
@@ -364,9 +371,13 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
         delivered = sum(1 for p in paid if _delivered(p))
         rate = (delivered / n) if n else None
         flags: list[str] = []
-        if any(paid_but_no_data(bool(p.get("settle_ok")), bool(p.get("http_ok")))
-               for p in paid):
-            flags.append(FLAG_NO_DELIVERY)
+        no_delivery = sum(
+            1 for p in paid
+            if paid_but_no_data(bool(p.get("settle_ok")), bool(p.get("http_ok"))))
+        if no_delivery >= 2:
+            flags.append(FLAG_NO_DELIVERY)              # confirmed → public ⚠
+        elif no_delivery == 1:
+            flags.append(FLAG_NO_DELIVERY_UNCONFIRMED)  # rec-drop only
         latencies = sorted(p["latency_ms"] for p in paid
                            if isinstance(p.get("latency_ms"), (int, float)))
         oks = [_parse_ts(p.get("probed_at")) for p in paid if _delivered(p)]

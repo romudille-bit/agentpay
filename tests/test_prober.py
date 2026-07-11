@@ -205,13 +205,26 @@ class TestScore:
         assert r["flags"] == []
         assert r["latency_p50_ms"] == 500
 
-    def test_paid_but_no_data_flags(self):
+    def test_single_no_delivery_is_unconfirmed(self):
+        # AGE-11 policy: 1 paid_but_no_data → unconfirmed flag (rec-drop only,
+        # no public accusation — could be a transient outage).
         rows = probe.score([
             probe_row(),
             probe_row(settle_ok=True, http_ok=False, response_nonempty=False),
         ], now=NOW)
-        assert probe.FLAG_NO_DELIVERY in rows[0]["flags"]
+        assert probe.FLAG_NO_DELIVERY_UNCONFIRMED in rows[0]["flags"]
+        assert probe.FLAG_NO_DELIVERY not in rows[0]["flags"]
         assert rows[0]["delivery_rate"] == 0.5
+
+    def test_two_no_deliveries_confirm_the_public_flag(self):
+        rows = probe.score([
+            probe_row(days_ago=3, settle_ok=True, http_ok=False,
+                      response_nonempty=False),
+            probe_row(days_ago=0, settle_ok=True, http_ok=False,
+                      response_nonempty=False),
+        ], now=NOW)
+        assert probe.FLAG_NO_DELIVERY in rows[0]["flags"]
+        assert probe.FLAG_NO_DELIVERY_UNCONFIRMED not in rows[0]["flags"]
 
     def test_schema_false_counts_against_none_does_not(self):
         ok = probe.score([probe_row(schema_ok=None)], now=NOW)[0]

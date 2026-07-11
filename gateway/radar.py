@@ -181,11 +181,15 @@ def _recency_days(iso: Optional[str]) -> Optional[int]:
         return None
 
 
-# Any paid_but_no_data probe in the scoring window → this flag on the score
-# row (agents/prober/probe.py) → hard-drop from recommendation here (still
-# listed, flagged). Mirror of probe.FLAG_NO_DELIVERY — kept as a literal so
-# radar.py stays importable without the agents package.
+# Delivery-failure flags from the Prober's score rows (mirrors of
+# agents/prober/probe.py constants — kept literal so radar.py stays importable
+# without the agents package). AGE-11 policy: BOTH hard-drop a service from
+# recommendation (buyer protection is immediate), but only the CONFIRMED flag
+# (>= 2 paid_but_no_data on separate runs) carries the public accusation in
+# why-text — a single failure may be a transient outage.
 FLAG_NO_DELIVERY = "took_payment_no_delivery"
+FLAG_NO_DELIVERY_UNCONFIRMED = "no_delivery_unconfirmed"
+_NO_DELIVERY_FLAGS = {FLAG_NO_DELIVERY, FLAG_NO_DELIVERY_UNCONFIRMED}
 
 # [MR-2] single-payer wash volume: calls capped at this multiple of unique
 # payers in usage_q, and flagged above it. 342 calls from 1 payer ranks like
@@ -308,8 +312,9 @@ def decide(cands: list[dict], remaining: Decimal,
             factor = 1.0
         if factor != 1.0:
             q = int(q * factor)
-        if FLAG_NO_DELIVERY in (score_row.get("flags") or []):
-            flags.append(FLAG_NO_DELIVERY)
+        for f in (score_row.get("flags") or []):
+            if f in _NO_DELIVERY_FLAGS:
+                flags.append(f)
         delivery_why = _delivery_why(score_row) if score_row else ""
 
         scored.append({**c, "flags": flags, "dropped": dropped,
@@ -326,9 +331,10 @@ def decide(cands: list[dict], remaining: Decimal,
 
     survivors = [s for s in scored if not s["dropped"]]
     survivors.sort(key=lambda s: (-s["quality"], s["price_usd"]))
-    # took_payment_no_delivery is listed but NEVER recommended.
-    recommendation = next((s for s in survivors
-                           if FLAG_NO_DELIVERY not in s["flags"]), None)
+    # A no-delivery flag (confirmed OR unconfirmed) is listed but NEVER
+    # recommended — protection doesn't wait for confirmation.
+    recommendation = next(
+        (s for s in survivors if not _NO_DELIVERY_FLAGS & set(s["flags"])), None)
     return scored, recommendation
 
 
@@ -519,7 +525,7 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     scored, _ = decide(cands, budget, usage_aware=True, scores=scores)
     survivors = [s for s in scored if not s["dropped"]]
     kept, stats = collapse_sybils(survivors)
-    rec = next((s for s in kept if FLAG_NO_DELIVERY not in s["flags"]), None)
+    rec = next((s for s in kept if not _NO_DELIVERY_FLAGS & set(s["flags"])), None)
 
     rec_pub = _public(rec)
     if rec_pub:

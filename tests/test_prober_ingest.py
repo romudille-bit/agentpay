@@ -105,7 +105,8 @@ def test_stores_probes_and_rescoreds_window(monkeypatch):
     s = body["scores"][0]
     assert s["paid_probes"] == 2
     assert s["delivery_rate"] == 0.5
-    assert "took_payment_no_delivery" in s["flags"]
+    # 1 no-delivery in the window → unconfirmed (AGE-11 split policy)
+    assert "no_delivery_unconfirmed" in s["flags"]
     # And the upsert got the same rows.
     assert calls["scores"][0]["delivery_rate"] == 0.5
 
