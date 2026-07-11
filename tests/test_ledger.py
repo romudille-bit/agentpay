@@ -333,3 +333,68 @@ def test_ledger_disabled_404(monkeypatch):
     c = TestClient(app)
     assert c.get("/ledger").status_code == 404
     assert c.get("/ledger.json").status_code == 404
+
+
+# ── synthesize_offgateway_runs (AGE-10: probe_sweep runs on the ledger) ───────
+
+def _probe_meta(run_at="2026-07-10T18:40:00+00:00", breakdown=None):
+    return {
+        "run_at": run_at,
+        "objective": {"kind": "probe_sweep",
+                      "goal_text": "Probe 15 x402 services for delivery quality",
+                      "cap_usdc": "0.50"},
+        "receipt": {"calls": 1, "spent": "$0.02", "budget": "$0.5",
+                    "breakdown": breakdown if breakdown is not None else [
+                        {"tool": "https://stablefinance.dev/api/news",
+                         "cost": "$0.02", "tx_hash": "0xabc",
+                         "network": "eip155:8453"}]},
+        "note": "AgentPay prober — sweep",
+    }
+
+
+def test_synthesize_probe_sweep_run_from_receipt():
+    runs: list = []          # nothing clustered — probe payments are off-gateway
+    added = ledger.synthesize_offgateway_runs(runs, [_probe_meta()], run_cap="0.25")
+    assert added == 1
+    r = runs[0]
+    assert r["synthesized_offgateway"] is True
+    assert r["reasoning"]["kind"] == "probe_sweep"
+    assert r["cap_usdc"] == "0.50"            # objective cap wins over run_cap
+    assert r["spent_usdc"] == "0.02"
+    assert r["paid_count"] == 1
+    assert r["under_cap"] is True
+    assert r["paid_calls"][0]["tx_hash"] == "0xabc"
+    assert r["timeline"][0]["kind"] == "paid"
+
+
+def test_synthesize_skips_metas_inside_existing_windows():
+    # A meta whose run_at falls inside a clustered flagship run must NOT be
+    # duplicated as a synthetic run (attach_reasoning owns that case).
+    out = ledger.group_runs(RUN_A, run_cap="0.25")
+    inside = _probe_meta(run_at=out["runs"][0]["started"])
+    added = ledger.synthesize_offgateway_runs(out["runs"], [inside])
+    assert added == 0
+
+
+def test_synthesize_ignores_non_probe_metas():
+    meta = _probe_meta()
+    meta["objective"]["kind"] = "regime"
+    runs: list = []
+    assert ledger.synthesize_offgateway_runs(runs, [meta]) == 0
+
+
+def test_synthesize_orders_newest_first():
+    out = ledger.group_runs(RUN_A, run_cap="0.25")
+    n_before = len(out["runs"])
+    added = ledger.synthesize_offgateway_runs(
+        out["runs"], [_probe_meta(run_at="2099-01-01T00:00:00+00:00")])
+    assert added == 1 and len(out["runs"]) == n_before + 1
+    assert out["runs"][0]["synthesized_offgateway"] is True   # newest first
+
+
+def test_synthesize_handles_empty_breakdown():
+    runs: list = []
+    added = ledger.synthesize_offgateway_runs(runs, [_probe_meta(breakdown=[])])
+    assert added == 1
+    assert runs[0]["spent_usdc"] == "0.00"
+    assert runs[0]["paid_count"] == 0

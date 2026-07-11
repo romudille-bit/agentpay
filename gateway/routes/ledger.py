@@ -363,6 +363,119 @@ def attach_reasoning(runs: list[dict], metas: list[dict]) -> int:
     return enriched
 
 
+def _run_view_from_breakdown(breakdown: list[dict], cap: Decimal) -> dict:
+    """Walk an SDK receipt breakdown into the ledger's run-view fields
+    (timeline, paid_calls, counts, spend). PURE. Shared by
+    reconcile_from_receipt and synthesize_offgateway_runs."""
+    steps: list[dict] = []
+    paid_calls: list[dict] = []
+    spent = Decimal("0")
+    free_count = paid_count = 0
+
+    for i, e in enumerate(breakdown, start=1):
+        raw_tool = e.get("tool")
+        external = bool(raw_tool) and ("://" in raw_tool or "/" in raw_tool)
+        name, purpose = (_label_external(raw_tool) if external
+                         else (raw_tool, _purpose(raw_tool)))
+        amt = _money_to_dec(e.get("cost"))
+        spent += amt
+        step = {
+            "step": i, "tool": name, "purpose": purpose,
+            "cost_usdc": f"{amt:.2f}",
+            "running_spent_usdc": f"{spent:.2f}",
+            "remaining_usdc": f"{(cap - spent):.2f}",
+        }
+        if amt > 0:
+            net = _norm_network(e.get("network"))
+            tx = e.get("tx_hash") or None
+            explorer = _explorer_url(net, tx)
+            step.update({"kind": "paid", "network": net,
+                         "tx_hash": tx, "explorer_url": explorer})
+            paid_calls.append({
+                "tool": name, "amount_usdc": f"{amt:.2f}", "network": net,
+                "tx_hash": tx, "explorer_url": explorer,
+                "spent_after_usdc": f"{spent:.2f}",
+                "remaining_after_usdc": f"{(cap - spent):.2f}",
+            })
+            paid_count += 1
+        else:
+            step["kind"] = "free"
+            free_count += 1
+        steps.append(step)
+
+    return {
+        "timeline": steps, "paid_calls": paid_calls,
+        "paid_count": paid_count, "free_count": free_count,
+        "spent_usdc": f"{spent:.2f}",
+        "remaining_usdc": f"{(cap - spent):.2f}",
+        "under_cap": spent <= cap,
+    }
+
+
+def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
+                               run_cap: str = "0.25") -> int:
+    """Surface runs that never touched payment_logs at all. PURE — mutates
+    `runs` in place (keeps newest-first order); returns the count added.
+
+    The prober's probe_sweep runs pay sellers DIRECTLY (agent→seller x402),
+    so group_runs — which clusters payment_logs — has nothing to cluster and
+    attach_reasoning finds no window to attach their metadata to (AGE-10,
+    found live 2026-07-10: 0 probe runs on /ledger despite stored metas).
+    For each probe_sweep meta whose run_at falls inside no existing run
+    window, synthesize a run straight from its SDK receipt breakdown — the
+    same authoritative source reconcile_from_receipt trusts for the strategy
+    goal's off-gateway CMC legs.
+    """
+    windows = []
+    for run in runs:
+        s, e = _parse_ts(run.get("started") or ""), _parse_ts(run.get("ended") or "")
+        if s and e:
+            windows.append((s.timestamp() - 300, e.timestamp() + 300))
+
+    added = 0
+    for m in metas:
+        obj = m.get("objective") or {}
+        if (obj.get("kind") or "") != "probe_sweep":
+            continue
+        mt = _parse_ts(m.get("run_at") or "")
+        if mt is None or any(lo <= mt.timestamp() <= hi for lo, hi in windows):
+            continue    # unparseable, or already covered by a clustered run
+        receipt = m.get("receipt") or {}
+        breakdown = receipt.get("breakdown")
+        if not isinstance(breakdown, list):
+            breakdown = []
+        cap = _dec(obj.get("cap_usdc") or m.get("max_spend") or run_cap)
+        view = _run_view_from_breakdown(breakdown, cap)
+        runs.append({
+            "started": m.get("run_at"),
+            "ended": m.get("run_at"),
+            "free_calls": [],
+            "cap_usdc": f"{cap:.2f}",
+            **view,
+            "synthesized_offgateway": True,
+            "reasoning": {
+                "objective":  obj,
+                "kind":       "probe_sweep",
+                "goal_text":  obj.get("goal_text") or "",
+                "plan":       m.get("plan") or {},
+                "regime":     m.get("regime") or "",
+                "context":    m.get("context") or "",
+                "verdicts":   m.get("verdicts") or {},
+                "skipped":    m.get("skipped") or {},
+                "findings":   m.get("findings") or {},
+                "receipt":    receipt,
+                "free_intel": m.get("free_intel") or {},
+                "note":       m.get("note") or "",
+            },
+        })
+        added += 1
+
+    if added:
+        runs.sort(key=lambda r: _parse_ts(r.get("started") or "")
+                  or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return added
+
+
 def reconcile_from_receipt(runs: list[dict]) -> int:
     """Rebuild a strategy run's timeline from its SDK receipt breakdown.
 
@@ -388,49 +501,7 @@ def reconcile_from_receipt(runs: list[dict]) -> int:
             continue
 
         cap = _dec(run.get("cap_usdc"))
-        steps: list[dict] = []
-        paid_calls: list[dict] = []
-        spent = Decimal("0")
-        free_count = paid_count = 0
-
-        for i, e in enumerate(breakdown, start=1):
-            raw_tool = e.get("tool")
-            external = bool(raw_tool) and ("://" in raw_tool or "/" in raw_tool)
-            name, purpose = (_label_external(raw_tool) if external
-                             else (raw_tool, _purpose(raw_tool)))
-            amt = _money_to_dec(e.get("cost"))
-            spent += amt
-            step = {
-                "step": i, "tool": name, "purpose": purpose,
-                "cost_usdc": f"{amt:.2f}",
-                "running_spent_usdc": f"{spent:.2f}",
-                "remaining_usdc": f"{(cap - spent):.2f}",
-            }
-            if amt > 0:
-                net = _norm_network(e.get("network"))
-                tx = e.get("tx_hash") or None
-                explorer = _explorer_url(net, tx)
-                step.update({"kind": "paid", "network": net,
-                             "tx_hash": tx, "explorer_url": explorer})
-                paid_calls.append({
-                    "tool": name, "amount_usdc": f"{amt:.2f}", "network": net,
-                    "tx_hash": tx, "explorer_url": explorer,
-                    "spent_after_usdc": f"{spent:.2f}",
-                    "remaining_after_usdc": f"{(cap - spent):.2f}",
-                })
-                paid_count += 1
-            else:
-                step["kind"] = "free"
-                free_count += 1
-            steps.append(step)
-
-        run["timeline"] = steps
-        run["paid_calls"] = paid_calls
-        run["paid_count"] = paid_count
-        run["free_count"] = free_count
-        run["spent_usdc"] = f"{spent:.2f}"
-        run["remaining_usdc"] = f"{(cap - spent):.2f}"
-        run["under_cap"] = spent <= cap
+        run.update(_run_view_from_breakdown(breakdown, cap))
         run["reconciled_from_receipt"] = True
         reconciled += 1
     return reconciled
@@ -490,9 +561,13 @@ async def ledger_json():
     metas = await fetch_flagship_runs()
     data["runs_with_reasoning"] = attach_reasoning(data["runs"], metas)
     # Reconcile off-gateway (e.g. direct CMC x402) spend into strategy-run
-    # timelines from the authoritative SDK receipt, then refresh headline totals.
+    # timelines from the authoritative SDK receipt, and synthesize runs that
+    # never touched payment_logs at all (the prober's probe_sweeps pay sellers
+    # directly), then refresh headline totals.
     data["runs_reconciled"] = reconcile_from_receipt(data["runs"])
-    if data["runs_reconciled"]:
+    data["runs_synthesized"] = synthesize_offgateway_runs(
+        data["runs"], metas, run_cap=settings.LEDGER_RUN_CAP_USDC)
+    if data["runs_reconciled"] or data["runs_synthesized"]:
         _recompute_totals(data)
     addrs = _flagship_addresses()
     data["agent"] = "AgentPay flagship analyst"
