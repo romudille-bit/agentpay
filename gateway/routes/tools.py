@@ -33,7 +33,7 @@ from decimal import Decimal
 
 from gateway import base as base_pay
 from gateway._limiter import limiter, wallet_or_ip
-from gateway.config import GATEWAY_URL, settings
+from gateway.config import GATEWAY_URL, offered_pending_network, settings
 from gateway.services.supabase import (
     insert_pending_payment_log,
     record_tx_hash,
@@ -534,17 +534,21 @@ async def _issue_402(
     )
 
     # Pre-402 payment_logs INSERT — awaited and fail-closed: the gateway
-    # refuses to issue challenges it cannot track. Network defaults to
-    # Stellar on this UUID-keyed row; a Base settlement later produces a
-    # second row keyed on tx_hash (x402-v2 doesn't carry the UUID through
-    # PAYMENT-SIGNATURE) and this one gets swept to 'abandoned'.
+    # refuses to issue challenges it cannot track. Network is the chain the
+    # 402 LEADS with (offered_pending_network: Base when configured, else
+    # Stellar) — NOT hardcoded Stellar, which mislabelled every abandoned-at-402
+    # row as stellar-mainnet and produced the "it's all Stellar" analytics
+    # artifact. A Base settlement later produces a second row keyed on tx_hash
+    # (x402-v2 doesn't carry the UUID through PAYMENT-SIGNATURE) and this one
+    # gets swept to 'abandoned'; the terminal PATCH overwrites the label with
+    # the chain that actually settled, so completed rows stay accurate.
     if sb_enabled():
         client_ip  = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
         row_id = await insert_pending_payment_log(
             payment_id=challenge.payment_id,
             tool_name=resolved,
-            network=f"stellar-{settings.STELLAR_NETWORK}",
+            network=offered_pending_network(),
             amount_usdc=tool.price_usdc,
             developer_address=tool.developer_address or None,
             client_ip=client_ip,

@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from gateway import base as base_pay
 from gateway._limiter import limiter
-from gateway.config import GATEWAY_URL, settings
+from gateway.config import GATEWAY_URL, offered_pending_network, settings
 from gateway.services.supabase import (
     insert_pending_payment_log,
     sb_enabled,
@@ -345,11 +345,9 @@ async def create_session(
         # abandoned-at-402 row is mislabelled stellar-mainnet and analytics
         # can't tell Base-intent from Stellar-intent abandoners. The terminal
         # payment_done PATCH still overwrites this with the chain that actually
-        # settled, so completed rows stay accurate.
-        offered_network = (
-            f"base-{settings.BASE_NETWORK}" if settings.BASE_GATEWAY_ADDRESS
-            else f"stellar-{settings.STELLAR_NETWORK}"
-        )
+        # settled, so completed rows stay accurate. Shared helper emits a clean,
+        # correctly-normalizing label (base-mainnet, not base-base).
+        offered_network = offered_pending_network()
         if sb_enabled():
             client_ip  = request.client.host if request.client else None
             user_agent = request.headers.get("user-agent")

@@ -190,3 +190,24 @@ def stellar_caip2() -> str:
         STELLAR_NETWORK="testnet"  →  "stellar:testnet"
     """
     return "stellar:pubnet" if settings.STELLAR_NETWORK == "mainnet" else "stellar:testnet"
+
+
+def offered_pending_network() -> str:
+    """Network label for a pre-402 pending payment_logs row.
+
+    A pending row is a challenge that has been ISSUED but not yet settled, so
+    we don't yet know which chain (if any) the client will pay on. Label it
+    with the chain the 402 LEADS with — Base when a Base gateway wallet is
+    configured (the canonical paid chain), else Stellar. Without this, every
+    abandoned-at-402 row defaults to ``stellar-mainnet`` and analytics can't
+    tell Base-intent from Stellar-intent abandoners (the "it's all Stellar"
+    reporting artifact). The terminal payment_done PATCH overwrites this with
+    the chain that actually settled, so completed rows stay accurate.
+
+    Labels are chosen to normalize cleanly (see ledger._norm_network): Base
+    mainnet → ``base-mainnet`` (not ``base-base``); Base testnet keeps its
+    ``base-sepolia`` value; Stellar → ``stellar-{network}``.
+    """
+    if settings.BASE_GATEWAY_ADDRESS:
+        return "base-mainnet" if settings.BASE_NETWORK == "base" else settings.BASE_NETWORK
+    return f"stellar-{settings.STELLAR_NETWORK}"

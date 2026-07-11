@@ -55,17 +55,41 @@ def _load_dotenv():
             continue
 
 
-# Automated crawlers / indexers — NOT real agent users. Matched as substrings
-# (case-insensitive) against the user_agent. Real usage = everything else.
+# Automated crawlers / indexers / monitors / probes — NOT real agent users.
+# Matched as substrings (case-insensitive) against the user_agent. These self-
+# identify as directory indexers, uptime/trust monitors, network mappers, and
+# endpoint probers: they read the 402 and leave, never pay. Left in "real
+# traffic" they dwarf the handful of genuine agents and make abandonment look
+# like a conversion problem when it's just discovery tooling doing its job.
 CRAWLER_UA_HINTS = [
-    "indexer", "discovery", "bazaar", "x402station", "x402scout", "bot",
-    "crawler", "spider", "uptime", "ari-indexer",
+    # indexers / discovery
+    "indexer", "discovery", "bazaar", "x402station", "x402scout", "scout",
+    "crawler", "spider", "ari-indexer", "402explorer", "explorer", "paygent",
+    # monitors / probes / mappers / verifiers (added 2026-07-11)
+    "bot", "uptime", "monitor", "observer", "mapper", "network-mapper",
+    "probe", "prober", "verifier", "research", "trust", "forum-labs",
+    "litebeam", "dexter", "scan",
 ]
 
 
 def _is_crawler(ua):
     u = (ua or "").lower()
     return any(h in u for h in CRAWLER_UA_HINTS)
+
+
+# Bare/generic HTTP runtimes with no product identity. Ambiguous — could be a
+# genuine agent that never set a User-Agent, but far more often it's directory
+# tooling / probes written in that runtime. Bucketed separately so they neither
+# inflate "likely real" nor get asserted as crawlers. Reported as a side note.
+GENERIC_RUNTIME_UA_HINTS = [
+    "node", "deno", "python-httpx", "python-requests", "httpx", "aiohttp",
+    "go-http-client", "okhttp", "curl", "wget", "java/", "libwww", "got (",
+]
+
+
+def _is_generic_runtime(ua):
+    u = (ua or "").strip().lower()
+    return any(h in u for h in GENERIC_RUNTIME_UA_HINTS)
 
 
 # Known noise scanner — NOT a real buyer. As of 2026-06 a single `axios/1.14.0`
@@ -138,8 +162,13 @@ def main():
     keep_scanner = "--with-scanner" in sys.argv
     scanner = [] if keep_scanner else [r for r in real if _is_scanner(r.get("user_agent"))]
     rest    = real if keep_scanner else [r for r in real if not _is_scanner(r.get("user_agent"))]
-    human   = [r for r in rest if not _is_crawler(r.get("user_agent"))]
     crawler = [r for r in rest if _is_crawler(r.get("user_agent"))]
+    non_crawl = [r for r in rest if not _is_crawler(r.get("user_agent"))]
+    # Bare runtimes (node/deno/httpx/…) are unattributed, not confirmed buyers —
+    # keep them out of "likely real". --with-generic folds them back in.
+    keep_generic = "--with-generic" in sys.argv
+    generic = [] if keep_generic else [r for r in non_crawl if _is_generic_runtime(r.get("user_agent"))]
+    human   = non_crawl if keep_generic else [r for r in non_crawl if not _is_generic_runtime(r.get("user_agent"))]
 
     print(f"\n  AgentPay usage — last {days} day(s)  (since {since_iso})")
     print(f"  {'(including our own test traffic)' if include_self else '(real traffic only — self wallets excluded)'}")
@@ -148,7 +177,9 @@ def main():
     print(f"  after self-filter       : {len(real)}")
     if scanner:
         print(f"  └─ noise scanner        : {len(scanner)}   (axios/1.14.0 — abandons every 402, never pays; --with-scanner to include)")
-    print(f"  └─ crawlers/indexers    : {len(crawler)}   (Bazaar/x402 directories probing — not users)")
+    print(f"  └─ crawlers/indexers    : {len(crawler)}   (Bazaar/x402 directories, monitors, probes — not users)")
+    if generic:
+        print(f"  └─ generic runtimes     : {len(generic)}   (bare node/deno/httpx — unattributed; --with-generic to include)")
     print(f"  └─ likely real traffic  : {len(human)}")
 
     # Completed PAID sessions = the real KPI (challenge issued AND settled).
