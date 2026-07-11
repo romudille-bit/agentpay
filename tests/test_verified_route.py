@@ -142,3 +142,28 @@ def test_against_live_fixture_if_present():
     assert cat["real_providers"] < cat["scanned"]            # collapse actually happened
     assert cat["sybil_collapsed"] > 0
     assert out["recommendation"] is not None
+
+
+def test_agentpay_own_tools_rankable_never_factory_flagged():
+    """AgentPay's own listings must be fairly recommendable by verified_route:
+    exempt from factory misclassification (multiple tools, one wallet, modest
+    payer counts) but receiving NO boost — the Prober never delivery-scores
+    them, so their factor stays neutral. Pinned so future heuristic changes
+    can't silently punish (or privilege) our own catalog entries."""
+    GW = "0xE8B25A72dD6aeF69515452a61AD231C7DF2843b7".lower()
+    def own(name, url):
+        r = _res(name, url, GW, payers=5, calls=40)
+        return r
+    payload = {"resources": [
+        own("AgentPay Session", "https://agentpay.tools/v1/session/create"),
+        own("AgentPay Pre-Trade", "https://agentpay.tools/tools/pre_trade_check/call"),
+        own("AgentPay Verified Route", "https://agentpay.tools/tools/verified_route/call"),
+        _res("Rival", "https://rival.x/t", "0x999", payers=50, calls=400),
+    ]}
+    out = radar.verified_route_from_payloads([payload], "spend control",
+                                             Decimal("1"))
+    ours = [s for s in out["survivors"] if "agentpay.tools" in s["url"]]
+    assert len(ours) == 3                                   # all listed
+    assert all("factory" not in s["flags"] for s in ours)   # never misflagged
+    # no self-boost: a genuinely better-used rival still wins
+    assert out["recommendation"]["url"] == "https://rival.x/t"

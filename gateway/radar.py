@@ -425,6 +425,12 @@ SYBIL_TAIL_MIN    = 5   # collapse a wallet's UNPROVEN (<PROVEN_PAYERS) listings
 # Prefix match (lowercased), same convention as KNOWN_FACTORIES.
 KNOWN_TRUSTED = {
     "0x271189c860db25bc43173b0335784ad68a680908".lower(),  # CoinMarketCap x402
+    # AgentPay's own gateway wallet: multiple legitimate tools under one
+    # wallet (session_create / pre_trade_check / verified_route). Trusted =
+    # exempt from factory-flagging/sybil-collapse ONLY — no rank boost, and
+    # the Prober deliberately never delivery-scores our own tools (factor
+    # stays neutral 1.0). Fair ranking, no self-dealing.
+    "0xe8b25a72dd6aef69515452a61ad231c7df2843b7",          # AgentPay gateway (Base)
 }
 
 
