@@ -185,12 +185,17 @@ def probe_paid(session, cand: dict) -> dict:
         latency_ms = int((time.monotonic() - t0) * 1000)
         error = str(e)[:200]
 
-    # Pre-payment request rejections (400/404/405/422 before OR instead of a
-    # settle) are OUR generic-params/method problem, not the seller's delivery
-    # — no money moved, so the probe is unscoreable. Mark skipped: it stays in
-    # the raw evidence but never enters delivery_rate.
+    # Buyer-side failures are unscoreable — no money moved and the fault is
+    # ours, not the seller's delivery. Marked skipped: kept in raw evidence,
+    # never enters delivery_rate. Cases:
+    #   - pre-payment request rejections (400/404/405/422): our generic params
+    #   - chain incompatibility ("wallet can only pay on …"): a Solana-only
+    #     seller must not be scored 0.25 because OUR wallet is Base/Stellar
     if error and not settle_ok and (
-        "no payment settled): 4" in error or "Expected 200 or 402" in error
+        "no payment settled): 4" in error
+        or "Expected 200 or 402" in error
+        or "wallet can only pay" in error
+        or "is not usable for" in error
     ):
         return _probe_row(cand, "paid", error=error, skipped=True)
 
