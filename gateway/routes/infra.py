@@ -31,9 +31,22 @@ async def root(request: Request):
     content types respond with 200 — keeps the Bazaar "quality score" check
     happy regardless of which Accept the indexer sends.
     """
+    # RFC 8288 Link header — machine-discoverable entry points for agents,
+    # regardless of which content type they negotiated.
+    link_header = ", ".join([
+        '</.well-known/api-catalog>; rel="api-catalog"',
+        '</openapi.json>; rel="service-desc"; type="application/json"',
+        '</llms.txt>; rel="service-doc"; type="text/plain"',
+        '</auth.md>; rel="service-doc"; type="text/markdown"',
+        '</.well-known/agentpay.json>; rel="service-meta"',
+        '</health>; rel="status"',
+    ])
+    headers = {"Link": link_header}
+
     accept = request.headers.get("accept", "")
     if "text/html" in accept and "application/json" not in accept:
-        return HTMLResponse(content=render_landing(registry.list_tools(), GATEWAY_URL))
+        return HTMLResponse(content=render_landing(registry.list_tools(), GATEWAY_URL),
+                            headers=headers)
 
     return JSONResponse(content={
         "name":             "AgentPay",
@@ -41,11 +54,13 @@ async def root(request: Request):
         "version":          "1.0",
         "tools":            len(registry.list_tools()),
         "docs":             "https://github.com/romudille-bit/agentpay",
+        "auth":             f"{GATEWAY_URL}/auth.md",
+        "api_catalog":      f"{GATEWAY_URL}/.well-known/api-catalog",
         "tools_endpoint":   f"{GATEWAY_URL}/tools",
         "faucet":           f"{GATEWAY_URL}/faucet",
         "discovery":        f"{GATEWAY_URL}/.well-known/agentpay.json",
         "payment_networks": ["base", "stellar"],
-    })
+    }, headers=headers)
 
 
 _FAVICON_SVG = """\

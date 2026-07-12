@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 import registry
@@ -533,14 +533,117 @@ async def well_known_402index_verify():
 
 @router.get("/robots.txt", response_class=Response)
 async def robots():
+    # Content-Signal (contentsignals.org): explicitly WELCOMING — AgentPay's
+    # customers are AI agents, and presence in AI training/retrieval corpora
+    # is distribution, not leakage. (Deliberate inverse of the Cloudflare
+    # managed default, which we disabled 2026-07-11.)
     return Response(
         content=(
             "User-agent: *\n"
             "Allow: /\n"
+            "Content-Signal: search=yes, ai-train=yes, ai-input=yes\n"
             f"Sitemap: {GATEWAY_URL}/sitemap.xml\n"
         ),
         media_type="text/plain",
     )
+
+
+# ── Agent-readiness endpoints (RFC 9727 / auth.md / MCP server card) ──────────
+# Machine-discoverable entry points for AI agents. AgentPay's auth model is
+# x402 payment (no OAuth), so /auth.md documents registration + payment and we
+# deliberately do NOT publish OAuth discovery metadata we don't have.
+
+@router.get("/.well-known/api-catalog", response_class=JSONResponse)
+async def api_catalog():
+    """RFC 9727 API catalog (linkset+json)."""
+    linkset = {
+        "linkset": [{
+            "anchor": f"{GATEWAY_URL}/",
+            "service-desc": [{"href": f"{GATEWAY_URL}/openapi.json",
+                              "type": "application/json"}],
+            "service-doc":  [{"href": f"{GATEWAY_URL}/llms.txt",
+                              "type": "text/plain"},
+                             {"href": f"{GATEWAY_URL}/auth.md",
+                              "type": "text/markdown"}],
+            "service-meta": [{"href": f"{GATEWAY_URL}/.well-known/agentpay.json",
+                              "type": "application/json"}],
+            "status":       [{"href": f"{GATEWAY_URL}/health",
+                              "type": "application/json"}],
+        }]
+    }
+    return JSONResponse(content=linkset,
+                        media_type="application/linkset+json",
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+
+_AUTH_MD = f"""# AgentPay — agent access & authentication
+
+There is **no OAuth, no API key, and no signup form**. AgentPay authenticates
+agents the x402 way: by payment.
+
+## Free tier (17 tools, $0)
+
+1. Register (optional but recommended — mints an identity + session token):
+
+       POST {GATEWAY_URL}/v1/agent/register
+
+2. Call any free tool. You'll receive a `402` challenge; retry with the
+   `free:<payment_id>` proof exactly as the challenge instructs. No wallet,
+   no funds required.
+
+## Paid tools ($0.01: session_create, pre_trade_check, verified_route)
+
+Pay the `402` challenge with USDC on **Base** (EIP-3009, gasless) or
+**Stellar**. The easiest client is the SDK:
+
+    pip install "agentpay-x402[base]"
+
+    from agentpay import quickstart
+    s = quickstart(max_spend=0.10)          # hard budget cap
+    r = s.call("token_price", {{"symbol": "ETH"}})
+
+Every paid call returns a verifiable on-chain receipt (see `/ledger`).
+
+## MCP
+
+    npx @romudille/agentpay-mcp             # keyless, Node >= 18
+
+## Machine-readable surfaces
+
+- OpenAPI: {GATEWAY_URL}/openapi.json
+- API catalog (RFC 9727): {GATEWAY_URL}/.well-known/api-catalog
+- Manifest: {GATEWAY_URL}/.well-known/agentpay.json
+- A2A card: {GATEWAY_URL}/.well-known/agent.json
+- LLM guide: {GATEWAY_URL}/llms.txt
+"""
+
+
+@router.get("/auth.md", response_class=Response)
+async def auth_md():
+    """Agent registration/authentication guide (auth.md convention)."""
+    return Response(content=_AUTH_MD, media_type="text/markdown",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@router.get("/.well-known/mcp/server-card.json", response_class=JSONResponse)
+async def mcp_server_card():
+    """MCP Server Card (SEP-1649, schema still stabilizing) for the
+    npm-distributed AgentPay MCP server."""
+    return JSONResponse(content={
+        "serverInfo": {"name": "agentpay-mcp", "version": "2.3.0"},
+        "description": ("AgentPay x402 gateway as MCP tools: 17 free crypto/"
+                        "web data tools, keyless vetted routing (verified_route "
+                        "preview), and pre-flight plan pricing."),
+        "transport": {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@romudille/agentpay-mcp"],
+            "runtime": "node>=18",
+        },
+        "capabilities": {"tools": True, "resources": False, "prompts": False},
+        "homepage": GATEWAY_URL,
+        "registry": "https://www.npmjs.com/package/@romudille/agentpay-mcp",
+    }, headers={"Cache-Control": "public, max-age=3600"})
 
 
 @router.get("/llms.txt", response_class=Response)

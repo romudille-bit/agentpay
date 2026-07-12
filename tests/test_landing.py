@@ -185,3 +185,44 @@ def test_og_image_served_and_referenced(client):
     html = client.get("/", headers={"Accept": "text/html"}).text
     assert "/og.png" in html
     assert "summary_large_image" in html
+
+
+# ── Agent-readiness endpoints (Cloudflare agent-ready checklist, 2026-07-12) ──
+
+def test_root_link_header(client):
+    r = client.get("/", headers={"Accept": "text/html"})
+    link = r.headers.get("link", "")
+    assert 'rel="api-catalog"' in link
+    assert 'rel="service-desc"' in link
+    # JSON negotiation carries the same header
+    assert 'rel="api-catalog"' in client.get("/").headers.get("link", "")
+
+
+def test_api_catalog_linkset(client):
+    r = client.get("/.well-known/api-catalog")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/linkset+json")
+    ls = r.json()["linkset"][0]
+    assert ls["service-desc"][0]["href"].endswith("/openapi.json")
+    assert ls["status"][0]["href"].endswith("/health")
+
+
+def test_auth_md(client):
+    r = client.get("/auth.md")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert "no OAuth" in r.text.replace("**", "")
+    assert "/v1/agent/register" in r.text
+
+
+def test_mcp_server_card(client):
+    r = client.get("/.well-known/mcp/server-card.json")
+    assert r.status_code == 200
+    card = r.json()
+    assert card["serverInfo"]["name"] == "agentpay-mcp"
+    assert card["transport"]["command"] == "npx"
+
+
+def test_robots_welcoming_content_signal(client):
+    txt = client.get("/robots.txt").text
+    assert "Content-Signal: search=yes, ai-train=yes, ai-input=yes" in txt
