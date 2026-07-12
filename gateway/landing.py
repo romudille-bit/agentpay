@@ -32,6 +32,24 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <meta name="twitter:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
 <meta name="twitter:description" content="Hard budget caps, cost awareness before every call, on-chain receipts. 20 x402 tools, 17 free. Public delivery scores for the whole x402 market.">
 <link rel="canonical" href="GATEWAY_URL_PLACEHOLDER">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "AgentPay",
+  "url": "GATEWAY_URL_PLACEHOLDER",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Web",
+  "description": "The economic intelligence layer for MCP servers and AI agents: x402 payment gateway with hard budget caps, pre-flight plan pricing, on-chain receipts, and public delivery scores for the x402 marketplace. USDC on Base and Stellar.",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD",
+             "description": "17 free tools; paid tools from $0.01 USDC per call"},
+  "sameAs": [
+    "https://github.com/romudille-bit/agentpay",
+    "https://www.npmjs.com/package/@romudille/agentpay-mcp",
+    "https://glama.ai/mcp/servers/romudille-bit/agentpay"
+  ]
+}
+</script>
 <link rel="icon" type="image/svg+xml" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
 <link rel="alternate icon" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
 <style>
