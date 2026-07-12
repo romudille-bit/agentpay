@@ -22,7 +22,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AgentPay — the economic intelligence layer for MCP servers and AI agents</title>
-<meta name="description" content="AgentPay is the economic intelligence layer for MCP servers and AI agents. Hard budget caps enforced at the payment layer. Cost awareness before every call. Full session receipts. 18 tools, 17 free.">
+<meta name="description" content="AgentPay is the economic intelligence layer for MCP servers and AI agents. Hard budget caps enforced at the payment layer. Cost awareness before every call. Full session receipts. 20 tools, 17 free.">
 <meta property="og:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
 <meta property="og:description" content="Agents spend money. Most don't know how much until the session ends. AgentPay gives agents the ability to reason about cost while they work, not after.">
 <meta property="og:url" content="GATEWAY_URL_PLACEHOLDER">
@@ -50,7 +50,9 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
   "sameAs": [
     "https://github.com/romudille-bit/agentpay",
     "https://www.npmjs.com/package/@romudille/agentpay-mcp",
-    "https://glama.ai/mcp/servers/romudille-bit/agentpay"
+    "https://glama.ai/mcp/servers/romudille-bit/agentpay",
+    "https://x.com/romudille",
+    "https://www.youtube.com/@romudille"
   ]
 }
 </script>
@@ -261,7 +263,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 1.25rem
   <p class="hero-hook">Most agent-payment tools are a wallet — they move money. AgentPay is the layer that decides whether to spend it at all.</p>
   <h1>AgentPay is the economic intelligence layer for MCP servers and AI agents.</h1>
   <p class="subtitle">Agents spend money. Most don't know how much, or why, until the session ends. AgentPay gives agents the ability to reason about cost while they work — not after.</p>
-  <a href="#snippet" class="cta">Start free — 18 tools, zero cost →</a>
+  <a href="#snippet" class="cta">Start free — 17 tools, zero cost →</a>
   <a href="#tools" class="cta secondary">Browse the tools</a>
   <div class="value-props">
     <div class="value-prop">
@@ -302,7 +304,7 @@ print(s.spending_summary())               # receipt: every call, cost, tx, chain
 </section>
 
 <section id="tools" class="tools">
-  <h2>18 tools — 17 free</h2>
+  <h2>20 tools — 17 free</h2>
   <ul class="tools-list">
 TOOLS_ROWS_PLACEHOLDER
   </ul>
@@ -351,12 +353,12 @@ TOOLS_ROWS_PLACEHOLDER
   <h2>Settlement layer</h2>
   <div class="networks-grid">
     <div class="network-card">
-      <h3>Stellar mainnet</h3>
-      <p>Native USDC. Sub-cent settlement (~$0.000001 per tx). As of May 2026, Circle's CCTP is live on Stellar, so agents can fund from any of 23 supported chains and settle here. Used today for <code>session_create</code> ($0.01) — metered inference settles here next.</p>
+      <h3>Base mainnet</h3>
+      <p>Native USDC, gasless EIP-3009 settlement via the CDP facilitator — the default paid chain. Discovery via Coinbase's Bazaar directory: <code>session_create</code>, <code>pre_trade_check</code>, and <code>verified_route</code> are indexed and settle here today.</p>
     </div>
     <div class="network-card">
-      <h3>Base mainnet</h3>
-      <p>Native USDC. Discovery via Coinbase's Bazaar directory, auto-indexed through the CDP facilitator. Discovery on Base, settlement on Stellar — the dual-network strategy.</p>
+      <h3>Stellar mainnet</h3>
+      <p>Native USDC, sub-cent fees (~$0.000001 per tx), Horizon-verified. Fully supported as an alternative settlement rail — pick it per call or per session. Circle's CCTP is live on Stellar, so funds bridge 1:1 to and from Base.</p>
     </div>
   </div>
 </section>
@@ -366,14 +368,16 @@ TOOLS_ROWS_PLACEHOLDER
 <footer>
   <div class="alignment">
     AgentPay is the economic intelligence layer for MCP servers and AI agents — x402-v2 payment protocol,
-    Horizon-verified Stellar settlement, and CDP Facilitator settlement on Base for
-    <a href="https://www.coinbase.com/en-gb/developer-platform/discover/launches/introducing-bazaar">Bazaar</a> auto-indexing.
-    Aligned with the <a href="https://developers.stellar.org/docs/build/agentic-payments/x402">Stellar Foundation's agentic payments roadmap</a>.
+    CDP Facilitator settlement on Base with
+    <a href="https://www.coinbase.com/en-gb/developer-platform/discover/launches/introducing-bazaar">Bazaar</a> auto-indexing,
+    and Horizon-verified Stellar settlement.
   </div>
   <ul>
     <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>
     <li><a href="GATEWAY_URL_PLACEHOLDER/ledger">Ledger</a></li>
     <li><a href="https://github.com/romudille-bit/agentpay">GitHub</a></li>
+    <li><a href="https://x.com/romudille">X</a></li>
+    <li><a href="https://www.youtube.com/@romudille">YouTube</a></li>
     <li><a href="https://glama.ai/mcp/servers/romudille-bit/agentpay">MCP</a></li>
     <li><a href="GATEWAY_URL_PLACEHOLDER/.well-known/agentpay.json">Manifest</a></li>
     <li><a href="GATEWAY_URL_PLACEHOLDER/privacy">Privacy</a></li>
