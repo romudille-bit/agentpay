@@ -28,7 +28,11 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <meta property="og:url" content="GATEWAY_URL_PLACEHOLDER">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AgentPay">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="GATEWAY_URL_PLACEHOLDER/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="GATEWAY_URL_PLACEHOLDER/og.png">
 <meta name="twitter:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
 <meta name="twitter:description" content="Hard budget caps, cost awareness before every call, on-chain receipts. 20 x402 tools, 17 free. Public delivery scores for the whole x402 market.">
 <link rel="canonical" href="GATEWAY_URL_PLACEHOLDER">

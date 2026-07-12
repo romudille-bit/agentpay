@@ -631,7 +631,9 @@ _LEDGER_HTML = r"""<!doctype html>
 <meta property="og:description" content="Autonomous agents spending real USDC under hard caps, leaving on-chain receipts. Live and public.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://agentpay.tools/ledger">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="https://agentpay.tools/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://agentpay.tools/og.png">
 <link rel="canonical" href="https://agentpay.tools/ledger">
 <style>
   :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;

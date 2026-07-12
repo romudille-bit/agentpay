@@ -96,7 +96,9 @@ _PROBES_HTML = """<!doctype html>
 <meta property="og:description" content="Usage stats say what's popular. Paying says what delivers. Live, public delivery scores for x402 services.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://agentpay.tools/probes">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="https://agentpay.tools/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://agentpay.tools/og.png">
 <link rel="canonical" href="https://agentpay.tools/probes">
 <style>
   :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;--ac:#c3f53c;--ac2:#5ad1ff;--bad:#ff6b6b}

@@ -7,8 +7,9 @@ routes/infra.py — Basic gateway-status endpoints.
 """
 
 import base64
+from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 import registry
@@ -62,6 +63,23 @@ _FAVICON_SVG = """\
 async def favicon():
     """SVG favicon — dark background, teal A mark."""
     return Response(content=_FAVICON_SVG, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+# Social/link-preview card (1200×630 PNG, generated from the brand palette —
+# see gateway/assets/). Referenced by og:image / twitter:image on the public
+# HTML pages so shares on X/Discord/Slack render a branded card, not bare text.
+_OG_IMAGE_PATH = Path(__file__).resolve().parent.parent / "assets" / "og.png"
+
+
+@router.get("/og.png", response_class=Response)
+async def og_image():
+    """Open Graph card image for link previews."""
+    try:
+        content = _OG_IMAGE_PATH.read_bytes()
+    except OSError:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=content, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
 
 

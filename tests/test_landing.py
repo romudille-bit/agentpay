@@ -174,3 +174,13 @@ def test_probes_page_has_seo_and_ledger_callout(client):
     assert 'rel="canonical"' in html
     assert "we don't score" in html      # own-tools callout routes to /ledger
     assert "/ledger" in html
+
+
+def test_og_image_served_and_referenced(client):
+    r = client.get("/og.png")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+    html = client.get("/", headers={"Accept": "text/html"}).text
+    assert "/og.png" in html
+    assert "summary_large_image" in html
