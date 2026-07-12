@@ -1048,6 +1048,43 @@ async def upsert_service_scores(rows: list[dict]) -> bool:
         return False
 
 
+async def fetch_own_tool_receipts() -> list[dict]:
+    """Per-tool receipt evidence for AgentPay's own PAID tools, from
+    payment_logs (state=payment_done, amount > 0). Powers the /probes
+    self-section: our delivery proof is real customers' on-chain receipts,
+    never self-probes. [] on error/disabled."""
+    if not sb_enabled():
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers={**sb_headers(), "Accept": "application/json"},
+                params={
+                    "select":      "tool_name,created_at,amount_usdc",
+                    "state":       "eq.payment_done",
+                    "amount_usdc": "gt.0",
+                    "order":       "created_at.desc",
+                    "limit":       "2000",
+                },
+            )
+        if resp.status_code != 200:
+            logger.error(f"fetch_own_tool_receipts error: HTTP {resp.status_code}")
+            return []
+        by_tool: dict[str, dict] = {}
+        for r in resp.json():
+            t = r.get("tool_name")
+            if not t:
+                continue
+            row = by_tool.setdefault(t, {"tool": t, "paid_calls": 0,
+                                         "last_paid_at": r.get("created_at")})
+            row["paid_calls"] += 1
+        return sorted(by_tool.values(), key=lambda r: -r["paid_calls"])
+    except Exception as e:
+        logger.error(f"fetch_own_tool_receipts failure: {e}")
+        return []
+
+
 async def fetch_service_scores() -> dict[str, dict]:
     """SELECT all score rows keyed by resource_url — the input dict decide()
     joins on (AGE-7). {} on error/disabled/missing (decide() then treats every

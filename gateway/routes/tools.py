@@ -143,8 +143,12 @@ _TOOL_BAZAAR: dict[str, dict] = {
                 "ok/caution/avoid verdict with per-factor reasons and raw data "
                 "embedded. Replaces four API integrations plus the judgment layer."
             ),
-            # ≤5 tags, ≤32 chars each — own the trade-decision category.
-            "tags": ["pre-trade-check", "trade-risk", "slippage", "funding-rates", "agent-trading"],
+            # ≤5 tags, ≤32 chars each. Bazaar search matches EXACT tags —
+            # hyphenated compounds don't match their component words (verified
+            # 2026-07-12: query "trading" missed the "agent-trading" tag while
+            # "slippage"/"pre-trade-check" hit). Mix plain high-traffic words
+            # with the category-owning compound.
+            "tags": ["trading", "trade", "risk", "slippage", "pre-trade-check"],
         },
         "extension": {
             "description": (
@@ -256,9 +260,11 @@ _TOOL_BAZAAR: dict[str, dict] = {
                 "a ready-to-pay challenge. The credit-bureau check an agent can't "
                 "do in a single query."
             ),
-            # ≤5 tags, ≤32 chars each — own the routing/trust category, not data.
-            "tags": ["x402-routing", "trust-oracle", "sybil-detection",
-                     "tool-discovery", "agent-commerce"],
+            # ≤5 tags, ≤32 chars each — own the routing/trust category, not
+            # data. Plain words match real queries (Bazaar is exact-tag match);
+            # compounds keep the category label.
+            "tags": ["routing", "discovery", "trust",
+                     "trust-oracle", "sybil-detection"],
         },
         "extension": {
             "description": (

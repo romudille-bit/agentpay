@@ -46,9 +46,11 @@ async def scores_json():
     stays private (tx hash + response snapshots back every negative flag);
     these scores are the public asset. No-store: reflect fresh sweeps."""
     from gateway.radar import _delivery_why
-    from gateway.services.supabase import fetch_service_scores
+    from gateway.services.supabase import (fetch_own_tool_receipts,
+                                           fetch_service_scores)
 
     scores = await fetch_service_scores()
+    own = await fetch_own_tool_receipts()
     services = []
     for url in sorted(scores, key=lambda u: (
             -(float(scores[u].get("delivery_factor") or 1.0)), u)):
@@ -78,6 +80,14 @@ async def scores_json():
                       "(factor 1.0); these scores feed verified_route ranking."),
             "count": len(services),
             "services": services,
+            # AgentPay's own paid tools are code-excluded from probing (a
+            # trust oracle must not score itself). Their delivery evidence is
+            # real customers' receipted paid calls — verifiable on /ledger.
+            "own_tools": {
+                "policy": "self-excluded from probing; evidenced by customer receipts",
+                "receipts_url": "https://agentpay.tools/ledger",
+                "tools": own,
+            },
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -137,11 +147,13 @@ _PROBES_HTML = """<!doctype html>
   Monday &amp; Thursday. Unprobed services rank neutral (factor 1.00) — absence of
   data never penalizes anyone. These scores feed
   <code>verified_route</code> ranking directly.</div>
-  <div class="note">Where are AgentPay's own tools? Not here — <b>we don't score
-  ourselves</b>. Judge us the harder way: every paid call to our tools leaves a real
-  on-chain receipt from a real customer, live on the
-  <a href="/ledger">receipt ledger</a>.</div>
   <div id="board" class="msg">Loading scores…</div>
+  <h2 style="font-size:18px;margin:28px 0 6px">AgentPay's own tools</h2>
+  <div class="note">Excluded from probing by design — <b>a trust oracle must not
+  score itself</b>. Our delivery evidence is the harder kind: real customers'
+  paid calls, each with an on-chain receipt on the
+  <a href="/ledger">receipt ledger</a>.</div>
+  <div id="own" class="msg">Loading…</div>
   <div class="foot">AgentPay's own tools are deliberately excluded — a trust
     oracle must not score itself (they're health-checked independently via
     x402scout). · Raw JSON: <a href="/scores.json">/scores.json</a> ·
@@ -205,6 +217,17 @@ _PROBES_HTML = """<!doctype html>
           <td class="r">${s.price_usdc != null ? '$' + esc(s.price_usdc) : '—'}</td>
           <td>${extras}</td></tr>`;
       }).join('') + '</tbody></table>';
+    const ownEl = document.getElementById('own');
+    const own = (d.own_tools || {}).tools || [];
+    ownEl.innerHTML = own.length
+      ? `<table><thead><tr><th>Tool</th><th class="r">Receipted paid calls</th>
+         <th class="r">Last paid</th><th>Evidence</th></tr></thead><tbody>` +
+        own.map(t => `<tr><td><span class="name">${esc(t.tool)}</span></td>
+          <td class="r">${esc(t.paid_calls)}</td>
+          <td class="r">${esc(String(t.last_paid_at || '').slice(0, 10)) || '—'}</td>
+          <td><a href="/ledger">on-chain receipts →</a></td></tr>`).join('') +
+        '</tbody></table>'
+      : '<p class="msg">Receipt data unavailable — see <a href="/ledger">/ledger</a>.</p>';
   } catch (e) { board.innerHTML = '<p class="msg">Could not load scores — try <a href="/scores.json">/scores.json</a>.</p>'; }
 })();
 </script></body></html>"""

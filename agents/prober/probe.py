@@ -63,6 +63,22 @@ FACTOR_BAD = 0.25           # rate < 0.5 — heavy downrank
 GOOD_RATE = 0.9
 BAD_RATE = 0.5
 
+# Self-exclusion (enforced, not just policy): the trust oracle must never
+# score its own tools — the 1.15× boost on our own board would be
+# self-dealing. Was previously emergent (our tools didn't rank for the data
+# needs); with the 2026-07-12 Bazaar tag improvements they legitimately can,
+# so the ban is now code. AgentPay's presence on /probes comes from real
+# customer receipts instead (see /scores.json own_tools).
+OWN_HOSTS = ("agentpay.tools", "gateway-production-2cc2.up.railway.app")
+OWN_PAYTO = ("0xe8b25a72dd6aef69515452a61ad231c7df2843b7",)
+
+
+def is_own_service(cand: dict) -> bool:
+    host = urlsplit(cand.get("url") or "").netloc.lower()
+    pay_to = (cand.get("pay_to") or "").lower()
+    return host in OWN_HOSTS or any(pay_to.startswith(p) for p in OWN_PAYTO)
+
+
 FLAG_NO_DELIVERY = "took_payment_no_delivery"
 # One paid_but_no_data = unconfirmed (could be a transient outage that hit our
 # probe window). It already hard-drops the service from recommendations —
@@ -103,6 +119,8 @@ def select_candidates(
     def add(cand: dict, need: Optional[str]) -> None:
         if not cand or not cand.get("url"):
             return
+        if is_own_service(cand):        # enforced self-exclusion
+            return
         key = _dedup_key(cand)
         if key in seen:
             return
@@ -123,7 +141,7 @@ def select_candidates(
     # paid set. This is what makes the leaderboard grow faster than the budget.
     for need in sorted(ranked):
         for cand in ranked[need][top_k:]:
-            if not cand or not cand.get("url"):
+            if not cand or not cand.get("url") or is_own_service(cand):
                 continue
             key = _dedup_key(cand)
             if key in seen:

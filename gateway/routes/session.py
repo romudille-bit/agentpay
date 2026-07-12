@@ -93,8 +93,10 @@ _SESSION_BAZAAR_RESOURCE = {
     "description": "A stateful, multi-chain spending session for AI agents. One session enforces a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger for each payment — not a one-shot budget check, but persistent spend governance with a full audit trail. USDC on Base or Stellar.",
     "mimeType":    "application/json",
     "serviceName": "AgentPay",
-    # ≤5 tags, ≤32 chars each — own the governance category, not the data-API commodity.
-    "tags":        ["spend-control", "agent-budget", "payment-receipts", "spend-authorization", "agent-commerce"],
+    # ≤5 tags, ≤32 chars each — own the governance category, not the data-API
+    # commodity. Bazaar matches EXACT tags, so plain words ("budget",
+    # "receipts", "session") catch real queries the hyphenated compounds miss.
+    "tags":        ["budget", "receipts", "session", "spend-control", "agent-commerce"],
 }
 
 _SESSION_BAZAAR_EXTENSION = {

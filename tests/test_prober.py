@@ -431,3 +431,33 @@ class TestT0BreadthAndParams:
         p = probe.params_for("news")
         p["q"] = "mutated"
         assert probe.params_for("news")["q"] == "crypto"
+
+
+class TestSelfExclusion:
+    """The self-scoring ban is CODE, not policy (2026-07-12): with honest
+    Bazaar tags our tools can now legitimately rank for sweep needs, so the
+    prober must skip them everywhere — no self-probe, no self-boost, ever."""
+
+    def test_own_host_excluded(self):
+        ranked = {"trading": [
+            cand(url="https://agentpay.tools/tools/pre_trade_check/call",
+                 pay_to="0x9999"),
+            cand(url="https://real.x/t", pay_to="0x1"),
+        ]}
+        sel = probe.select_candidates(ranked)
+        urls = [c["url"] for c in sel["t0"]]
+        assert urls == ["https://real.x/t"]
+
+    def test_own_wallet_excluded_any_host(self):
+        ranked = {"n": [cand(url="https://some-mirror.example/x",
+                             pay_to="0xE8B25A72dD6aeF69515452a61AD231C7DF2843b7")]}
+        sel = probe.select_candidates(ranked)
+        assert sel["t0"] == [] and sel["t1"] == []
+
+    def test_own_service_excluded_from_breadth_tail(self):
+        ranked = {"n": [cand(url=f"https://x{i}.com/t", pay_to=f"0x{i}")
+                        for i in range(3)] +
+                       [cand(url="https://agentpay.tools/v1/session/create",
+                             pay_to="0x9999")]}
+        sel = probe.select_candidates(ranked, top_k=3)
+        assert all("agentpay.tools" not in c["url"] for c in sel["t0"])

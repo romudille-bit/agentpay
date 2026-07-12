@@ -172,7 +172,8 @@ def test_probes_page_has_seo_and_ledger_callout(client):
     html = client.get("/probes").text
     assert 'name="description"' in html
     assert 'rel="canonical"' in html
-    assert "we don't score" in html      # own-tools callout routes to /ledger
+    assert "score itself" in html            # self-exclusion stated on page
+    assert "AgentPay's own tools" in html    # self section, receipt-evidenced
     assert "/ledger" in html
 
 
