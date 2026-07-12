@@ -91,6 +91,13 @@ _PROBES_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>x402 Delivery Scores — AgentPay Prober</title>
+<meta name="description" content="Live delivery scores for the x402 marketplace. The AgentPay Prober pays services real USDC twice a week and scores whether they actually deliver — latency, delivery rate, and flags, all public.">
+<meta property="og:title" content="x402 Delivery Scores — AgentPay Prober">
+<meta property="og:description" content="Usage stats say what's popular. Paying says what delivers. Live, public delivery scores for x402 services.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://agentpay.tools/probes">
+<meta name="twitter:card" content="summary">
+<link rel="canonical" href="https://agentpay.tools/probes">
 <style>
   :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;--ac:#c3f53c;--ac2:#5ad1ff;--bad:#ff6b6b}
   *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
@@ -128,6 +135,10 @@ _PROBES_HTML = """<!doctype html>
   Monday &amp; Thursday. Unprobed services rank neutral (factor 1.00) — absence of
   data never penalizes anyone. These scores feed
   <code>verified_route</code> ranking directly.</div>
+  <div class="note">Where are AgentPay's own tools? Not here — <b>we don't score
+  ourselves</b>. Judge us the harder way: every paid call to our tools leaves a real
+  on-chain receipt from a real customer, live on the
+  <a href="/ledger">receipt ledger</a>.</div>
   <div id="board" class="msg">Loading scores…</div>
   <div class="foot">AgentPay's own tools are deliberately excluded — a trust
     oracle must not score itself (they're health-checked independently via

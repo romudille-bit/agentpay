@@ -626,6 +626,13 @@ _LEDGER_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgentPay — How an Agent Decides What to Spend</title>
+<meta name="description" content="The public receipt ledger: autonomous agents running on AgentPay daily under hard budget caps, with a verifiable on-chain receipt for every paid call. Plans, spend, and reasoning — live.">
+<meta property="og:title" content="AgentPay Receipt Ledger — how an agent decides what to spend">
+<meta property="og:description" content="Autonomous agents spending real USDC under hard caps, leaving on-chain receipts. Live and public.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://agentpay.tools/ledger">
+<meta name="twitter:card" content="summary">
+<link rel="canonical" href="https://agentpay.tools/ledger">
 <style>
   :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;
         --ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--ac:#c3f53c;--base:#4f7cff;--stellar:#f5c542}

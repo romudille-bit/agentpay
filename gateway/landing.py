@@ -27,6 +27,10 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <meta property="og:description" content="Agents spend money. Most don't know how much until the session ends. AgentPay gives agents the ability to reason about cost while they work, not after.">
 <meta property="og:url" content="GATEWAY_URL_PLACEHOLDER">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentPay">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
+<meta name="twitter:description" content="Hard budget caps, cost awareness before every call, on-chain receipts. 20 x402 tools, 17 free. Public delivery scores for the whole x402 market.">
 <link rel="canonical" href="GATEWAY_URL_PLACEHOLDER">
 <link rel="icon" type="image/svg+xml" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
 <link rel="alternate icon" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
@@ -223,6 +227,8 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 1.25rem
   <ul>
     <li><a href="#snippet">Quick start</a></li>
     <li><a href="#tools">Tools</a></li>
+    <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>
+    <li><a href="GATEWAY_URL_PLACEHOLDER/ledger">Ledger</a></li>
     <li><a href="https://github.com/romudille-bit/agentpay">GitHub</a></li>
   </ul>
 </nav>
@@ -302,6 +308,24 @@ TOOLS_ROWS_PLACEHOLDER
 </section>
 
 <section class="networks">
+  <h2>Live proof</h2>
+  <div class="networks-grid">
+    <div class="network-card">
+      <h3><a href="GATEWAY_URL_PLACEHOLDER/probes">x402 delivery scores →</a></h3>
+      <p>Our Prober pays x402 services real USDC twice a week and scores whether they
+      actually deliver. Every score is public and feeds <code>verified_route</code>
+      ranking. Usage says what's popular — paying says what works.</p>
+    </div>
+    <div class="network-card">
+      <h3><a href="GATEWAY_URL_PLACEHOLDER/ledger">Receipt ledger →</a></h3>
+      <p>Autonomous agents run on AgentPay daily under hard budget caps — every paid
+      call leaves a verifiable on-chain receipt. The cap-and-receipt loop, live,
+      in public.</p>
+    </div>
+  </div>
+</section>
+
+<section class="networks">
   <h2>Settlement layer</h2>
   <div class="networks-grid">
     <div class="network-card">
@@ -325,9 +349,12 @@ TOOLS_ROWS_PLACEHOLDER
     Aligned with the <a href="https://developers.stellar.org/docs/build/agentic-payments/x402">Stellar Foundation's agentic payments roadmap</a>.
   </div>
   <ul>
+    <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>
+    <li><a href="GATEWAY_URL_PLACEHOLDER/ledger">Ledger</a></li>
     <li><a href="https://github.com/romudille-bit/agentpay">GitHub</a></li>
     <li><a href="https://glama.ai/mcp/servers/romudille-bit/agentpay">MCP</a></li>
     <li><a href="GATEWAY_URL_PLACEHOLDER/.well-known/agentpay.json">Manifest</a></li>
+    <li><a href="GATEWAY_URL_PLACEHOLDER/privacy">Privacy</a></li>
   </ul>
 </footer>
 

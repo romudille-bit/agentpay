@@ -150,3 +150,27 @@ class TestValidateConfig:
         monkeypatch.setattr(gw_main.settings, "GATEWAY_PUBLIC_KEY", "G" + "A" * 55)
         monkeypatch.setattr(gw_main.settings, "GATEWAY_SECRET_KEY", "S" + "A" * 55)
         gw_main._validate_config()  # no raise
+
+
+def test_landing_links_proof_pages(client):
+    """Cleanup pass 2026-07-11: /probes + /ledger must be reachable from the
+    landing page (nav, live-proof section, footer)."""
+    html = client.get("/", headers={"Accept": "text/html"}).text
+    assert html.count("/probes") >= 2
+    assert html.count("/ledger") >= 2
+    assert "Live proof" in html
+    assert 'name="twitter:card"' in html
+
+
+def test_sitemap_covers_public_pages(client):
+    xml = client.get("/sitemap.xml").text
+    for path in ("/probes", "/ledger", "/radar", "/privacy"):
+        assert path in xml, path
+
+
+def test_probes_page_has_seo_and_ledger_callout(client):
+    html = client.get("/probes").text
+    assert 'name="description"' in html
+    assert 'rel="canonical"' in html
+    assert "we don't score" in html      # own-tools callout routes to /ledger
+    assert "/ledger" in html

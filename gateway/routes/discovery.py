@@ -230,6 +230,8 @@ _RADAR_LEADERBOARD_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Arbitrum x402 Radar — AgentPay</title>
+<meta name="description" content="Curated, usage-ranked discovery of x402 services on the Arbitrum stack (Arbitrum One, Sepolia, Robinhood Chain). Junk-filtered, sybil-aware, with ready-to-pay details.">
+<link rel="canonical" href="https://agentpay.tools/radar">
 <style>
   :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;--ac:#c3f53c;--ac2:#5ad1ff}
   *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
@@ -605,6 +607,10 @@ async def sitemap():
     urls = [
         f"{GATEWAY_URL}/",
         f"{GATEWAY_URL}/tools",
+        f"{GATEWAY_URL}/probes",
+        f"{GATEWAY_URL}/ledger",
+        f"{GATEWAY_URL}/radar",
+        f"{GATEWAY_URL}/privacy",
         f"{GATEWAY_URL}/.well-known/agentpay.json",
         f"{GATEWAY_URL}/.well-known/agent.json",
         f"{GATEWAY_URL}/.well-known/x402",
