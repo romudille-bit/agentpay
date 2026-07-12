@@ -67,6 +67,32 @@ def test_root_json_when_browser_explicitly_requests_json(client):
     assert r.headers["content-type"].startswith("application/json")
 
 
+def test_root_markdown_for_agents(client):
+    """Accept: text/markdown → the live /llms.txt document as text/markdown.
+
+    Origin-side equivalent of Cloudflare's paid "Markdown for Agents" feature:
+    agents that negotiate markdown get the LLM-readable service description
+    instead of the HTML landing or the JSON manifest."""
+    r = client.get("/", headers={"Accept": "text/markdown"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert r.text.startswith("# AgentPay")
+    assert "quickstart" in r.text
+    # Same document as /llms.txt (single source of truth).
+    assert r.text == client.get("/llms.txt").text
+    # Markdown wins even in a mixed Accept that also lists html/json.
+    r2 = client.get("/", headers={"Accept": "text/markdown, text/html"})
+    assert r2.headers["content-type"].startswith("text/markdown")
+
+
+def test_root_vary_accept(client):
+    """Root varies by Accept — the Vary header must say so on every path,
+    or an edge cache could serve markdown to a browser (and vice versa)."""
+    for accept in ("text/html", "application/json", "text/markdown"):
+        r = client.get("/", headers={"Accept": accept})
+        assert r.headers.get("vary") == "Accept", accept
+
+
 def test_root_head_returns_200_no_body(client):
     """HEAD / → 200 with empty body. FastAPI handles HEAD by running GET and
     dropping the body, so this works for both negotiated paths. Critical for

@@ -646,8 +646,13 @@ async def mcp_server_card():
     }, headers={"Cache-Control": "public, max-age=3600"})
 
 
-@router.get("/llms.txt", response_class=Response)
-async def llms_txt():
+def build_llms_txt() -> str:
+    """LLM/agent-readable service description in markdown.
+
+    Shared by GET /llms.txt and by the root route's `Accept: text/markdown`
+    content negotiation (gateway/routes/infra.py) — the origin-side equivalent
+    of Cloudflare's paid "Markdown for Agents" feature.
+    """
     tools = registry.list_tools()
     def _price_label(p: str) -> str:
         try:
@@ -701,7 +706,12 @@ Response: data is in result["result"]
 - GitHub: https://github.com/romudille-bit/agentpay
 - Glama MCP: https://glama.ai/mcp/servers/romudille-bit/agentpay
 """
-    return Response(content=content, media_type="text/plain")
+    return content
+
+
+@router.get("/llms.txt", response_class=Response)
+async def llms_txt():
+    return Response(content=build_llms_txt(), media_type="text/plain")
 
 
 @router.get("/sitemap.xml", response_class=Response)

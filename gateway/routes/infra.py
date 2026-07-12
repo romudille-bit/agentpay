@@ -16,6 +16,7 @@ import registry
 
 from gateway.config import GATEWAY_URL, settings
 from gateway.landing import render_landing
+from gateway.routes.discovery import build_llms_txt
 from gateway.services.transaction_log import recent_transactions
 from gateway.x402 import get_pending_count
 
@@ -41,9 +42,18 @@ async def root(request: Request):
         '</.well-known/agentpay.json>; rel="service-meta"',
         '</health>; rel="status"',
     ])
-    headers = {"Link": link_header}
+    # Root varies by Accept (markdown / HTML / JSON) — tell caches so.
+    headers = {"Link": link_header, "Vary": "Accept"}
 
     accept = request.headers.get("accept", "")
+
+    # Agent-side markdown negotiation (Accept: text/markdown) — the free,
+    # origin-side equivalent of Cloudflare's paid "Markdown for Agents".
+    # Serves the same live document as /llms.txt.
+    if "text/markdown" in accept:
+        return Response(content=build_llms_txt(), media_type="text/markdown",
+                        headers=headers)
+
     if "text/html" in accept and "application/json" not in accept:
         return HTMLResponse(content=render_landing(registry.list_tools(), GATEWAY_URL),
                             headers=headers)
