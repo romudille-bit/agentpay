@@ -144,6 +144,109 @@ def test_against_live_fixture_if_present():
     assert out["recommendation"] is not None
 
 
+# ── Relevance tier (AGE-43) ───────────────────────────────────────────────────
+# Regression for the live miss: paid verified_route for "dex pair liquidity"
+# recommended an EMAIL tool — the highest-usage real provider catalog-wide —
+# because `need` never touched the ranking.
+
+def test_need_relevant_provider_beats_higher_usage_irrelevant():
+    """The email tool has 4x the usage; the dex tool matches the need. Dex wins."""
+    payload = {"resources": [
+        _res("Agent Email", "https://mail.x/mailboxes/search",
+             "0xmail0000000000000000000000000000000aaaa", payers=873, calls=881),
+        _res("DexScreener Pairs", "https://dexdata.x/pairs",
+             "0xdex00000000000000000000000000000000bbbb", payers=40, calls=300),
+    ]}
+    out = radar.verified_route_from_payloads(
+        [payload], "dex pair liquidity", Decimal("1"))
+    assert out["recommendation"]["name"] == "DexScreener Pairs"
+    assert out["catalog"]["need_relevant"] == 1
+    assert "matches_need" in out["recommendation"]
+    assert "dex" in out["recommendation"]["matches_need"]
+    # the email tool stays LISTED (vetting is transparent), just not on top
+    assert any(s["name"] == "Agent Email" for s in out["survivors"])
+    assert out["survivors"][0]["name"] == "DexScreener Pairs"
+    assert "relevance_fallback" not in out
+
+
+def test_more_need_concepts_covered_outranks_usage_within_tier():
+    """Within the relevant tier, covering more of the buyer's concepts beats
+    raw usage; usage still breaks ties at equal coverage."""
+    payload = {"resources": [
+        _res("Pair Prices", "https://a.x/pair-price",
+             "0xaaa0000000000000000000000000000000000001", payers=500, calls=900),
+        _res("Dex Pair Liquidity", "https://b.x/dex-pair-liquidity",
+             "0xbbb0000000000000000000000000000000000002", payers=20, calls=100),
+    ]}
+    out = radar.verified_route_from_payloads(
+        [payload], "dex pair liquidity", Decimal("1"))
+    # b matches dex+pair+liquidity (3); a matches pair (+ pool synonym) only
+    assert out["recommendation"]["name"] == "Dex Pair Liquidity"
+
+
+def test_relevance_synonyms_match_domain_terms():
+    """'dex pair liquidity' matches a listing that only says swap/amm/pool."""
+    payload = {"resources": [
+        _res("Agent Email", "https://mail.x/inbox",
+             "0xmail0000000000000000000000000000000aaaa", payers=873, calls=881),
+        _res("AMM Pool Stats", "https://amm.x/pools",
+             "0xamm00000000000000000000000000000000cccc", payers=15, calls=60),
+    ]}
+    out = radar.verified_route_from_payloads(
+        [payload], "dex pair liquidity", Decimal("1"))
+    assert out["recommendation"]["name"] == "AMM Pool Stats"
+
+
+def test_relevance_is_word_boundary_prefix_not_substring():
+    """'dex' must not match 'Index Fund API' (no word-boundary prefix)."""
+    payload = {"resources": [
+        _res("Index Fund API", "https://index.x/funds",
+             "0xidx00000000000000000000000000000000dddd", payers=300, calls=900),
+        _res("Dex Aggregator", "https://agg.x/dex",
+             "0xagg00000000000000000000000000000000eeee", payers=10, calls=30),
+    ]}
+    out = radar.verified_route_from_payloads([payload], "dex", Decimal("1"))
+    assert out["recommendation"]["name"] == "Dex Aggregator"
+    assert out["catalog"]["need_relevant"] == 1
+
+
+def test_no_relevant_match_falls_back_catalog_wide_and_says_so():
+    out = radar.verified_route_from_payloads(
+        [SYNTHETIC], "quantum entanglement telemetry", Decimal("1"))
+    assert out["relevance_fallback"] is True
+    assert out["catalog"]["need_relevant"] == 0
+    assert out["recommendation"]["name"] == "Real Otto"     # usage order preserved
+    assert "none match the need" in out["vetting"]
+
+
+def test_generic_need_terms_do_not_retier():
+    """Stopword-only needs ('data', 'api') keep the pure usage ranking."""
+    out = radar.verified_route_from_payloads([SYNTHETIC], "data api", Decimal("1"))
+    assert out["recommendation"]["name"] == "Real Otto"
+    assert "relevance_fallback" not in out
+    assert out["catalog"]["need_relevant"] == 0
+
+
+def test_no_delivery_flag_still_blocks_relevant_recommendation():
+    """Relevance can't resurrect a took_payment_no_delivery service: the
+    relevant-but-flagged listing is listed, the next relevant one wins."""
+    payload = {"resources": [
+        _res("Dex Bad", "https://bad.x/dex", "0xbad00000000000000000000000000000000f00d",
+             payers=100, calls=500),
+        _res("Dex Good", "https://good.x/dex", "0xgood000000000000000000000000000000f00d",
+             payers=8, calls=20),
+    ]}
+    scores = {"https://bad.x/dex": {
+        "delivery_factor": 0.25, "delivery_rate": 0.0, "paid_probes": 2,
+        "flags": [radar.FLAG_NO_DELIVERY],
+    }}
+    out = radar.verified_route_from_payloads(
+        [payload], "dex", Decimal("1"), scores=scores)
+    assert out["recommendation"]["name"] == "Dex Good"
+    bad = next(s for s in out["survivors"] if s["name"] == "Dex Bad")
+    assert radar.FLAG_NO_DELIVERY in bad["flags"]
+
+
 def test_agentpay_own_tools_rankable_never_factory_flagged():
     """AgentPay's own listings must be fairly recommendable by verified_route:
     exempt from factory misclassification (multiple tools, one wallet, modest

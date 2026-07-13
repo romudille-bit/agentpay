@@ -22,6 +22,7 @@ Pipeline:
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -135,6 +136,10 @@ def parse_resources(data: dict) -> list[dict]:
         out.append({
             "name": r.get("serviceName") or rd.get("serviceName") or url.rsplit("/", 1)[-1],
             "url": url,
+            # Searchable text for the relevance tier (AGE-43); Bazaar carries a
+            # description on the listing, the resource dict, or the extension.
+            "description": (r.get("description") or rd.get("description")
+                            or (ext.get("info") or {}).get("description") or ""),
             "price_usd": price,
             "network": a.get("network", ""),
             "network_caip2": normalize_network(a.get("network", "")),
@@ -394,6 +399,9 @@ def _public(s: Optional[dict]) -> Optional[dict]:
     }
     if s.get("collapsed_siblings"):
         out["collapsed_siblings"] = s["collapsed_siblings"]
+    if s.get("relevance"):
+        # AGE-43: which of the buyer's need concepts this listing matched.
+        out["matches_need"] = s.get("relevance_matched") or []
     if s.get("why"):
         out["why"] = s["why"]
     if s.get("delivery"):
@@ -497,6 +505,69 @@ def collapse_sybils(survivors: list[dict]) -> tuple[list[dict], dict]:
     return kept, stats
 
 
+# ── Relevance tier (AGE-43) ───────────────────────────────────────────────────
+# The catalog-wide usage rank answered "what's most used, period" — an email
+# tool with 873 payers won "dex pair liquidity". verified_route now recommends
+# within the NEED-RELEVANT tier first (usage × delivery still ranks inside it)
+# and falls back to catalog-wide only when nothing matches, saying so.
+
+# Generic terms that appear in most listings and carry no topical signal.
+_RELEVANCE_STOPWORDS = {
+    "the", "a", "an", "for", "and", "or", "of", "to", "in", "on", "with",
+    "get", "via", "per", "any", "all", "best", "real", "top",
+    "api", "data", "service", "tool", "tools", "x402", "agent", "agents",
+}
+
+# Small curated synonym map (domain-specific, deliberately tight — this is a
+# match-widener, not NLP). Keys and values are lowercase stems; a need token
+# expands to itself + its synonyms.
+_RELEVANCE_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "dex":       ("swap", "amm", "pool", "pancakeswap", "uniswap"),
+    "liquidity": ("pool", "tvl", "depth", "pair"),
+    "pair":      ("pool",),   # NOT "market" — matches half the catalog's tags
+    "price":     ("quote", "prices", "ticker", "rate"),
+    "news":      ("headline", "headlines", "articles"),
+    "security":  ("honeypot", "audit", "scam", "rug"),
+    "wallet":    ("balance", "address", "account"),
+    "email":     ("mail", "mailbox", "inbox", "imap"),
+    "search":    ("lookup", "find", "query"),
+    "image":     ("photo", "picture", "img", "vision"),
+    "llm":       ("inference", "chat", "completion", "completions", "model"),
+    "gas":       ("fees", "gwei"),
+    "nft":       ("collectible", "collectibles", "opensea"),
+    "weather":   ("forecast", "temperature"),
+}
+
+
+def _need_tokens(need: str) -> list[str]:
+    """Topical tokens from a need string: lowercased, stopword-filtered, len>2."""
+    toks = re.findall(r"[a-z0-9]+", (need or "").lower())
+    return list(dict.fromkeys(
+        t for t in toks if len(t) > 2 and t not in _RELEVANCE_STOPWORDS))
+
+
+def _relevance(cand: dict, tokens: list[str]) -> tuple[int, list[str]]:
+    """(matched-token count, matched tokens) for a candidate vs need tokens.
+
+    A token matches on a WORD-BOUNDARY PREFIX of the candidate's searchable
+    text (name, url, tags, description): "dex" matches "dexscreener" and
+    "dex-pairs" but not "index" or "codex". Synonyms count for their source
+    token (matching "swap" credits "dex"), so multi-word needs rank by how
+    many of the buyer's own concepts a listing covers — not how often.
+    """
+    text = " ".join([
+        cand.get("name") or "", cand.get("url") or "",
+        " ".join(cand.get("tags") or []), cand.get("description") or "",
+    ]).lower()
+    matched: list[str] = []
+    for tok in tokens:
+        for term in (tok, *_RELEVANCE_SYNONYMS.get(tok, ())):
+            if re.search(r"\b" + re.escape(term), text):
+                matched.append(tok)
+                break
+    return len(matched), matched
+
+
 def _ready_to_pay(s: Optional[dict]) -> Optional[dict]:
     """The buyer-facing 'how to pay this' block for the recommendation."""
     if not s:
@@ -514,8 +585,11 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
 
     DISCOVER (merge+dedup many queries) → FILTER (chain) → DECIDE (junk/factory/
     rank over the FULL set, delivery factor joined from `scores`) → COLLAPSE
-    (sybil clusters → one entry) → recommend (never a service flagged
-    took_payment_no_delivery — listed, not recommended).
+    (sybil clusters → one entry) → RELEVANCE tier (AGE-43: need-matching
+    providers outrank the catalog; usage × delivery ranks within the tier;
+    empty tier falls back catalog-wide with `relevance_fallback`) →
+    recommend (never a service flagged took_payment_no_delivery — listed,
+    not recommended).
     """
     merged = merge_resources(payloads)
     cands = filter_chain(parse_resources(merged), chain)
@@ -525,7 +599,20 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     scored, _ = decide(cands, budget, usage_aware=True, scores=scores)
     survivors = [s for s in scored if not s["dropped"]]
     kept, stats = collapse_sybils(survivors)
-    rec = next((s for s in kept if not _NO_DELIVERY_FLAGS & set(s["flags"])), None)
+
+    # ── Relevance tier (AGE-43) ────────────────────────────────────────────
+    tokens = _need_tokens(need)
+    for s in kept:
+        s["relevance"], s["relevance_matched"] = _relevance(s, tokens)
+    # Relevant tier first; more of the buyer's concepts covered beats fewer;
+    # usage quality (already delivery-factored) then price rank within.
+    # collapse_sybils preserved decide()'s (quality desc, price asc) order,
+    # so this stable sort is a re-tier of that ranking, not a re-rank.
+    kept.sort(key=lambda s: (0 if s["relevance"] > 0 else 1, -s["relevance"]))
+    relevant = [s for s in kept if s["relevance"] > 0]
+    fallback = bool(tokens) and not relevant
+    pool = relevant if relevant else kept
+    rec = next((s for s in pool if not _NO_DELIVERY_FLAGS & set(s["flags"])), None)
 
     rec_pub = _public(rec)
     if rec_pub:
@@ -541,13 +628,18 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
             "scanned": len(cands),
             "after_vetting": len(survivors),
             "real_providers": len(kept),
+            "need_relevant": len(relevant),
             "unique_wallets": stats["unique_wallets"],
             "sybil_collapsed": stats["sybil_collapsed"],
             "biggest_factory": stats["biggest_factory"],
         },
+        **({"relevance_fallback": True} if fallback else {}),
         "vetting": (
             f"swept {len(payloads)} queries → {len(cands)} listings → "
             f"collapsed {stats['sybil_collapsed']} sybil listings → "
             f"{len(kept)} real providers"
+            + (f" → {len(relevant)} match the need" if relevant else (
+                " → none match the need — recommending catalog-wide by usage"
+                if fallback else ""))
         ),
     }

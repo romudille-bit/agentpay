@@ -1492,9 +1492,10 @@ async def _fetch_verified_route(client: httpx.AsyncClient, params: dict) -> dict
     except (InvalidOperation, ValueError, TypeError):
         budget = Decimal("1")
 
-    # Bias the sweep toward the need: lead with the agent's own terms, then the
+    # Bias the sweep toward the need: lead with the whole need + the agent's own
+    # topical terms (same tokenizer the relevance tier uses — AGE-43), then the
     # broad default set (deduped, order-preserving) for full-catalog coverage.
-    need_terms = [t for t in need.lower().split() if len(t) > 2][:4]
+    need_terms = ([need.lower()] if need else []) + radar._need_tokens(need)[:4]
     queries = list(dict.fromkeys(need_terms + radar.SWEEP_QUERIES))
 
     payloads = await _sweep_bazaar(client, queries)
