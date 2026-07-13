@@ -45,12 +45,20 @@ async def scores_json():
     and the human why line verified_route shows. The raw probe evidence
     stays private (tx hash + response snapshots back every negative flag);
     these scores are the public asset. No-store: reflect fresh sweeps."""
+    from decimal import Decimal
+
     from gateway.radar import _delivery_why
     from gateway.services.supabase import (fetch_own_tool_receipts,
                                            fetch_service_scores)
+    from registry.registry import get_tool, list_tools
 
     scores = await fetch_service_scores()
     own = await fetch_own_tool_receipts()
+    for t in own:                       # enrich with the registry price
+        tool = get_tool(t["tool"])
+        t["price_usdc"] = tool.price_usdc if tool else None
+    free_count = sum(1 for t in list_tools()
+                     if Decimal(t.price_usdc or "0") == 0)
     services = []
     for url in sorted(scores, key=lambda u: (
             -(float(scores[u].get("delivery_factor") or 1.0)), u)):
@@ -87,6 +95,12 @@ async def scores_json():
                 "policy": "self-excluded from probing; evidenced by customer receipts",
                 "receipts_url": "https://agentpay.tools/ledger",
                 "tools": own,
+                # Free tools never settle on-chain, so there is no payment
+                # evidence to show — surfaced as a count, not as rows that
+                # could be mistaken for paid demand (AGE-38).
+                "free_tools": {"count": free_count,
+                               "note": "no payment needed, so no payment "
+                                       "evidence to show"},
             },
         },
         headers={"Cache-Control": "no-store"},
@@ -136,6 +150,20 @@ _PROBES_HTML = """<!doctype html>
   .rail{color:var(--ac2);font-size:11px;border:1px solid #1f3a45;border-radius:6px;padding:2px 6px}
   .note{background:var(--card);border:1px solid var(--line);border-radius:10px;
     padding:10px 14px;color:var(--mut);font-size:13px;margin-bottom:18px}
+  .selfbadge{font-size:12px;font-weight:700;color:var(--ac);border:1px solid #2c4a1f;
+    border-radius:20px;padding:2px 10px;vertical-align:middle;margin-left:8px;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .card .top{display:flex;justify-content:space-between;align-items:baseline}
+  .card .tool{font-weight:600;font-size:14px}.card .price{color:var(--mut);font-size:12px}
+  .card b{display:block;font-size:26px;margin:6px 0 0}
+  .card .cap{color:var(--mut);font-size:12px}
+  .card .bot{display:flex;justify-content:space-between;align-items:center;
+    border-top:1px solid var(--line);margin-top:10px;padding-top:8px;font-size:12px}
+  .card .when{color:var(--mut)}
+  .freerow{display:flex;justify-content:space-between;align-items:center;gap:10px;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:10px 14px;color:var(--mut);font-size:13px}
   .msg{color:var(--mut);padding:18px 2px}
   a{color:var(--ac2)}.foot{color:var(--mut);font-size:12px;margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
 </style></head><body><div class="wrap">
@@ -148,12 +176,14 @@ _PROBES_HTML = """<!doctype html>
   data never penalizes anyone. These scores feed
   <code>verified_route</code> ranking directly.</div>
   <div id="board" class="msg">Loading scores…</div>
-  <h2 style="font-size:18px;margin:28px 0 6px">AgentPay's own tools</h2>
-  <div class="note">Excluded from probing by design — <b>a trust oracle must not
-  score itself</b>. Our delivery evidence is the harder kind: real customers'
-  paid calls, each with an on-chain receipt on the
+  <h2 style="font-size:18px;margin:28px 0 6px">AgentPay's own tools
+    <span class="selfbadge">never self-scored</span></h2>
+  <div class="note">A trust oracle shouldn't grade itself, so our tools are
+  excluded from probing by design. The evidence below is the harder kind:
+  <b>real customers paying real USDC</b> — every call verifiable on the
   <a href="/ledger">receipt ledger</a>.</div>
   <div id="own" class="msg">Loading…</div>
+  <div id="ownfree"></div>
   <div class="foot">AgentPay's own tools are deliberately excluded — a trust
     oracle must not score itself (they're health-checked independently via
     x402scout). · Raw JSON: <a href="/scores.json">/scores.json</a> ·
@@ -219,15 +249,30 @@ _PROBES_HTML = """<!doctype html>
       }).join('') + '</tbody></table>';
     const ownEl = document.getElementById('own');
     const own = (d.own_tools || {}).tools || [];
+    const ago = iso => {
+      if (!iso) return '—';
+      const days = Math.floor((Date.now() - Date.parse(iso)) / 86400000);
+      if (isNaN(days)) return '—';
+      if (days <= 0) return 'last paid today';
+      if (days === 1) return 'last paid yesterday';
+      if (days < 45) return `last paid ${days}d ago`;
+      return 'last paid ' + String(iso).slice(0, 10);
+    };
+    ownEl.className = '';
     ownEl.innerHTML = own.length
-      ? `<table><thead><tr><th>Tool</th><th class="r">Receipted paid calls</th>
-         <th class="r">Last paid</th><th>Evidence</th></tr></thead><tbody>` +
-        own.map(t => `<tr><td><span class="name">${esc(t.tool)}</span></td>
-          <td class="r">${esc(t.paid_calls)}</td>
-          <td class="r">${esc(String(t.last_paid_at || '').slice(0, 10)) || '—'}</td>
-          <td><a href="/ledger">on-chain receipts →</a></td></tr>`).join('') +
-        '</tbody></table>'
+      ? '<div class="cards">' + own.map(t => `<div class="card">
+          <div class="top"><span class="tool">${esc(t.tool)}</span>
+            <span class="price">${t.price_usdc != null ? '$' + esc(t.price_usdc) : ''}</span></div>
+          <b>${esc(t.paid_calls)}</b><span class="cap">customer-paid calls</span>
+          <div class="bot"><span class="when">${esc(ago(t.last_paid_at))}</span>
+            <a href="/ledger">receipts →</a></div>
+        </div>`).join('') + '</div>'
       : '<p class="msg">Receipt data unavailable — see <a href="/ledger">/ledger</a>.</p>';
+    const freeN = ((d.own_tools || {}).free_tools || {}).count;
+    if (freeN) document.getElementById('ownfree').innerHTML =
+      `<div class="freerow"><span>${esc(freeN)} free tools — no payment needed,
+       so no payment evidence to show</span>
+       <a href="/ledger" style="white-space:nowrap">activity on the ledger →</a></div>`;
   } catch (e) { board.innerHTML = '<p class="msg">Could not load scores — try <a href="/scores.json">/scores.json</a>.</p>'; }
 })();
 </script></body></html>"""

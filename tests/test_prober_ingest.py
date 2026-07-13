@@ -240,3 +240,29 @@ def test_group_paid_receipts_drops_free_rows():
 def test_group_paid_receipts_empty():
     from gateway.services.supabase import _group_paid_receipts
     assert _group_paid_receipts([]) == []
+
+
+def test_scores_json_own_tools_enriched(monkeypatch):
+    """AGE-38 redesign: own paid tools carry the registry price; free tools
+    surface as a count, never as rows mistakable for paid demand."""
+    async def _empty_scores():
+        return {}
+    async def _own():
+        return [{"tool": "pre_trade_check", "paid_calls": 31,
+                 "last_paid_at": "2026-07-13T10:00:00+00:00"}]
+    from gateway.services import supabase
+    monkeypatch.setattr(supabase, "fetch_service_scores", _empty_scores)
+    monkeypatch.setattr(supabase, "fetch_own_tool_receipts", _own)
+    body = _client().get("/scores.json").json()
+    own = body["own_tools"]
+    assert own["tools"][0]["price_usdc"] == "0.01"
+    assert own["free_tools"]["count"] == 17
+    assert "no payment" in own["free_tools"]["note"]
+
+
+def test_probes_page_self_section_copy():
+    r = _client().get("/probes")
+    assert "never self-scored" in r.text
+    assert "real customers paying real USDC" in r.text
+    assert "customer-paid calls" in r.text          # card caption, not jargon
+    assert "Receipted paid calls" not in r.text     # old table header gone
