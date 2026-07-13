@@ -1,7 +1,7 @@
 {
   "name": "@romudille/agentpay-mcp",
-  "version": "2.3.0",
-  "description": "AgentPay — the economic-intelligence layer for AI agents: budget-capped tool calls with verifiable receipts, plus verified_route buyer-side x402 trust routing. 17 tools free to start. USDC on Base or Stellar, no keys.",
+  "version": "2.4.0",
+  "description": "AgentPay — the economic-intelligence layer for AI agents: budget-capped tool calls with verifiable receipts, plus verified_route buyer-side x402 trust routing. 17 tools free to start, no keys; set AGENTPAY_BASE_KEY to settle paid tools in-place (gasless EIP-3009 on Base) under an AGENTPAY_MAX_SPEND cap.",
   "type": "module",
   "bin": {
     "agentpay-mcp": "bin/agentpay-mcp.js"
@@ -9,8 +9,13 @@
   "files": [
     "bin/"
   ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0"
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.5.0"
   },
   "keywords": [
     "mcp",

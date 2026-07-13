@@ -10,8 +10,15 @@ Self-contained Node MCP server (Node ≥ 18). No Python, no repo, no wallet, no 
 preview* that vets the x402 marketplace (sweep → drop stubs & sybil factories → rank by real
 unique-payer usage) and names the real, used provider for your need. It withholds the
 ready-to-pay payload by design; the full multi-query sweep + ready-to-pay challenge come from
-the paid `verified_route` ($0.01) via the `agentpay-x402` SDK. (`route` is kept as a legacy
-alias; `estimate_plan` prices a multi-tool plan before you spend.)
+the paid `verified_route` ($0.01). (`route` is kept as a legacy alias; `estimate_plan`
+prices a multi-tool plan before you spend.)
+
+**New in v2.4.0 — optional wallet.** Set `AGENTPAY_BASE_KEY` (an EVM private key) and paid
+tools settle **in-place**, right inside the MCP: gasless EIP-3009 on Base (no ETH needed,
+nothing broadcast client-side — a rejected call moves no USDC), under a hard
+`AGENTPAY_MAX_SPEND` session cap. With a key present, `verified_route` returns the **full
+paid payload** — provider URL + ready-to-pay challenge. Unset, everything stays exactly
+keyless as before.
 
 Gateway: `https://agentpay.tools`
 
@@ -37,9 +44,10 @@ Or add to your MCP client (Claude Desktop, Cursor, Claude Code, Codex, Gemini CL
 Keyless by default — an ephemeral identity runs the x402 free-flow for all 17 free tools.
 No wallet or funding needed to start.
 
-## Tools (18 — 17 free)
+## Tools (17 free + paid)
 
-All data tools are **free**; only `session_create` settles on-chain.
+All data tools are **free**. Paid tools ($0.01) need wallet mode (`AGENTPAY_BASE_KEY`) —
+or the `agentpay-x402` Python SDK.
 
 | Tool | Price | What it does |
 |------|-------|--------------|
@@ -61,18 +69,44 @@ All data tools are **free**; only `session_create` settles on-chain.
 | `yield_scanner` | Free | DeFi yield opportunities |
 | `dune_query` | Free | Run a Dune query |
 | `session_create` | $0.01 | Open a metered, budget-capped spending session |
-| `route` | Free | Buyer-side routing: cheapest real x402 tool under budget (advise-only) |
+| `pre_trade_check` | $0.01 | Composite pre-trade verdict: orderbook + funding + OI + security |
+| `verified_route` | Free preview / $0.01 full | Buyer-side trust oracle: the vetted, real x402 provider for a need (full payload in wallet mode) |
+| `route` | Free | Legacy alias of the `verified_route` preview |
+| `estimate_plan` | Free | Price a multi-tool plan before spending |
 
 ## Config
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `AGENTPAY_GATEWAY_URL` | `https://agentpay.tools` | Point at a different gateway |
+| `AGENTPAY_BASE_KEY` | *(unset — keyless)* | EVM private key; enables in-place paid settles on Base (gasless EIP-3009) |
+| `AGENTPAY_MAX_SPEND` | `0.10` | Hard session spend cap in USDC (wallet mode) — calls past the cap are refused |
 
-## Pay for tools (Python SDK)
+## Wallet mode (settle paid tools in-place)
 
-The Node server is keyless and runs the free tools. To settle paid tools and get hard
-budget caps + receipts, use the Python SDK:
+```json
+{
+  "mcpServers": {
+    "agentpay": {
+      "command": "npx",
+      "args": ["-y", "@romudille/agentpay-mcp"],
+      "env": {
+        "AGENTPAY_BASE_KEY": "0x<your EVM private key>",
+        "AGENTPAY_MAX_SPEND": "0.10"
+      }
+    }
+  }
+}
+```
+
+Fund the key's address with USDC on Base mainnet — that's it. No ETH needed: settlement is
+gasless EIP-3009 (`transferWithAuthorization`); the MCP signs off-chain and the gateway's
+facilitator settles only if it accepts the call, so a rejected call moves no USDC. Every
+paid call counts against `AGENTPAY_MAX_SPEND`; the MCP refuses calls that would exceed it.
+
+Use a dedicated, small-balance key for agent spend — the cap is your blast radius.
+
+Prefer Python, or need Stellar settlement and full receipts? The `agentpay-x402` SDK:
 
 ```bash
 pip install agentpay-x402
