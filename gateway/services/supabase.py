@@ -1048,11 +1048,45 @@ async def upsert_service_scores(rows: list[dict]) -> bool:
         return False
 
 
+def _group_paid_receipts(rows: list[dict]) -> list[dict]:
+    """Pure: group payment_logs rows into per-tool paid-call evidence,
+    keeping ONLY genuinely paid rows (Decimal(amount) > 0).
+
+    amount_usdc is written to Supabase as a *string* (see record_payment),
+    so a PostgREST `amount_usdc=gt.0` filter compares TEXT — "0.000000" >
+    "0" lexicographically — and lets every $0 free-flow receipt through
+    (free tools traverse the full x402 lifecycle into payment_logs by
+    design). The authoritative paid/free split therefore happens HERE, in
+    Python, with a real Decimal comparison. Unparseable amounts are
+    treated as unpaid (excluded). Rows are expected newest-first; the
+    first row seen per tool provides last_paid_at. AGE-38."""
+    from decimal import Decimal, InvalidOperation
+    by_tool: dict[str, dict] = {}
+    for r in rows:
+        t = r.get("tool_name")
+        if not t:
+            continue
+        try:
+            if Decimal(str(r.get("amount_usdc") or "0")) <= 0:
+                continue
+        except (InvalidOperation, ValueError):
+            continue
+        row = by_tool.setdefault(t, {"tool": t, "paid_calls": 0,
+                                     "last_paid_at": r.get("created_at")})
+        row["paid_calls"] += 1
+    return sorted(by_tool.values(), key=lambda r: -r["paid_calls"])
+
+
 async def fetch_own_tool_receipts() -> list[dict]:
     """Per-tool receipt evidence for AgentPay's own PAID tools, from
     payment_logs (state=payment_done, amount > 0). Powers the /probes
     self-section: our delivery proof is real customers' on-chain receipts,
-    never self-probes. [] on error/disabled."""
+    never self-probes. [] on error/disabled.
+
+    NOTE: the server-side `amount_usdc=gt.0` filter is best-effort only
+    (text column — see _group_paid_receipts); it never drops a paid row
+    but does NOT reliably drop free ones. _group_paid_receipts is the
+    authoritative filter."""
     if not sb_enabled():
         return []
     try:
@@ -1071,15 +1105,7 @@ async def fetch_own_tool_receipts() -> list[dict]:
         if resp.status_code != 200:
             logger.error(f"fetch_own_tool_receipts error: HTTP {resp.status_code}")
             return []
-        by_tool: dict[str, dict] = {}
-        for r in resp.json():
-            t = r.get("tool_name")
-            if not t:
-                continue
-            row = by_tool.setdefault(t, {"tool": t, "paid_calls": 0,
-                                         "last_paid_at": r.get("created_at")})
-            row["paid_calls"] += 1
-        return sorted(by_tool.values(), key=lambda r: -r["paid_calls"])
+        return _group_paid_receipts(resp.json())
     except Exception as e:
         logger.error(f"fetch_own_tool_receipts failure: {e}")
         return []

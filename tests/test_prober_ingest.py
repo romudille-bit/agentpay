@@ -204,3 +204,39 @@ def test_probes_page_serves_html():
     assert "x402 Delivery Scores" in r.text
     assert "/scores.json" in r.text          # fetches the JSON client-side
     assert r.headers["cache-control"] == "no-store"
+
+
+# ---------------------------------------------------------------- AGE-38
+# amount_usdc is a TEXT column: PostgREST "gt.0" compares strings, so
+# "0.000000" (free-flow receipts) sneaks past the server-side filter.
+# _group_paid_receipts is the authoritative Python-side paid/free split.
+
+def test_group_paid_receipts_drops_free_rows():
+    from gateway.services.supabase import _group_paid_receipts
+    rows = [  # newest-first, as the query orders
+        {"tool_name": "pre_trade_check", "amount_usdc": "0.010000",
+         "created_at": "2026-07-13T10:00:00Z"},
+        {"tool_name": "fear_greed_index", "amount_usdc": "0.000000",
+         "created_at": "2026-07-13T09:00:00Z"},          # free — must drop
+        {"tool_name": "pre_trade_check", "amount_usdc": "0.01",
+         "created_at": "2026-07-12T10:00:00Z"},
+        {"tool_name": "token_price", "amount_usdc": "0",
+         "created_at": "2026-07-12T09:00:00Z"},          # free — must drop
+        {"tool_name": "verified_route", "amount_usdc": "0.010000",
+         "created_at": "2026-06-30T10:00:00Z"},
+        {"tool_name": "session_create", "amount_usdc": "garbage",
+         "created_at": "2026-06-29T10:00:00Z"},          # unparseable — drop
+        {"tool_name": "", "amount_usdc": "0.01",
+         "created_at": "2026-06-28T10:00:00Z"},          # no tool — drop
+    ]
+    out = _group_paid_receipts(rows)
+    assert [r["tool"] for r in out] == ["pre_trade_check", "verified_route"]
+    assert out[0]["paid_calls"] == 2
+    assert out[0]["last_paid_at"] == "2026-07-13T10:00:00Z"  # newest kept
+    tools = {r["tool"] for r in out}
+    assert "fear_greed_index" not in tools and "token_price" not in tools
+
+
+def test_group_paid_receipts_empty():
+    from gateway.services.supabase import _group_paid_receipts
+    assert _group_paid_receipts([]) == []
