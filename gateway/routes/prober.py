@@ -17,8 +17,11 @@ the secret gate is the same FLAGSHIP_INGEST_SECRET, reused per PROBER_SPEC.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
+import html as _html
 import logging
+import re
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -34,6 +37,19 @@ from gateway.services.supabase import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def service_slug(url: str) -> str:
+    """Stable, readable, collision-safe slug for a scored service URL.
+
+    host-and-path words + 6-hex sha1 tail, e.g.
+    https://api.exa.ai/search → api-exa-ai-search-1a2b3c. Pure; the same
+    function feeds /scores.json ("page"), the /s/{slug} route, and the
+    sitemap, so links can never drift apart. (AGE-39 SEO pages.)"""
+    tail = hashlib.sha1(url.encode()).hexdigest()[:6]
+    base = re.sub(r"^https?://", "", url.strip().lower())
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:60].rstrip("-")
+    return f"{base}-{tail}"
 
 
 @router.get("/scores.json")
@@ -65,6 +81,7 @@ async def scores_json():
         row = scores[url]
         services.append({
             "resource_url": url,
+            "page": f"/s/{service_slug(url)}",
             "name": row.get("name") or url.split("//")[-1].split("/")[0],
             "need": row.get("need"),
             "network": row.get("network"),
@@ -237,7 +254,7 @@ _PROBES_HTML = """<!doctype html>
           s.usdg_option ? '<span class="rail">USDG</span>' : '',
           ...(s.flags || []).map(f => `<span class="flag">${esc(f)}</span>`),
         ].filter(Boolean).join(' ') || '<span class="url">—</span>';
-        return `<tr><td><div><span class="name">${esc(s.name || '')}</span>
+        return `<tr><td><div><a class="name" style="color:var(--fg)" href="${esc(s.page || '#')}">${esc(s.name || '')}</a>
           ${s.need ? `<span class="need">${esc(s.need)}</span>` : ''}</div>
           <div class="url">${esc(s.resource_url)}</div>
           ${s.why ? `<div class="why">${esc(s.why)}</div>` : ''}</td>
@@ -283,6 +300,115 @@ async def probes_page():
     """Public delivery-scores leaderboard — the human surface for /scores.json."""
     return Response(content=_PROBES_HTML, media_type="text/html",
                     headers={"Cache-Control": "no-store"})
+
+
+_PAGE_CSS = """
+  :root{--bg:#0b0e11;--card:#13181d;--line:#222a31;--fg:#e7edf3;--mut:#8a97a6;--ac:#c3f53c;--ac2:#5ad1ff;--bad:#ff6b6b}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:28px 18px 60px}
+  .crumb{font-size:13px;margin:0 0 14px}.crumb a{color:var(--ac2);text-decoration:none}
+  h1{font-size:22px;margin:0 0 2px;word-break:break-word}
+  .url{color:var(--mut);font-size:13px;word-break:break-all;margin:0 0 14px}
+  .chips{margin:0 0 16px}.chip{display:inline-block;color:var(--mut);font-size:12px;
+    border:1px solid var(--line);border-radius:20px;padding:2px 10px;margin:0 6px 6px 0}
+  .chip.rail{color:var(--ac2);border-color:#1f3a45}
+  .chip.flag{color:var(--bad);border-color:#4a1f1f}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:0 0 16px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat b{display:block;font-size:22px}.stat span{color:var(--mut);font-size:12px}
+  .stat b.up{color:var(--ac)}.stat b.down{color:var(--bad)}
+  .why{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:12px 14px;font-size:14px;margin:0 0 16px}
+  .meta{color:var(--mut);font-size:13px;margin:0 0 20px}
+  .cta{background:var(--card);border:1px solid #2c4a1f;border-radius:10px;padding:14px;font-size:14px}
+  .cta a{color:var(--ac)}
+  .foot{color:var(--mut);font-size:12px;margin-top:24px;border-top:1px solid var(--line);
+    padding-top:12px}.foot a{color:var(--ac2)}
+"""
+
+
+@router.get("/s/{slug}", response_class=Response)
+async def service_page(slug: str):
+    """Per-service public page (AGE-39) — the SEO surface for one probed
+    x402 service. SERVER-rendered on purpose: /probes builds its table
+    client-side, which crawlers without JS see as an empty shell (the exact
+    trap that kept competitors' pages ranking while ours didn't). Everything
+    a search engine needs — title, description, canonical, the delivery
+    evidence itself — is in the HTML we return here."""
+    from gateway.radar import _delivery_why
+    from gateway.services.supabase import fetch_service_scores
+
+    scores = await fetch_service_scores()
+    row, url = None, None
+    for u, r in scores.items():
+        if service_slug(u) == slug:
+            row, url = r, u
+            break
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown service")
+
+    e = _html.escape
+    name = row.get("name") or url.split("//")[-1].split("/")[0]
+    why = _delivery_why(row) or ""
+    rate = row.get("delivery_rate")
+    rate_s = "unprobed" if rate is None else f"{round(float(rate) * 100)}%"
+    factor = float(row.get("delivery_factor") or 1.0)
+    lat = row.get("latency_p50_ms")
+    price = row.get("price_usdc")
+    probes = row.get("paid_probes") or 0
+    desc = (f"{name} — x402 delivery score from the AgentPay Prober: "
+            f"{rate_s} delivery over {row.get('window_days', 30)} days"
+            f"{', p50 ' + str(lat) + 'ms' if lat is not None else ''}. "
+            "Paid probes with real USDC, not uptime pings.")
+    chips = []
+    if row.get("need"):
+        chips.append(f'<span class="chip">{e(str(row["need"]))}</span>')
+    if row.get("network"):
+        chips.append(f'<span class="chip rail">{e(str(row["network"]))}</span>')
+    if row.get("mpp_option"):
+        chips.append('<span class="chip rail">also payable via MPP/Tempo</span>')
+    if row.get("usdg_option"):
+        chips.append('<span class="chip rail">USDG</span>')
+    for f in (row.get("flags") or []):
+        chips.append(f'<span class="chip flag">{e(str(f))}</span>')
+    fcls = "up" if factor > 1 else ("down" if factor < 1 else "")
+    page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{e(name)} — x402 delivery score | AgentPay Prober</title>
+<meta name="description" content="{e(desc)}">
+<link rel="canonical" href="https://agentpay.tools/s/{e(slug)}">
+<meta property="og:title" content="{e(name)} — x402 delivery score">
+<meta property="og:description" content="{e(desc)}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://agentpay.tools/s/{e(slug)}">
+<style>{_PAGE_CSS}</style></head><body><div class="wrap">
+<p class="crumb"><a href="/probes">← x402 delivery scores</a></p>
+<h1>{e(name)}</h1>
+<p class="url">{e(url)}</p>
+<div class="chips">{''.join(chips)}</div>
+<div class="grid">
+  <div class="stat"><b>{e(rate_s)}</b><span>delivery rate ({row.get('window_days', 30)}d)</span></div>
+  <div class="stat"><b class="{fcls}">{factor:.2f}×</b><span>ranking factor</span></div>
+  <div class="stat"><b>{e(str(lat)) + 'ms' if lat is not None else '—'}</b><span>p50 latency</span></div>
+  <div class="stat"><b>{'$' + e(str(price)) if price is not None else '—'}</b><span>price per call</span></div>
+  <div class="stat"><b>{e(str(probes))}</b><span>paid probes (30d)</span></div>
+</div>
+{f'<div class="why">{e(why)}</div>' if why else ''}
+<p class="meta">Delivered = payment settled ∧ HTTP 200 ∧ non-empty response ∧ advertised
+schema matched. The AgentPay Prober pays this service real USDC on a Mon/Thu sweep —
+these are settlement-verified delivery checks, not uptime pings. Negative flags are
+backed by on-chain transaction evidence.</p>
+<div class="cta">Routing an agent to a tool like this? <a href="/tools/verified_route">verified_route</a>
+($0.01) sweeps the marketplace, applies these delivery scores, and returns one vetted,
+ready-to-pay recommendation — one call instead of a score-then-choose pipeline.</div>
+<div class="foot"><a href="/probes">All delivery scores</a> ·
+<a href="/scores.json">Raw JSON</a> · <a href="/ledger">Receipt ledger</a> ·
+<a href="/llms.txt">About AgentPay</a></div>
+</div></body></html>"""
+    return Response(content=page, media_type="text/html",
+                    headers={"Cache-Control": "public, max-age=300"})
 
 
 @router.post("/v1/prober/run")

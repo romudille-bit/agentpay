@@ -716,7 +716,14 @@ async def llms_txt():
 
 @router.get("/sitemap.xml", response_class=Response)
 async def sitemap():
+    from gateway.routes.prober import service_slug
+    from gateway.services.supabase import fetch_service_scores
+
     tools = registry.list_tools()
+    try:                      # per-service SEO pages (AGE-39); [] on blip
+        scores = await fetch_service_scores()
+    except Exception:
+        scores = {}
     urls = [
         f"{GATEWAY_URL}/",
         f"{GATEWAY_URL}/tools",
@@ -728,7 +735,8 @@ async def sitemap():
         f"{GATEWAY_URL}/.well-known/agent.json",
         f"{GATEWAY_URL}/.well-known/x402",
         f"{GATEWAY_URL}/faucet/ui",
-    ] + [f"{GATEWAY_URL}/tools/{t.name}" for t in tools]
+    ] + [f"{GATEWAY_URL}/tools/{t.name}" for t in tools] \
+      + [f"{GATEWAY_URL}/s/{service_slug(u)}" for u in sorted(scores)]
 
     loc_tags = "\n".join(f"  <url><loc>{u}</loc></url>" for u in urls)
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>

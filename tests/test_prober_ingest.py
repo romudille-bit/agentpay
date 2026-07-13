@@ -266,3 +266,62 @@ def test_probes_page_self_section_copy():
     assert "real customers paying real USDC" in r.text
     assert "customer-paid calls" in r.text          # card caption, not jargon
     assert "Receipted paid calls" not in r.text     # old table header gone
+
+
+# ---------------------------------------------------------------- AGE-39
+# Per-service SEO pages: server-rendered /s/{slug} from service_scores.
+
+_ROW = {
+    "resource_url": "https://api.exa.ai/search", "name": "Exa Search",
+    "need": "web search", "network": "eip155:8453", "window_days": 30,
+    "paid_probes": 8, "delivery_rate": 1.0, "delivery_factor": 1.15,
+    "latency_p50_ms": 740, "flags": [], "mpp_option": True,
+    "usdg_option": False, "price_usdc": "0.01",
+    "last_ok_at": "2026-07-10T18:40:32+00:00", "last_fail_at": None,
+}
+
+
+def _patch_scores(monkeypatch):
+    async def _scores():
+        return {_ROW["resource_url"]: dict(_ROW)}
+    from gateway.services import supabase
+    monkeypatch.setattr(supabase, "fetch_service_scores", _scores)
+
+
+def test_service_slug_stable_readable_unique():
+    s = prober.service_slug("https://api.exa.ai/search")
+    assert s == prober.service_slug("https://api.exa.ai/search")  # stable
+    assert s.startswith("api-exa-ai-search-") and len(s.split("-")[-1]) == 6
+    assert s != prober.service_slug("https://api.exa.ai/search2")  # unique
+
+
+def test_service_page_server_rendered(monkeypatch):
+    _patch_scores(monkeypatch)
+    slug = prober.service_slug(_ROW["resource_url"])
+    r = _client().get(f"/s/{slug}")
+    assert r.status_code == 200
+    # SEO essentials are IN the HTML, not fetched client-side
+    assert "Exa Search — x402 delivery score" in r.text
+    assert f'rel="canonical" href="https://agentpay.tools/s/{slug}"' in r.text
+    assert "100%" in r.text and "740ms" in r.text
+    assert "also payable via MPP/Tempo" in r.text
+    assert "verified_route" in r.text
+    assert r.headers["cache-control"] == "public, max-age=300"
+
+
+def test_service_page_unknown_404(monkeypatch):
+    _patch_scores(monkeypatch)
+    assert _client().get("/s/nope-000000").status_code == 404
+
+
+def test_scores_json_rows_carry_page_link(monkeypatch):
+    _patch_scores(monkeypatch)
+    body = _client().get("/scores.json").json()
+    assert body["services"][0]["page"] == \
+        "/s/" + prober.service_slug(_ROW["resource_url"])
+
+
+def test_sitemap_includes_service_pages(monkeypatch):
+    _patch_scores(monkeypatch)
+    r = _client().get("/sitemap.xml")
+    assert "/s/" + prober.service_slug(_ROW["resource_url"]) in r.text
