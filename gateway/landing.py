@@ -286,9 +286,10 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 1.25rem
   <p>Claude Code — one command:</p>
 <pre><code>/plugin marketplace add romudille-bit/agentpay
 /plugin install agentpay@agentpay</code></pre>
-  <p>Any MCP runtime — self-contained (pure Node, no Python, no wallet):</p>
+  <p>Any MCP runtime — self-contained (pure Node, no Python, no keys to start):</p>
 <pre><code>npx -y @romudille/agentpay-mcp</code></pre>
-  <p class="snippet-note">When your agent needs a paid tool, AgentPay finds the options across the x402 marketplace, drops the fake/empty stubs, and recommends the cheapest one that's <em>actually used</em> — within a budget. The agent pays the provider directly (peer-to-peer, no custody) and keeps a verifiable receipt.</p>
+  <p class="snippet-note">When your agent needs a paid tool, AgentPay finds the options across the x402 marketplace, drops the fake/empty stubs, and recommends the cheapest one <em>relevant to the need</em> that's <em>actually used</em> — within a budget. The agent pays the provider directly (peer-to-peer, no custody) and keeps a verifiable receipt.</p>
+  <p class="snippet-note">New in MCP v2.4.0: set <code>AGENTPAY_BASE_KEY</code> (+ <code>AGENTPAY_MAX_SPEND</code>, default $0.10) and paid tools settle <em>in-place</em> — gasless EIP-3009 on Base, hard session cap enforced before anything is signed. Keyless stays the default.</p>
 </section>
 
 <section id="snippet" class="snippet">

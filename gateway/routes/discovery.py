@@ -701,7 +701,9 @@ Response: data is in result["result"]
 ## Docs
 
 - README: {GATEWAY_URL}/
-- MCP server: npx @romudille/agentpay-mcp
+- MCP server: npx @romudille/agentpay-mcp — keyless: 17 free tools + verified_route
+  preview. Wallet mode: set AGENTPAY_BASE_KEY (EVM key) + AGENTPAY_MAX_SPEND to
+  settle paid tools in-place (gasless EIP-3009 on Base, hard session cap).
 - npm: https://www.npmjs.com/package/@romudille/agentpay-mcp
 - GitHub: https://github.com/romudille-bit/agentpay
 - Glama MCP: https://glama.ai/mcp/servers/romudille-bit/agentpay

@@ -23,7 +23,7 @@ The developer sees all of it: spending patterns per agent, anomaly flags when so
 
 The result is an agent that doesn't just have a budget. It knows how to use one.
 
-**Start free:** 19 tools (17 free), no USDC needed, no wallet setup required.  
+**Start free:** 20 tools (17 free), no USDC needed, no wallet setup required.  
 **Live gateway:** `https://agentpay.tools`
 
 ---
@@ -197,7 +197,7 @@ x402 tool within a budget — plus the 17 free tools. No keys needed to route.
 
 ### MCP server (any runtime)
 
-Self-contained — pure Node, no Python, no repo, no wallet:
+Self-contained — pure Node, no Python, no repo, no keys to start:
 
 ```bash
 npx -y @romudille/agentpay-mcp
@@ -214,9 +214,33 @@ npx -y @romudille/agentpay-mcp
 }
 ```
 
-Exposes the 17 free tools **plus** `route` (buyer-side routing) and
-`estimate_plan` (price a multi-tool plan before spending). Listed on
+Exposes the 17 free tools **plus** `verified_route` (buyer-side trust oracle —
+free preview keyless, full paid payload in wallet mode), `route` (legacy alias)
+and `estimate_plan` (price a multi-tool plan before spending). Listed on
 [Glama](https://glama.ai/mcp/servers/romudille-bit/agentpay).
+
+**Wallet mode (v2.4.0):** add an EVM key and paid tools settle **in-place** —
+gasless EIP-3009 on Base (no ETH needed; nothing broadcast client-side, a
+rejected call moves no USDC) under a hard session cap:
+
+```json
+{
+  "mcpServers": {
+    "agentpay": {
+      "command": "npx",
+      "args": ["-y", "@romudille/agentpay-mcp"],
+      "env": {
+        "AGENTPAY_BASE_KEY": "0x<EVM private key>",
+        "AGENTPAY_MAX_SPEND": "0.10"
+      }
+    }
+  }
+}
+```
+
+Fund the key's address with USDC on Base mainnet; every paid call counts
+against `AGENTPAY_MAX_SPEND` and is refused past the cap — the budget story,
+enforced inside the MCP itself. Use a dedicated small-balance key.
 
 ### Buyer-side routing — find & pay for the best tool, within a budget
 
@@ -231,14 +255,19 @@ agentpay-route "funding rates" --budget 0.01   # ranked candidates + a recommend
 
 ---
 
-## Paid tools: session_create + pre_trade_check ($0.01 each)
+## Paid tools: session_create, pre_trade_check, verified_route ($0.01 each)
 
-Two tools cost money today. `session_create` opens a budget-capped session with a
+Three tools cost money today. `session_create` opens a budget-capped session with a
 hard `max_spend` limit — for autonomous agents that need spend enforcement across
 multiple calls. `pre_trade_check` is the first **outcome bundle**: one call returns
 an ok/caution/avoid trade verdict from live orderbook slippage at your size,
 side-aware funding carry, open-interest crowding, and an optional contract security
-scan — with the per-factor breakdown and raw components embedded. All 17 data tools
+scan — with the per-factor breakdown and raw components embedded. `verified_route`
+is the **buyer-side trust oracle**: "I need X, budget $Y — which x402 tool is
+real?" It sweeps the whole marketplace, collapses sybil/factory clusters, keeps
+only providers relevant to *your need*, ranks them by real unique-payer usage ×
+the [Prober's](https://agentpay.tools/probes) paid delivery scores, and returns
+one vetted recommendation with a ready-to-pay challenge. All 17 data tools
 remain free.
 
 Price any plan before spending a cent (free, no wallet): `POST /v1/plan/estimate`,
