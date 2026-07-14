@@ -174,6 +174,13 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_pre_trade_check(params)
             elif tool_name == "verified_route":
                 result = await _fetch_verified_route(client, params)
+            elif tool_name == "session_create":
+                # AGE-42: the registry lists session_create, so standards-pure
+                # x402 clients (and the npm MCP) pay it via /tools/session_create/
+                # call — which used to charge and then return "no implementation".
+                # Mirror the /v1/session/create response (the payment envelope +
+                # receipt are added by the tools route itself).
+                result = _make_session_create(params)
             else:
                 result = {"error": f"No real API implementation for tool: {tool_name}"}
         except Exception as e:
@@ -184,6 +191,30 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
         cache_set(cache_key, result, CACHE_TTL[tool_name])
 
     return result
+
+
+def _make_session_create(params: dict) -> dict:
+    """Build the session_create result for the generic tools route (AGE-42).
+
+    Mirrors POST /v1/session/create's Step-3 response: session creation is a
+    pure response builder (session_id + endpoints; the payment lifecycle rows
+    are written by the calling route). Kept in sync with
+    gateway/routes/session.py — the canonical Bazaar-anchored endpoint.
+    """
+    import uuid
+    from datetime import datetime, timezone
+    from gateway.config import GATEWAY_URL
+
+    return {
+        "session_id":     str(uuid.uuid4()),
+        "max_spend":      str(params.get("max_spend") or "0.10"),
+        "agent_address":  params.get("agent_address"),
+        "label":          params.get("label"),
+        "gateway_url":    GATEWAY_URL,
+        "tools_endpoint": f"{GATEWAY_URL}/tools",
+        "created_at":     datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sdk_hint": "Use `from agentpay import Session` to enforce the max_spend cap client-side.",
+    }
 
 
 async def _fetch_token_price(client: httpx.AsyncClient, params: dict) -> dict:

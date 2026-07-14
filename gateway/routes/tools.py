@@ -839,6 +839,21 @@ async def _execute_and_log(
     except Exception as e:
         return await _refund_and_502(tool_name, payment_id, e)
 
+    # AGE-42: a PAID tool that produced only an error must refund, not charge.
+    # real_tool_response swallows executor failures (missing implementation,
+    # upstream API errors) into {"error": ...} with a 200 — for a $0 tool that's
+    # harmless, but for a paid tool it charged the agent for nothing and left
+    # the payment in 'payment_done' with no refund state (live incident:
+    # session_create via /tools/…/call, 2026-07-13). "error" is the uniform
+    # top-level failure marker across every executor; success shapes never
+    # carry it.
+    if (isinstance(tool_result, dict) and "error" in tool_result
+            and Decimal(str(tool.price_usdc or "0")) > 0):
+        return await _refund_and_502(
+            tool_name, payment_id,
+            RuntimeError(f"paid tool returned error: {tool_result['error']}"),
+        )
+
     append_transaction({
         "tool": tool_name,
         "amount_usdc": tool.price_usdc,

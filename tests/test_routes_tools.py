@@ -273,6 +273,68 @@ class TestCallWithPayment:
         assert r.status_code == 402
         assert "replay" in r.json()["reason"].lower()
 
+    # ── AGE-42: paid tool errors must refund, not charge ──────────────────
+
+    def _pay(self, client, tool, error_result=None):
+        """Drive the paid Stellar flow for `tool`; executor returns error_result
+        when given, else a normal mocked payload."""
+        import gateway.routes.tools as rt
+        first = client.post(f"/tools/{tool}/call", json={"parameters": {}})
+        payment_id = first.json()["payment_id"]
+        return client.post(
+            f"/tools/{tool}/call",
+            json={"parameters": {}},
+            headers={
+                "X-Payment": f"tx_hash=mocktx,from=GAGENT,id={payment_id}",
+                "X-Agent-Address": "GAGENT",
+            },
+        )
+
+    def test_paid_tool_error_result_returns_502_refund(
+        self, client, patch_route_verify, monkeypatch
+    ):
+        """A PAID tool whose executor returns {'error': ...} must NOT respond
+        200 'payment_done' — it charged the agent for nothing (live incident:
+        session_create via /tools/…/call, 2026-07-13). Contract: 502 with
+        payment_status so SDK callers get RefundPending."""
+        import gateway.routes.tools as rt
+        async def erroring(tool_name, params):
+            return {"error": "upstream exploded"}
+        monkeypatch.setattr(rt, "real_tool_response", erroring)
+
+        r = self._pay(client, "pre_trade_check")   # $0.01 — a paid tool
+        assert r.status_code == 502
+        body = r.json()
+        assert body["payment_status"] in ("refund_pending", "refund_disabled")
+        assert "upstream exploded" in body["error_reason"]
+
+    def test_free_tool_error_result_still_returns_200(
+        self, client, patch_route_verify, monkeypatch
+    ):
+        """$0 tools keep the legacy in-band error (nothing was charged, and the
+        free x402 lifecycle the analytics pin must not gain a 502 branch)."""
+        import gateway.routes.tools as rt
+        async def erroring(tool_name, params):
+            return {"error": "upstream exploded"}
+        monkeypatch.setattr(rt, "real_tool_response", erroring)
+
+        r = self._pay(client, "token_price")       # free tool
+        assert r.status_code == 200
+        assert r.json()["result"]["error"] == "upstream exploded"
+
+    def test_session_create_via_tools_route_returns_session(
+        self, client, patch_route_verify
+    ):
+        """AGE-42 part 2: session_create now has a real executor on the generic
+        tools route — paying it returns a session, not 'no implementation'."""
+        r = self._pay(client, "session_create")
+        assert r.status_code == 200
+        result = r.json()["result"]
+        assert "error" not in result
+        assert result["session_id"]
+        assert result["tools_endpoint"].endswith("/tools")
+        assert "session" in result["sdk_hint"].lower()
+
     def test_alias_resolves_in_post_path(
         self, client, patch_route_verify, patch_route_tool_response
     ):
