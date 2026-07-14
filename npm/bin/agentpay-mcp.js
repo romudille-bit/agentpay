@@ -51,7 +51,7 @@ import { privateKeyToAddress, buildPaymentSignature } from './eip3009.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.4.0';
+const VERSION = '2.4.1';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -554,8 +554,11 @@ const VERIFIED_ROUTE_TOOL_DEF = {
     required: ['need'],
   },
   annotations: {
-    title: 'Verified Route (x402 trust oracle, preview)',
-    readOnlyHint: true,
+    // Wallet mode runs the PAID tool ($0.01 settles on call) — not read-only.
+    title: WALLET
+      ? 'Verified Route (x402 trust oracle, paid $0.01)'
+      : 'Verified Route (x402 trust oracle, preview)',
+    readOnlyHint: !WALLET,
     openWorldHint: true,
   },
 };
@@ -660,15 +663,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     }
 
     // Directory requirement: every tool carries a human title + read/destructive
-    // hint. All AgentPay tools are read-only data/advice calls (the paid settle,
-    // when it happens, is driven by the SDK, not the tool's own side effects).
+    // hint. Keyless (the default, and what the directory reviews): every tool is
+    // a read-only data/advice call. Wallet mode (AGE-44): a priced tool SPENDS
+    // USDC when called — declare it, so clients prompt before the first paid
+    // call instead of auto-approving a "read-only" tool that moves money.
+    const spends = Boolean(WALLET) && parseFloat(t.price_usdc) > 0;
     const title = t.name
       .split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     return {
       name: t.name,
       description,
       inputSchema: t.parameters ?? { type: 'object', properties: {} },
-      annotations: { title, readOnlyHint: true, openWorldHint: true },
+      annotations: { title, readOnlyHint: !spends, openWorldHint: true },
     };
   });
 
