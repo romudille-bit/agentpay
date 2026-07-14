@@ -610,7 +610,21 @@ async def flagship_ingest(request: Request,
     stored = await insert_flagship_run(payload)
     # 200 when persisted; 202 when accepted-but-not-stored (e.g. table not yet
     # created) so the agent sees a 2xx and never fails its run over the ledger.
-    return JSONResponse({"stored": stored}, status_code=200 if stored else 202)
+    # AGE-46: the 202 path was a silent black hole — the agent logged "ingest
+    # ok" while nothing landed in flagship_runs. Log it loudly here (insert_
+    # flagship_run already logs the HTTP cause) and say so in the body.
+    if not stored:
+        logger.warning(
+            f"[FLAGSHIP] ingest ACCEPTED BUT NOT STORED "
+            f"(run_at={payload.get('run_at_iso') or payload.get('run_at')!r}) — "
+            f"reasoning will be missing on /ledger; check Supabase/flagship_runs"
+        )
+    return JSONResponse(
+        {"stored": stored,
+         **({} if stored else
+            {"warning": "accepted but not stored — reasoning will not appear on /ledger"})},
+        status_code=200 if stored else 202,
+    )
 
 
 @router.get("/ledger", response_class=Response)

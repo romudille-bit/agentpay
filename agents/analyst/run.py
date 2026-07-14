@@ -787,9 +787,21 @@ def publish_run(payload: dict) -> bool:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            ok = 200 <= resp.status < 300
-        log(f"ingest {'ok' if ok else 'failed'} → /v1/flagship/run")
-        return ok
+            status = resp.status
+            try:
+                body = json.loads(resp.read().decode() or "{}")
+            except Exception:
+                body = {}
+        # AGE-46: a 202 means the gateway ACCEPTED but did NOT store the run —
+        # reasoning will be missing on /ledger. Calling that "ok" hid a
+        # never-populated pipeline for a month. Only stored=True is ok.
+        stored = bool(body.get("stored"))
+        if stored:
+            log("ingest ok → /v1/flagship/run (stored)")
+        else:
+            log(f"ingest NOT STORED → /v1/flagship/run (HTTP {status}, "
+                f"stored={body.get('stored')!r}) — reasoning will be missing on /ledger")
+        return stored
     except Exception as e:
         log(f"ingest failed: {e}")
         return False
