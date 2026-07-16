@@ -68,6 +68,22 @@ class Settings(BaseSettings):
     # /.well-known/402index-verify.txt. Leave blank to serve 404.
     INDEX402_VERIFY_HASH: str = ""
 
+    # Search-engine verification + instant indexing (SEO). All optional;
+    # blank = tag/endpoint not emitted. Set via Railway env vars.
+    #
+    # GOOGLE_SITE_VERIFICATION: content token from Google Search Console's
+    #   "HTML tag" method → rendered as <meta name="google-site-verification">
+    #   on the landing page.
+    # BING_SITE_VERIFICATION: content token from Bing Webmaster Tools
+    #   ("HTML Meta Tag" method) → <meta name="msvalidate.01">.
+    # INDEXNOW_KEY: any hex key (self-generated, e.g. `openssl rand -hex 16`).
+    #   Served at GET /indexnow.txt; submit URLs with
+    #   keyLocation=https://agentpay.tools/indexnow.txt for instant Bing/
+    #   Seznam/Naver/Yandex indexing.
+    GOOGLE_SITE_VERIFICATION: str = ""
+    BING_SITE_VERIFICATION: str = ""
+    INDEXNOW_KEY: str = ""
+
     # Coinbase CDP API credentials — required for authenticated x402 facilitator
     # calls (POST /settle). The CDP Facilitator returns 401 without these.
     # Bazaar auto-indexing only works when settlement flows through CDP.

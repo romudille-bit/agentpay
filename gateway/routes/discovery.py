@@ -531,6 +531,20 @@ async def well_known_402index_verify():
     )
 
 
+@router.get("/indexnow.txt", response_class=Response)
+async def indexnow_key():
+    """IndexNow key file (indexnow.org) — instant URL submission to Bing,
+    Seznam, Naver, Yandex. The key content must match the INDEXNOW_KEY env
+    var; submit URLs with keyLocation={GATEWAY_URL}/indexnow.txt, e.g.:
+
+        curl "https://api.indexnow.org/indexnow?url=<page>&key=<key>&keyLocation=<GATEWAY_URL>/indexnow.txt"
+
+    404 when unconfigured (same pattern as 402index-verify)."""
+    if not settings.INDEXNOW_KEY:
+        raise HTTPException(status_code=404, detail="Not configured")
+    return Response(content=settings.INDEXNOW_KEY, media_type="text/plain")
+
+
 @router.get("/robots.txt", response_class=Response)
 async def robots():
     # Content-Signal (contentsignals.org): explicitly WELCOMING — AgentPay's
@@ -726,21 +740,32 @@ async def sitemap():
         scores = await fetch_service_scores()
     except Exception:
         scores = {}
-    urls = [
-        f"{GATEWAY_URL}/",
-        f"{GATEWAY_URL}/tools",
-        f"{GATEWAY_URL}/probes",
-        f"{GATEWAY_URL}/ledger",
-        f"{GATEWAY_URL}/radar",
-        f"{GATEWAY_URL}/privacy",
-        f"{GATEWAY_URL}/.well-known/agentpay.json",
-        f"{GATEWAY_URL}/.well-known/agent.json",
-        f"{GATEWAY_URL}/.well-known/x402",
-        f"{GATEWAY_URL}/faucet/ui",
-    ] + [f"{GATEWAY_URL}/tools/{t.name}" for t in tools] \
-      + [f"{GATEWAY_URL}/s/{service_slug(u)}" for u in sorted(scores)]
+    # (url, lastmod|None) — lastmod only where we actually know it: /s/ pages
+    # carry the row's updated_at (stamped on every Mon/Thu probe sweep).
+    # Fabricating lastmod for static pages erodes crawler trust, so they omit it.
+    def _lastmod(row: dict) -> str | None:
+        ts = row.get("updated_at") or row.get("probed_at")
+        return str(ts)[:10] if ts else None
 
-    loc_tags = "\n".join(f"  <url><loc>{u}</loc></url>" for u in urls)
+    urls: list[tuple[str, str | None]] = [
+        (f"{GATEWAY_URL}/", None),
+        (f"{GATEWAY_URL}/tools", None),
+        (f"{GATEWAY_URL}/probes", None),
+        (f"{GATEWAY_URL}/ledger", None),
+        (f"{GATEWAY_URL}/radar", None),
+        (f"{GATEWAY_URL}/privacy", None),
+        (f"{GATEWAY_URL}/.well-known/agentpay.json", None),
+        (f"{GATEWAY_URL}/.well-known/agent.json", None),
+        (f"{GATEWAY_URL}/.well-known/x402", None),
+        (f"{GATEWAY_URL}/faucet/ui", None),
+    ] + [(f"{GATEWAY_URL}/tools/{t.name}", None) for t in tools] \
+      + [(f"{GATEWAY_URL}/s/{service_slug(u)}", _lastmod(scores[u]))
+         for u in sorted(scores)]
+
+    loc_tags = "\n".join(
+        f"  <url><loc>{u}</loc>" + (f"<lastmod>{lm}</lastmod>" if lm else "") + "</url>"
+        for u, lm in urls
+    )
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 {loc_tags}

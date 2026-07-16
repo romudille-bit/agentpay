@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import html as _html
+import json as _json
 import logging
 import re
 
@@ -192,7 +193,7 @@ _PROBES_HTML = """<!doctype html>
   Monday &amp; Thursday. Unprobed services rank neutral (factor 1.00) — absence of
   data never penalizes anyone. These scores feed
   <code>verified_route</code> ranking directly.</div>
-  <div id="board" class="msg">Loading scores…</div>
+  <div id="board" class="msg">PROBES_FALLBACK_PLACEHOLDER</div>
   <h2 style="font-size:18px;margin:28px 0 6px">AgentPay's own tools
     <span class="selfbadge">never self-scored</span></h2>
   <div class="note">A trust oracle shouldn't grade itself, so our tools are
@@ -297,8 +298,31 @@ _PROBES_HTML = """<!doctype html>
 
 @router.get("/probes", response_class=Response)
 async def probes_page():
-    """Public delivery-scores leaderboard — the human surface for /scores.json."""
-    return Response(content=_PROBES_HTML, media_type="text/html",
+    """Public delivery-scores leaderboard — the human surface for /scores.json.
+
+    The full table is built client-side from /scores.json, which crawlers
+    without JS see as an empty shell. So the #board div is seeded SERVER-side
+    with a plain link list to every /s/ page — that's the crawl path that
+    makes the 52 per-service SEO pages discoverable by internal link, not
+    just sitemap. The JS overwrites it with the rich table on load."""
+    from gateway.services.supabase import fetch_service_scores
+    try:
+        scores = await fetch_service_scores()
+    except Exception:
+        scores = {}
+    e = _html.escape
+    items = []
+    for u in sorted(scores):
+        row = scores[u]
+        name = row.get("name") or u.split("//")[-1].split("/")[0]
+        rate = row.get("delivery_rate")
+        rate_s = "unprobed" if rate is None else f"{round(float(rate) * 100)}% delivery"
+        items.append(f'<li><a href="/s/{e(service_slug(u))}">{e(str(name))}</a>'
+                     f' — {e(rate_s)}</li>')
+    fallback = (f'<ul style="columns:2;font-size:13px">{"".join(items)}</ul>'
+                if items else "Loading scores…")
+    page = _PROBES_HTML.replace("PROBES_FALLBACK_PLACEHOLDER", fallback)
+    return Response(content=page, media_type="text/html",
                     headers={"Cache-Control": "no-store"})
 
 
@@ -373,6 +397,23 @@ async def service_page(slug: str):
     for f in (row.get("flags") or []):
         chips.append(f'<span class="chip flag">{e(str(f))}</span>')
     fcls = "up" if factor > 1 else ("down" if factor < 1 else "")
+    # JSON-LD: entity grounding for search/answer engines — the page is a
+    # WebPage about a Service, published by AgentPay. (No Review/Rating type:
+    # delivery scores are measurements, not editorial reviews, and fake-able
+    # rating markup is a manual-action magnet.)
+    json_ld = _json.dumps({
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": f"{name} — x402 delivery score",
+        "url": f"https://agentpay.tools/s/{slug}",
+        "description": desc,
+        "isPartOf": {"@type": "WebSite", "name": "AgentPay",
+                     "url": "https://agentpay.tools"},
+        "about": {"@type": "Service", "name": name, "url": url,
+                  "serviceType": "x402 API service"},
+        "publisher": {"@type": "Organization", "name": "AgentPay",
+                      "url": "https://agentpay.tools"},
+    }).replace("</", "<\\/")  # service names are external data — block </script> breakout
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -383,6 +424,7 @@ async def service_page(slug: str):
 <meta property="og:description" content="{e(desc)}">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://agentpay.tools/s/{e(slug)}">
+<script type="application/ld+json">{json_ld}</script>
 <style>{_PAGE_CSS}</style></head><body><div class="wrap">
 <p class="crumb"><a href="/probes">← x402 delivery scores</a></p>
 <h1>{e(name)}</h1>

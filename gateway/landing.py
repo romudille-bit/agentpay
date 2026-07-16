@@ -56,7 +56,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
   ]
 }
 </script>
-<link rel="icon" type="image/svg+xml" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
+VERIFICATION_META_PLACEHOLDER<link rel="icon" type="image/svg+xml" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
 <link rel="alternate icon" href="GATEWAY_URL_PLACEHOLDER/favicon.svg">
 <style>
 :root {
@@ -403,15 +403,26 @@ def render_landing(tools: list[Tool], gateway_url: str) -> str:
 
     tools_rows = "\n".join(
         f'    <li>'
-        f'<span class="tool-name">{t.name}</span>'
+        f'<span class="tool-name"><a href="{gateway_url}/tools/{t.name}">{t.name}</a></span>'
         f'<span class="tool-price">{_price_label(t.price_usdc)}</span>'
         f'<span class="tool-desc">{_escape(t.description)}</span>'
         f'</li>'
         for t in sorted(tools, key=lambda x: x.name)
         if t.active
     )
+    # Search-engine ownership verification (Google Search Console / Bing
+    # Webmaster Tools "HTML tag" method). Emitted only when configured.
+    from gateway.config import settings
+    verification_meta = ""
+    if settings.GOOGLE_SITE_VERIFICATION:
+        verification_meta += (f'<meta name="google-site-verification" '
+                              f'content="{_escape(settings.GOOGLE_SITE_VERIFICATION)}">\n')
+    if settings.BING_SITE_VERIFICATION:
+        verification_meta += (f'<meta name="msvalidate.01" '
+                              f'content="{_escape(settings.BING_SITE_VERIFICATION)}">\n')
     return (
         _LANDING_TEMPLATE
+        .replace("VERIFICATION_META_PLACEHOLDER", verification_meta)
         .replace("GATEWAY_URL_PLACEHOLDER", gateway_url)
         .replace("TOOLS_ROWS_PLACEHOLDER", tools_rows)
     )

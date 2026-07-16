@@ -366,24 +366,53 @@ _TOOL_BAZAAR: dict[str, dict] = {
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def _wants_html(request: Request) -> bool:
+    """Browser/crawler content negotiation — same rule as the root route.
+
+    JSON stays the default (agents, SDK, tests all send Accept: */* or
+    application/json). Only an explicit text/html Accept without JSON gets
+    the server-rendered page, so the API contract is untouched while the
+    20 sitemap'd /tools URLs become indexable HTML instead of raw JSON.
+    """
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept and "application/json" not in accept
+
+
 @router.get("/tools")
-async def list_tools(category: Optional[str] = None):
-    """List all available tools with pricing."""
+async def list_tools(request: Request, category: Optional[str] = None):
+    """List all available tools with pricing (HTML for browsers, JSON default)."""
     tools = registry.list_tools(category=category)
-    return {
+    if _wants_html(request):
+        from gateway.tool_pages import render_tools_index
+        return Response(content=render_tools_index(tools, GATEWAY_URL),
+                        media_type="text/html",
+                        headers={"Cache-Control": "public, max-age=300",
+                                 "Vary": "Accept"})
+    return JSONResponse(content={
         "tools": [registry.tool_to_dict(t) for t in tools],
         "count": len(tools),
-    }
+    }, headers={"Vary": "Accept"})
 
 
 @router.api_route("/tools/{tool_name}", methods=["GET", "HEAD"])
-async def get_tool(tool_name: str):
-    """Get details for a specific tool. Supports legacy aliases."""
+async def get_tool(tool_name: str, request: Request):
+    """Get details for a specific tool. Supports legacy aliases.
+
+    Browsers (Accept: text/html) get a server-rendered, indexable page;
+    agents keep the JSON contract.
+    """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
     tool = registry.get_tool(resolved)
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    return registry.tool_to_dict(tool)
+    if _wants_html(request):
+        from gateway.tool_pages import render_tool_page
+        return Response(content=render_tool_page(tool, GATEWAY_URL),
+                        media_type="text/html",
+                        headers={"Cache-Control": "public, max-age=300",
+                                 "Vary": "Accept"})
+    return JSONResponse(content=registry.tool_to_dict(tool),
+                        headers={"Vary": "Accept"})
 
 
 @router.head("/tools/{tool_name}/call")
