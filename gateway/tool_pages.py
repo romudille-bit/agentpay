@@ -17,8 +17,33 @@ kept /probes invisible (see routes/prober.py service_page).
 
 import html as _html
 import json as _json
+import re as _re
 
 from registry.registry import Tool
+
+# ── Crawler detection (dynamic serving) ─────────────────────────────────────
+# Search/social/AI-answer crawlers mostly send `Accept: */*` (bingbot does —
+# live BWT "missing title tag" finding, 2026-07-17), so Accept-header
+# negotiation alone serves them JSON. Serving them the SAME content as
+# browsers (the HTML page) is standard dynamic serving, not cloaking.
+# Agent runtimes (python-httpx, node-fetch, curl, SDKs) are deliberately NOT
+# in this list — the JSON contract is their surface. An explicit
+# `Accept: application/json` always wins over the UA check.
+_CRAWLER_RE = _re.compile(
+    r"bingbot|googlebot|googleother|google-inspectiontool|adsbot-google|"
+    r"storebot-google|duckduckbot|duckassistbot|slurp|yandex|baiduspider|"
+    r"applebot|seznambot|yeti|petalbot|qwantbot|ecosia|"
+    r"facebookexternalhit|meta-externalagent|twitterbot|linkedinbot|"
+    r"pinterestbot|discordbot|telegrambot|slackbot|whatsapp|"
+    r"gptbot|oai-searchbot|chatgpt-user|perplexitybot|claudebot|claude-web|"
+    r"ccbot|amazonbot|bytespider|cohere-ai|youbot",
+    _re.IGNORECASE,
+)
+
+
+def is_search_crawler(user_agent: str) -> bool:
+    """True for search/social/AI-answer crawlers that index pages."""
+    return bool(user_agent) and bool(_CRAWLER_RE.search(user_agent))
 
 _CSS = """
   :root{--bg:#0a0a0b;--card:#131316;--line:#1f1f24;--fg:#e8e8e8;--mut:#8a8a92;--ac:#5eead4;--price:#4ade80}

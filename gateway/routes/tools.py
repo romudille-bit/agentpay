@@ -370,12 +370,19 @@ def _wants_html(request: Request) -> bool:
     """Browser/crawler content negotiation — same rule as the root route.
 
     JSON stays the default (agents, SDK, tests all send Accept: */* or
-    application/json). Only an explicit text/html Accept without JSON gets
-    the server-rendered page, so the API contract is untouched while the
-    20 sitemap'd /tools URLs become indexable HTML instead of raw JSON.
+    application/json). Explicit text/html (browsers) gets the page — and so
+    do known search crawlers, because bingbot & co. send Accept: */* (Bing
+    flagged the JSON responses as 'HTML document missing a title tag').
+    An explicit application/json Accept always wins, so an agent identifying
+    as anything still gets JSON by asking for it.
     """
     accept = request.headers.get("accept", "")
-    return "text/html" in accept and "application/json" not in accept
+    if "application/json" in accept:
+        return False
+    if "text/html" in accept:
+        return True
+    from gateway.tool_pages import is_search_crawler
+    return is_search_crawler(request.headers.get("user-agent", ""))
 
 
 @router.get("/tools")
@@ -387,11 +394,11 @@ async def list_tools(request: Request, category: Optional[str] = None):
         return Response(content=render_tools_index(tools, GATEWAY_URL),
                         media_type="text/html",
                         headers={"Cache-Control": "public, max-age=300",
-                                 "Vary": "Accept"})
+                                 "Vary": "Accept, User-Agent"})
     return JSONResponse(content={
         "tools": [registry.tool_to_dict(t) for t in tools],
         "count": len(tools),
-    }, headers={"Vary": "Accept"})
+    }, headers={"Vary": "Accept, User-Agent"})
 
 
 @router.api_route("/tools/{tool_name}", methods=["GET", "HEAD"])
@@ -410,9 +417,9 @@ async def get_tool(tool_name: str, request: Request):
         return Response(content=render_tool_page(tool, GATEWAY_URL),
                         media_type="text/html",
                         headers={"Cache-Control": "public, max-age=300",
-                                 "Vary": "Accept"})
+                                 "Vary": "Accept, User-Agent"})
     return JSONResponse(content=registry.tool_to_dict(tool),
-                        headers={"Vary": "Accept"})
+                        headers={"Vary": "Accept, User-Agent"})
 
 
 @router.head("/tools/{tool_name}/call")

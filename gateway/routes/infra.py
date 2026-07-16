@@ -42,8 +42,9 @@ async def root(request: Request):
         '</.well-known/agentpay.json>; rel="service-meta"',
         '</health>; rel="status"',
     ])
-    # Root varies by Accept (markdown / HTML / JSON) — tell caches so.
-    headers = {"Link": link_header, "Vary": "Accept"}
+    # Root varies by Accept (markdown / HTML / JSON) and User-Agent
+    # (crawlers get HTML) — tell caches so.
+    headers = {"Link": link_header, "Vary": "Accept, User-Agent"}
 
     accept = request.headers.get("accept", "")
 
@@ -54,7 +55,16 @@ async def root(request: Request):
         return Response(content=build_llms_txt(), media_type="text/markdown",
                         headers=headers)
 
-    if "text/html" in accept and "application/json" not in accept:
+    # Browsers ask for text/html; search crawlers (bingbot & co.) send
+    # Accept: */* and were getting the JSON manifest — Bing flagged it as an
+    # HTML document with no <title>. Serve crawlers the landing page too
+    # (dynamic serving); explicit application/json still wins.
+    from gateway.tool_pages import is_search_crawler
+    wants_html = "application/json" not in accept and (
+        "text/html" in accept
+        or is_search_crawler(request.headers.get("user-agent", ""))
+    )
+    if wants_html:
         return HTMLResponse(content=render_landing(registry.list_tools(), GATEWAY_URL),
                             headers=headers)
 

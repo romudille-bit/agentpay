@@ -132,3 +132,58 @@ class TestSitemap:
         assert r.status_code == 200
         assert "/tools/token_price</loc>" in r.text
         assert "/tools</loc>" in r.text
+
+    def test_sitemap_omits_faucet_ui_on_mainnet(self, client, monkeypatch):
+        # /faucet/ui 404s on mainnet — listing it would be a standing crawl error
+        from gateway.config import settings
+        monkeypatch.setattr(settings, "STELLAR_NETWORK", "mainnet")
+        assert "/faucet/ui" not in client.get("/sitemap.xml").text
+
+
+BINGBOT_UA = ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; "
+              "bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116.0 Safari/537.36")
+GOOGLEBOT_UA = ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; "
+                "Googlebot/2.1; +http://www.google.com/bot.html) Chrome/125.0 Safari/537.36")
+
+
+class TestCrawlerDynamicServing:
+    """Search crawlers send Accept: */* — they must get HTML (with a <title>),
+    while agent runtimes on the same Accept keep the JSON contract.
+    Root cause of Bing's 'missing title tag' recommendation (2026-07-17)."""
+
+    def test_bingbot_gets_html_with_title_on_root(self, client):
+        r = client.get("/", headers={"User-Agent": BINGBOT_UA, "Accept": "*/*"})
+        assert r.headers["content-type"].startswith("text/html")
+        assert "<title>" in r.text
+
+    def test_bingbot_gets_html_on_tools(self, client):
+        r = client.get("/tools", headers={"User-Agent": BINGBOT_UA, "Accept": "*/*"})
+        assert r.headers["content-type"].startswith("text/html")
+        assert "<title>" in r.text
+
+    def test_googlebot_gets_html_on_tool_page(self, client):
+        r = client.get("/tools/token_price",
+                       headers={"User-Agent": GOOGLEBOT_UA, "Accept": "*/*"})
+        assert r.headers["content-type"].startswith("text/html")
+        assert "<title>token_price" in r.text
+
+    def test_agent_ua_with_star_accept_stays_json(self, client):
+        # httpx/node/curl-style clients are NOT crawlers — JSON contract holds
+        for ua in ("python-httpx/0.27.0", "node", "curl/8.6.0",
+                   "python-requests/2.32.0"):
+            r = client.get("/tools/token_price",
+                           headers={"User-Agent": ua, "Accept": "*/*"})
+            assert r.headers["content-type"].startswith("application/json"), ua
+
+    def test_crawler_explicit_json_accept_wins(self, client):
+        # A crawler explicitly asking for JSON gets JSON — Accept beats UA
+        r = client.get("/tools/token_price",
+                       headers={"User-Agent": BINGBOT_UA,
+                                "Accept": "application/json"})
+        assert r.headers["content-type"].startswith("application/json")
+
+    def test_vary_header_covers_user_agent(self, client):
+        r = client.get("/tools/token_price",
+                       headers={"User-Agent": BINGBOT_UA, "Accept": "*/*"})
+        vary = r.headers.get("vary", "")
+        assert "Accept" in vary and "User-Agent" in vary

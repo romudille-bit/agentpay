@@ -757,8 +757,11 @@ async def sitemap():
         (f"{GATEWAY_URL}/.well-known/agentpay.json", None),
         (f"{GATEWAY_URL}/.well-known/agent.json", None),
         (f"{GATEWAY_URL}/.well-known/x402", None),
-        (f"{GATEWAY_URL}/faucet/ui", None),
-    ] + [(f"{GATEWAY_URL}/tools/{t.name}", None) for t in tools] \
+        # /faucet/ui 404s on mainnet (testnet-only) — a sitemap URL that 404s
+        # is a standing crawl error, so only list it where it actually serves.
+    ] + ([(f"{GATEWAY_URL}/faucet/ui", None)]
+         if settings.STELLAR_NETWORK != "mainnet" else []) \
+      + [(f"{GATEWAY_URL}/tools/{t.name}", None) for t in tools] \
       + [(f"{GATEWAY_URL}/s/{service_slug(u)}", _lastmod(scores[u]))
          for u in sorted(scores)]
 

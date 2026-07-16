@@ -86,11 +86,12 @@ def test_root_markdown_for_agents(client):
 
 
 def test_root_vary_accept(client):
-    """Root varies by Accept — the Vary header must say so on every path,
-    or an edge cache could serve markdown to a browser (and vice versa)."""
+    """Root varies by Accept AND User-Agent (crawlers get HTML on Accept: */*)
+    — the Vary header must say so on every path, or an edge cache could serve
+    markdown to a browser or JSON to bingbot (and vice versa)."""
     for accept in ("text/html", "application/json", "text/markdown"):
         r = client.get("/", headers={"Accept": accept})
-        assert r.headers.get("vary") == "Accept", accept
+        assert r.headers.get("vary") == "Accept, User-Agent", accept
 
 
 def test_root_head_returns_200_no_body(client):
