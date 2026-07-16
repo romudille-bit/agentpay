@@ -180,6 +180,7 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
     resource_url = SESSION_RESOURCE_URL
     base_option = None
     payment_required_header = None
+    accepts_entry = None
     if settings.BASE_GATEWAY_ADDRESS:
         base_req = base_pay.build_payment_requirements(
             amount_usdc=SESSION_PRICE_USDC,
@@ -212,6 +213,11 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
             bazaar_resource=_SESSION_BAZAAR_RESOURCE,
             bazaar_extension=_SESSION_BAZAAR_EXTENSION,
         )
+        accepts_entry = base_pay.build_accepts_entry(
+            requirements=base_req,
+            resource_url=resource_url,
+            description=_SESSION_DESCRIPTION,
+        )
 
     headers = build_402_headers(challenge)
     if payment_required_header:
@@ -235,6 +241,9 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
     content = {
         "error":       "Payment required",
         "x402Version": 2,
+        # Standard x402 accepts[] in the BODY (not just the PAYMENT-REQUIRED
+        # header) so generic payers find the Base path — GitHub issue #1.
+        "accepts":     [accepts_entry] if accepts_entry else [],
     }
 
     if base_option:

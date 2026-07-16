@@ -173,6 +173,32 @@ def build_payment_requirements(
     }
 
 
+def build_accepts_entry(
+    requirements: dict,
+    resource_url: str,
+    description: str = "",
+) -> dict:
+    """
+    Build a standard x402 `accepts[]` entry for the 402 JSON BODY.
+
+    Generic x402 payers discover payment options by reading `accepts[]` from
+    the 402 body with the standard field names (`payTo`, `maxAmountRequired`,
+    `asset`, `network`). AgentPay historically exposed the standard entry only
+    inside the base64 PAYMENT-REQUIRED header and used non-standard names
+    (`pay_to`, `amount_atomic`) in the body's `payment_options`, so generic
+    clients missed the otherwise-valid Base path (GitHub issue #1).
+
+    Carries BOTH `amount` (x402 v2 / header dialect) and `maxAmountRequired`
+    (v1 field name many payers still key off) — same atomic value.
+    """
+    entry = dict(requirements)  # shallow copy — don't mutate caller's dict
+    entry["maxAmountRequired"] = entry.get("amount")
+    entry["resource"] = resource_url
+    entry["description"] = description or "AgentPay tool call"
+    entry["mimeType"] = "application/json"
+    return entry
+
+
 def build_payment_required_header(
     requirements: dict,
     resource_url: str,

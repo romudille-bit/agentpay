@@ -417,11 +417,14 @@ async def head_tool(tool_name: str):
 def _base_402_option(tool, resource_url: str):
     """Build the Base payment option + PAYMENT-REQUIRED header for a 402.
 
-    Returns (base_option, payment_required_header), both None when
-    BASE_GATEWAY_ADDRESS isn't configured.
+    Returns (base_option, payment_required_header, accepts_entry), all None
+    when BASE_GATEWAY_ADDRESS isn't configured. `accepts_entry` is the
+    standard-form x402 entry (payTo/maxAmountRequired) for the 402 JSON body,
+    so generic x402 payers can discover the Base path without decoding the
+    PAYMENT-REQUIRED header (GitHub issue #1).
     """
     if not settings.BASE_GATEWAY_ADDRESS:
-        return None, None
+        return None, None, None
 
     base_req = base_pay.build_payment_requirements(
         amount_usdc=tool.price_usdc,
@@ -470,7 +473,12 @@ def _base_402_option(tool, resource_url: str):
         bazaar_resource=bz.get("resource"),
         bazaar_extension=bz.get("extension"),
     )
-    return base_option, payment_required_header
+    accepts_entry = base_pay.build_accepts_entry(
+        requirements=base_req,
+        resource_url=resource_url,
+        description=tool.description,
+    )
+    return base_option, payment_required_header, accepts_entry
 
 
 async def _refund_and_502(tool_name: str, payment_id: str, exc: Exception) -> JSONResponse:
@@ -570,7 +578,7 @@ async def _issue_402(
                 ),
             )
 
-    base_option, payment_required_header = _base_402_option(tool, resource_url)
+    base_option, payment_required_header, accepts_entry = _base_402_option(tool, resource_url)
 
     headers = build_402_headers(challenge)
     if payment_required_header:
@@ -579,6 +587,9 @@ async def _issue_402(
     body_content = {
         "error":       "Payment required",
         "x402Version": 2,
+        # Standard x402 accepts[] in the BODY (not just the PAYMENT-REQUIRED
+        # header) so generic payers find the Base path — GitHub issue #1.
+        "accepts":     [accepts_entry] if accepts_entry else [],
         # Stellar option (backward-compatible top-level fields)
         "payment_id":  challenge.payment_id,
         "amount_usdc": challenge.amount_usdc,

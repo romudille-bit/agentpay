@@ -1058,6 +1058,62 @@ class TestFreeToolStandardV2:
         assert "without any on-chain settlement" in base_opt["instructions"]
 
 
+class TestBodyAcceptsEntry:
+    """GitHub issue #1: generic x402 payers read `accepts[]` from the 402 JSON
+    body with the STANDARD field names (payTo / maxAmountRequired). The
+    standard entry used to live only inside the base64 PAYMENT-REQUIRED
+    header; the body carried non-standard payment_options names (pay_to,
+    amount_atomic), so generic clients missed the valid Base path."""
+
+    def test_402_body_has_standard_accepts_when_base_configured(self, client, monkeypatch):
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        r = client.post("/tools/pre_trade_check/call",
+                        json={"parameters": {"symbol": "ETH"}})
+        assert r.status_code == 402
+        body = r.json()
+        assert isinstance(body.get("accepts"), list) and body["accepts"], \
+            "402 body must carry a non-empty standard accepts[] when Base is configured"
+        a = body["accepts"][0]
+        # Standard x402 field names — NOT pay_to / amount_atomic
+        assert a["payTo"] == "0x" + "c" * 40
+        assert a["scheme"] == "exact"
+        assert a["network"].startswith("eip155:")
+        assert a["asset"].startswith("0x")
+        # Both dialects carry the same atomic amount
+        assert a["maxAmountRequired"] == a["amount"] == "10000"  # $0.01
+        assert a["resource"].endswith("/tools/pre_trade_check/call")
+        assert a["mimeType"] == "application/json"
+        # payment_options untouched (backward compat)
+        assert "base" in body["payment_options"]
+
+    def test_402_body_accepts_empty_when_base_not_configured(self, client, monkeypatch):
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "")
+        r = client.post("/tools/pre_trade_check/call",
+                        json={"parameters": {"symbol": "ETH"}})
+        assert r.status_code == 402
+        assert r.json()["accepts"] == []
+
+    def test_free_tool_402_body_accepts_is_zero_amount(self, client, monkeypatch):
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        r = client.post("/tools/token_price/call", json={"parameters": {"symbol": "ETH"}})
+        assert r.status_code == 402
+        a = r.json()["accepts"][0]
+        assert a["maxAmountRequired"] == a["amount"] == "0"
+
+    def test_session_create_402_body_has_standard_accepts(self, client, monkeypatch):
+        import gateway.routes.session as sess
+        monkeypatch.setattr(sess.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        r = client.get("/v1/session/create")
+        assert r.status_code == 402
+        a = r.json()["accepts"][0]
+        assert a["payTo"] == "0x" + "c" * 40
+        assert a["maxAmountRequired"] == a["amount"] == "10000"  # $0.01
+        assert a["network"].startswith("eip155:")
+
+
 # ── Verified payer wins over declared agent_address (Base paths) ─────────────
 #
 # Real buyers were logged under docs-example addresses (0x742d35Cc…, 0x0000…0)
