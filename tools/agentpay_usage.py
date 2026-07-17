@@ -36,6 +36,11 @@ SELF_ADDRESSES = {
         "GBLYTV4ZME4CARIUVG2WC4LWQUB7HQVZ5W6IZNXLYEMTUYNX2QYOUMU7",  # Stellar test agent (testnet)
         "0xE8B25A72dD6aeF69515452a61AD231C7DF2843b7",  # Base gateway wallet
         "GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",  # Stellar gateway (mainnet)
+        # Added 2026-07-17. Both were landing in "real" traffic and only stayed
+        # out of the KPI by accident (their UAs happen to hit the generic-runtime
+        # bucket). Change either client's UA and our own spend books as revenue.
+        "0xe1601C10B8d4DbF71E0c592B779520380174bc3A",  # Flagship analyst (daily cron, ~$0.02/day)
+        "0x1111111111111111111111111111111111111111",  # free_v2_smoke.py test payer
     ]
 }
 
@@ -69,6 +74,9 @@ CRAWLER_UA_HINTS = [
     "bot", "uptime", "monitor", "observer", "mapper", "network-mapper",
     "probe", "prober", "verifier", "research", "trust", "forum-labs",
     "litebeam", "dexter", "scan",
+    # search-engine crawlers (added 2026-07-17) — GoogleOther hits /s/ pages and
+    # tool endpoints, reads the 402, leaves. Was landing in "likely real".
+    "googleother", "googlebot", "bingbot", "applebot", "duckduckbot",
 ]
 
 
@@ -101,10 +109,38 @@ SCANNER_UA_HINTS = [
     "axios/1.14.0",
 ]
 
+# Our own test harnesses (added 2026-07-17). free_v2_smoke.py writes real rows
+# to payment_logs — incl. payment_done/verified — so without this it books its
+# own smoke calls as customer traffic. Belt-and-braces with SELF_ADDRESSES:
+# filter on BOTH, because genuine paid rows often carry user_agent=None and a
+# UA-only filter would miss a self row whose payer we forgot to list.
+SELF_TEST_UA_HINTS = [
+    "agentpay-freev2-smoke",
+    "agentpay-smoke",
+]
+
+
+def _is_self_test(ua):
+    u = (ua or "").lower()
+    return any(h in u for h in SELF_TEST_UA_HINTS)
+
+
+# Spoofed browser UAs (added 2026-07-17). No human browses to
+# /tools/{name}/call — a real browser UA on an x402 API endpoint is a scanner
+# wearing a costume. These were landing in "likely real" and getting misread as
+# a free-tool conversion wall (the 2026-07-17 wall-E false alarm: 6 rows from a
+# stale iOS 13.2.3 UA, payer=None, abandoned). Checked AFTER _is_crawler so
+# honest self-identifying bots (GoogleOther et al.) keep their own bucket.
+def _is_spoofed_browser(ua):
+    u = (ua or "").strip().lower()
+    return u.startswith("mozilla/") and not _is_crawler(u)
+
 
 def _is_scanner(ua):
     u = (ua or "").lower()
-    return any(h in u for h in SCANNER_UA_HINTS)
+    if any(h in u for h in SCANNER_UA_HINTS):
+        return True
+    return _is_self_test(u) or _is_spoofed_browser(u)
 
 
 def _fetch(url, key, since_iso):
@@ -176,10 +212,17 @@ def main():
     print(f"  total rows              : {len(rows)}")
     print(f"  after self-filter       : {len(real)}")
     if scanner:
-        print(f"  └─ noise scanner        : {len(scanner)}   (axios/1.14.0 — abandons every 402, never pays; --with-scanner to include)")
+        n_axios  = sum(1 for r in scanner if "axios/1.14.0" in (r.get("user_agent") or "").lower())
+        n_spoof  = sum(1 for r in scanner if _is_spoofed_browser(r.get("user_agent")))
+        n_smoke  = sum(1 for r in scanner if _is_self_test(r.get("user_agent")))
+        print(f"  └─ noise scanner        : {len(scanner)}   (abandons every 402, never pays; --with-scanner to include)")
+        print(f"     ├─ axios/1.14.0      : {n_axios}")
+        print(f"     ├─ spoofed browser UA: {n_spoof}   (fake iPhone/Chrome on an API endpoint — not a human)")
+        print(f"     └─ our own smoke test: {n_smoke}   (free_v2_smoke.py — not traffic)")
     print(f"  └─ crawlers/indexers    : {len(crawler)}   (Bazaar/x402 directories, monitors, probes — not users)")
     if generic:
         print(f"  └─ generic runtimes     : {len(generic)}   (bare node/deno/httpx — unattributed; --with-generic to include)")
+        _generic_breakdown(generic)
     print(f"  └─ likely real traffic  : {len(human)}")
 
     # Completed PAID sessions = the real KPI (challenge issued AND settled).
@@ -195,6 +238,9 @@ def main():
 
     print(f"\n  REAL-USAGE signals (crawlers excluded):")
     print(f"    completed paid sessions : {len(done_sessions)}   <- the KPI: discovered + actually paid")
+    for r in done_sessions:
+        print(f"      · {(r.get('created_at') or '')[:19]}  ${r.get('amount_usdc')}  "
+              f"{r.get('agent_address')}  {r.get('network','')}")
     print(f"    abandoned session 402s  : {len(abandoned_sessions)}   (got the challenge, didn't pay)")
     print(f"    unique IPs              : {len(ips)}")
     print(f"    unique agent wallets    : {len(agents)}   (note: quickstart mints a NEW wallet per run,")
@@ -223,6 +269,30 @@ def main():
         ag = (r.get("agent_address") or "—")[:14]
         print(f"    {ts}  {r.get('tool_name','?'):<16} {r.get('state','?'):<12} ${r.get('amount_usdc','0')}  {ag}  {r.get('network','')}")
     print()
+
+
+PAID_TOOLS = {"session_create", "pre_trade_check", "verified_route"}
+
+
+def _generic_breakdown(generic):
+    """Split the generic-runtime bucket into free vs PAID tools, with completion.
+
+    Added 2026-07-17 (AGE-49). This bucket is excluded from "likely real"
+    because bare runtimes are unattributed — but collapsing it to one count
+    hid a growing, zero-converting cohort on the only revenue path we have.
+    A cohort that keeps hitting PAID tools and never settles is either the
+    funding wall or a second scanner; either way it must be visible, not
+    summarised away.
+    """
+    paid = [r for r in generic if r.get("tool_name") in PAID_TOOLS]
+    if not paid:
+        return
+    done = [r for r in paid if r.get("state") in ("payment_done", "verified")]
+    rate = (len(done) / len(paid) * 100) if paid else 0.0
+    by_ua = Counter((r.get("user_agent") or "—").strip().lower() for r in paid)
+    top = ", ".join(f"{u}×{c}" for u, c in by_ua.most_common(3))
+    print(f"     ├─ on PAID tools      : {len(paid)}   ({len(done)} settled = {rate:.0f}% — see AGE-49)")
+    print(f"     └─ top UAs on paid    : {top}")
 
 
 def _top_simple(counter, label, n=10):
