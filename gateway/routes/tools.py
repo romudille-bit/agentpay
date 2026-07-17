@@ -136,27 +136,45 @@ def normalize_payment_headers(
 _TOOL_BAZAAR: dict[str, dict] = {
     "pre_trade_check": {
         "resource": {
+            # AGE-36 EXPERIMENT (2026-07-17) — does description text, not tags,
+            # drive Bazaar ranking? "trading" and "risk" are already TAGS here
+            # and query=trading / query=risk return us NOTHING, while every term
+            # we DO rank for (budget, session, slippage) appears in a description.
+            # The resources that beat us for head terms carry the word in their
+            # NAME ("Pair Trading: Bulk Signals" ranks #1 for trading without a
+            # trading tag at all). So: add "trading" + "risk" here naturally and
+            # re-query after one Mode-A settle.
+            #   CONTROL: verified_route's "routing"/"discovery" stay tag-only and
+            #   unchanged. If trading/risk start ranking while routing/discovery
+            #   stay absent, the model is confirmed and the fix is copy, not tags.
+            # If this holds, see AGE-36 for the real decision: head terms are won
+            # by keyword-in-name, which is the keyword-stuffed-stub pattern the
+            # competitor scan rejected — owning rare precise compounds
+            # (spend-control, trust-oracle, sybil-detection) may be the better game.
             "serviceName": "AgentPay",
             "description": (
-                "One-call pre-trade sanity check for AI agents: live orderbook "
+                "Pre-trade risk check for AI agents trading crypto: live orderbook "
                 "slippage at YOUR size, side-aware funding carry, open-interest "
                 "crowding, and optional contract security — composed into a single "
                 "ok/caution/avoid verdict with per-factor reasons and raw data "
-                "embedded. Replaces four API integrations plus the judgment layer."
+                "embedded. Answers 'is this trade sane?' before trading, not after. "
+                "Replaces four API integrations plus the judgment layer."
             ),
-            # ≤5 tags, ≤32 chars each. Bazaar search matches EXACT tags —
-            # hyphenated compounds don't match their component words (verified
-            # 2026-07-12: query "trading" missed the "agent-trading" tag while
-            # "slippage"/"pre-trade-check" hit). Mix plain high-traffic words
-            # with the category-owning compound.
+            # ≤5 tags, ≤32 chars each. NOTE (2026-07-17): the "Bazaar matches
+            # EXACT tags" finding is only half true. Exact-tag matching surfaces
+            # you for RARE compounds where competition is thin (spend-control,
+            # agent-budget, trust-oracle). For COMMON head terms, text relevance
+            # over name+description dominates and a tag contributes ~nothing —
+            # which is why these plain words alone never moved us.
             "tags": ["trading", "trade", "risk", "slippage", "pre-trade-check"],
         },
         "extension": {
             "description": (
-                "Pre-trade sanity check: 'I want to long $X of SYMBOL — is now "
-                "sane?' Live slippage at your size + side-aware funding carry + "
-                "OI crowding + optional security scan → one ok/caution/avoid "
-                "verdict with per-factor breakdown and raw components embedded."
+                "Pre-trade risk check for AI agents trading crypto: 'I want to "
+                "long $X of SYMBOL — is now sane?' Live slippage at your size + "
+                "side-aware funding carry + OI crowding + optional security scan "
+                "→ one ok/caution/avoid verdict with per-factor breakdown and raw "
+                "components embedded."
             ),
             "info": {
                 "input": {
