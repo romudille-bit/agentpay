@@ -783,7 +783,15 @@ def publish_run(payload: dict) -> bool:
         req = urllib.request.Request(
             f"{GATEWAY}/v1/flagship/run",
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "X-Flagship-Secret": secret},
+            headers={"Content-Type": "application/json",
+                     "X-Flagship-Secret": secret,
+                     # AGE-46 root cause: Cloudflare 403s urllib's default
+                     # "Python-urllib/3.x" UA (error 1010, UA ban) on
+                     # agentpay.tools, so EVERY daily ingest died as
+                     # "ingest failed: HTTP Error 403" since 2026-06-12.
+                     # Same incident the prober hit on its first sweep
+                     # (2026-07-10) and fixed with PROBE_UA — mirror it.
+                     "User-Agent": "Mozilla/5.0 (compatible; x402-client)"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
