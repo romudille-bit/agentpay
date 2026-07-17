@@ -661,6 +661,114 @@ async def mark_split_failed(payment_id: str, reason: str) -> None:
 _ABANDONED_AFTER_SECONDS = 5 * 60
 
 
+async def correlate_pending_challenge(
+    tool_name: str,
+    client_ip: Optional[str],
+    user_agent: Optional[str],
+    tx_hash: str,
+) -> Optional[str]:
+    """Best-effort: link a Base/free-v2 settle back to the 402 that prompted it.
+
+    WHY THIS EXISTS. x402-v2 does not echo our UUID back through
+    PAYMENT-SIGNATURE, so a Base settle is keyed on tx_hash and writes a
+    SECOND row; the original UUID-keyed pending row is never touched and the
+    sweep marks it 'abandoned'. Every success therefore mints a phantom
+    abandonment, and no 402 can be tied to its own settlement.
+
+    Two consequences, one small and one not:
+      * Inflation is currently trivial (~311 phantoms vs ~121k abandoned rows
+        = 0.26%). This is NOT why the funnel looks bad.
+      * But `conversion = payment_done / (payment_done + abandoned)` is
+        SYSTEMATICALLY WRONG, and the error scales with success: at a true 50%
+        conversion the query reports 33%. It corrupts the metric precisely when
+        the metric starts to matter. That's the reason to fix it now, cheaply,
+        rather than when there's revenue riding on the number.
+
+    Correlation is HEURISTIC and best-effort. There is no shared key, so we
+    match the most recent still-pending row on (tool_name, client_ip,
+    user_agent) inside the sweep window. Caveats, stated plainly:
+      * client_ip is near-useless as a discriminator — Railway's edge puts
+        almost everything on 100.64.0.x (CGNAT). It's kept as a weak filter,
+        not a identity.
+      * UA is not unique either: many distinct clients share bare 'node'.
+      * So under concurrency this CAN attribute a settle to the wrong client's
+        challenge. That is acceptable ONLY because this column is analytics,
+        never money: nothing about verification, replay, or the split reads it.
+
+    Failure degrades to exactly today's behaviour (row → 'abandoned' via the
+    sweep), so this is safe to run fire-and-forget off the hot path.
+
+    Returns the correlated payment_id, or None if nothing matched.
+    """
+    if not sb_enabled():
+        return None
+    try:
+        from datetime import timedelta
+        since = (
+            datetime.now(tz=timezone.utc) - timedelta(seconds=_ABANDONED_AFTER_SECONDS)
+        ).isoformat()
+        params = {
+            "select":     "payment_id",
+            "state":      "eq.pending",
+            "tool_name":  f"eq.{tool_name}",
+            "created_at": f"gte.{since}",
+            "order":      "created_at.desc",
+            "limit":      "1",
+        }
+        # Weak filters — only applied when present, so a UA-less client still
+        # correlates on (tool_name, window) rather than not at all.
+        if client_ip:
+            params["client_ip"] = f"eq.{client_ip}"
+        if user_agent:
+            params["user_agent"] = f"eq.{user_agent}"
+
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params=params,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    f"correlate_pending_challenge lookup: HTTP {resp.status_code} "
+                    f"body={resp.text[:120]}"
+                )
+                return None
+            rows = resp.json() or []
+            if not rows:
+                return None
+            pid = rows[0].get("payment_id")
+            if not pid:
+                return None
+
+            # 'superseded' — the challenge WAS answered; the outcome lives on
+            # the tx-keyed row. Deliberately NOT 'payment_done': that would
+            # double-count successes in the very query this exists to fix.
+            # Deliberately not a DELETE either: the row's created_at is the
+            # 402-issue time, so keeping it gives time-to-pay for free.
+            patch = await client.patch(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={"payment_id": f"eq.{pid}", "state": "eq.pending"},
+                json={"state": "superseded", "tx_hash": tx_hash},
+            )
+            if patch.status_code not in (200, 204):
+                logger.warning(
+                    f"correlate_pending_challenge patch: HTTP {patch.status_code} "
+                    f"body={patch.text[:120]} (payment_id={pid})"
+                )
+                return None
+            logger.info(
+                f"[FUNNEL] correlated 402 {str(pid)[:8]}… → settle {str(tx_hash)[:14]}… "
+                f"tool={tool_name}"
+            )
+            return pid
+    except Exception as e:
+        # Never let analytics break a paid call that already settled on-chain.
+        logger.warning(f"correlate_pending_challenge failure (tool={tool_name}): {e}")
+        return None
+
+
 async def sweep_abandoned_pending() -> int:
     """Transition stale pending payment_logs rows to state='abandoned'.
 
@@ -676,6 +784,25 @@ async def sweep_abandoned_pending() -> int:
     place — the abandoned row stays as a permanent analytics record.
     The conversion-by-tool query in §5.5 of the design doc relies on
     counting abandoned vs. payment_done rows per tool.
+
+    IMPORTANT (2026-07-17): 'abandoned' means "we issued a 402 and NOTHING
+    came back" — it does NOT mean "tried and failed". A client that answers
+    with a bad payload is 'rejected' with an error_reason; a client whose
+    answer settled on Base is 'superseded' via correlate_pending_challenge.
+    Historically neither had ever fired: 0 'rejected' rows and 0 non-null
+    error_reason in the entire table, i.e. no client has ever sent a payload
+    we refused. Abandonment here is silence, not failure — don't read it as a
+    payments bug.
+
+    Because a Base settle is keyed on tx_hash (x402-v2 doesn't echo our UUID),
+    the §5.5 conversion query MUST exclude 'superseded' from the denominator
+    or it double-counts every success as an abandonment too:
+
+        conversion = payment_done / (payment_done + abandoned)
+          -- 'superseded' rows are answered challenges; excluding them is the
+          -- whole point. Before correlate_pending_challenge existed they were
+          -- silently mixed into 'abandoned' and the ratio was wrong by
+          -- construction, with the error scaling as success grew.
     """
     if not sb_enabled():
         return 0

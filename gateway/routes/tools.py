@@ -35,6 +35,7 @@ from gateway import base as base_pay
 from gateway._limiter import limiter, wallet_or_ip
 from gateway.config import GATEWAY_URL, offered_pending_network, settings
 from gateway.services.supabase import (
+    correlate_pending_challenge,
     insert_pending_payment_log,
     record_tx_hash,
     sb_enabled,
@@ -879,6 +880,19 @@ async def _execute_and_log(
             gateway_fee_usdc=gateway_fee,
             client_ip=client_ip,
             user_agent=user_agent_str,
+        ))
+        # …and mark the 402 that prompted it 'superseded' instead of letting the
+        # sweep call it 'abandoned'. Without this every success also books a
+        # phantom abandonment, so conversion = done/(done+abandoned) is wrong by
+        # construction and the error GROWS with success (50% true → 33% reported).
+        # Fire-and-forget on purpose: the payment already settled on-chain, so
+        # analytics must never add latency or a failure mode to it. If this
+        # misses, the row falls through to the sweep = today's behaviour.
+        asyncio.create_task(correlate_pending_challenge(
+            tool_name=resolved,
+            client_ip=client_ip,
+            user_agent=user_agent_str,
+            tx_hash=tx_hash,
         ))
 
     try:

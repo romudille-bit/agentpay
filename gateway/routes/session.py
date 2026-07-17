@@ -28,6 +28,7 @@ from gateway import base as base_pay
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, offered_pending_network, settings
 from gateway.services.supabase import (
+    correlate_pending_challenge,
     insert_pending_payment_log,
     sb_enabled,
     update_payment_log_state,
@@ -470,7 +471,18 @@ async def create_session(
 
     # Base path: insert a tx_hash-keyed row so the terminal PATCH below has
     # somewhere to land (same pattern as the tools route).
+    #
+    # client_ip/user_agent were MISSING here until 2026-07-17, so every settled
+    # session_create row carried user_agent=NULL while the same client's
+    # /tools/…/call rows carried its real UA. That's not cosmetic: session_create
+    # IS the KPI, so a UA-based filter could never classify the one row that
+    # counts. Live case — 0xEB3d1b… books as a "paying customer" on a NULL-UA
+    # session_create row while its pre_trade_check row reads
+    # 'TrustprobeBot/1.0 (deep-probe)': a peer trust-prober paying $0.01 to check
+    # we deliver, i.e. exactly what our own Prober does to other services. Not demand.
     if is_base and sb_enabled():
+        settle_ip = request.client.host if request.client else None
+        settle_ua = request.headers.get("user-agent")
         asyncio.create_task(insert_pending_payment_log(
             payment_id=payment_id,
             tool_name=SESSION_TOOL_NAME,
@@ -480,6 +492,18 @@ async def create_session(
             agent_address=agent_address,
             tx_hash=tx_hash,
             developer_address=settings.GATEWAY_PUBLIC_KEY,
+            client_ip=settle_ip,
+            user_agent=settle_ua,
+        ))
+        # Mark the 402 that prompted this settle 'superseded' rather than
+        # letting the sweep book it as 'abandoned'. See
+        # supabase.correlate_pending_challenge for why (conversion is wrong by
+        # construction otherwise, and the error grows with success).
+        asyncio.create_task(correlate_pending_challenge(
+            tool_name=SESSION_TOOL_NAME,
+            client_ip=settle_ip,
+            user_agent=settle_ua,
+            tx_hash=tx_hash,
         ))
 
     session_id = str(uuid.uuid4())

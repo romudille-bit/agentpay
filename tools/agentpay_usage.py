@@ -225,11 +225,37 @@ def main():
         _generic_breakdown(generic)
     print(f"  └─ likely real traffic  : {len(human)}")
 
+    # Cohort classification (2026-07-17). A wallet that EVER appears under a
+    # crawler/prober/scanner UA is one on all its rows — including rows where
+    # the UA is absent. This is not pedantry: session_create settle rows carried
+    # user_agent=NULL until the 2026-07-17 gateway fix, so the single row that
+    # IS the KPI was the one row a UA filter could never classify. 0xEB3d1b…
+    # booked as a "paying customer" on a NULL-UA session_create while its
+    # pre_trade_check row read 'TrustprobeBot/1.0 (deep-probe)' — a peer trust
+    # prober paying $0.01 to verify we deliver, not a buyer. Classify the WALLET.
+    bot_wallets = {
+        (r.get("agent_address") or "").lower()
+        for r in real
+        if r.get("agent_address")
+        and (_is_crawler(r.get("user_agent")) or _is_scanner(r.get("user_agent")))
+    }
+    bot_wallets.discard("")
+
+    def _is_bot_wallet(r):
+        return (r.get("agent_address") or "").lower() in bot_wallets
+
     # Completed PAID sessions = the real KPI (challenge issued AND settled).
     done_sessions = [r for r in human if r.get("tool_name") == "session_create"
-                     and r.get("state") in ("payment_done", "verified")]
+                     and r.get("state") in ("payment_done", "verified")
+                     and not _is_bot_wallet(r)]
+    bot_sessions = [r for r in human if r.get("tool_name") == "session_create"
+                    and r.get("state") in ("payment_done", "verified")
+                    and _is_bot_wallet(r)]
+    # 'abandoned' = we issued a 402 and NOTHING came back. Exclude 'superseded'
+    # (answered, settled on a tx-keyed row) and 'pending' (still in flight) —
+    # counting either as abandonment overstates the wall.
     abandoned_sessions = [r for r in human if r.get("tool_name") == "session_create"
-                          and r.get("state") not in ("payment_done", "verified")]
+                          and r.get("state") == "abandoned"]
 
     agents = Counter(r.get("agent_address") for r in human if r.get("agent_address"))
     ips     = Counter(r.get("client_ip") for r in human if r.get("client_ip"))
@@ -241,7 +267,12 @@ def main():
     for r in done_sessions:
         print(f"      · {(r.get('created_at') or '')[:19]}  ${r.get('amount_usdc')}  "
               f"{r.get('agent_address')}  {r.get('network','')}")
-    print(f"    abandoned session 402s  : {len(abandoned_sessions)}   (got the challenge, didn't pay)")
+    if bot_sessions:
+        print(f"    (excluded: {len(bot_sessions)} paid session(s) from prober/crawler wallets — not demand)")
+        for r in bot_sessions:
+            print(f"      · {(r.get('created_at') or '')[:19]}  ${r.get('amount_usdc')}  "
+                  f"{r.get('agent_address')}  [bot cohort]")
+    print(f"    abandoned session 402s  : {len(abandoned_sessions)}   (402 issued, NOTHING came back)")
     print(f"    unique IPs              : {len(ips)}")
     print(f"    unique agent wallets    : {len(agents)}   (note: quickstart mints a NEW wallet per run,")
     print(f"                                       so this overcounts distinct users)")

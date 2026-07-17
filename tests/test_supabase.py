@@ -34,6 +34,7 @@ import respx
 from gateway.services.supabase import (
     claim_refund_pending,
     cleanup_expired_challenges,
+    correlate_pending_challenge,
     delete_pending_challenge,
     faucet_ip_seen_recently,
     get_pending_challenge,
@@ -557,6 +558,127 @@ class TestRefundORM:
         )
         assert captured["body"]["state"] == "refund_failed"
         assert captured["body"]["error_reason"] == "max_attempts_exhausted"
+
+
+# ── correlate_pending_challenge (2026-07-17, phantom-abandon fix) ───────────
+
+class TestCorrelatePendingChallenge:
+    """x402-v2 doesn't echo our UUID, so a Base settle writes a tx-keyed row and
+    the original 402 row is swept to 'abandoned' — every success booking a
+    phantom abandonment. These pin the correlation that marks it 'superseded'.
+    """
+
+    @pytest.mark.asyncio
+    async def test_marks_matching_pending_row_superseded(self):
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(200, json=[{"payment_id": "uuid-42"}])
+            )
+            patched = {}
+
+            def capture(request):
+                import json
+                patched["url"] = str(request.url)
+                patched["body"] = json.loads(request.content)
+                return httpx.Response(204)
+
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(side_effect=capture)
+            pid = await correlate_pending_challenge(
+                tool_name="session_create", client_ip="100.64.0.5",
+                user_agent="node", tx_hash="0xdead",
+            )
+        assert pid == "uuid-42"
+        # 'superseded', NOT 'payment_done' — marking it done would double-count
+        # the success in the very conversion query this exists to fix.
+        assert patched["body"]["state"] == "superseded"
+        assert patched["body"]["tx_hash"] == "0xdead"
+        # Guard the PATCH: must be scoped to that row AND still-pending, so a
+        # terminal row can never be clobbered by a late correlation.
+        assert "payment_id=eq.uuid-42" in patched["url"]
+        assert "state=eq.pending" in patched["url"]
+
+    @pytest.mark.asyncio
+    async def test_lookup_scoped_to_pending_rows_in_window(self):
+        captured = {}
+
+        def capture(request):
+            captured["url"] = str(request.url)
+            return httpx.Response(200, json=[])
+
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(side_effect=capture)
+            res = await correlate_pending_challenge(
+                tool_name="pre_trade_check", client_ip="100.64.0.5",
+                user_agent="node", tx_hash="0xbeef",
+            )
+        assert res is None  # no candidate → nothing correlated
+        assert "state=eq.pending" in captured["url"]
+        assert "tool_name=eq.pre_trade_check" in captured["url"]
+        assert "created_at=gte." in captured["url"]   # bounded by the sweep window
+        assert "limit=1" in captured["url"]
+
+    @pytest.mark.asyncio
+    async def test_missing_ua_still_correlates_on_tool_and_window(self):
+        # Genuine paid rows often carry user_agent=None. A UA-less client must
+        # still correlate rather than not at all — otherwise the phantom stays.
+        captured = {}
+
+        def capture(request):
+            captured["url"] = str(request.url)
+            return httpx.Response(200, json=[{"payment_id": "uuid-7"}])
+
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(side_effect=capture)
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(204)
+            )
+            pid = await correlate_pending_challenge(
+                tool_name="session_create", client_ip=None,
+                user_agent=None, tx_hash="0xabc",
+            )
+        assert pid == "uuid-7"
+        assert "user_agent" not in captured["url"]
+        assert "client_ip" not in captured["url"]
+
+    @pytest.mark.asyncio
+    async def test_supabase_error_returns_none_and_does_not_raise(self):
+        # The payment already settled ON-CHAIN before this runs. Analytics must
+        # never raise into a settled call; failure degrades to the sweep.
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(500, text="boom")
+            )
+            assert await correlate_pending_challenge(
+                tool_name="session_create", client_ip=None,
+                user_agent=None, tx_hash="0x1",
+            ) is None
+
+    @pytest.mark.asyncio
+    async def test_network_failure_returns_none_and_does_not_raise(self):
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=httpx.ConnectError("network down")
+            )
+            assert await correlate_pending_challenge(
+                tool_name="session_create", client_ip=None,
+                user_agent=None, tx_hash="0x1",
+            ) is None
+
+    @pytest.mark.asyncio
+    async def test_disabled_supabase_is_noop(self, monkeypatch):
+        import gateway.services.supabase as sb_module
+        from gateway.config import get_settings
+
+        monkeypatch.setenv("SUPABASE_URL", "")
+        get_settings.cache_clear()
+        monkeypatch.setattr(sb_module, "settings", get_settings())
+        with respx.mock:
+            # No mocks: any HTTP call here fails the test.
+            assert await correlate_pending_challenge(
+                tool_name="session_create", client_ip=None,
+                user_agent=None, tx_hash="0x1",
+            ) is None
+        get_settings.cache_clear()
 
 
 # ── sweep_abandoned_pending (PR #14) ────────────────────────────────────────
