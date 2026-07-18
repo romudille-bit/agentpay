@@ -184,11 +184,14 @@ class AgentPayClient:
             # success=True only when the tool call completes.
             entry: dict | None = None
 
-            def _record(state: str, tx_hash: str = "") -> dict:
+            def _record(state: str, tx_hash: str = "", amount=None) -> dict:
+                # `amount` overrides the 402 body's amount_usdc — used by the
+                # Base leg to record the amount the auth was actually SIGNED
+                # for (the payment_options.base amount, which can differ).
                 nonlocal entry
                 entry = {
                     "tool": tool_name,
-                    "amount_usdc": str(amount_usdc),
+                    "amount_usdc": str(amount if amount is not None else amount_usdc),
                     "tx_hash": tx_hash,
                     "success": False,
                     "state": state,
@@ -305,7 +308,14 @@ class AgentPayClient:
                         # X-Payment header format'. This path only talks to
                         # AgentPay's own gateway; external x402 URLs go through
                         # _call_x402_url instead.
-                        _record("signed_auth_transmitted")
+                        # Record the amount the authorization was SIGNED for —
+                        # the Base option's amount, not the 402 body's
+                        # amount_usdc (equal on AgentPay's own gateway, but
+                        # the signed amount is the one that can settle).
+                        _record(
+                            "signed_auth_transmitted",
+                            amount=base_amount if base_amount is not None else None,
+                        )
                         try:
                             retry = client.post(
                                 url,

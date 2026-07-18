@@ -1162,6 +1162,9 @@ class Session:
 
         For external URLs, payment goes directly to the tool provider.
         AgentPay tracks the spend locally and enforces the budget cap.
+        NOTE: an external URL has no registry quote, so a URL call is bounded
+        only by the remaining session budget (its 402 IS the quote). To bound
+        spend on a specific URL, use max_per_tool={"https://…": cap}.
 
         - Pre-checks the price against remaining budget.
         - If budget would be exceeded, looks for the next-cheapest tool in the

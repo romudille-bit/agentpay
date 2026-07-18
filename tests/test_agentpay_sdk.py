@@ -812,3 +812,29 @@ class TestFallbackRespectsPolicies:
                 s.call("token_price", {"symbol": "ETH"})
         assert w.pay.call_count == 0
         assert not fb_route.called
+
+
+class TestBaseLegRecordsSignedAmount:
+    """Review follow-up: the Base leg must record the amount the auth was
+    actually SIGNED for (payment_options.base), not the 402 body's
+    amount_usdc — the signed amount is the one that can settle."""
+
+    def test_entry_amount_is_the_signed_base_amount(self, fake_wallet):
+        fake_wallet.base_address = "0x" + "b" * 40
+        fake_wallet.build_base_payment_signature.return_value = "sig-b64"
+        challenge = dict(VALID_402, amount_usdc="0.001", payment_options={"base": {
+            "amount_atomic": 1050,          # $0.00105 signed — differs from body
+            "amount_usdc": "0.00105",
+            "pay_to": "0x" + "c" * 40, "network": "eip155:8453",
+        }})
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=challenge),
+                httpx.Response(500, text="rejected"),
+            ])
+            with pytest.raises(Exception, match="after payment"):
+                client.call_tool("token_price", {}, max_spend="0.00105")
+        e = client.call_log[0]
+        assert e["amount_usdc"] == "0.00105"   # signed amount, not body's 0.001
+        assert e["state"] == "uncertain_settlement"
