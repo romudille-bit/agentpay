@@ -31,7 +31,9 @@ def mocked_refund_deps(monkeypatch):
     state = {
         "rows":       [],     # what claim_refund_pending returns
         "send_results": [],   # popped one per call to send_refund
-        "attempts":   {},     # payment_id → increment count
+        "attempts":   {},     # payment_id → increment CALL count
+        "initial_attempts": {},  # payment_id → refund_attempts on the claimed row
+        "increment_unconfirmed": False,  # True → fake_increment returns None (AGE-61)
         "done_calls": [],     # (payment_id, tx_hash) tuples
         "failed_calls": [],   # (payment_id, reason) tuples
     }
@@ -42,11 +44,20 @@ def mocked_refund_deps(monkeypatch):
         if state["rows"]:
             r = state["rows"]
             state["rows"] = []
+            for row in r:
+                state["initial_attempts"][row["payment_id"]] = int(
+                    row.get("refund_attempts", 0)
+                )
             return r
         return []
 
     async def fake_increment(payment_id):
+        # AGE-61 contract: return the confirmed NEW total attempt count,
+        # or None when the increment could not be confirmed.
+        if state["increment_unconfirmed"]:
+            return None
         state["attempts"][payment_id] = state["attempts"].get(payment_id, 0) + 1
+        return state["initial_attempts"].get(payment_id, 0) + state["attempts"][payment_id]
 
     async def fake_mark_done(payment_id, refund_tx_hash):
         state["done_calls"].append((payment_id, refund_tx_hash))
@@ -59,7 +70,11 @@ def mocked_refund_deps(monkeypatch):
             return state["send_results"].pop(0)
         return {"success": True, "tx_hash": "default_hash"}
 
+    async def fake_sweep_cap():
+        return 0
+
     import gateway.services.supabase as sb_mod
+    monkeypatch.setattr(sb_mod, "sweep_cap_exhausted_refunds", fake_sweep_cap)
     monkeypatch.setattr(sb_mod, "claim_refund_pending", fake_claim)
     monkeypatch.setattr(sb_mod, "increment_refund_attempt", fake_increment)
     monkeypatch.setattr(sb_mod, "mark_refund_done", fake_mark_done)
@@ -239,3 +254,38 @@ async def test_refund_worker_base_refund_used_when_key_configured(
     assert mocked_refund_deps["failed_calls"] == []
     # Stellar send_refund untouched
     assert mocked_refund_deps["send_results"] == []
+
+
+@pytest.mark.asyncio
+async def test_refund_worker_unconfirmed_increment_skips_send(mocked_refund_deps):
+    """AGE-61: when increment_refund_attempt cannot CONFIRM the new count
+    (read blip / missing row / failed write → None), the worker must NOT
+    send a refund this sweep. The old code defaulted a failed read to 0,
+    resetting the counter and letting duplicate refunds blow past the
+    5-attempt cap — each attempt a real USDC send."""
+    mocked_refund_deps["rows"] = [{
+        "payment_id":      "pid-blip",
+        "agent_address":   "GAGENT",
+        "amount_usdc":     "0.004",
+        "network":         "stellar-testnet",
+        "tool_name":       "token_price",
+        "refund_attempts": 4,   # one send away from the cap
+    }]
+    mocked_refund_deps["increment_unconfirmed"] = True
+    # If the worker sends despite the unconfirmed counter, this would
+    # mark the row done and the assertions below fail.
+    mocked_refund_deps["send_results"] = [
+        {"success": True, "tx_hash": "must_not_happen"},
+    ]
+
+    from gateway.main import _refund_worker_loop
+    with pytest.raises(asyncio.CancelledError):
+        await _refund_worker_loop()
+
+    # No send: the pre-loaded result was never popped.
+    assert mocked_refund_deps["send_results"] == [
+        {"success": True, "tx_hash": "must_not_happen"},
+    ]
+    # No state transitions either — the row waits for the next sweep.
+    assert mocked_refund_deps["done_calls"] == []
+    assert mocked_refund_deps["failed_calls"] == []

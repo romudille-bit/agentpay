@@ -100,16 +100,50 @@ class TestReplayProtection:
         assert ok is False
 
     @pytest.mark.asyncio
-    async def test_record_payment_id_5xx_does_not_block(self):
-        # On Supabase 5xx, return True so the gateway doesn't reject
-        # legitimate payments due to infrastructure issues. The error gets
-        # logged so the failure is visible.
+    async def test_record_payment_id_5xx_fails_closed(self):
+        """AGE-60: Supabase is the PRIMARY replay store (in-memory dies on
+        every restart). A 5xx means the consume could NOT be confirmed —
+        return None so callers reject retryably instead of authorizing a
+        potentially-replayed payment."""
         with respx.mock:
             respx.post(f"{SB}/rest/v1/replay_payment_ids").mock(
                 return_value=httpx.Response(503)
             )
             ok = await record_payment_id("test-uuid-1")
-        assert ok is True  # don't block on infra
+        assert ok is None  # consume unconfirmed → caller must fail closed
+
+    @pytest.mark.asyncio
+    async def test_record_tx_hash_network_error_fails_closed(self):
+        """AGE-60: same for transport-level failures on the tx-hash side."""
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/replay_tx_hashes").mock(
+                side_effect=httpx.ConnectError("supabase down")
+            )
+            ok = await record_tx_hash("hash-x", "stellar-mainnet")
+        assert ok is None
+
+    @pytest.mark.asyncio
+    async def test_replay_store_sustained_failures_escalate(self, caplog):
+        """AGE-60: 3+ consecutive record_* failures log CRITICAL so a broken
+        table/RLS at cutover is loud, not silent."""
+        import logging
+        import gateway.services.supabase as sb_module
+        sb_module._replay_store_consecutive_failures = 0
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/replay_payment_ids").mock(
+                return_value=httpx.Response(503)
+            )
+            with caplog.at_level(logging.ERROR):
+                for _ in range(3):
+                    assert await record_payment_id("uuid-n") is None
+        assert any(r.levelno == logging.CRITICAL for r in caplog.records)
+        # A success resets the streak.
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/replay_payment_ids").mock(
+                return_value=httpx.Response(201)
+            )
+            assert await record_payment_id("uuid-ok") is True
+        assert sb_module._replay_store_consecutive_failures == 0
 
     @pytest.mark.asyncio
     async def test_is_payment_id_consumed(self):
@@ -498,9 +532,51 @@ class TestRefundORM:
         with respx.mock:
             respx.get(f"{SB}/rest/v1/payment_logs").mock(side_effect=get_handler)
             respx.patch(f"{SB}/rest/v1/payment_logs").mock(side_effect=patch_handler)
-            await increment_refund_attempt("test-uuid")
+            new_count = await increment_refund_attempt("test-uuid")
 
         assert write_payload == {"refund_attempts": 4}
+        assert new_count == 4  # AGE-61: confirmed new total returned
+
+    @pytest.mark.asyncio
+    async def test_increment_refund_attempt_read_blip_returns_none(self):
+        """AGE-61: a failed read must NOT default to current=0 (which reset
+        the counter from e.g. 4 back to 1 and let the worker blow past the
+        5-attempt cap — each attempt a real USDC send). It returns None and
+        performs NO write."""
+        patched = {"called": False}
+
+        def patch_handler(request):
+            patched["called"] = True
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(503)
+            )
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(side_effect=patch_handler)
+            assert await increment_refund_attempt("test-uuid") is None
+        assert patched["called"] is False  # no write on a failed read
+
+    @pytest.mark.asyncio
+    async def test_increment_refund_attempt_missing_row_returns_none(self):
+        """AGE-61: an empty read (row gone/filtered) is also a hard stop."""
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(200, json=[])
+            )
+            assert await increment_refund_attempt("test-uuid") is None
+
+    @pytest.mark.asyncio
+    async def test_increment_refund_attempt_failed_write_returns_none(self):
+        """AGE-61: an unconfirmed write must not authorize a send either."""
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(200, json=[{"refund_attempts": 2}])
+            )
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(500)
+            )
+            assert await increment_refund_attempt("test-uuid") is None
 
     @pytest.mark.asyncio
     async def test_mark_refund_done_uses_state_guard(self):
@@ -811,10 +887,67 @@ class TestCrossCutting:
     @pytest.mark.asyncio
     async def test_network_error_logs_but_does_not_raise(self):
         # httpx raises ConnectError on network failure. Our functions
-        # must catch + log + return a safe default.
+        # must catch + log + return a safe value — for record_* that is
+        # None (AGE-60 fail-closed: consume unconfirmed), never a raise.
         with respx.mock:
             respx.post(f"{SB}/rest/v1/replay_payment_ids").mock(
                 side_effect=httpx.ConnectError("dns fail")
             )
             ok = await record_payment_id("x")  # must not raise
-        assert ok is True
+        assert ok is None
+
+
+class TestAge60FollowUps:
+    """Compensating rollback + cap-exhausted sweep (AGE-60/61 follow-ups)."""
+
+    @pytest.mark.asyncio
+    async def test_unrecord_tx_hash_deletes_by_composite_key(self):
+        from gateway.services.supabase import unrecord_tx_hash
+        seen = {}
+
+        def delete_handler(request):
+            seen["params"] = dict(request.url.params)
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.delete(f"{SB}/rest/v1/replay_tx_hashes").mock(
+                side_effect=delete_handler
+            )
+            assert await unrecord_tx_hash("deadbeef", "stellar-mainnet") is True
+        assert seen["params"]["tx_hash"] == "eq.deadbeef"
+        assert seen["params"]["network"] == "eq.stellar-mainnet"
+
+    @pytest.mark.asyncio
+    async def test_unrecord_tx_hash_failure_returns_false_logs_critical(self, caplog):
+        import logging
+        from gateway.services.supabase import unrecord_tx_hash
+        with respx.mock:
+            respx.delete(f"{SB}/rest/v1/replay_tx_hashes").mock(
+                return_value=httpx.Response(500)
+            )
+            with caplog.at_level(logging.CRITICAL):
+                assert await unrecord_tx_hash("deadbeef", "stellar-mainnet") is False
+        assert any("half-consumed" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_sweep_cap_exhausted_filters_and_counts(self):
+        from gateway.services.supabase import (
+            _REFUND_ATTEMPT_CAP,
+            sweep_cap_exhausted_refunds,
+        )
+        seen = {}
+
+        def patch_handler(request):
+            import json
+            seen["params"] = dict(request.url.params)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json=[{"payment_id": "a"}, {"payment_id": "b"}])
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(side_effect=patch_handler)
+            n = await sweep_cap_exhausted_refunds()
+        assert n == 2
+        assert seen["params"]["state"] == "eq.refund_pending"
+        assert seen["params"]["refund_attempts"] == f"gte.{_REFUND_ATTEMPT_CAP}"
+        assert seen["body"] == {"state": "refund_failed",
+                                "error_reason": "cap_exhausted_no_send"}

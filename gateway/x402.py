@@ -330,21 +330,52 @@ async def verify_and_fulfill(
     #      within this worker's event loop.
     #   2. Durable: the replay_* tables are insert-only with a PK/composite-PK,
     #      so record_*() returns False on an HTTP 409 — i.e. another worker or
-    #      a pre-restart request already consumed this payment. (They return
-    #      True when Supabase is disabled/unreachable, so this never fails
-    #      closed on infra blips; in-memory still guards the single-process
-    #      case.) These are now AWAITED — the few-ms cost buys correctness.
+    #      a pre-restart request already consumed this payment. AGE-60: they
+    #      return None when the insert can't be confirmed (Supabase error) —
+    #      the consume now fails CLOSED, since the in-memory set dies on every
+    #      restart and can't be trusted across one. These are AWAITED — the
+    #      few-ms cost buys correctness.
     if tx_hash in _completed_payments:
         return {"authorized": False, "reason": "Payment already used (replay attack)"}
     _completed_payments.add(tx_hash)
 
+    # AGE-60 (review follow-up): the two durable inserts are NOT atomic.
+    # Attempt the second only when the first is confirmed-new — otherwise an
+    # infra blip between them leaves a half-consumed proof: an orphan
+    # replay_tx_hashes row that makes the client's retry bounce off the PK
+    # with a false "replay attack" on a payment that never fulfilled.
     tx_recorded  = await sb.record_tx_hash(tx_hash, network_label)
-    pid_recorded = await sb.record_payment_id(payment_id)
+    pid_recorded = None
+    if tx_recorded is True:
+        pid_recorded = await sb.record_payment_id(payment_id)
     if tx_recorded is False or pid_recorded is False:
         # Durable store already had this tx_hash / payment_id → concurrent or
         # cross-restart replay won the race. Reject WITHOUT fulfilling or
         # splitting. (The competing request that inserted first proceeds.)
         return {"authorized": False, "reason": "Payment already used (replay attack)"}
+    if (tx_recorded is None or pid_recorded is None) and not _is_free:
+        # AGE-60 fail-closed: the durable consume could not be CONFIRMED
+        # (Supabase blip / broken table). The in-memory set is wiped on every
+        # restart, so proceeding here would let a pre-restart payment be
+        # replayed during any blip. Reject WITHOUT fulfilling — and release
+        # the in-memory claim so the client's retry with the SAME proof
+        # succeeds once the store is back. Not a replay accusation.
+        #
+        # $0 free proofs are exempt (fail-OPEN, matching _settle_free_v2):
+        # nothing of value can be replayed, and bouncing the free funnel on a
+        # Supabase blip buys no security. In-memory still dedupes in-process.
+        #
+        # Compensate a half-consume: the tx row landed but the payment_id
+        # insert blipped — roll the tx row back so the SAME proof retries
+        # cleanly instead of false-positive rejecting as a replay.
+        if tx_recorded is True:
+            await sb.unrecord_tx_hash(tx_hash, network_label)
+        _completed_payments.discard(tx_hash)
+        return {
+            "authorized": False,
+            "reason": ("replay_check_unavailable: durable replay store "
+                       "unreachable — retry with the same payment proof"),
+        }
 
     # Consumed successfully — drop the pending challenge from both stores.
     _pending_challenges.pop(payment_id, None)

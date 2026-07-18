@@ -218,6 +218,13 @@ async def radar_verify(body: RadarVerifyRequest, request: Request):
         recorded = await sb.record_tx_hash(tx_hash, network_label)
         if recorded is False:
             return {"success": False, "reason": "already_verified (replay)", "tx_hash": tx_hash}
+        if recorded is None:
+            # AGE-60 fail-closed: durable consume unconfirmed — reject
+            # retryably and release the in-memory hold.
+            _consumed_radar_txs.discard(tx_hash)
+            return {"success": False, "tx_hash": tx_hash,
+                    "reason": ("replay_check_unavailable: durable replay store "
+                               "unreachable — retry the same tx_hash")}
 
     return {**result, "chain": chain, "contract": contract}
 

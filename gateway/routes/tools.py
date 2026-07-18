@@ -837,6 +837,12 @@ async def _settle_free_v2(
     _used_free_v2_nonces.add(free_key)
     if sb_enabled():
         recorded = await record_tx_hash(free_key, "free")
+        # AGE-60 note: record_tx_hash returns None on infra error and the
+        # paid paths fail CLOSED on it. Here we deliberately stay fail-OPEN
+        # (None falls through): this is a $0 free proof — nothing of value
+        # can be replayed — and bouncing ~6k free calls/month on a Supabase
+        # blip would hurt the funnel for zero security gain. The in-memory
+        # nonce set still dedupes within the process.
         if recorded is False:
             return JSONResponse(
                 status_code=402,

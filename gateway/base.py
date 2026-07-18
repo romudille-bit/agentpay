@@ -505,6 +505,12 @@ async def _recover_uncertain_settle(
                 recorded = await sb.record_tx_hash(tx_hash, network_label)
                 if recorded is False:
                     return None
+                if recorded is None:
+                    # AGE-60 fail-closed: durable consume unconfirmed — don't
+                    # claim the recovered transfer. Release the in-memory hold
+                    # so a later retry can re-recover it once the store is back.
+                    _used_base_tx_hashes.discard(tx_hash)
+                    return None
                 logger.info(
                     f"[BASE] settle RECOVERED on-chain: {tx_hash[:20]}... "
                     f"(CDP reported failure but the transfer confirmed)"
@@ -596,6 +602,17 @@ async def settle_base_payment(
                 return {"success": False, "tx_hash": tx_hash, "payer": payer,
                         "network": payment_requirements.get("network", ""),
                         "reason": "replay_attack"}
+            if recorded is None:
+                # AGE-60 fail-closed: durable consume unconfirmed (Supabase
+                # blip / broken table). The in-memory set dies on restart, so
+                # settling here would make pre-restart payments replayable.
+                # Reject retryably — NOT "replay_attack" — and release the
+                # in-memory hold so the same proof works once the store is back.
+                _used_base_tx_hashes.discard(tx_hash)
+                return {"success": False, "tx_hash": tx_hash, "payer": payer,
+                        "network": payment_requirements.get("network", ""),
+                        "reason": ("replay_check_unavailable: durable replay "
+                                   "store unreachable — retry the same proof")}
         # Inject CAIP-2 network from requirements so callers don't see ""
         result["network"] = payment_requirements.get("network", "")
         return result

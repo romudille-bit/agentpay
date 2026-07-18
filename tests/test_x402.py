@@ -612,3 +612,90 @@ class TestVerifyAndFulfill:
         assert patched_x402["record_tx_hash"] == 0
         assert patched_x402["delete_pending_challenge"] == 0
         assert patched_x402["split_payment"] == 0
+
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_consume_rejects_then_retry_succeeds(
+        self, patched_x402, mock_settings, monkeypatch,
+    ):
+        import gateway.x402 as x402_mod
+
+        # First record_tx_hash call: infra error (None). Later calls: True.
+        calls = {"n": 0}
+
+        async def flaky_record_tx_hash(tx_hash, network):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else True
+        monkeypatch.setattr(x402_mod.sb, "record_tx_hash", flaky_record_tx_hash)
+
+        challenge = issue_payment_challenge(
+            tool_name="token_price",
+            price_usdc="0.001",
+            developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+            request_data={"parameters": {"symbol": "ETH"}},
+        )
+        agent = "GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGEN"
+        proof = f"tx_hash=blip123,from={agent},id={challenge.payment_id}"
+
+        # Attempt 1: store blip → rejected, retryable reason, NOT "replay".
+        r1 = await verify_and_fulfill(payment_header=proof, agent_address=agent)
+        assert r1["authorized"] is False
+        assert "replay_check_unavailable" in r1["reason"]
+        assert "replay attack" not in r1["reason"]
+
+        # Attempt 2 with the SAME proof: store back → authorized. This is
+        # the release-the-in-memory-claim half: without the discard, the
+        # retry would bounce off _completed_payments forever.
+        r2 = await verify_and_fulfill(payment_header=proof, agent_address=agent)
+        assert r2["authorized"] is True
+        assert r2["tx_hash"] == "blip123"
+
+    @pytest.mark.asyncio
+    async def test_partial_consume_rolls_back_and_retry_succeeds(
+        self, patched_x402, mock_settings, monkeypatch,
+    ):
+        """AGE-60 follow-up: tx row lands but the payment_id insert blips.
+        The half-consume must be rolled back (unrecord_tx_hash) so the SAME
+        proof retries successfully — instead of bouncing off the orphan row
+        with a false 'replay attack' on money that never fulfilled."""
+        import gateway.x402 as x402_mod
+
+        durable_tx: set = set()
+
+        async def fake_record_tx_hash(tx_hash, network):
+            if (tx_hash, network) in durable_tx:
+                return False
+            durable_tx.add((tx_hash, network))
+            return True
+
+        async def fake_unrecord_tx_hash(tx_hash, network):
+            durable_tx.discard((tx_hash, network))
+            return True
+
+        pid_calls = {"n": 0}
+
+        async def flaky_record_payment_id(payment_id):
+            pid_calls["n"] += 1
+            return None if pid_calls["n"] == 1 else True
+
+        monkeypatch.setattr(x402_mod.sb, "record_tx_hash", fake_record_tx_hash)
+        monkeypatch.setattr(x402_mod.sb, "unrecord_tx_hash", fake_unrecord_tx_hash)
+        monkeypatch.setattr(x402_mod.sb, "record_payment_id", flaky_record_payment_id)
+
+        challenge = issue_payment_challenge(
+            tool_name="token_price",
+            price_usdc="0.001",
+            developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+            request_data={"parameters": {"symbol": "ETH"}},
+        )
+        agent = "GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGEN"
+        proof = f"tx_hash=halfhash1,from={agent},id={challenge.payment_id}"
+
+        r1 = await verify_and_fulfill(payment_header=proof, agent_address=agent)
+        assert r1["authorized"] is False
+        assert "replay_check_unavailable" in r1["reason"]
+        assert durable_tx == set()          # the half-consume was rolled back
+
+        r2 = await verify_and_fulfill(payment_header=proof, agent_address=agent)
+        assert r2["authorized"] is True     # same proof, clean retry
+        assert r2["tx_hash"] == "halfhash1"

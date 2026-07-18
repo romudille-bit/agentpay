@@ -154,13 +154,17 @@ async def _refund_worker_loop():
     await asyncio.sleep(_REFUND_WORKER_INTERVAL_SECS)
     while True:
         try:
+            # AGE-61 follow-up: terminal-state rows that hit the attempt cap
+            # without a completed send (worker crash mid-attempt, or repeated
+            # unconfirmed increments). They're filtered out of the claim
+            # query, so without this they'd stay refund_pending forever.
+            await sb.sweep_cap_exhausted_refunds()
             rows = await sb.claim_refund_pending(limit=20)
             for row in rows:
                 payment_id    = row.get("payment_id", "")
                 agent_address = row.get("agent_address", "")
                 amount_usdc   = str(row.get("amount_usdc", "0"))
                 network       = row.get("network", "")
-                attempts_so_far = int(row.get("refund_attempts", 0))
 
                 # Defensive: skip malformed rows that survived to here
                 if not (payment_id and agent_address and amount_usdc):
@@ -179,8 +183,19 @@ async def _refund_worker_loop():
 
                 # Increment attempt count BEFORE the send so a worker
                 # crash mid-attempt still counts towards the cap.
-                await sb.increment_refund_attempt(payment_id)
-                this_attempt = attempts_so_far + 1
+                # AGE-61: the send is authorized ONLY by a CONFIRMED
+                # increment. On None (read blip, missing row, failed
+                # write) skip this row for this sweep — the old code
+                # defaulted a failed read to 0, resetting the counter
+                # and letting duplicate refunds past the 5-attempt cap.
+                this_attempt = await sb.increment_refund_attempt(payment_id)
+                if this_attempt is None:
+                    logger.warning(
+                        f"[REFUND] payment_id={payment_id[:8]}... attempt counter "
+                        f"unconfirmed — skipping send this sweep (no USDC moves "
+                        f"without a counted attempt)"
+                    )
+                    continue
 
                 if is_base_row:
                     from gateway.base import send_base_refund

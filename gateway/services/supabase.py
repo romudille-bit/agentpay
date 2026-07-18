@@ -71,26 +71,58 @@ def sb_enabled() -> bool:
 #                        a Stellar testnet hash can't collide with a Base
 #                        mainnet hash.
 #
-# Behaviour conventions for this group:
-#   record_*()  — returns True on successful insert, False if row already
-#                 exists (HTTP 409). On other errors (network, 5xx),
-#                 log at error level and return True (don't block on
-#                 Supabase issues; in-memory is still primary).
-#   is_*_consumed() — returns True if row exists in DB, False otherwise.
-#                 On error, return False (assume not consumed; in-memory
-#                 dedupe will catch it).
-#
-# Reads are NOT called during the dual-write phase (#13). They become
-# active during cutover (#13 row 7) when Supabase becomes primary.
+# Behaviour conventions for this group (AGE-60 — fail CLOSED):
+#   record_*()  — tri-state:
+#                   True  — newly recorded (payment may proceed)
+#                   False — row already exists (HTTP 409 → replay, reject)
+#                   None  — infra error (network, 5xx, broken table/RLS).
+#                 Supabase is now the PRIMARY replay store — the in-memory
+#                 sets are wiped on every Railway restart, so "don't block
+#                 on infrastructure errors" made a pre-restart payment
+#                 replayable during any Supabase blip. Callers MUST treat
+#                 None as "consume not confirmed" and reject WITHOUT
+#                 accusing replay (the client may retry the same proof).
+#   is_*_consumed() — pre-checks only: True if row exists, False otherwise
+#                 (including on error, logged). They are advisory — the
+#                 authoritative, fail-closed gate is the record_*() insert
+#                 (PK/composite-PK 409), which every consume path awaits.
 
 
-async def record_payment_id(payment_id: str) -> bool:
+# AGE-60: sustained-failure escalation. A single blip is a warning; a broken
+# table / RLS misconfiguration is silent replay-protection loss and must be
+# LOUD. Counter is shared by both record_* helpers and resets on any success.
+_replay_store_consecutive_failures = 0
+_REPLAY_STORE_ALERT_THRESHOLD = 3
+
+
+def _replay_store_failed(what: str, detail: str) -> None:
+    global _replay_store_consecutive_failures
+    _replay_store_consecutive_failures += 1
+    n = _replay_store_consecutive_failures
+    logger.error(f"{what} Supabase failure ({detail}) — consume NOT confirmed")
+    if n >= _REPLAY_STORE_ALERT_THRESHOLD:
+        logger.critical(
+            f"[ALERT] durable replay store failing ({n} consecutive failures) — "
+            f"paid consumes are being rejected fail-closed; check Supabase "
+            f"availability / replay_* table RLS"
+        )
+
+
+def _replay_store_ok() -> None:
+    global _replay_store_consecutive_failures
+    _replay_store_consecutive_failures = 0
+
+
+async def record_payment_id(payment_id: str) -> bool | None:
     """Insert payment_id into replay_payment_ids.
 
     Returns:
-        True  — newly recorded (or Supabase unreachable, treated as success
-                so we don't block legitimate payments)
-        False — already consumed (HTTP 409 conflict)
+        True  — newly recorded
+        False — already consumed (HTTP 409 conflict) → replay, reject
+        None  — infra error: consume NOT confirmed (AGE-60 fail-closed).
+                Callers must reject without fulfilling, with a retryable
+                reason (not a replay accusation).
+        (sb disabled → True: single-process in-memory dedupe is authoritative)
     """
     if not sb_enabled():
         return True
@@ -102,16 +134,55 @@ async def record_payment_id(payment_id: str) -> bool:
                 json={"payment_id": payment_id},
             )
         if resp.status_code == 409:
+            _replay_store_ok()
             return False  # already consumed
         if resp.status_code not in (200, 201):
-            logger.error(
-                f"record_payment_id Supabase error: HTTP {resp.status_code} "
-                f"body={resp.text[:200]}"
+            _replay_store_failed(
+                "record_payment_id",
+                f"HTTP {resp.status_code} body={resp.text[:200]} payment_id={payment_id}",
             )
+            return None
+        _replay_store_ok()
         return True
     except Exception as e:
-        logger.error(f"record_payment_id Supabase failure (payment_id={payment_id}): {e}")
-        return True  # don't block on infrastructure errors
+        _replay_store_failed("record_payment_id", f"payment_id={payment_id}: {e}")
+        return None
+
+
+async def unrecord_tx_hash(tx_hash: str, network: str) -> bool:
+    """Best-effort compensating DELETE for a HALF-consumed proof (AGE-60
+    follow-up): record_tx_hash landed but the paired record_payment_id could
+    not be confirmed, so verify_and_fulfill is rolling the consume back to
+    keep the client's proof retryable.
+
+    Returns True when the row is gone. On failure logs CRITICAL with the
+    identifiers — until the row is removed, this proof will false-positive
+    as "replay attack" on retry and needs manual reconciliation.
+    """
+    if not sb_enabled():
+        return True
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.delete(
+                f"{settings.SUPABASE_URL}/rest/v1/replay_tx_hashes",
+                headers=sb_headers(),
+                params={"tx_hash": f"eq.{tx_hash}", "network": f"eq.{network}"},
+            )
+        if resp.status_code in (200, 204):
+            return True
+        logger.critical(
+            f"[ALERT] unrecord_tx_hash failed: HTTP {resp.status_code} "
+            f"tx_hash={tx_hash[:16]}... network={network} — half-consumed proof "
+            f"will reject as replay until this row is deleted manually"
+        )
+        return False
+    except Exception as e:
+        logger.critical(
+            f"[ALERT] unrecord_tx_hash failed: {e} tx_hash={tx_hash[:16]}... "
+            f"network={network} — half-consumed proof will reject as replay "
+            f"until this row is deleted manually"
+        )
+        return False
 
 
 async def is_payment_id_consumed(payment_id: str) -> bool:
@@ -139,7 +210,7 @@ async def is_payment_id_consumed(payment_id: str) -> bool:
         return False
 
 
-async def record_tx_hash(tx_hash: str, network: str) -> bool:
+async def record_tx_hash(tx_hash: str, network: str) -> bool | None:
     """Insert (tx_hash, network) into replay_tx_hashes.
 
     network must be one of: 'stellar-mainnet', 'stellar-testnet',
@@ -147,8 +218,12 @@ async def record_tx_hash(tx_hash: str, network: str) -> bool:
     exist across networks (extremely unlikely, but defensive).
 
     Returns:
-        True  — newly recorded (or Supabase unreachable)
-        False — already consumed (HTTP 409 conflict)
+        True  — newly recorded
+        False — already consumed (HTTP 409 conflict) → replay, reject
+        None  — infra error: consume NOT confirmed (AGE-60 fail-closed).
+                Callers must reject without fulfilling, with a retryable
+                reason (not a replay accusation).
+        (sb disabled → True: single-process in-memory dedupe is authoritative)
     """
     if not sb_enabled():
         return True
@@ -160,19 +235,22 @@ async def record_tx_hash(tx_hash: str, network: str) -> bool:
                 json={"tx_hash": tx_hash, "network": network},
             )
         if resp.status_code == 409:
+            _replay_store_ok()
             return False
         if resp.status_code not in (200, 201):
-            logger.error(
-                f"record_tx_hash Supabase error: HTTP {resp.status_code} "
-                f"body={resp.text[:200]}"
+            _replay_store_failed(
+                "record_tx_hash",
+                f"HTTP {resp.status_code} body={resp.text[:200]} "
+                f"tx_hash={tx_hash[:16]}... network={network}",
             )
+            return None
+        _replay_store_ok()
         return True
     except Exception as e:
-        logger.error(
-            f"record_tx_hash Supabase failure "
-            f"(tx_hash={tx_hash[:16]}..., network={network}): {e}"
+        _replay_store_failed(
+            "record_tx_hash", f"tx_hash={tx_hash[:16]}..., network={network}: {e}"
         )
-        return True
+        return None
 
 
 async def is_tx_hash_consumed(tx_hash: str, network: str) -> bool:
@@ -910,8 +988,52 @@ async def claim_refund_pending(limit: int = 20) -> list[dict]:
         return []
 
 
-async def increment_refund_attempt(payment_id: str) -> None:
-    """PATCH refund_attempts = refund_attempts + 1, atomically.
+async def sweep_cap_exhausted_refunds() -> int:
+    """Terminal-state a leaked row class (AGE-61 follow-up): rows sitting in
+    state='refund_pending' with refund_attempts >= cap. They fall outside
+    claim_refund_pending's `refund_attempts < cap` filter, so without this
+    sweep they stay pending forever, invisible to the worker AND to failure
+    analytics. Reachable two ways: a worker crash between increment and
+    mark_*, or (new with the confirmed-increment contract) repeated blips
+    that burn attempts without a send.
+
+    PATCHes them to refund_failed with error_reason='cap_exhausted_no_send'.
+    Returns the number of rows transitioned (0 on error/disabled).
+    """
+    if not sb_enabled():
+        return 0
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.patch(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers={**sb_headers(), "Prefer": "return=representation"},
+                params={
+                    "state":           "eq.refund_pending",
+                    "refund_attempts": f"gte.{_REFUND_ATTEMPT_CAP}",
+                },
+                json={"state": "refund_failed",
+                      "error_reason": "cap_exhausted_no_send"},
+            )
+        if resp.status_code != 200:
+            logger.error(
+                f"sweep_cap_exhausted_refunds error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]}"
+            )
+            return 0
+        n = len(resp.json())
+        if n:
+            logger.warning(
+                f"sweep_cap_exhausted_refunds: {n} rows → refund_failed "
+                f"(cap reached without a completed send)"
+            )
+        return n
+    except Exception as e:
+        logger.error(f"sweep_cap_exhausted_refunds failure: {e}")
+        return 0
+
+
+async def increment_refund_attempt(payment_id: str) -> int | None:
+    """PATCH refund_attempts = refund_attempts + 1 (read-modify-write).
 
     PostgREST doesn't expose SQL-side arithmetic in a PATCH body
     directly — but we can hit a SQL function via /rpc, or read-modify-
@@ -924,12 +1046,22 @@ async def increment_refund_attempt(payment_id: str) -> None:
     Called BEFORE the on-chain send so a worker crash mid-attempt
     still counts against the cap — bias towards "don't retry forever"
     over "don't waste an attempt".
+
+    Returns (AGE-61):
+        int  — the NEW attempt count, confirmed written.
+        None — the increment could NOT be confirmed (read failed, row
+               missing, or write failed). Callers MUST NOT send a refund
+               on None: the old behaviour defaulted a failed read to
+               current=0, so a single read blip reset refund_attempts
+               from e.g. 4 back to 1 and let the worker blow past the
+               5-attempt cap — and every attempt is a real USDC send.
     """
     if not sb_enabled():
-        return
+        return None
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
-            # Read current count
+            # Read current count — a failed or empty read is a hard stop,
+            # never "assume 0" (AGE-61).
             r = await client.get(
                 f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
                 headers=sb_headers(),
@@ -938,9 +1070,14 @@ async def increment_refund_attempt(payment_id: str) -> None:
                     "select":     "refund_attempts",
                 },
             )
-            current = 0
-            if r.status_code == 200 and r.json():
-                current = int(r.json()[0].get("refund_attempts", 0))
+            if r.status_code != 200 or not r.json():
+                logger.error(
+                    f"increment_refund_attempt read failed: HTTP {r.status_code} "
+                    f"rows={len(r.json()) if r.status_code == 200 else 'n/a'} "
+                    f"(payment_id={payment_id}) — attempt NOT authorized"
+                )
+                return None
+            current = int(r.json()[0].get("refund_attempts", 0) or 0)
             # Write +1
             resp = await client.patch(
                 f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
@@ -950,13 +1087,17 @@ async def increment_refund_attempt(payment_id: str) -> None:
             )
         if resp.status_code not in (200, 204):
             logger.error(
-                f"increment_refund_attempt error: HTTP {resp.status_code} "
-                f"body={resp.text[:200]} (payment_id={payment_id})"
+                f"increment_refund_attempt write failed: HTTP {resp.status_code} "
+                f"body={resp.text[:200]} (payment_id={payment_id}) — attempt NOT authorized"
             )
+            return None
+        return current + 1
     except Exception as e:
         logger.error(
-            f"increment_refund_attempt failure (payment_id={payment_id}): {e}"
+            f"increment_refund_attempt failure (payment_id={payment_id}): {e} "
+            f"— attempt NOT authorized"
         )
+        return None
 
 
 async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
