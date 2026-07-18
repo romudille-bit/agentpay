@@ -885,8 +885,16 @@ async def _execute_and_log(
 
     # Base success strands the UUID-keyed pending row; INSERT a tx_hash-keyed
     # 'verified' row so the terminal PATCH has somewhere to land.
+    #
+    # AGE-58: the insert runs CONCURRENTLY with tool execution (create_task —
+    # no latency added to the hot path), but the task handle is kept and
+    # awaited before ANY terminal state write. Fire-and-forget raced the
+    # terminal PATCH: the PATCH could run first, no-op on the missing row,
+    # then the insert landed 'verified' — and the row never advanced
+    # (the "stuck in verified / phantom-abandon" class, AGE-52).
+    insert_task: Optional[asyncio.Task] = None
     if is_base and sb_enabled():
-        asyncio.create_task(insert_pending_payment_log(
+        insert_task = asyncio.create_task(insert_pending_payment_log(
             payment_id=payment_id,
             tool_name=resolved,
             network=receipt_network,
@@ -913,9 +921,24 @@ async def _execute_and_log(
             tx_hash=tx_hash,
         ))
 
+    async def _ensure_row_inserted():
+        """AGE-58: barrier before every terminal state write on the Base path.
+        A PATCH keyed on tx_hash must not run until the tx-keyed row exists.
+        Insert failures are logged, not raised — the payment already settled
+        on-chain, so bookkeeping must never fail the response."""
+        if insert_task is not None:
+            try:
+                await insert_task
+            except Exception as e:
+                logger.warning(
+                    f"[AGE-58] tx-keyed row insert failed for {payment_id[:16]}…: {e}"
+                )
+
     try:
         tool_result = await _run_tool(tool, resolved, tool_name, body.parameters)
     except Exception as e:
+        # _refund_and_502 PATCHes the row's state too — same ordering rule.
+        await _ensure_row_inserted()
         return await _refund_and_502(tool_name, payment_id, e)
 
     # AGE-42: a PAID tool that produced only an error must refund, not charge.
@@ -928,6 +951,7 @@ async def _execute_and_log(
     # carry it.
     if (isinstance(tool_result, dict) and "error" in tool_result
             and Decimal(str(tool.price_usdc or "0")) > 0):
+        await _ensure_row_inserted()
         return await _refund_and_502(
             tool_name, payment_id,
             RuntimeError(f"paid tool returned error: {tool_result['error']}"),
@@ -945,6 +969,8 @@ async def _execute_and_log(
 
     # Terminal 'payment_done' PATCH — awaited so analytics are consistent at
     # response time. The single Supabase write on the happy path.
+    # AGE-58: barrier first — the PATCH must land on the inserted row.
+    await _ensure_row_inserted()
     await update_payment_log_state(
         payment_id,
         "payment_done",

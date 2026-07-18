@@ -480,10 +480,15 @@ async def create_session(
     # session_create row while its pre_trade_check row reads
     # 'TrustprobeBot/1.0 (deep-probe)': a peer trust-prober paying $0.01 to check
     # we deliver, i.e. exactly what our own Prober does to other services. Not demand.
+    # AGE-58: keep the task handle and await it before the terminal PATCH.
+    # Fire-and-forget raced the PATCH: the PATCH could run first, no-op on
+    # the missing row, then the insert landed 'verified' and never advanced —
+    # stranding session_create rows (the KPI) in 'verified'.
+    insert_task = None
     if is_base and sb_enabled():
         settle_ip = request.client.host if request.client else None
         settle_ua = request.headers.get("user-agent")
-        asyncio.create_task(insert_pending_payment_log(
+        insert_task = asyncio.create_task(insert_pending_payment_log(
             payment_id=payment_id,
             tool_name=SESSION_TOOL_NAME,
             network=receipt_network,
@@ -514,7 +519,15 @@ async def create_session(
     except Exception:
         gateway_fee = None
 
-    # Terminal PATCH — awaited so analytics are consistent at response time
+    # Terminal PATCH — awaited so analytics are consistent at response time.
+    # AGE-58: barrier first — the PATCH must land on the inserted row. Insert
+    # failures are logged, not raised: the payment already settled on-chain,
+    # so bookkeeping must never fail the session-create response.
+    if insert_task is not None:
+        try:
+            await insert_task
+        except Exception as e:
+            logger.warning(f"[AGE-58] tx-keyed row insert failed for {payment_id[:16]}…: {e}")
     await update_payment_log_state(
         payment_id,
         "payment_done",
