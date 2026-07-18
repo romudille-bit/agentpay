@@ -191,8 +191,14 @@ def probe_paid(session, cand: dict) -> dict:
     #   - pre-payment request rejections (400/404/405/422): our generic params
     #   - chain incompatibility ("wallet can only pay on …"): a Solana-only
     #     seller must not be scored 0.25 because OUR wallet is Base/Stellar
+    # NOTE (AGE-56): the SDK's 4xx-rejection message changed from
+    # "…(no payment settled): 4xx" to "…(settlement uncertain, spend
+    # recorded): 4xx" — a transmitted signed auth is now treated as
+    # potentially spent. For scoring purposes a 4xx param-rejection is
+    # still a buyer-side fault, so it stays skipped/unscoreable.
     if error and not settle_ok and (
-        "no payment settled): 4" in error
+        "spend recorded): 4" in error
+        or "no payment settled): 4" in error   # pre-AGE-56 SDK message
         or "Expected 200 or 402" in error
         or "wallet can only pay" in error
         or "is not usable for" in error

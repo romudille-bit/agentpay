@@ -8,6 +8,7 @@ from agentpay._wallet import (
     Session as _Session,
     BudgetExceeded,
     PaymentFailed,
+    PrePaymentError,
     RefundPending,
     ToolResult,
 )
@@ -194,5 +195,5 @@ class Session(_Session):
 
 
 __all__ = ["AgentWallet", "Session", "ToolResult", "BudgetExceeded", "PaymentFailed",
-           "RefundPending", "faucet_wallet", "quickstart",
+           "PrePaymentError", "RefundPending", "faucet_wallet", "quickstart",
            "TESTNET_GATEWAY", "MAINNET_GATEWAY"]

@@ -431,3 +431,384 @@ class TestPaymentRequiredHeaderDecode:
         from agentpay._wallet import _decode_payment_required_header
         assert _decode_payment_required_header({}) is None
         assert _decode_payment_required_header({"PAYMENT-REQUIRED": "%%%"}) is None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Gateway Code Review 2026-07 — SDK cluster regression tests (AGE-53..57)
+# ═════════════════════════════════════════════════════════════════════════════
+
+from decimal import Decimal
+
+from agentpay._wallet import (
+    BudgetExceeded,
+    PrePaymentError,
+    Session,
+)
+
+
+def _session_wallet():
+    """Stub wallet for Session-level tests: Stellar-only, successful pays."""
+    w = MagicMock()
+    w.public_key = "GFAKEAGENTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    w.network = "testnet"
+    w.base_address = None
+    w.base_disabled_reason = None
+    w.pay.return_value = {"success": True, "tx_hash": "fakehash" + "a" * 56}
+    return w
+
+
+TOKEN_PRICE_INFO = {"name": "token_price", "price_usdc": "0.001", "category": "data"}
+TOOLS_LIST = {"tools": [
+    {"name": "token_price", "price_usdc": "0.001", "category": "data", "active": True},
+    {"name": "gas_tracker", "price_usdc": "0.001", "category": "data", "active": True},
+]}
+
+
+class TestBudgetCapBindsActualAmount:
+    """AGE-53: the cap must bind the amount the 402 ACTUALLY demands,
+    not the registry-advertised price."""
+
+    def test_client_refuses_402_above_cap_before_paying(self, fake_wallet):
+        fake_wallet.base_address = None
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        inflated = dict(VALID_402, amount_usdc="0.50")
+        with respx.mock:
+            respx.post(TOOL_URL).mock(return_value=httpx.Response(402, json=inflated))
+            with pytest.raises(BudgetExceeded) as exc_info:
+                client.call_tool("token_price", {"symbol": "ETH"}, max_spend="0.00105")
+        assert "refusing to pay" in str(exc_info.value)
+        assert fake_wallet.pay.call_count == 0        # nothing moved
+        assert client.call_log == []                   # nothing recorded
+
+    def test_session_binds_quote_not_budget(self):
+        """Budget is $1.00 but the registry quote is $0.001 — a 402 demanding
+        $0.50 must be refused even though it fits the session budget."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        inflated = dict(VALID_402, amount_usdc="0.50")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.post(TOOL_URL).mock(return_value=httpx.Response(402, json=inflated))
+            with pytest.raises(BudgetExceeded):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 0
+        assert s.spent_usd() == Decimal("0")
+
+    def test_402_within_tolerance_is_paid(self):
+        """Small overpay (<5% above quote) is tolerated — rounding/format
+        drift must not brick every call."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        slightly_up = dict(VALID_402, amount_usdc="0.00104")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=slightly_up),
+                httpx.Response(200, json={
+                    "tool": "token_price", "result": {"price_usd": 1.0},
+                    "payment": {"amount_usdc": "0.00104", "tx_hash": "t",
+                                "network": "stellar-testnet"},
+                }),
+            ])
+            result = s.call("token_price", {"symbol": "ETH"})
+        assert result["result"]["price_usd"] == 1.0
+        assert w.pay.call_count == 1
+        assert s.spent_usd() == Decimal("0.00104")
+
+
+class TestSpendRecordedOnBroadcast:
+    """AGE-54: a broadcast payment counts against the budget even when the
+    tool call then fails — spent() must never under-report."""
+
+    def test_client_records_spend_when_retry_fails(self, fake_wallet):
+        fake_wallet.base_address = None
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=VALID_402),
+                httpx.Response(500, text="upstream exploded"),
+            ])
+            with pytest.raises(Exception, match="Tool call failed after payment"):
+                client.call_tool("token_price", {"symbol": "ETH"})
+        assert len(client.call_log) == 1
+        e = client.call_log[0]
+        assert e["amount_usdc"] == "0.001"
+        assert e["success"] is False
+        assert e["state"] == "paid_no_result"
+        assert e["tx_hash"].startswith("fakehash")
+
+    def test_session_burns_budget_on_pay_then_fail(self):
+        """The exact bug: an agent looping over a pay-then-fail tool used to
+        spend real USDC every iteration while remaining() stayed full."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=VALID_402),
+                httpx.Response(500, text="boom"),
+            ])
+            with pytest.raises(Exception, match="after payment"):
+                s.call("token_price", {"symbol": "ETH"})
+        assert s.spent_usd() == Decimal("0.001")           # budget burned
+        assert s.summary()["breakdown"][0]["success"] is False
+
+    def test_refund_pending_spend_counts_until_refund_confirms(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=VALID_402),
+                httpx.Response(502, json={
+                    "payment_id": "fake-uuid-123",
+                    "payment_status": "refund_pending",
+                    "refund_eta_seconds": 60,
+                    "error_reason": "tool_exec_failed: x",
+                }),
+            ])
+            with pytest.raises(RefundPending):
+                s.call("token_price", {"symbol": "ETH"})
+        assert s.spent_usd() == Decimal("0.001")
+        assert s.summary()["breakdown"][0]["state"] == "refund_pending"
+
+
+class TestNoFallbackAfterPayment:
+    """AGE-55: fallback only on pre-payment failures — a post-payment
+    failure must never trigger a second payment."""
+
+    def test_post_payment_failure_does_not_pay_fallback(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        fallback_url = f"{GATEWAY}/tools/gas_tracker/call"
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=VALID_402),
+                httpx.Response(500, text="post-payment boom"),
+            ])
+            fb_route = respx.post(fallback_url).mock(
+                return_value=httpx.Response(402, json=VALID_402))
+            with pytest.raises(Exception, match="after payment"):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 1          # exactly one payment
+        assert not fb_route.called            # fallback never touched
+
+    def test_pre_payment_failure_still_falls_back(self):
+        """A 503 on the un-paid probe is pre-payment — fallback stays."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        fallback_url = f"{GATEWAY}/tools/gas_tracker/call"
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(503, text="down"))
+            respx.post(fallback_url).mock(side_effect=[
+                httpx.Response(402, json=dict(VALID_402, payment_id="fb-1")),
+                httpx.Response(200, json={
+                    "tool": "gas_tracker", "result": {"gwei": 12},
+                    "payment": {"amount_usdc": "0.001", "tx_hash": "t"},
+                }),
+            ])
+            result = s.call("token_price", {"symbol": "ETH"})
+        assert result["result"]["gwei"] == 12
+        assert w.pay.call_count == 1                       # only the fallback paid
+        assert s.summary()["breakdown"][0]["fallback_for"] == "token_price"
+        assert s.spent_usd() == Decimal("0.001")
+
+
+class TestSignedAuthNotTreatedAsUnspent:
+    """AGE-56: once the signed EIP-3009 auth is transmitted, a non-200 must
+    NOT be treated as 'no payment settled' — no Stellar re-pay, spend
+    recorded as uncertain."""
+
+    def _base_402(self):
+        return dict(VALID_402, payment_options={"base": {
+            "amount_atomic": 1000, "amount_usdc": "0.001",
+            "pay_to": "0x" + "c" * 40, "network": "eip155:8453",
+        }})
+
+    def test_no_stellar_fallback_after_auth_transmitted(self, fake_wallet):
+        fake_wallet.base_address = "0x" + "b" * 40
+        fake_wallet.build_base_payment_signature.return_value = "sig-b64"
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=self._base_402()),
+                httpx.Response(500, text="server pretends nothing settled"),
+            ])
+            with pytest.raises(Exception, match="Tool call failed after payment"):
+                client.call_tool("token_price", {"symbol": "ETH"})
+        assert fake_wallet.pay.call_count == 0             # NO Stellar re-pay
+        e = client.call_log[0]
+        assert e["state"] == "uncertain_settlement"        # counted, not "free"
+        assert e["amount_usdc"] == "0.001"
+
+    def test_signing_failure_is_prepayment_and_falls_back_to_stellar(self, fake_wallet):
+        """Failures BEFORE transmission (signing) are pre-payment: the old
+        Stellar fallback behaviour is preserved there."""
+        fake_wallet.base_address = "0x" + "b" * 40
+        fake_wallet.build_base_payment_signature.side_effect = RuntimeError("no signer")
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=self._base_402()),
+                httpx.Response(200, json={
+                    "tool": "token_price", "result": {"price_usd": 1.0},
+                    "payment": {"amount_usdc": "0.001", "tx_hash": "t"},
+                }),
+            ])
+            result = client.call_tool("token_price", {"symbol": "ETH"})
+        assert result["result"]["price_usd"] == 1.0
+        assert fake_wallet.pay.call_count == 1             # settled on Stellar
+
+    def test_base_option_amount_also_bound_by_cap(self, fake_wallet):
+        """The Base block can carry its own amount — it must be capped too,
+        BEFORE signing."""
+        fake_wallet.base_address = "0x" + "b" * 40
+        challenge = dict(VALID_402, payment_options={"base": {
+            "amount_atomic": 500_000,   # $0.50 despite body saying $0.001
+            "amount_usdc": "0.50",
+            "pay_to": "0x" + "c" * 40, "network": "eip155:8453",
+        }})
+        client = AgentPayClient(wallet=fake_wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            respx.post(TOOL_URL).mock(return_value=httpx.Response(402, json=challenge))
+            with pytest.raises(BudgetExceeded, match="refusing to sign"):
+                client.call_tool("token_price", {}, max_spend="0.00105")
+        assert fake_wallet.build_base_payment_signature.call_count == 0
+        assert fake_wallet.pay.call_count == 0
+
+
+class TestUrlCallsRespectPolicies:
+    """AGE-57: allowed_tools / max_per_tool / rate_limit apply to external
+    x402 URLs exactly as they do to registry tools."""
+
+    EVIL = "https://evil.example/x402/steal"
+
+    def test_allowlist_blocks_external_url(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00",
+                    allowed_tools=["token_price"])
+        with respx.mock:   # no routes: ANY http request would error loudly
+            with pytest.raises(BudgetExceeded, match="allowlist"):
+                s.call(self.EVIL, {"q": "x"})
+        assert w.pay.call_count == 0
+
+    def test_per_tool_cap_applies_to_url(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00",
+                    max_per_tool={self.EVIL: 0.001})
+        s._call_log.append({"tool": self.EVIL, "amount_usdc": "0.001"})
+        with respx.mock:
+            with pytest.raises(BudgetExceeded, match="Per-tool cap"):
+                s.call(self.EVIL, {"q": "x"})
+
+    def test_rate_limit_applies_to_url(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00", rate_limit=0)
+        with respx.mock:
+            with pytest.raises(BudgetExceeded, match="Rate limit"):
+                s.call(self.EVIL, {"q": "x"})
+
+
+class TestExternalUrlSpendRecording:
+    """AGE-54/56 for the external-URL path in Session._call_x402_url."""
+
+    URL = "https://ext.example/tool"
+
+    def _stellar_accepts(self):
+        return {"accepts": [{
+            "network": "stellar:pubnet", "amount": "1000",
+            "payTo": "GEXTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "scheme": "exact",
+        }]}
+
+    def _base_accepts(self):
+        return {"accepts": [{
+            "network": "eip155:8453", "amount": "1000",
+            "payTo": "0x" + "c" * 40, "scheme": "exact",
+        }]}
+
+    def test_external_stellar_spend_recorded_on_failed_retry(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            respx.post(self.URL).mock(side_effect=[
+                httpx.Response(402, json=self._stellar_accepts()),
+                httpx.Response(500, text="post-payment boom"),
+            ])
+            with pytest.raises(Exception, match="spend recorded"):
+                s.call(self.URL, {"q": "x"})
+        assert w.pay.call_count == 1
+        assert s.spent_usd() == Decimal("0.001000")
+        assert s.summary()["breakdown"][0]["state"] == "paid_no_result"
+
+    def test_external_base_rejection_still_counts_spend(self):
+        w = _session_wallet()
+        w.base_address = "0x" + "b" * 40
+        w.build_base_payment_signature.return_value = "sig-b64"
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            respx.post(self.URL).mock(side_effect=[
+                httpx.Response(402, json=self._base_accepts()),
+                httpx.Response(500, text="rejected, or was it"),
+            ])
+            with pytest.raises(Exception, match="settlement uncertain"):
+                s.call(self.URL, {"q": "x"})
+        assert w.pay.call_count == 0                       # never re-paid on Stellar
+        assert s.spent_usd() == Decimal("0.001000")
+        assert s.summary()["breakdown"][0]["state"] == "uncertain_settlement"
+
+
+class TestFallbackRespectsPolicies:
+    """AGE-57 follow-up: a FALLBACK tool must satisfy the same session
+    policies — the SDK picking it doesn't exempt it from the allowlist
+    or a per-tool cap."""
+
+    def test_fallback_outside_allowlist_is_not_paid(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00",
+                    allowed_tools=["token_price"])
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(503, text="down"))
+            fb_route = respx.post(f"{GATEWAY}/tools/gas_tracker/call").mock(
+                return_value=httpx.Response(402, json=VALID_402))
+            with pytest.raises(PrePaymentError):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 0
+        assert not fb_route.called
+
+    def test_fallback_at_per_tool_cap_is_not_paid(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00",
+                    max_per_tool={"gas_tracker": 0.001})
+        s._call_log.append({"tool": "gas_tracker", "amount_usdc": "0.001"})
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(503, text="down"))
+            fb_route = respx.post(f"{GATEWAY}/tools/gas_tracker/call").mock(
+                return_value=httpx.Response(402, json=VALID_402))
+            with pytest.raises(PrePaymentError):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 0
+        assert not fb_route.called

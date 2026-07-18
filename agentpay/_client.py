@@ -2,13 +2,37 @@
 _client.py — HTTP client that handles the x402 payment flow.
 
 Internal helper used by Session.call(). Not part of the public API.
+
+Failure semantics (AGE-53..56):
+  - PrePaymentError   → nothing moved, no signed auth left the process.
+                        Session.call() may safely fall back to another tool.
+  - PaymentFailed     → the on-chain payment itself failed (no funds moved).
+  - BudgetExceeded    → the 402 demanded more than the caller's cap; refused
+                        BEFORE paying or signing.
+  - RefundPending     → paid, tool failed, gateway queued a refund. The spend
+                        is recorded in call_log and counts against the budget
+                        until the refund confirms.
+  - Exception ("Tool call failed after payment…") → funds moved (or a signed
+                        authorization was transmitted) and the call then
+                        failed. The spend is recorded in call_log. Callers
+                        MUST NOT retry with a second payment.
+
+call_log entries are appended the moment value can leave the wallet — at
+Stellar broadcast or Base auth transmission — not when the call returns 200,
+so Session budgets count every real payment even when the tool then fails.
 """
 
 import httpx
 import logging
 from decimal import Decimal
 
-from agentpay._wallet import AgentWallet, PaymentFailed, RefundPending
+from agentpay._wallet import (
+    AgentWallet,
+    BudgetExceeded,
+    PaymentFailed,
+    PrePaymentError,
+    RefundPending,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +43,7 @@ class AgentPayClient:
 
     When a tool returns 402:
       1. Reads payment details from response
-      2. Sends USDC via Stellar
+      2. Sends USDC via Stellar (or signs a Base EIP-3009 authorization)
       3. Retries with payment proof header
     """
 
@@ -28,15 +52,15 @@ class AgentPayClient:
         self.gateway_url = gateway_url
         self.call_log: list[dict] = []
 
-    def _settle_base(self, client, url, payload, base_opt, challenge):
+    def _sign_base_auth(self, base_opt: dict, url: str) -> str:
         """
-        Settle a paid AgentPay tool on Base via the gasless EIP-3009 (Mode A)
-        path and return the retry HTTP response.
+        Sign the gasless EIP-3009 (Mode A) authorization for a paid AgentPay
+        tool and return the header payload. OFF-CHAIN only — nothing is
+        transmitted here, so a failure in this step is strictly pre-payment
+        and the caller may still fall back to Stellar (AGE-56).
 
         `base_opt` is the `payment_options.base` block from AgentPay's native
-        402. Nothing is broadcast client-side — the gateway's CDP facilitator
-        settles the signed authorization only if it accepts the retry, so a
-        rejected call moves no USDC.
+        402.
         """
         accept = {
             "amount":            str(base_opt.get("amount_atomic") or base_opt.get("amount")),
@@ -47,23 +71,22 @@ class AgentPayClient:
             "maxTimeoutSeconds": int(base_opt.get("maxTimeoutSeconds", 300)),
         }
         logger.info(
-            f"  Settling on Base (EIP-3009, gasless) "
+            f"  Signing Base auth (EIP-3009, gasless) "
             f"{base_opt.get('amount_usdc')} USDC → {str(accept['payTo'])[:10]}..."
         )
-        sig = self.wallet.build_base_payment_signature(accept, url)
-        # PAYMENT-SIGNATURE only. Sending the same payload in X-PAYMENT (the
-        # x402 standard header) collides with the gateway's legacy Stellar
-        # X-Payment header and got every Mode A named-tool call rejected with
-        # 'Invalid X-Payment header format'. This path only talks to AgentPay's
-        # own gateway; external x402 URLs go through _call_x402_url instead.
-        return client.post(
-            url,
-            json=payload,
-            headers={
-                "PAYMENT-SIGNATURE": sig,
-                "X-Agent-Address":   self.wallet.base_address,
-            },
-        )
+        return self.wallet.build_base_payment_signature(accept, url)
+
+    @staticmethod
+    def _base_opt_amount_usd(base_opt: dict) -> Decimal | None:
+        """USD amount the Base option would sign for, or None if unparseable."""
+        try:
+            atomic = base_opt.get("amount_atomic") or base_opt.get("amount")
+            if atomic is not None:
+                return Decimal(str(atomic)) / Decimal("1000000")
+            usd = base_opt.get("amount_usdc")
+            return Decimal(str(usd)) if usd is not None else None
+        except (ValueError, ArithmeticError):
+            return None
 
     def call_tool(
         self,
@@ -76,7 +99,11 @@ class AgentPayClient:
     ) -> dict:
         """
         Call a paid tool. Handles 402 automatically.
-        Raises ValueError if max_spend is set and price exceeds it.
+
+        Raises BudgetExceeded (BEFORE paying or signing) if max_spend is set
+        and the amount the 402 actually demands exceeds it — this is the hard
+        cap AGE-53 requires: the 402 body's amount, not the registry quote,
+        is what gets checked.
 
         Chain selection for PAID tools:
           - prefer_chain="base" (default) settles via the gateway's Base/EIP-3009
@@ -96,7 +123,12 @@ class AgentPayClient:
 
             # ── First request — no payment ─────────────────────────────────
             logger.info(f"→ Calling: {tool_name} | params: {parameters}")
-            resp = client.post(url, json=payload)
+            try:
+                resp = client.post(url, json=payload)
+            except Exception as e:
+                raise PrePaymentError(
+                    f"request to '{tool_name}' failed before payment: {e}"
+                )
 
             if resp.status_code == 200:
                 # Free tool — the gateway returns 200 directly with no 402.
@@ -110,25 +142,61 @@ class AgentPayClient:
                     "free": True,
                 })
                 logger.info(f"  ✓ {tool_name} (free) — logged at $0")
-                return resp.json()
+                try:
+                    return resp.json()
+                except Exception as e:
+                    # $0 and nothing transmitted — safe for the caller to
+                    # fall back.
+                    raise PrePaymentError(
+                        f"free tool '{tool_name}' returned 200 with an "
+                        f"unparseable body: {e}"
+                    )
 
             if resp.status_code != 402:
-                raise Exception(f"Unexpected {resp.status_code}: {resp.text}")
+                raise PrePaymentError(f"Unexpected {resp.status_code}: {resp.text}")
 
             # ── 402 received — parse payment details ───────────────────────
-            data = resp.json()
-            payment_id  = data["payment_id"]
-            amount_usdc = data["amount_usdc"]
-            pay_to      = data["pay_to"]
+            try:
+                data = resp.json()
+                payment_id  = data["payment_id"]
+                amount_usdc = data["amount_usdc"]
+                pay_to      = data["pay_to"]
+            except Exception as e:
+                raise PrePaymentError(
+                    f"could not parse 402 response for '{tool_name}': {e}"
+                )
 
             logger.info(f"  402 — pay {amount_usdc} USDC to {pay_to[:12]}...")
 
-            # Optional per-call spend cap
-            if max_spend and Decimal(str(amount_usdc)) > Decimal(str(max_spend)):
-                raise ValueError(
-                    f"Tool '{tool_name}' costs {amount_usdc} USDC "
-                    f"which exceeds max_spend={max_spend}"
+            # ── Budget cap vs the amount ACTUALLY demanded (AGE-53) ─────────
+            # Session.call() passes max_spend = min(remaining budget,
+            # quoted_price * (1 + tolerance)). Checked BEFORE any signing or
+            # broadcast, so a gateway that advertises $0.001 in the registry
+            # and demands more in the 402 is refused, not paid.
+            if max_spend is not None and Decimal(str(amount_usdc)) > Decimal(str(max_spend)):
+                raise BudgetExceeded(
+                    f"402 for '{tool_name}' demands {amount_usdc} USDC, which exceeds "
+                    f"the cap for this call ({max_spend} USDC) — refusing to pay"
                 )
+
+            # `entry` is the call_log record for this payment. It is appended
+            # the moment value can leave the wallet (AGE-54) and flipped to
+            # success=True only when the tool call completes.
+            entry: dict | None = None
+
+            def _record(state: str, tx_hash: str = "") -> dict:
+                nonlocal entry
+                entry = {
+                    "tool": tool_name,
+                    "amount_usdc": str(amount_usdc),
+                    "tx_hash": tx_hash,
+                    "success": False,
+                    "state": state,
+                }
+                self.call_log.append(entry)
+                return entry
+
+            tx_hash = ""
 
             # ── Free tool ($0 challenge): no on-chain settlement ───────────
             # The gateway issues a 402 for free tools too (so every call gets
@@ -141,19 +209,26 @@ class AgentPayClient:
                 # ── Free tool: never settle on-chain (chain pref ignored) ──
                 tx_hash = f"free:{payment_id}"
                 logger.info(f"  ✓ {tool_name} is free — skipping settlement")
+                _record("free", tx_hash)
                 proof_header = (
                     f"tx_hash={tx_hash},"
                     f"from={self.wallet.public_key},"
                     f"id={payment_id}"
                 )
-                retry = client.post(
-                    url,
-                    json=payload,
-                    headers={
-                        "X-Payment": proof_header,
-                        "X-Agent-Address": self.wallet.public_key,
-                    },
-                )
+                try:
+                    retry = client.post(
+                        url,
+                        json=payload,
+                        headers={
+                            "X-Payment": proof_header,
+                            "X-Agent-Address": self.wallet.public_key,
+                        },
+                    )
+                except Exception as e:
+                    # $0 — nothing at risk, safe for the caller to fall back.
+                    raise PrePaymentError(
+                        f"free tool '{tool_name}' retry failed: {e}"
+                    )
             else:
                 # ── Paid tool: prefer Base (Mode A) → fall back to Stellar ──
                 base_opt = (data.get("payment_options") or {}).get("base")
@@ -177,10 +252,33 @@ class AgentPayClient:
 
                 retry = None
                 if want_base:
+                    # ── Phase 1: sign OFF-CHAIN (strictly pre-payment) ─────
+                    sig = None
                     try:
-                        retry = self._settle_base(
-                            client, url, payload, base_opt, data
-                        )
+                        # AGE-53: the Base option can carry its own amount —
+                        # bound it by the same cap before signing anything.
+                        # Fail closed: an amount we can't parse is an amount we
+                        # can't bound, so we don't sign it either (falls back
+                        # to Stellar via the except below — Stellar pays the
+                        # body's amount_usdc, which IS capped).
+                        base_amount = self._base_opt_amount_usd(base_opt)
+                        if max_spend is not None and base_amount is None:
+                            raise ValueError(
+                                f"Base option for '{tool_name}' has an "
+                                f"unparseable amount — refusing to sign"
+                            )
+                        if (
+                            max_spend is not None
+                            and base_amount > Decimal(str(max_spend))
+                        ):
+                            raise BudgetExceeded(
+                                f"Base option for '{tool_name}' would sign for "
+                                f"{base_amount} USDC, which exceeds the cap for "
+                                f"this call ({max_spend} USDC) — refusing to sign"
+                            )
+                        sig = self._sign_base_auth(base_opt, url)
+                    except BudgetExceeded:
+                        raise
                     except Exception as e:
                         msg = str(e)[:160]
                         if isinstance(e, ImportError):
@@ -188,9 +286,42 @@ class AgentPayClient:
                         if chain_is_explicit and prefer_chain == "base":
                             raise PaymentFailed(f"base settlement failed: {msg}")
                         logger.warning(
-                            f"  Base settlement failed ({msg}) — falling back to Stellar"
+                            f"  Base signing failed ({msg}) — falling back to Stellar"
                         )
-                        retry = None
+                        sig = None
+
+                    if sig is not None:
+                        # ── Phase 2: transmit the signed auth (AGE-56) ─────
+                        # Once this POST leaves the wire the gateway holds a
+                        # transferWithAuthorization it can settle within
+                        # validBefore — even if it answers non-200. Record the
+                        # spend NOW and never fall back to Stellar past this
+                        # point: that would be a second payment.
+                        #
+                        # PAYMENT-SIGNATURE only. Sending the same payload in
+                        # X-PAYMENT (the x402 standard header) collides with
+                        # the gateway's legacy Stellar X-Payment header and got
+                        # every Mode A named-tool call rejected with 'Invalid
+                        # X-Payment header format'. This path only talks to
+                        # AgentPay's own gateway; external x402 URLs go through
+                        # _call_x402_url instead.
+                        _record("signed_auth_transmitted")
+                        try:
+                            retry = client.post(
+                                url,
+                                json=payload,
+                                headers={
+                                    "PAYMENT-SIGNATURE": sig,
+                                    "X-Agent-Address":   self.wallet.base_address,
+                                },
+                            )
+                        except Exception as e:
+                            entry["state"] = "uncertain_settlement"
+                            raise Exception(
+                                f"Tool call failed after payment — the signed Base "
+                                f"authorization was transmitted, settlement uncertain, "
+                                f"spend recorded: {e}"
+                            )
 
                 if retry is None:
                     # ── Stellar settlement (fallback / explicit) ───────────
@@ -223,21 +354,32 @@ class AgentPayClient:
                         raise PaymentFailed(reason)
                     tx_hash = payment["tx_hash"]
                     logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
+                    # Funds have LEFT the wallet — record before the retry, so
+                    # a failed retry still burns budget (AGE-54).
+                    _record("paid_awaiting_result", tx_hash)
                     proof_header = (
                         f"tx_hash={tx_hash},"
                         f"from={self.wallet.public_key},"
                         f"id={payment_id}"
                     )
-                    retry = client.post(
-                        url,
-                        json=payload,
-                        headers={
-                            "X-Payment": proof_header,
-                            "X-Agent-Address": self.wallet.public_key,
-                        },
-                    )
+                    try:
+                        retry = client.post(
+                            url,
+                            json=payload,
+                            headers={
+                                "X-Payment": proof_header,
+                                "X-Agent-Address": self.wallet.public_key,
+                            },
+                        )
+                    except Exception as e:
+                        entry["state"] = "paid_no_result"
+                        raise Exception(
+                            f"Tool call failed after payment (spend recorded): {e}"
+                        )
                 else:
                     tx_hash = retry.headers.get("x-tx-hash", "") or ""
+                    if entry is not None and tx_hash:
+                        entry["tx_hash"] = tx_hash
 
             if retry.status_code != 200:
                 # Gateway refund contract: on tool-failure-post-verify the
@@ -259,6 +401,10 @@ class AgentPayClient:
                     payment_status = None
 
                 if payment_status in ("refund_pending", "refund_disabled"):
+                    if entry is not None:
+                        # Spend stays counted against the budget until the
+                        # refund actually confirms (AGE-54).
+                        entry["state"] = "refund_pending"
                     raise RefundPending(
                         err_body.get("error_reason", ""),
                         payment_id=err_body.get("payment_id", ""),
@@ -267,21 +413,52 @@ class AgentPayClient:
                         payment_status=payment_status,
                     )
 
+                if entry is None or Decimal(str(entry["amount_usdc"] or "0")) == 0:
+                    # Nothing at risk ($0 free proof) — safe to fall back.
+                    raise PrePaymentError(
+                        f"free tool '{tool_name}' call failed: "
+                        f"{retry.status_code} {retry.text[:200]}"
+                    )
+
+                entry["state"] = (
+                    "uncertain_settlement"
+                    if entry["state"] == "signed_auth_transmitted"
+                    else "paid_no_result"
+                )
                 raise Exception(f"Tool call failed after payment: {retry.text}")
 
-            result = retry.json()
+            try:
+                result = retry.json()
+            except Exception as e:
+                if entry is None or Decimal(str(entry["amount_usdc"] or "0")) == 0:
+                    # $0 — nothing at risk, safe for the caller to fall back.
+                    raise PrePaymentError(
+                        f"free tool '{tool_name}' returned 200 with an "
+                        f"unparseable body: {e}"
+                    )
+                # Paid: the spend is already recorded; the tool ran but the
+                # body is unusable. Keep success=False so receipts don't show
+                # a settled leg for a call the caller experienced as an error.
+                entry["state"] = "settled_bad_body"
+                raise Exception(
+                    f"Tool call failed after payment: unparseable 200 body ({e})"
+                )
 
             # Base settlement returns the tx hash inside the response envelope.
             if not tx_hash and isinstance(result, dict):
                 tx_hash = (result.get("payment") or {}).get("tx_hash", "") or \
                           (result.get("receipt") or {}).get("tx_hash", "") or ""
 
-            self.call_log.append({
-                "tool": tool_name,
-                "amount_usdc": amount_usdc,
-                "tx_hash": tx_hash,
-                "success": True,
-            })
+            if entry is not None:
+                entry["success"] = True
+                entry["tx_hash"] = tx_hash
+                if entry["state"] in ("paid_awaiting_result", "signed_auth_transmitted"):
+                    entry["state"] = "settled"
+                # Settlement network from the gateway receipt, if present.
+                if isinstance(result, dict):
+                    net = (result.get("payment") or {}).get("network", "") or ""
+                    if net:
+                        entry["network"] = net
 
             logger.info(f"  ✓ Result received for {tool_name}")
             return result

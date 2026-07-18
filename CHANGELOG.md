@@ -4,6 +4,43 @@ All notable changes to **agentpay-x402** (the `agentpay` Python SDK).
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security / Fixed — Gateway Code Review 2026-07, SDK cluster (AGE-53..57)
+- **Budget cap now binds the amount actually paid** (AGE-53, CRITICAL).
+  `Session.call()` passes `max_spend = min(remaining budget, quoted price
+  × 1.05)` into the client, which hard-fails **before** paying or signing if
+  the 402 demands more. A gateway advertising $0.001 and demanding $0.50 in
+  the 402 is now refused instead of paid. The Base `payment_options` amount
+  is bound by the same cap before signing.
+- **Spend is recorded at broadcast/auth-transmission time, not at HTTP 200**
+  (AGE-54). A payment whose tool call then fails still counts against
+  `spent()`/`remaining()` (call-log `state`: `paid_no_result`,
+  `uncertain_settlement`, `refund_pending`). Pay-then-fail loops can no
+  longer overspend the cap.
+- **No fallback after funds move** (AGE-55). `Session.call()` only retries a
+  fallback tool on the new typed `PrePaymentError` (nothing moved, no auth
+  transmitted). Post-payment failures propagate — one `session.call()` can
+  no longer pay twice.
+- **Transmitted EIP-3009 authorizations are treated as potentially spent**
+  (AGE-56). A non-200 after the signed auth left the wire no longer claims
+  "no payment settled", never re-pays on Stellar, and records the spend as
+  `uncertain_settlement`. Signing failures (pre-transmission) still fall
+  back to Stellar as before.
+- **`allowed_tools` / `max_per_tool` / `rate_limit` now apply to external
+  x402 URLs** (AGE-57). Policy checks run in `Session.call()` before any
+  routing, so URL targets (and `discover_and_call`) can no longer bypass the
+  allowlist or per-tool caps.
+- Server-controlled `maxTimeoutSeconds` is clamped to 600s before signing
+  (AGE-67): a hostile 402 can no longer request a year-long `validBefore`.
+
+### Changed (breaking)
+- `AgentPayClient.call_tool` raises `BudgetExceeded` (was `ValueError`) when
+  the 402 amount exceeds `max_spend`.
+- New exported exception: `agentpay.PrePaymentError`.
+- External x402 4xx rejections after auth transmission now read
+  "…settlement uncertain, spend recorded…" (prober matcher updated).
+
 ## [0.2.7] — 2026-06-17
 
 ### Fixed

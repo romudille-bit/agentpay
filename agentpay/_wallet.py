@@ -48,6 +48,20 @@ class PaymentFailed(Exception):
     pass
 
 
+class PrePaymentError(Exception):
+    """
+    Raised when a tool call fails BEFORE any funds move and BEFORE any
+    signed payment authorization leaves the process — e.g. the initial
+    request errored, the 402 couldn't be parsed, or the gateway returned
+    an unexpected status on the un-paid probe.
+
+    This is the ONLY failure class Session.call() will fall back on:
+    anything else is treated as potentially-paid (fail closed) so a
+    fallback can never turn into a second payment (AGE-55/AGE-56).
+    """
+    pass
+
+
 class RefundPending(Exception):
     """
     Raised when the gateway accepted the payment on-chain but the tool
@@ -385,7 +399,11 @@ class AgentWallet:
         pay_to  = accept["payTo"]
         network = accept.get("network", "eip155:8453")
         scheme_name = accept.get("scheme", "exact")
-        timeout = int(accept.get("maxTimeoutSeconds", 300))
+        # AGE-67/AGE-56: maxTimeoutSeconds comes from the SERVER'S 402 and
+        # becomes the signed authorization's validBefore window. Clamp it so a
+        # hostile 402 can't request a year-long validity and hold a settleable
+        # authorization long after the session/budget is gone.
+        timeout = min(int(accept.get("maxTimeoutSeconds", 300)), MAX_AUTH_VALIDITY_SECONDS)
         extra   = accept.get("extra") or {
             "name": "USD Coin", "version": "2", "assetTransferMethod": "eip3009",
         }
@@ -419,6 +437,19 @@ class AgentWallet:
 # facilitator that keeps AgentPay discoverable on Bazaar; Stellar is the
 # automatic fallback when no Base wallet/option is available.
 DEFAULT_PAID_CHAIN = "base"
+
+# AGE-53: how much the 402-demanded amount may exceed the registry-quoted
+# price before the SDK refuses to pay/sign. Covers rounding/format drift
+# ("0.001" vs "0.0010") plus small legitimate repricing; anything larger is
+# treated as a hostile or misconfigured gateway and hard-fails pre-payment.
+OVERPAY_TOLERANCE = Decimal("0.05")   # 5% relative
+
+# AGE-67/AGE-56: ceiling for the server-controlled maxTimeoutSeconds that
+# becomes the EIP-3009 validBefore window. 10 minutes is generous for any
+# legitimate settlement; without a clamp a hostile 402 could request a
+# year-long window and settle the signed authorization long after the
+# session is gone.
+MAX_AUTH_VALIDITY_SECONDS = 600
 
 
 def _fmt(amount) -> str:
@@ -704,6 +735,11 @@ class Session:
                     "cost":     _fmt(e["amount_usdc"]),
                     "tx_hash":  e.get("tx_hash", ""),
                     "network":  e.get("network", "") or "",   # settlement chain
+                    # AGE-54: failed/uncertain spends now legitimately appear in
+                    # the ledger — receipt consumers must be able to tell them
+                    # from settled legs.
+                    "success":  e.get("success", True),
+                    **({"state": e["state"]} if e.get("state") else {}),
                     **({"fallback_for": e["fallback_for"]} if "fallback_for" in e else {}),
                 }
                 for e in self._call_log
@@ -851,19 +887,11 @@ class Session:
 
         Currently supports Stellar mainnet and testnet.
         Base/Solana support: add EVM wallet to AgentWallet (roadmap).
+
+        NOTE: policy checks (allowed_tools, max_per_tool, rate_limit) are
+        enforced by call() BEFORE routing here (AGE-57) — call() is the only
+        entry point, so URL targets can no longer bypass the allowlist.
         """
-        import time as _time
-
-        # ── Policy checks (reuse same guards as call()) ───────────────────────
-        if self._rate_limit is not None:
-            now = _time.monotonic()
-            self._rate_window = [t for t in self._rate_window if now - t < 60.0]
-            if len(self._rate_window) >= self._rate_limit:
-                raise BudgetExceeded(
-                    f"Rate limit exceeded: max {self._rate_limit} calls/min"
-                )
-            self._rate_window.append(now)
-
         with httpx.Client(timeout=60.0) as client:
             # ── First request — probe for 402 ─────────────────────────────────
             # Default POST (AgentPay's own tools); GET-only servers (e.g. CMC's
@@ -874,13 +902,13 @@ class Session:
                 if resp.status_code == 405:
                     resp = client.get(url)
             except Exception as e:
-                raise Exception(f"External x402 call failed: {e}")
+                raise PrePaymentError(f"External x402 call failed: {e}")
 
             if resp.status_code == 200:
                 return resp.json()
 
             if resp.status_code != 402:
-                raise Exception(
+                raise PrePaymentError(
                     f"Expected 200 or 402 from {url}, got {resp.status_code}: {resp.text[:200]}"
                 )
 
@@ -896,7 +924,7 @@ class Session:
             hdr_payload = _decode_payment_required_header(resp.headers)
             if not isinstance(data, dict):
                 if hdr_payload is None:
-                    raise Exception(f"Could not parse 402 response from {url}: {resp.text[:200]}")
+                    raise PrePaymentError(f"Could not parse 402 response from {url}: {resp.text[:200]}")
                 data = hdr_payload
             elif hdr_payload and not (data.get("accepts") or []):
                 data = {**hdr_payload, **{k: v for k, v in data.items() if v}}
@@ -922,12 +950,12 @@ class Session:
                 # AgentPay's own endpoints use the native 'payment_options' shape,
                 # not x402-v2 'accepts' — guide the caller instead of failing cryptically.
                 if data.get("payment_options"):
-                    raise Exception(
+                    raise PrePaymentError(
                         f"{url} returned an AgentPay-native 402 (payment_options, not "
                         f"x402-v2 'accepts'). Call AgentPay tools by name — "
                         f"session.call('tool_name') — rather than by URL."
                     )
-                raise Exception(f"402 from {url} had no payment requirements in 'accepts'")
+                raise PrePaymentError(f"402 from {url} had no payment requirements in 'accepts'")
 
             # ── Normalise into payable candidates, tagged by chain ────────────
             def _chain_kind(net) -> str | None:
@@ -1002,14 +1030,32 @@ class Session:
                 )
 
             # ── Pay on the selected network and retry ─────────────────────────
+            # AGE-54/AGE-56: spend is recorded the moment value can leave the
+            # wallet — at Stellar broadcast, or at Base auth transmission — NOT
+            # when the call returns 200. A pay-then-fail loop must burn budget.
             tx_hash = ""
+            entry = {
+                "tool":        url,
+                "amount_usdc": amount_usdc,
+                "tx_hash":     "",
+                "network":     pay_network,
+                "success":     False,
+                "external":    True,
+            }
+
+            def _record_spend(state: str):
+                entry["state"] = state
+                self._spent += Decimal(amount_usdc)
+                self._call_log.append(entry)
+
             if kind == "base":
-                # Base: sign EIP-3009 OFF-CHAIN — nothing is broadcast. The
-                # resource server's facilitator settles the authorization only
-                # if it accepts the request, so a rejected retry moves no funds.
-                # (This replaces the old raw ERC-20 transfer + tx_hash proof,
-                # which paid on-chain BEFORE the provider accepted and lost USDC
-                # against CDP-facilitator tools.)
+                # Base: sign EIP-3009 OFF-CHAIN — nothing is broadcast here. The
+                # resource server's facilitator settles the authorization if it
+                # accepts the request. Signing failures are pre-payment; but the
+                # moment the POST carrying the auth leaves the wire, the server
+                # holds a signature it CAN settle within validBefore — so any
+                # failure after transmission is treated as potentially spent
+                # (AGE-56), never as "no payment settled".
                 logger.info(f"  402 — signing {amount_usdc} USDC auth for {pay_to[:10]}... (Base, off-chain)")
                 try:
                     x_payment = self.wallet.build_base_payment_signature(base_accept, resource_for_payment)
@@ -1022,17 +1068,32 @@ class Session:
                     "PAYMENT-SIGNATURE": x_payment,   # alias some gateways use
                     "X-Agent-Address":   payer_address,
                 }
-                retry = (client.get(url, headers=_headers) if req_method == "GET"
-                         else client.post(url, json=params, headers=_headers))
-                if retry.status_code != 200:
-                    # No broadcast happened — no USDC left the wallet.
+                # Recorded BEFORE transmission: if the request itself times out,
+                # the auth may still have reached the server.
+                _record_spend("signed_auth_transmitted")
+                try:
+                    retry = (client.get(url, headers=_headers) if req_method == "GET"
+                             else client.post(url, json=params, headers=_headers))
+                except Exception as e:
+                    entry["state"] = "uncertain_settlement"
                     raise Exception(
-                        f"External x402 call rejected (no payment settled): "
+                        f"External x402 call errored after the signed authorization "
+                        f"was transmitted — settlement uncertain, spend recorded: {e}"
+                    )
+                if retry.status_code != 200:
+                    # The server rejected the call but STILL holds a valid signed
+                    # authorization it could settle within validBefore. Count the
+                    # spend (fail closed) instead of claiming nothing was paid.
+                    entry["state"] = "uncertain_settlement"
+                    raise Exception(
+                        f"External x402 call rejected after auth transmission "
+                        f"(settlement uncertain, spend recorded): "
                         f"{retry.status_code} {retry.text[:200]}"
                     )
                 result = retry.json()
                 if isinstance(result, dict):
                     tx_hash = ((result.get("payment") or {}).get("tx_hash")) or ""
+                    entry["tx_hash"] = tx_hash
             else:
                 # Stellar: broadcast the payment, then prove it with the tx_hash.
                 logger.info(f"  402 — paying {amount_usdc} USDC to {pay_to[:10]}... (Stellar)")
@@ -1042,8 +1103,12 @@ class Session:
                 if not payment["success"]:
                     raise PaymentFailed(payment["reason"])
                 tx_hash = payment["tx_hash"]
+                entry["tx_hash"] = tx_hash
                 payer_address = self.wallet.public_key
                 logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
+                # Funds have LEFT the wallet — record now, regardless of what
+                # the retry returns (AGE-54).
+                _record_spend("paid_awaiting_result")
 
                 proof_payload = {
                     "x402Version": 2,
@@ -1053,25 +1118,27 @@ class Session:
                 }
                 x_payment = base64.b64encode(json.dumps(proof_payload).encode()).decode()
                 _headers = {"X-Payment": x_payment, "X-Agent-Address": payer_address}
-                retry = (client.get(url, headers=_headers) if req_method == "GET"
-                         else client.post(url, json=params, headers=_headers))
-                if retry.status_code != 200:
+                try:
+                    retry = (client.get(url, headers=_headers) if req_method == "GET"
+                             else client.post(url, json=params, headers=_headers))
+                except Exception as e:
+                    entry["state"] = "paid_no_result"
                     raise Exception(
-                        f"External x402 call failed after payment: {retry.status_code} {retry.text[:200]}"
+                        f"External x402 call errored after payment "
+                        f"(spend recorded): {e}"
+                    )
+                if retry.status_code != 200:
+                    entry["state"] = "paid_no_result"
+                    raise Exception(
+                        f"External x402 call failed after payment (spend recorded): "
+                        f"{retry.status_code} {retry.text[:200]}"
                     )
                 result = retry.json()
 
-            # ── Record spend (only reached when the call returned 200) ─────────
+            # ── Success: mark the already-recorded spend entry settled ─────────
             cost = Decimal(amount_usdc)
-            self._spent += cost
-            self._call_log.append({
-                "tool":        url,
-                "amount_usdc": amount_usdc,
-                "tx_hash":     tx_hash,
-                "network":     pay_network,
-                "success":     True,
-                "external":    True,
-            })
+            entry["success"] = True
+            entry["state"] = "settled"
             # Make the settlement chain observable on the result (ToolResult.network)
             # for third-party tools whose response isn't already enveloped.
             if isinstance(result, dict) and "payment" not in result:
@@ -1099,16 +1166,25 @@ class Session:
         - Pre-checks the price against remaining budget.
         - If budget would be exceeded, looks for the next-cheapest tool in the
           same category that fits, and uses it as a fallback.
-        - If the tool is unavailable after payment attempt, also falls back.
-        - Raises BudgetExceeded if no affordable option exists.
-        - Records actual spend from the x402 payment receipt.
+        - If the tool fails BEFORE any payment moved, also falls back; failures
+          after funds moved (or after a signed authorization was transmitted)
+          are never retried with a second payment.
+        - Raises BudgetExceeded if no affordable option exists, or if the 402
+          demands more than the quoted price allows.
+        - Records actual spend from the x402 payment receipt — including
+          payments whose tool call then failed.
         """
-        import time as _time
         from agentpay._client import AgentPayClient
+
+        params = params or {}
+
+        # ── Policy gate (AGE-57): allowlist, rate limit, per-tool cap apply to
+        # BOTH registry tools and external x402 URLs, BEFORE any routing.
+        self._check_call_policies(tool_name)
 
         # ── External x402 URL: route directly, skip AgentPay registry ─────────
         if isinstance(tool_name, str) and tool_name.startswith(("http://", "https://")):
-            return _wrap_result(self._call_x402_url(tool_name, params or {}, chain=chain))
+            return _wrap_result(self._call_x402_url(tool_name, params, chain=chain))
 
         # ── Resolve paid-tool chain preference (Base default, Stellar fallback)
         # An explicit chain (per-call chain= or Session prefer_chain=) is a hard
@@ -1116,39 +1192,6 @@ class Session:
         # flow through the CDP/Mode-A path that keeps the Bazaar listing live.
         _chain_is_explicit = bool(chain or self._prefer_chain)
         _prefer_chain = (chain or self._prefer_chain or DEFAULT_PAID_CHAIN).lower()
-
-        params = params or {}
-
-        # ── Policy: allowed_tools whitelist ───────────────────────────────────
-        if self._allowed_tools is not None and tool_name not in self._allowed_tools:
-            raise BudgetExceeded(
-                f"Tool '{tool_name}' is not in the session allowlist: {self._allowed_tools}"
-            )
-
-        # ── Policy: rate_limit (max calls per minute) ─────────────────────────
-        if self._rate_limit is not None:
-            now = _time.monotonic()
-            # Prune calls older than 60 seconds
-            self._rate_window = [t for t in self._rate_window if now - t < 60.0]
-            if len(self._rate_window) >= self._rate_limit:
-                raise BudgetExceeded(
-                    f"Rate limit exceeded: max {self._rate_limit} calls/min "
-                    f"(made {len(self._rate_window)} in the last 60s)"
-                )
-            self._rate_window.append(now)
-
-        # ── Policy: max_per_tool cap ──────────────────────────────────────────
-        if tool_name in self._max_per_tool:
-            already_spent_on_tool = sum(
-                Decimal(e["amount_usdc"])
-                for e in self._call_log
-                if e["tool"] == tool_name
-            )
-            if already_spent_on_tool >= self._max_per_tool[tool_name]:
-                raise BudgetExceeded(
-                    f"Per-tool cap reached for '{tool_name}': "
-                    f"spent {_fmt(already_spent_on_tool)} of max {_fmt(self._max_per_tool[tool_name])}"
-                )
 
         # ── Resolve which tool to actually call ───────────────────────────────
         tool_info = self._fetch_tool_info(tool_name)
@@ -1182,66 +1225,130 @@ class Session:
                 )
 
         # ── Execute via x402 flow ─────────────────────────────────────────────
+        # AGE-53: the cap handed to the client binds the amount ACTUALLY
+        # demanded by the 402, not just the registry-advertised price: never
+        # more than the remaining session budget, and never more than the
+        # quoted price plus a small overpay tolerance. The client hard-fails
+        # BEFORE paying or signing if the 402 demands more.
+        def _cap_for(quote) -> str:
+            q = Decimal(str(quote))
+            return str(min(self.remaining_usd(), q * (Decimal("1") + OVERPAY_TOLERANCE)))
+
         client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
         try:
-            result = client.call_tool(
-                target, params,
-                prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
-            )
-        except PaymentFailed:
-            # On-chain payment itself failed — a fallback tool would fail for the
-            # same reason (empty wallet, wrong network, etc.). Surface the clean
-            # reason to the caller instead of cascading into more failures.
-            raise
-        except RefundPending:
-            # The agent already paid and the gateway has queued a refund.
-            # Falling back to another tool would just spend more USDC for
-            # another attempt at the same upstream failure mode. Surface
-            # the typed exception so callers can branch on it explicitly
-            # (see RefundPending docstring for the usage pattern).
-            raise
-        except Exception as exc:
-            # Tool call itself failed (e.g., tool server down post-payment)
-            if target == tool_name:
+            try:
+                result = client.call_tool(
+                    target, params, max_spend=_cap_for(price),
+                    prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
+                )
+            except (PaymentFailed, RefundPending):
+                # PaymentFailed: the on-chain payment itself failed — a fallback
+                # tool would fail for the same reason (empty wallet, wrong
+                # network, etc.). RefundPending: the agent already paid and the
+                # gateway queued a refund — falling back would spend more USDC
+                # on the same upstream failure mode. Surface the typed
+                # exceptions so callers can branch on them explicitly.
+                raise
+            except PrePaymentError as exc:
+                # AGE-55: fall back ONLY when no funds moved and no signed
+                # authorization left the process. Any other exception (e.g.
+                # "Tool call failed after payment", transport errors during the
+                # paid retry) is treated as potentially-paid and re-raised —
+                # a fallback there would be a second payment.
+                if target != tool_name:
+                    raise
                 category = tool_info.get("category", "data")
                 fallback = self._find_fallback(category=category, exclude=target)
-                if fallback and not self.would_exceed(fallback["price_usdc"]):
-                    logger.warning(f"  '{target}' failed ({exc}) — trying '{fallback['name']}'")
-                    client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
-                    result = client.call_tool(
-                        fallback["name"], params,
-                        prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
-                    )
-                    target = fallback["name"]
-                else:
+                if not (fallback and not self.would_exceed(fallback["price_usdc"])):
                     raise
-            else:
-                raise
+                logger.warning(
+                    f"  '{target}' failed pre-payment ({exc}) — trying '{fallback['name']}'"
+                )
+                # Keep the failed leg's (necessarily $0) entries on the receipt
+                # before the client is replaced — full session visibility.
+                self._absorb_client_log(client, requested=tool_name, target=target)
+                # Set target BEFORE the call so a fallback leg that pays and
+                # then fails still gets its fallback_for tag in the finally.
+                target = fallback["name"]
+                client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
+                result = client.call_tool(
+                    target, params, max_spend=_cap_for(fallback["price_usdc"]),
+                    prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
+                )
+        finally:
+            # AGE-54: fold EVERY payment the client made into the session —
+            # success or failure. A broadcast payment (or transmitted signed
+            # auth) whose tool call then failed still burned budget; the old
+            # code only recorded spend on HTTP 200, so a pay-then-fail loop
+            # spent real USDC while remaining() stayed full.
+            self._absorb_client_log(client, requested=tool_name, target=target)
 
-        # ── Record actual spend from payment receipt ───────────────────────────
-        if client.call_log:
-            last = client.call_log[-1]
-            cost = Decimal(last.get("amount_usdc", "0"))
-            self._spent += cost
-            self._tool_cache.setdefault(target, {})["price_usdc"] = str(cost)
-
-            # Settlement chain from the gateway receipt (e.g. 'stellar-mainnet',
-            # 'base', or 'free' for $0 tools) — recorded so it shows on the receipt.
-            net = ""
-            if isinstance(result, dict):
-                net = (result.get("payment") or {}).get("network", "") or ""
-            entry: dict = {
-                "tool": target,
-                "amount_usdc": str(cost),
-                "tx_hash": last.get("tx_hash", ""),
-                "network": net,
-                "success": True,
-            }
-            if target != tool_name:
-                entry["fallback_for"] = tool_name
-            self._call_log.append(entry)
+        # Settlement chain from the gateway receipt (e.g. 'stellar-mainnet',
+        # 'base', or 'free' for $0 tools) — recorded so it shows on the receipt.
+        if isinstance(result, dict) and self._call_log:
+            net = (result.get("payment") or {}).get("network", "") or ""
+            if net and not self._call_log[-1].get("network"):
+                self._call_log[-1]["network"] = net
 
         return _wrap_result(result)
+
+    def _check_call_policies(self, name_or_url: str) -> None:
+        """Pre-payment policy gate shared by registry tools AND external x402
+        URLs (AGE-57): allowed_tools allowlist, rate limit, per-tool cap.
+        call() is the single entry point, so URL targets can no longer bypass
+        the allowlist by skipping the registry path."""
+        import time as _time
+
+        if self._allowed_tools is not None and name_or_url not in self._allowed_tools:
+            raise BudgetExceeded(
+                f"Tool '{name_or_url}' is not in the session allowlist: {self._allowed_tools}"
+            )
+
+        if self._rate_limit is not None:
+            now = _time.monotonic()
+            # Prune calls older than 60 seconds
+            self._rate_window = [t for t in self._rate_window if now - t < 60.0]
+            if len(self._rate_window) >= self._rate_limit:
+                raise BudgetExceeded(
+                    f"Rate limit exceeded: max {self._rate_limit} calls/min "
+                    f"(made {len(self._rate_window)} in the last 60s)"
+                )
+            self._rate_window.append(now)
+
+        if name_or_url in self._max_per_tool:
+            already_spent_on_tool = sum(
+                Decimal(e["amount_usdc"])
+                for e in self._call_log
+                if e["tool"] == name_or_url
+            )
+            if already_spent_on_tool >= self._max_per_tool[name_or_url]:
+                raise BudgetExceeded(
+                    f"Per-tool cap reached for '{name_or_url}': "
+                    f"spent {_fmt(already_spent_on_tool)} of max {_fmt(self._max_per_tool[name_or_url])}"
+                )
+
+    def _absorb_client_log(self, client, requested: str, target: str) -> None:
+        """Fold an AgentPayClient's call_log into the session ledger and
+        budget. Runs on success AND failure paths (AGE-54): the client records
+        an entry the moment value can leave the wallet, so every broadcast
+        payment counts against the cap even when the tool call then failed."""
+        for e in client.call_log:
+            cost = Decimal(str(e.get("amount_usdc", "0")))
+            self._spent += cost
+            entry: dict = {
+                "tool":        e.get("tool", target),
+                "amount_usdc": str(cost),
+                "tx_hash":     e.get("tx_hash", "") or "",
+                "network":     e.get("network", "") or "",
+                "success":     bool(e.get("success")),
+            }
+            if e.get("state"):
+                entry["state"] = e["state"]
+            if target != requested and entry["tool"] == target:
+                entry["fallback_for"] = requested
+            self._call_log.append(entry)
+            if entry["success"]:
+                self._tool_cache.setdefault(entry["tool"], {})["price_usdc"] = str(cost)
 
     def summary(self) -> dict:
         return {
@@ -1290,14 +1397,34 @@ class Session:
         """
         Find the cheapest available tool in `category` within remaining budget,
         excluding `exclude`. Returns tool dict or None.
+
+        Policy-aware (AGE-57): a fallback must satisfy the same session
+        policies as a named tool — the SDK picking it instead of the caller
+        does not exempt it from the allowed_tools allowlist or a per-tool cap.
         """
         remaining = self.max_spend - self._spent
+
+        def _policy_ok(t: dict) -> bool:
+            name = t.get("name")
+            if self._allowed_tools is not None and name not in self._allowed_tools:
+                return False
+            if name in self._max_per_tool:
+                already = sum(
+                    Decimal(e["amount_usdc"])
+                    for e in self._call_log
+                    if e["tool"] == name
+                )
+                if already >= self._max_per_tool[name]:
+                    return False
+            return True
+
         candidates = [
             t for t in self._all_tools()
             if t.get("category") == category
             and t.get("name") != exclude
             and t.get("active", True)
             and Decimal(t.get("price_usdc", "999")) <= remaining
+            and _policy_ok(t)
         ]
         if not candidates:
             return None
