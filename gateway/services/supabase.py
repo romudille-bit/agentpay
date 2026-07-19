@@ -1100,21 +1100,113 @@ async def increment_refund_attempt(payment_id: str) -> int | None:
         return None
 
 
-async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
-    """Terminal happy-path transition. PATCH state='refund_done',
-    refund_tx_hash=$1, with expected_state='refund_pending' guard so
-    we don't accidentally overwrite a refund_failed (which would
-    happen if a stale worker comes back after we'd already given up).
+async def claim_refund_sending(payment_id: str) -> bool:
+    """AGE-76 two-phase claim: refund_pending → refund_sending, CONFIRMED.
+
+    The USDC send is authorized ONLY by a confirmed claim: with the row in
+    'refund_sending', claim_refund_pending can never re-claim it blind, so a
+    send whose terminal PATCH later fails cannot be silently re-sent. Stale
+    'refund_sending' rows are resolved by the worker's stale sweep via the
+    on-chain memo idempotency check.
+
+    Returns True only when exactly this transition landed (1 row). False on
+    any error, or when the row was not in refund_pending — the caller MUST
+    NOT send on False.
     """
+    if not sb_enabled():
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.patch(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers={**sb_headers(), "Prefer": "return=representation"},
+                params={
+                    "payment_id": f"eq.{payment_id}",
+                    "state":      "eq.refund_pending",
+                },
+                json={"state": "refund_sending"},
+            )
+        if resp.status_code != 200:
+            logger.error(
+                f"claim_refund_sending error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]} (payment_id={payment_id})"
+            )
+            return False
+        return len(resp.json()) == 1
+    except Exception as e:
+        logger.error(f"claim_refund_sending failure (payment_id={payment_id}): {e}")
+        return False
+
+
+async def release_refund_sending(payment_id: str) -> None:
+    """AGE-76: after a FAILED send, put the row back in the retry pool
+    (refund_sending → refund_pending; the attempt was already counted).
+    Best-effort — if this PATCH fails the row stays in refund_sending and
+    the stale sweep resolves it via the on-chain check."""
     await update_payment_log_state(
         payment_id,
-        "refund_done",
-        expected_state="refund_pending",
-        refund_tx_hash=refund_tx_hash,
-        # Clear any error_reason from a previous failed attempt so the
-        # success state is unambiguous.
-        error_reason=None,
+        "refund_pending",
+        expected_state="refund_sending",
     )
+
+
+async def list_refund_sending() -> list[dict]:
+    """AGE-76 stale sweep input: every row currently in 'refund_sending'.
+    The worker resolves each via the on-chain memo idempotency check —
+    at sweep start, any such row is from a crashed/blipped earlier sweep
+    (this sweep's claims happen after)."""
+    if not sb_enabled():
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={
+                    "state":  "eq.refund_sending",
+                    "select": "payment_id,agent_address,amount_usdc,network,refund_attempts",
+                },
+            )
+        if resp.status_code != 200:
+            logger.error(f"list_refund_sending error: HTTP {resp.status_code}")
+            return []
+        return resp.json()
+    except Exception as e:
+        logger.error(f"list_refund_sending failure: {e}")
+        return []
+
+
+async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
+    """Terminal happy-path transition. PATCH state='refund_done',
+    refund_tx_hash=$1, guarded to the in-flight states so we don't
+    accidentally overwrite a refund_failed (which would happen if a
+    stale worker comes back after we'd already given up).
+
+    AGE-76: the row is in 'refund_sending' when a send just completed
+    (two-phase claim); 'refund_pending' is kept in the guard for
+    backward compatibility with rows written before the deploy.
+    """
+    if not sb_enabled():
+        return
+    payload = {"state": "refund_done", "refund_tx_hash": refund_tx_hash}
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.patch(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={
+                    "payment_id": f"eq.{payment_id}",
+                    "state":      "in.(refund_sending,refund_pending)",
+                },
+                json=payload,
+            )
+        if resp.status_code not in (200, 204):
+            logger.error(
+                f"mark_refund_done error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]} (payment_id={payment_id})"
+            )
+    except Exception as e:
+        logger.error(f"mark_refund_done failure (payment_id={payment_id}): {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1404,10 +1496,11 @@ async def fetch_service_scores() -> dict[str, dict]:
 
 async def mark_refund_failed(payment_id: str, error_reason: str) -> None:
     """Terminal sad-path transition after cap exhaustion. Filters by
-    expected_state IN ('refund_pending', 'refund_failed') so a retry
-    of this terminal write is idempotent — second call lands as a
-    no-op rather than a 0-rows update that callers can't distinguish
-    from a bug.
+    expected_state IN ('refund_pending', 'refund_sending', 'refund_failed')
+    so a retry of this terminal write is idempotent — second call lands as
+    a no-op rather than a 0-rows update that callers can't distinguish
+    from a bug. ('refund_sending' added with AGE-76's two-phase claim: the
+    cap-exhaustion write now happens while the row is claimed.)
 
     PostgREST 'in.(...)' syntax for the state filter.
     """
@@ -1421,7 +1514,7 @@ async def mark_refund_failed(payment_id: str, error_reason: str) -> None:
                 headers=sb_headers(),
                 params={
                     "payment_id": f"eq.{payment_id}",
-                    "state":      "in.(refund_pending,refund_failed)",
+                    "state":      "in.(refund_pending,refund_sending,refund_failed)",
                 },
                 json=payload,
             )

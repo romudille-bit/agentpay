@@ -149,11 +149,57 @@ async def _refund_worker_loop():
     # would order-couple them. Mirrors the lazy import in
     # stellar.py:split_payment.
     from gateway.services import supabase as sb
-    from gateway.stellar import send_refund
+    from gateway.stellar import find_refund_on_chain, send_refund
+
+    async def _resolve_stale_refund_sending():
+        """AGE-76: resolve rows stuck in 'refund_sending' — a send whose
+        terminal PATCH failed, or a worker crash mid-send. At sweep start
+        any such row is from an EARLIER sweep (this sweep's claims happen
+        later), so each is resolved against the chain:
+          - refund found on Horizon (memo match) → mark_refund_done with
+            the found tx (the send DID happen; only the bookkeeping failed)
+          - Horizon confirms NO refund → release back to refund_pending
+            (the attempt was already counted; next sweep retries)
+          - Horizon unknown → leave in refund_sending, try again next sweep.
+            Releasing on unknown would be the duplicate-refund path.
+        Stellar-only: Base rows have no memo to match — logged for manual
+        reconciliation instead of guessing.
+        """
+        for row in await sb.list_refund_sending():
+            pid = row.get("payment_id", "")
+            if not pid:
+                continue
+            if str(row.get("network", "")).startswith("base-"):
+                logger.critical(
+                    f"[REFUND] payment_id={pid[:8]}... stuck in refund_sending "
+                    f"on a Base row — no on-chain memo check available; "
+                    f"reconcile manually"
+                )
+                continue
+            ok, tx = await find_refund_on_chain(pid)
+            if not ok:
+                continue                      # unknown — retry next sweep
+            if tx:
+                await sb.mark_refund_done(pid, tx)
+                logger.warning(
+                    f"[REFUND] payment_id={pid[:8]}... recovered from "
+                    f"refund_sending: refund found on-chain tx={tx[:16]}... "
+                    f"→ refund_done (terminal PATCH had been lost)"
+                )
+            else:
+                await sb.release_refund_sending(pid)
+                logger.info(
+                    f"[REFUND] payment_id={pid[:8]}... released "
+                    f"refund_sending → refund_pending (no refund on-chain)"
+                )
 
     await asyncio.sleep(_REFUND_WORKER_INTERVAL_SECS)
     while True:
         try:
+            # AGE-76: resolve in-flight rows from earlier sweeps BEFORE
+            # claiming new ones (ordering makes every refund_sending row
+            # seen here provably stale).
+            await _resolve_stale_refund_sending()
             # AGE-61 follow-up: terminal-state rows that hit the attempt cap
             # without a completed send (worker crash mid-attempt, or repeated
             # unconfirmed increments). They're filtered out of the claim
@@ -197,6 +243,18 @@ async def _refund_worker_loop():
                     )
                     continue
 
+                # AGE-76 two-phase claim: move the row OUT of the claimable
+                # pool before any USDC leaves. If the post-send terminal
+                # PATCH then fails, the row sits in 'refund_sending' — never
+                # blindly re-claimed — until the stale sweep resolves it
+                # against the chain. No confirmed claim → no send.
+                if not await sb.claim_refund_sending(payment_id):
+                    logger.warning(
+                        f"[REFUND] payment_id={payment_id[:8]}... claim to "
+                        f"refund_sending unconfirmed — skipping send this sweep"
+                    )
+                    continue
+
                 if is_base_row:
                     from gateway.base import send_base_refund
                     result = await send_base_refund(
@@ -226,6 +284,9 @@ async def _refund_worker_loop():
                         f"after {this_attempt} attempts ({reason})"
                     )
                 else:
+                    # Failed send below the cap: put the row back in the
+                    # retry pool (AGE-76 — the claim moved it out).
+                    await sb.release_refund_sending(payment_id)
                     logger.info(
                         f"[REFUND] payment_id={payment_id[:8]}... attempt "
                         f"{this_attempt}/{sb._REFUND_ATTEMPT_CAP} failed "

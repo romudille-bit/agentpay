@@ -580,15 +580,15 @@ class TestRefundORM:
 
     @pytest.mark.asyncio
     async def test_mark_refund_done_uses_state_guard(self):
-        """Terminal happy-path PATCH must filter by
-        state=eq.refund_pending so it can't accidentally overwrite a
-        refund_failed row (which would happen if a delayed worker
-        comes back to a row we'd already given up on). PR #14a
-        state-guard pattern."""
+        """Terminal happy-path PATCH must filter to the in-flight states
+        (refund_sending from AGE-76's two-phase claim, refund_pending for
+        pre-deploy rows) so it can't accidentally overwrite a refund_failed
+        row (which would happen if a delayed worker comes back to a row
+        we'd already given up on)."""
         captured = {}
 
         def capture_request(request):
-            captured["url"] = str(request.url)
+            captured["params"] = dict(request.url.params)
             import json
             captured["body"] = json.loads(request.content)
             return httpx.Response(204)
@@ -599,15 +599,16 @@ class TestRefundORM:
             )
             await mark_refund_done("test-uuid", "refund_hash_abc")
 
-        # State-guarded
-        assert "state=eq.refund_pending" in captured["url"]
+        # State-guarded to in-flight states only
+        assert captured["params"]["state"] == "in.(refund_sending,refund_pending)"
         # Carries the refund tx_hash
         assert captured["body"]["state"] == "refund_done"
         assert captured["body"]["refund_tx_hash"] == "refund_hash_abc"
 
     @pytest.mark.asyncio
     async def test_mark_refund_failed_idempotent_via_in_filter(self):
-        """The terminal-sad PATCH includes BOTH 'refund_pending' and
+        """The terminal-sad PATCH includes the in-flight states
+        ('refund_pending', 'refund_sending' — AGE-76 two-phase claim) AND
         'refund_failed' in its state filter so a second call to
         mark_refund_failed (e.g. a retry of the worker's give-up
         logic) lands as a no-op rather than a 0-row update. Otherwise
@@ -616,7 +617,7 @@ class TestRefundORM:
         captured = {}
 
         def capture_request(request):
-            captured["url"] = str(request.url)
+            captured["params"] = dict(request.url.params)
             import json
             captured["body"] = json.loads(request.content)
             return httpx.Response(204)
@@ -627,11 +628,8 @@ class TestRefundORM:
             )
             await mark_refund_failed("test-uuid", "max_attempts_exhausted")
 
-        # PostgREST `in.()` syntax (URL-encoded: %28 = '(', %29 = ')')
-        assert (
-            "state=in.(refund_pending,refund_failed)" in captured["url"]
-            or "state=in.%28refund_pending%2Crefund_failed%29" in captured["url"]
-        )
+        assert captured["params"]["state"] == \
+            "in.(refund_pending,refund_sending,refund_failed)"
         assert captured["body"]["state"] == "refund_failed"
         assert captured["body"]["error_reason"] == "max_attempts_exhausted"
 
@@ -951,3 +949,72 @@ class TestAge60FollowUps:
         assert seen["params"]["refund_attempts"] == f"gte.{_REFUND_ATTEMPT_CAP}"
         assert seen["body"] == {"state": "refund_failed",
                                 "error_reason": "cap_exhausted_no_send"}
+
+
+class TestTwoPhaseRefundClaim:
+    """AGE-76: claim_refund_sending / release_refund_sending / list_refund_sending."""
+
+    @pytest.mark.asyncio
+    async def test_claim_confirmed_only_on_exactly_one_row(self):
+        from gateway.services.supabase import claim_refund_sending
+        seen = {}
+
+        def handler(request):
+            import json
+            seen["params"] = dict(request.url.params)
+            seen["body"] = json.loads(request.content)
+            seen["prefer"] = request.headers.get("Prefer", "")
+            return httpx.Response(200, json=[{"payment_id": "p1"}])
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(side_effect=handler)
+            assert await claim_refund_sending("p1") is True
+        assert seen["params"]["state"] == "eq.refund_pending"   # guarded transition
+        assert seen["body"] == {"state": "refund_sending"}
+        assert "return=representation" in seen["prefer"]        # confirmation required
+
+    @pytest.mark.asyncio
+    async def test_claim_unconfirmed_on_zero_rows_or_error(self):
+        from gateway.services.supabase import claim_refund_sending
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                return_value=httpx.Response(200, json=[])   # row not in refund_pending
+            )
+            assert await claim_refund_sending("p1") is False
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=httpx.ConnectError("down")
+            )
+            assert await claim_refund_sending("p1") is False   # no send on unknown
+
+    @pytest.mark.asyncio
+    async def test_release_is_state_guarded(self):
+        from gateway.services.supabase import release_refund_sending
+        seen = {}
+
+        def handler(request):
+            import json
+            seen["params"] = dict(request.url.params)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(side_effect=handler)
+            await release_refund_sending("p1")
+        assert seen["params"]["state"] == "eq.refund_sending"
+        assert seen["body"]["state"] == "refund_pending"
+
+    @pytest.mark.asyncio
+    async def test_list_refund_sending_selects_worker_columns(self):
+        from gateway.services.supabase import list_refund_sending
+        seen = {}
+
+        def handler(request):
+            seen["params"] = dict(request.url.params)
+            return httpx.Response(200, json=[{"payment_id": "p1"}])
+
+        with respx.mock:
+            respx.get(f"{SB}/rest/v1/payment_logs").mock(side_effect=handler)
+            rows = await list_refund_sending()
+        assert rows == [{"payment_id": "p1"}]
+        assert seen["params"]["state"] == "eq.refund_sending"

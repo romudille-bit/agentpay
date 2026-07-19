@@ -509,6 +509,68 @@ async def send_refund(
         return {"success": False, "reason": reason}
 
 
+# AGE-76: how far back the on-chain idempotency check will page before it
+# gives up. 5 pages × 200 = 1000 txs of gateway history — comfortably beyond
+# any realistic per-minute tx volume, so a genuine refund is found. If the
+# memo isn't seen AND history isn't exhausted within this bound, the result
+# is UNKNOWN (never "no refund"), so a busy account can't trigger a re-send.
+_REFUND_SCAN_MAX_PAGES = 5
+
+
+async def find_refund_on_chain(payment_id: str) -> tuple[bool, str | None]:
+    """AGE-76 on-chain idempotency check: has a refund for this payment_id
+    already been submitted? Matches the deterministic memo send_refund sets
+    ('refund:<payment_id[:20]>') against the gateway account's transactions
+    on Horizon (newest first), paging until found or history is exhausted.
+
+    Returns:
+        (True,  tx_hash) — refund found on-chain
+        (True,  None)    — Horizon history EXHAUSTED and NO refund exists —
+                           safe to release the row back to refund_pending
+        (False, None)    — UNKNOWN: Horizon unreachable/errored, OR the memo
+                           wasn't found within _REFUND_SCAN_MAX_PAGES and
+                           more history remains. Callers must NOT release on
+                           this — releasing on unknown is the exact
+                           duplicate-refund path this check exists to close.
+    """
+    if not settings.GATEWAY_PUBLIC_KEY:
+        return (False, None)
+    memo = f"refund:{payment_id[:20]}"
+    try:
+        server = get_server()
+        call = (
+            server.transactions()
+            .for_account(settings.GATEWAY_PUBLIC_KEY)
+            .order(desc=True)
+            .limit(200)
+        )
+        page = await asyncio.to_thread(call.call)
+        for _ in range(_REFUND_SCAN_MAX_PAGES):
+            records = (page.get("_embedded") or {}).get("records") or []
+            for r in records:
+                if r.get("memo") == memo and r.get("successful", True):
+                    return (True, r.get("hash"))
+            # A short page means we've reached the end of history → the memo
+            # genuinely isn't there. A full page means more may remain.
+            if len(records) < 200:
+                return (True, None)
+            page = await asyncio.to_thread(page.next)
+        # Ran out of page budget with full pages throughout → more history
+        # exists that we didn't scan. UNKNOWN, not "no refund".
+        logger.warning(
+            f"[REFUND] on-chain idempotency check exhausted "
+            f"{_REFUND_SCAN_MAX_PAGES} pages without a verdict "
+            f"(payment_id={payment_id[:8]}...) — treating as UNKNOWN"
+        )
+        return (False, None)
+    except Exception as e:
+        logger.warning(
+            f"[REFUND] on-chain idempotency check failed "
+            f"(payment_id={payment_id[:8]}...): {e}"
+        )
+        return (False, None)
+
+
 # ── Balance Check ─────────────────────────────────────────────────────────────
 
 async def get_usdc_balance(public_key: str) -> str | None:

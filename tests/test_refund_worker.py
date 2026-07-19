@@ -36,6 +36,12 @@ def mocked_refund_deps(monkeypatch):
         "increment_unconfirmed": False,  # True → fake_increment returns None (AGE-61)
         "done_calls": [],     # (payment_id, tx_hash) tuples
         "failed_calls": [],   # (payment_id, reason) tuples
+        # AGE-76 two-phase claim + stale sweep
+        "sending_claims": [],        # payment_ids claimed to refund_sending
+        "claim_sending_fails": False,  # True → claim unconfirmed (no send)
+        "released": [],              # payment_ids released back to refund_pending
+        "sending_rows": [],          # stale refund_sending rows for the sweep
+        "chain_results": {},         # payment_id → (ok, tx_hash) for find_refund_on_chain
     }
 
     async def fake_claim(limit=20):
@@ -73,15 +79,39 @@ def mocked_refund_deps(monkeypatch):
     async def fake_sweep_cap():
         return 0
 
+    async def fake_claim_sending(payment_id):
+        if state["claim_sending_fails"]:
+            return False
+        state["sending_claims"].append(payment_id)
+        return True
+
+    async def fake_release_sending(payment_id):
+        state["released"].append(payment_id)
+
+    async def fake_list_sending():
+        # Return the configured stale rows ONCE (like fake_claim).
+        if state["sending_rows"]:
+            r = state["sending_rows"]
+            state["sending_rows"] = []
+            return r
+        return []
+
+    async def fake_find_refund_on_chain(payment_id):
+        return state["chain_results"].get(payment_id, (True, None))
+
     import gateway.services.supabase as sb_mod
     monkeypatch.setattr(sb_mod, "sweep_cap_exhausted_refunds", fake_sweep_cap)
     monkeypatch.setattr(sb_mod, "claim_refund_pending", fake_claim)
     monkeypatch.setattr(sb_mod, "increment_refund_attempt", fake_increment)
     monkeypatch.setattr(sb_mod, "mark_refund_done", fake_mark_done)
     monkeypatch.setattr(sb_mod, "mark_refund_failed", fake_mark_failed)
+    monkeypatch.setattr(sb_mod, "claim_refund_sending", fake_claim_sending)
+    monkeypatch.setattr(sb_mod, "release_refund_sending", fake_release_sending)
+    monkeypatch.setattr(sb_mod, "list_refund_sending", fake_list_sending)
 
     import gateway.stellar as stellar_mod
     monkeypatch.setattr(stellar_mod, "send_refund", fake_send_refund)
+    monkeypatch.setattr(stellar_mod, "find_refund_on_chain", fake_find_refund_on_chain)
 
     # Also replace _refund_worker_loop's asyncio.sleep with a fast version
     # so the test doesn't actually wait 60s between ticks.
@@ -287,5 +317,116 @@ async def test_refund_worker_unconfirmed_increment_skips_send(mocked_refund_deps
         {"success": True, "tx_hash": "must_not_happen"},
     ]
     # No state transitions either — the row waits for the next sweep.
+    assert mocked_refund_deps["done_calls"] == []
+    assert mocked_refund_deps["failed_calls"] == []
+
+
+# ── AGE-76: send → mark_refund_done idempotency (two-phase + on-chain check) ──
+
+ROW = {
+    "payment_id":      "pid-76",
+    "agent_address":   "GAGENT",
+    "amount_usdc":     "0.002",
+    "network":         "stellar-testnet",
+    "tool_name":       "token_price",
+    "refund_attempts": 0,
+}
+
+
+@pytest.mark.asyncio
+async def test_send_requires_confirmed_sending_claim(mocked_refund_deps):
+    """AGE-76: no USDC send without a CONFIRMED refund_pending →
+    refund_sending transition."""
+    mocked_refund_deps["rows"] = [dict(ROW)]
+    mocked_refund_deps["claim_sending_fails"] = True
+    mocked_refund_deps["send_results"] = [
+        {"success": True, "tx_hash": "must_not_happen"},
+    ]
+
+    from gateway.main import _refund_worker_loop
+    with pytest.raises(asyncio.CancelledError):
+        await _refund_worker_loop()
+
+    assert mocked_refund_deps["send_results"] == [
+        {"success": True, "tx_hash": "must_not_happen"},
+    ]  # never popped → never sent
+    assert mocked_refund_deps["done_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_failed_send_releases_row_back_to_pending(mocked_refund_deps):
+    """A failed send below the cap releases refund_sending → refund_pending
+    so the next sweep retries it."""
+    mocked_refund_deps["rows"] = [dict(ROW)]
+    mocked_refund_deps["send_results"] = [
+        {"success": False, "reason": "horizon_timeout"},
+    ]
+
+    from gateway.main import _refund_worker_loop
+    with pytest.raises(asyncio.CancelledError):
+        await _refund_worker_loop()
+
+    assert mocked_refund_deps["sending_claims"] == ["pid-76"]
+    assert mocked_refund_deps["released"] == ["pid-76"]
+    assert mocked_refund_deps["done_calls"] == []
+    assert mocked_refund_deps["failed_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_stale_sending_row_with_onchain_refund_marks_done_no_resend(
+    mocked_refund_deps,
+):
+    """The core AGE-76 scenario: a previous sweep sent the refund but the
+    terminal PATCH was lost (row stuck in refund_sending). The stale sweep
+    finds the refund on-chain via the memo and marks the row done — WITHOUT
+    a second send."""
+    mocked_refund_deps["sending_rows"] = [dict(ROW)]
+    mocked_refund_deps["chain_results"] = {"pid-76": (True, "found_on_chain_tx")}
+    # If anything sends, this would be popped.
+    mocked_refund_deps["send_results"] = [
+        {"success": True, "tx_hash": "must_not_happen"},
+    ]
+
+    from gateway.main import _refund_worker_loop
+    with pytest.raises(asyncio.CancelledError):
+        await _refund_worker_loop()
+
+    assert mocked_refund_deps["done_calls"] == [("pid-76", "found_on_chain_tx")]
+    assert mocked_refund_deps["send_results"] == [
+        {"success": True, "tx_hash": "must_not_happen"},
+    ]  # no re-send
+
+
+@pytest.mark.asyncio
+async def test_stale_sending_row_with_no_onchain_refund_is_released(
+    mocked_refund_deps,
+):
+    """Horizon confirms no refund exists → the crash happened BEFORE the
+    send; release the row so the normal retry path picks it up."""
+    mocked_refund_deps["sending_rows"] = [dict(ROW)]
+    mocked_refund_deps["chain_results"] = {"pid-76": (True, None)}
+
+    from gateway.main import _refund_worker_loop
+    with pytest.raises(asyncio.CancelledError):
+        await _refund_worker_loop()
+
+    assert mocked_refund_deps["released"] == ["pid-76"]
+    assert mocked_refund_deps["done_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_stale_sending_row_with_unknown_chain_state_left_alone(
+    mocked_refund_deps,
+):
+    """Horizon unreachable → UNKNOWN. Releasing on unknown is exactly the
+    duplicate-refund path — the row must stay in refund_sending untouched."""
+    mocked_refund_deps["sending_rows"] = [dict(ROW)]
+    mocked_refund_deps["chain_results"] = {"pid-76": (False, None)}
+
+    from gateway.main import _refund_worker_loop
+    with pytest.raises(asyncio.CancelledError):
+        await _refund_worker_loop()
+
+    assert mocked_refund_deps["released"] == []
     assert mocked_refund_deps["done_calls"] == []
     assert mocked_refund_deps["failed_calls"] == []
