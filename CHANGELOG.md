@@ -6,6 +6,15 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.3.0] — 2026-07-19
+
+Breaking payment-safety release from the 2026-07 gateway code review. Every fix
+below hardens the pay path against overspend, double-pay, and hostile 402s.
+Callers on `>=0.2` that relied on the budget cap silently clamping the amount
+must now handle `BudgetExceeded`. This is the first release to raise it.
+
 ### Security / Fixed — Gateway Code Review 2026-07, SDK cluster (AGE-53..57)
 - **Budget cap now binds the amount actually paid** (AGE-53, CRITICAL).
   `Session.call()` passes `max_spend = min(remaining budget, quoted price
@@ -40,6 +49,24 @@ project uses [Semantic Versioning](https://semver.org/).
 - New exported exception: `agentpay.PrePaymentError`.
 - External x402 4xx rejections after auth transmission now read
   "…settlement uncertain, spend recorded…" (prober matcher updated).
+
+### Added
+- **x402 v2 `PAYMENT-REQUIRED` header fallback** (AGE-9). The SDK now reads the
+  v2 header form in addition to the JSON body; an endpoint it cannot score is
+  rejected rather than paid blindly.
+
+### Concurrency / Fixed (AGE-66, AGE-68)
+- **Budget is reserved before payment under a re-entrant lock** (AGE-66). Two
+  concurrent `session.call()`s can no longer both clear the cap check and jointly
+  overspend — each reserves its slice up front. This also fixes a double-release
+  bug: a failed fallback re-reservation returned the hold twice and drove the
+  reserved total negative, letting concurrent calls exceed the cap
+  (regression-tested).
+- **Timed-out submits are polled for their result, not blindly retried**
+  (AGE-68). A slow settle that lands after the client gives up is detected on
+  poll instead of triggering a second send.
+- Base settlement records the **signed** amount, not the amount advertised in the
+  402 body (AGE-53/56 follow-up).
 
 ## [0.2.7] — 2026-06-17
 
@@ -189,6 +216,8 @@ Initial releases: `AgentWallet`, budget-aware `Session`, Stellar settlement,
 `session.call()` for AgentPay tools and external x402 URLs, `discover()`,
 `spending_summary()`, faucet wallet.
 
+[0.3.0]: https://pypi.org/project/agentpay-x402/0.3.0/
+[0.2.7]: https://pypi.org/project/agentpay-x402/0.2.7/
 [0.2.3]: https://pypi.org/project/agentpay-x402/0.2.3/
 [0.2.2]: https://pypi.org/project/agentpay-x402/0.2.2/
 [0.2.1]: https://pypi.org/project/agentpay-x402/0.2.1/
