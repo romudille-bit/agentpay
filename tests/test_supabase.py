@@ -44,6 +44,7 @@ from gateway.services.supabase import (
     is_tx_hash_consumed,
     mark_refund_done,
     mark_refund_failed,
+    persist_tool_registration,
     record_faucet_ip,
     record_payment_id,
     record_tx_hash,
@@ -760,19 +761,21 @@ class TestCorrelatePendingChallenge:
 class TestSweepAbandonedPending:
 
     @pytest.mark.asyncio
-    async def test_sweep_returns_count_of_transitioned_rows(self):
-        # Supabase returns the patched rows when return=representation is set.
-        # The function counts those and returns the number.
+    async def test_sweep_returns_count_from_content_range(self):
+        # AGE-75: count=exact + return=minimal — the affected count comes from
+        # the Content-Range header, NOT an echoed body of every row.
+        seen = {}
+
+        def handler(request):
+            seen["prefer"] = request.headers.get("Prefer", "")
+            return httpx.Response(204, headers={"Content-Range": "*/3"})
+
         with respx.mock:
-            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
-                return_value=httpx.Response(200, json=[
-                    {"payment_id": "uuid-1", "state": "abandoned"},
-                    {"payment_id": "uuid-2", "state": "abandoned"},
-                    {"payment_id": "uuid-3", "state": "abandoned"},
-                ])
-            )
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(side_effect=handler)
             n = await sweep_abandoned_pending()
         assert n == 3
+        assert "count=exact" in seen["prefer"]
+        assert "return=minimal" in seen["prefer"]
 
     @pytest.mark.asyncio
     async def test_sweep_filters_state_eq_pending_and_old_created_at(self):
@@ -1018,3 +1021,89 @@ class TestTwoPhaseRefundClaim:
             rows = await list_refund_sending()
         assert rows == [{"payment_id": "p1"}]
         assert seen["params"]["state"] == "eq.refund_sending"
+
+
+# ── Tool registry persistence (AGE-71) ───────────────────────────────────────
+
+class TestPersistToolRegistration:
+    """AGE-71: runtime tool registrations must be pushed to Supabase so they
+    survive the next restart (hydration already merges them back at boot)."""
+
+    def _tool(self, **overrides):
+        base = {
+            "name": "runtime_tool_abc",
+            "description": "a developer-registered tool",
+            "endpoint": "https://8.8.8.8/tool",
+            "price_usdc": "0.001",
+            "developer_address": "GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+            "parameters": {"type": "object", "properties": {}},
+            "category": "data",
+            "active": True,
+            "uptime_pct": 100.0,
+            "total_calls": 0,
+            "triggers": [],
+            "use_when": "",
+            "returns": "",
+            "response_example": None,
+        }
+        base.update(overrides)
+        return base
+
+    @pytest.mark.asyncio
+    async def test_persist_upserts_and_returns_true(self):
+        captured = {}
+
+        def _capture(request):
+            captured["prefer"] = request.headers.get("prefer")
+            captured["body"] = request.content
+            return httpx.Response(201)
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/tools").mock(side_effect=_capture)
+            ok = await persist_tool_registration(self._tool())
+        assert ok is True
+        # Upsert semantics so re-registration converges instead of 409-ing.
+        assert "merge-duplicates" in (captured["prefer"] or "")
+        import json as _json
+        assert _json.loads(captured["body"])["name"] == "runtime_tool_abc"
+
+    @pytest.mark.asyncio
+    async def test_persist_maps_empty_developer_address_to_null(self):
+        captured = {}
+
+        def _capture(request):
+            import json as _json
+            captured["dev"] = _json.loads(request.content)["developer_address"]
+            return httpx.Response(201)
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/tools").mock(side_effect=_capture)
+            await persist_tool_registration(self._tool(developer_address=""))
+        assert captured["dev"] is None
+
+    @pytest.mark.asyncio
+    async def test_persist_returns_false_on_5xx(self):
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/tools").mock(
+                return_value=httpx.Response(500, text="boom")
+            )
+            ok = await persist_tool_registration(self._tool())
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_persist_returns_false_on_network_error(self):
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/tools").mock(
+                side_effect=httpx.ConnectError("supabase down")
+            )
+            ok = await persist_tool_registration(self._tool())
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_persist_noop_when_disabled(self, monkeypatch):
+        import gateway.services.supabase as sb_module
+        monkeypatch.setattr(sb_module, "sb_enabled", lambda: False)
+        # No respx route registered — a network call would raise, proving
+        # the disabled short-circuit returns before touching httpx.
+        ok = await persist_tool_registration(self._tool())
+        assert ok is False

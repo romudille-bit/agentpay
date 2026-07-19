@@ -2,7 +2,23 @@
 registry.py — Tool registry for AgentPay.
 
 Stores tool metadata: name, endpoint, price, developer wallet.
-MVP uses in-memory dict. Swap for Supabase in production.
+
+The in-memory `_TOOLS` dict is the live, hot-path source of truth (seeded below).
+Durability is layered on around it (AGE-71):
+  - At startup, `_hydrate_tools_from_supabase` (gateway/main.py) merges the
+    Supabase `tools` table onto this seed via `reload_tools`.
+  - On runtime registration, `POST /tools/register` calls
+    `supabase.persist_tool_registration` so a developer-registered tool (its
+    payout `developer_address`, its `endpoint`) survives the next restart
+    instead of being silently dropped.
+
+Residual: `increment_call_count` bumps only the in-memory counter — it is NOT
+persisted, so `total_calls` resets to the Supabase-seeded value on restart.
+This is deliberate: writing a counter to Supabase on every *paid* call would
+add DB latency to the payment hot path (the thing we avoid everywhere else),
+and the count is cosmetic marketplace analytics, not payout- or safety-
+critical state. Persist it via a batched/periodic flush if it ever needs to be
+durable.
 """
 
 from dataclasses import dataclass, asdict, field

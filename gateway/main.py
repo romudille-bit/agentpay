@@ -606,6 +606,13 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# AGE-75: wildcard CORS is SAFE here only because auth is header/wallet-based
+# (X-Payment / PAYMENT-SIGNATURE / X-*-Secret) and there are NO cookies or
+# browser sessions — a malicious origin can't ride ambient credentials it
+# doesn't have. `allow_credentials` is intentionally left off (its default is
+# False), which also means "*" stays legal per the CORS spec. If any
+# cookie/session-based auth is ever added, this MUST become an explicit origin
+# allowlist with allow_credentials handled deliberately.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -422,6 +422,43 @@ class TestRegisterTool:
         )
         assert r.status_code == 409
 
+    def test_register_persists_and_reports_true(self, client, monkeypatch):
+        """AGE-71: a successful registration is pushed to Supabase and the
+        response tells the caller it will survive a restart."""
+        import gateway.routes.tools as rt
+
+        async def _ok(_tool_dict):
+            return True
+
+        self._enable(monkeypatch)
+        monkeypatch.setattr(rt, "persist_tool_registration", _ok)
+        r = client.post(
+            "/tools/register", json=self._payload(name="persist_ok_tool"),
+            headers={"X-Register-Secret": self.SECRET},
+        )
+        assert r.status_code == 200
+        assert r.json()["persisted"] is True
+
+    def test_register_survives_persist_failure_but_flags_it(self, client, monkeypatch):
+        """AGE-71: a Supabase blip must NOT fail the registration (the tool is
+        live in-memory) — but the response must flag persisted=False so the
+        caller knows it won't outlive a redeploy."""
+        import gateway.routes.tools as rt
+
+        async def _fail(_tool_dict):
+            return False
+
+        self._enable(monkeypatch)
+        monkeypatch.setattr(rt, "persist_tool_registration", _fail)
+        r = client.post(
+            "/tools/register", json=self._payload(name="persist_fail_tool"),
+            headers={"X-Register-Secret": self.SECRET},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "registered"
+        assert body["persisted"] is False
+
     def test_register_rejects_bad_fields(self, client, monkeypatch):
         self._enable(monkeypatch)
         cases = [

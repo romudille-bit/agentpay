@@ -42,6 +42,7 @@ from gateway.config import GATEWAY_URL, offered_pending_network, settings
 from gateway.services.supabase import (
     correlate_pending_challenge,
     insert_pending_payment_log,
+    persist_tool_registration,
     record_tx_hash,
     sb_enabled,
     update_payment_log_state,
@@ -1260,6 +1261,21 @@ async def register_tool(
             f"[REGISTER] tool={body.name} price={body.price_usdc} "
             f"dev={body.developer_address[:10]}... endpoint={body.endpoint}"
         )
-        return {"status": "registered", "tool": registry.tool_to_dict(tool)}
+        # AGE-71: persist so the registration survives the next restart. The
+        # tool is already live in-memory for this process, so a Supabase blip
+        # must not fail the request — but the caller is told whether it will
+        # actually outlive a redeploy via `persisted`, rather than silently
+        # believing a durable registration was made.
+        persisted = await persist_tool_registration(registry.tool_to_dict(tool))
+        if not persisted:
+            logger.warning(
+                f"[REGISTER] tool={body.name} registered in-memory but NOT "
+                f"persisted to Supabase — it will be lost on the next restart"
+            )
+        return {
+            "status":    "registered",
+            "persisted": persisted,
+            "tool":      registry.tool_to_dict(tool),
+        }
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

@@ -404,11 +404,25 @@ async def delete_pending_challenge(payment_id: str) -> None:
         )
 
 
+def _count_from_content_range(resp) -> int:
+    """AGE-75: parse the affected-row count from a PostgREST Content-Range
+    header (e.g. '*/1234' or '0-19/1234') on a count=exact request — so a
+    sweep doesn't have to echo (and JSON-decode) every affected row just to
+    count them. Returns 0 when the header is absent/unparseable."""
+    cr = resp.headers.get("content-range") or resp.headers.get("Content-Range")
+    if not cr or "/" not in cr:
+        return 0
+    total = cr.rsplit("/", 1)[-1].strip()
+    try:
+        return int(total)
+    except ValueError:
+        return 0
+
+
 async def cleanup_expired_challenges() -> int:
     """DELETE rows where expires_at < now() - interval '1 hour'.
 
     Returns the number of rows deleted (or 0 on error / Supabase disabled).
-    Just exposed in this PR — scheduling comes with #13 cutover (row 7).
     """
     if not sb_enabled():
         return 0
@@ -419,9 +433,11 @@ async def cleanup_expired_challenges() -> int:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
             resp = await client.delete(
                 f"{settings.SUPABASE_URL}/rest/v1/pending_challenges",
-                # Prefer: return=representation makes Supabase echo the
-                # deleted rows so we can count them.
-                headers={**sb_headers(), "Prefer": "return=representation"},
+                # AGE-75: count via the Content-Range header (count=exact) with
+                # return=minimal — no body echo, so a big backlog after downtime
+                # can't return tens of thousands of rows just to be counted.
+                headers={**sb_headers(),
+                         "Prefer": "return=minimal,count=exact"},
                 params={"expires_at": f"lt.{cutoff}"},
             )
         if resp.status_code not in (200, 204):
@@ -429,11 +445,7 @@ async def cleanup_expired_challenges() -> int:
                 f"cleanup_expired_challenges error: HTTP {resp.status_code}"
             )
             return 0
-        # 204 returns no body; 200 with return=representation returns the
-        # deleted rows. Count whatever we got.
-        if resp.status_code == 200:
-            return len(resp.json())
-        return 0
+        return _count_from_content_range(resp)
     except Exception as e:
         logger.error(f"cleanup_expired_challenges failure: {e}")
         return 0
@@ -633,6 +645,7 @@ async def update_payment_log_state(
     state: str,
     *,
     expected_state: Optional[str] = None,
+    clear_fields: Optional[list[str]] = None,
     **fields,
 ) -> None:
     """UPDATE payment_logs SET state = $1, [**fields] WHERE payment_id = $2.
@@ -653,14 +666,22 @@ async def update_payment_log_state(
     on the 'verified' PATCH, the racing-late case becomes a silent
     no-op (WHERE doesn't match) instead of corrupting the row.
 
+    clear_fields: columns to explicitly set to SQL NULL (AGE-73). The
+    **fields path skips None so a caller can't accidentally null a column,
+    but sometimes clearing IS the intent — e.g. a refund that failed 4×
+    then succeeded must drop its stale error_reason. Listing a column here
+    writes JSON null for it. `fields` wins if a name appears in both.
+
     Idempotent — calling with the same (payment_id, state) twice is safe.
     """
     if not sb_enabled():
         return
     payload = {"state": state}
+    for key in (clear_fields or []):
+        payload[key] = None            # explicit JSON null → SQL NULL
     for key, val in fields.items():
         # Skip None values so the caller can't accidentally null a column
-        # by passing field=None.
+        # by passing field=None (use clear_fields for intentional nulling).
         if val is not None:
             payload[key] = val
 
@@ -739,6 +760,14 @@ async def mark_split_failed(payment_id: str, reason: str) -> None:
 _ABANDONED_AFTER_SECONDS = 5 * 60
 
 
+def _pgrst_filter_safe(value: str) -> bool:
+    """AGE-75: True if `value` is safe to drop into a PostgREST `eq.` filter
+    verbatim — i.e. contains no PostgREST-reserved characters (comma, parens,
+    or a double quote). Values that fail this are dropped by callers rather
+    than risking a malformed filter."""
+    return not any(c in value for c in ',()"')
+
+
 async def correlate_pending_challenge(
     tool_name: str,
     client_ip: Optional[str],
@@ -795,9 +824,14 @@ async def correlate_pending_challenge(
         }
         # Weak filters — only applied when present, so a UA-less client still
         # correlates on (tool_name, window) rather than not at all.
-        if client_ip:
+        # AGE-75: the User-Agent is client-controlled and goes into a PostgREST
+        # `eq.` filter. `eq.` treats the value literally (no working break was
+        # found), but a UA containing PostgREST-reserved chars (,()") is dropped
+        # defensively — correlation then degrades to (tool_name, window), which
+        # this function already tolerates, rather than risking a malformed filter.
+        if client_ip and _pgrst_filter_safe(client_ip):
             params["client_ip"] = f"eq.{client_ip}"
-        if user_agent:
+        if user_agent and _pgrst_filter_safe(user_agent):
             params["user_agent"] = f"eq.{user_agent}"
 
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
@@ -892,8 +926,11 @@ async def sweep_abandoned_pending() -> int:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
             resp = await client.patch(
                 f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
-                # return=representation echoes deleted rows so we can count
-                headers={**sb_headers(), "Prefer": "return=representation"},
+                # AGE-75: count via Content-Range (count=exact) + return=minimal
+                # — a backlog of tens of thousands of stale rows after downtime
+                # is counted from a header, not echoed back as a giant JSON body.
+                headers={**sb_headers(),
+                         "Prefer": "return=minimal,count=exact"},
                 params={
                     "state":      "eq.pending",
                     "created_at": f"lt.{cutoff}",
@@ -906,9 +943,7 @@ async def sweep_abandoned_pending() -> int:
                 f"body={resp.text[:200]}"
             )
             return 0
-        if resp.status_code == 200:
-            return len(resp.json())
-        return 0
+        return _count_from_content_range(resp)
     except Exception as e:
         logger.error(f"sweep_abandoned_pending failure: {e}")
         return 0
@@ -1185,10 +1220,15 @@ async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
     AGE-76: the row is in 'refund_sending' when a send just completed
     (two-phase claim); 'refund_pending' is kept in the guard for
     backward compatibility with rows written before the deploy.
+
+    AGE-73: clears error_reason (JSON null) — a refund that failed a few
+    times then succeeded must not keep a stale failure reason on the
+    now-successful row.
     """
     if not sb_enabled():
         return
-    payload = {"state": "refund_done", "refund_tx_hash": refund_tx_hash}
+    payload = {"state": "refund_done", "refund_tx_hash": refund_tx_hash,
+               "error_reason": None}
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
             resp = await client.patch(
@@ -1560,3 +1600,71 @@ async def mark_refund_failed(payment_id: str, error_reason: str) -> None:
         logger.error(
             f"mark_refund_failed failure (payment_id={payment_id}): {e}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool registry persistence (AGE-71)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Runtime tool registrations (POST /tools/register) previously lived ONLY in the
+# in-memory `_TOOLS` dict. Every Railway restart re-seeded from registry.py and
+# silently dropped any developer-registered tool — its payout `developer_address`
+# and `endpoint` gone, nothing detecting the loss. `_hydrate_tools_from_supabase`
+# (main.py) already MERGES the `tools` table onto the seed at startup, so the
+# only missing half was the WRITE: push a new registration to Supabase so the
+# next boot hydrates it back.
+#
+# Upsert (merge-duplicates on the `name` PK) rather than a bare INSERT: the
+# register route rejects in-memory duplicates before we get here, but a row can
+# already exist in Supabase from a prior deploy whose process died before the
+# next hydrate — upsert makes re-registration converge instead of 409-ing on the
+# DB side. Best-effort: a persistence failure does NOT fail the registration
+# (the tool is already live in-memory for this process); the caller is told via
+# the returned bool so the response can flag `persisted: false`.
+
+async def persist_tool_registration(tool_dict: dict) -> bool:
+    """Upsert a registered tool into the Supabase `tools` table.
+
+    Returns True if Supabase acknowledged the write, False otherwise (disabled,
+    network error, or non-2xx). Never raises — the tool is already registered
+    in memory; persistence is what lets it survive the next restart.
+    """
+    if not sb_enabled():
+        return False
+    name = tool_dict.get("name", "")
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/tools",
+                headers={**sb_headers(),
+                         "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={
+                    "name":              tool_dict.get("name"),
+                    "description":       tool_dict.get("description", ""),
+                    "endpoint":          tool_dict.get("endpoint", ""),
+                    "price_usdc":        tool_dict.get("price_usdc", "0"),
+                    # NULL (not "") for AgentPay-owned tools, matching the
+                    # store_pending_challenge convention.
+                    "developer_address": tool_dict.get("developer_address") or None,
+                    "parameters":        tool_dict.get("parameters", {}),
+                    "category":          tool_dict.get("category", "data"),
+                    "active":            tool_dict.get("active", True),
+                    "uptime_pct":        tool_dict.get("uptime_pct", 100.0),
+                    "total_calls":       tool_dict.get("total_calls", 0),
+                    "triggers":          tool_dict.get("triggers", []),
+                    "use_when":          tool_dict.get("use_when", ""),
+                    "returns":           tool_dict.get("returns", ""),
+                    "response_example":  tool_dict.get("response_example"),
+                },
+            )
+        if resp.status_code not in (200, 201, 204):
+            logger.error(
+                f"persist_tool_registration error: HTTP {resp.status_code} "
+                f"body={resp.text[:200]} (tool={name})"
+            )
+            return False
+        logger.info(f"Persisted tool registration to Supabase: {name}")
+        return True
+    except Exception as e:
+        logger.error(f"persist_tool_registration failure (tool={name}): {e}")
+        return False
