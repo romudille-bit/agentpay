@@ -285,6 +285,20 @@ async def verify_base_tx(
 
     Returns same shape as settle_base_payment():
         {"success": bool, "tx_hash": str, "payer": str, "network": str, "reason": str}
+
+    AGE-64 — challenge binding: the LIVE SDK path is Mode A (sign EIP-3009, the
+    gateway settles via CDP), which is bound to this specific challenge by a
+    single-use authorization nonce (CDP rejects reuse on-chain) plus the signed
+    paymentRequirements (amount + resource) — and AGE-65 extends that nonce
+    binding to the uncertain-settle recovery scan. This Mode B path (a client
+    presenting a raw tx_hash) is legacy: a raw ERC-20 Transfer carries no
+    challenge nonce/memo, so it is bound only by (payer, pay_to, amount) plus
+    one-time tx-hash consumption. Exposure is minimal today — every paid tool is
+    the same $0.01 to the same address and each tx_hash is consumed exactly once,
+    so a payer can at most redeem one real payment for one tool call. It becomes
+    material only if per-tool pricing ever diverges; the clean fix then is to
+    route all Base payments through Mode A (nonce-bound) or add a per-challenge
+    amount salt so the exact amount binds the transfer to the challenge.
     """
     # ERC-20 Transfer(address indexed from, address indexed to, uint256 value)
     TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -443,6 +457,32 @@ _UNCERTAIN_SETTLE_HINTS   = ("did not confirm in time", "context deadline exceed
 _RECOVER_ATTEMPTS = 5
 _RECOVER_DELAY_SECS = 4.0
 
+# AGE-65: USDC emits AuthorizationUsed(address indexed authorizer, bytes32
+# indexed nonce) when a transferWithAuthorization settles. Matching recovery
+# on this event's nonce binds it to the EXACT signed authorization we sent,
+# instead of "any (payer→gateway, ≥amount) transfer in the window" — which
+# could grab an unrelated second payment from the same payer. Computed via
+# keccak so the topic can't drift from a hand-copied constant.
+try:
+    from eth_utils import keccak as _keccak
+    _AUTH_USED_SIG = "0x" + _keccak(text="AuthorizationUsed(address,bytes32)").hex()
+except Exception:   # eth_utils absent (Base extra not installed) — nonce match disabled
+    _AUTH_USED_SIG = None
+
+
+def _extract_auth_nonce(payload: dict | None) -> str | None:
+    """Pull the EIP-3009 authorization nonce (bytes32 hex) out of an x402 v2
+    payment payload, if present. Mode A payloads carry it under
+    payload.authorization.nonce; tolerate a couple of shapes defensively."""
+    if not isinstance(payload, dict):
+        return None
+    for inner in (payload.get("payload"), payload):
+        if isinstance(inner, dict):
+            auth = inner.get("authorization")
+            if isinstance(auth, dict) and auth.get("nonce"):
+                return str(auth["nonce"])
+    return None
+
 
 async def _recover_uncertain_settle(
     payer: str,
@@ -450,12 +490,17 @@ async def _recover_uncertain_settle(
     required_amount_atomic: int,
     rpc_url: str,
     network_label: str,
+    auth_nonce: str | None = None,
 ) -> dict | None:
     """After an uncertain CDP failure, look for the confirmed transfer on-chain.
 
-    Polls eth_getLogs for a USDC Transfer(payer → pay_to, value >= required)
-    in the recent block window. Returns a success-shaped dict if found and
-    successfully consumed (replay-protected), else None.
+    AGE-65: when the signed authorization's nonce is known, poll eth_getLogs
+    for the USDC AuthorizationUsed(authorizer=payer, nonce) event — that binds
+    recovery to the EXACT authorization we sent, so a payer's *other* transfer
+    to the gateway in the same window can't be grabbed and consumed against
+    this challenge. Falls back to the old amount-only Transfer scan only when
+    the nonce is unavailable (logged). Returns a success-shaped dict if found
+    and successfully consumed (replay-protected), else None.
     """
     if not (payer and pay_to and rpc_url):
         return None
@@ -466,6 +511,24 @@ async def _recover_uncertain_settle(
     payer_padded  = "0x" + payer.lower().removeprefix("0x").zfill(64)
     pay_to_padded = "0x" + pay_to.lower().removeprefix("0x").zfill(64)
 
+    # Prefer the nonce-bound AuthorizationUsed filter; fall back to the broad
+    # Transfer filter only if we have no nonce or can't build the topic.
+    use_nonce = bool(auth_nonce and _AUTH_USED_SIG)
+    if auth_nonce and not _AUTH_USED_SIG:
+        logger.warning("[BASE] recovery: nonce present but keccak unavailable — "
+                       "falling back to amount-only Transfer match")
+    if not auth_nonce:
+        logger.warning("[BASE] recovery: no authorization nonce — falling back to "
+                       "amount-only Transfer match (may match an unrelated transfer)")
+    if use_nonce:
+        nonce_topic = auth_nonce if auth_nonce.startswith("0x") else "0x" + auth_nonce
+        nonce_topic = "0x" + nonce_topic.removeprefix("0x").zfill(64)
+        log_filter = {"address": usdc_contract,
+                      "topics": [_AUTH_USED_SIG, payer_padded, nonce_topic]}
+    else:
+        log_filter = {"address": usdc_contract,
+                      "topics": [TRANSFER_SIG, payer_padded, pay_to_padded]}
+
     async with httpx.AsyncClient(timeout=20.0) as client:
         for attempt in range(_RECOVER_ATTEMPTS):
             if attempt:
@@ -475,15 +538,12 @@ async def _recover_uncertain_settle(
                     "jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": [],
                 })
                 latest = int(resp.json()["result"], 16)
+                # EIP-3009 authorizations are valid ≤300s; ~5min of blocks.
                 resp = await client.post(rpc_url, json={
                     "jsonrpc": "2.0", "id": 2, "method": "eth_getLogs",
-                    "params": [{
-                        "address":   usdc_contract,
-                        "topics":    [TRANSFER_SIG, payer_padded, pay_to_padded],
-                        # EIP-3009 authorizations are valid ≤300s; ~5min of blocks
-                        "fromBlock": hex(max(latest - 200, 0)),
-                        "toBlock":   "latest",
-                    }],
+                    "params": [{**log_filter,
+                                "fromBlock": hex(max(latest - 200, 0)),
+                                "toBlock":   "latest"}],
                 })
                 logs = resp.json().get("result") or []
             except Exception as e:
@@ -491,10 +551,24 @@ async def _recover_uncertain_settle(
                 continue
 
             for log in logs:
-                raw = (log.get("data") or "0x").removeprefix("0x")
-                if not raw or int(raw, 16) < required_amount_atomic:
-                    continue
-                tx_hash = log.get("transactionHash", "")
+                if use_nonce:
+                    # AuthorizationUsed carries no amount; fetch the tx and
+                    # verify the actual Transfer inside it matches our terms.
+                    tx_hash = log.get("transactionHash", "")
+                    if not tx_hash:
+                        continue
+                    verified = await verify_base_tx(
+                        tx_hash=tx_hash, payer=payer,
+                        required_amount_atomic=required_amount_atomic,
+                        pay_to=pay_to, rpc_url=rpc_url,
+                    )
+                    if not verified.get("success"):
+                        continue
+                else:
+                    raw = (log.get("data") or "0x").removeprefix("0x")
+                    if not raw or int(raw, 16) < required_amount_atomic:
+                        continue
+                    tx_hash = log.get("transactionHash", "")
                 # Replay-consume the recovered hash. Unlike normal Mode A
                 # (where CDP's EIP-3009 nonce check prevents reuse), recovery
                 # reads chain history — without this consume, re-sending the
@@ -695,6 +769,8 @@ async def settle_base_payment(
                 required_amount_atomic=int(payment_requirements.get("amount", "0") or 0),
                 rpc_url=rpc_url or "https://mainnet.base.org",
                 network_label=_network_label(caip2),
+                # AGE-65: bind recovery to this exact signed authorization.
+                auth_nonce=_extract_auth_nonce(payload),
             )
             if recovered:
                 return recovered
@@ -759,6 +835,12 @@ async def settle_base_payment(
             required_amount_atomic=int(payment_requirements.get("amount", "0") or 0),
             rpc_url=rpc_url or "https://mainnet.base.org",
             network_label=_network_label(caip2),
+            # AGE-65: bind recovery to this exact signed authorization — must
+            # mirror the HTTP-non-200 recovery call site above. Without this the
+            # 200-body {"success": false} path fell back to the broad amount-only
+            # Transfer filter, which can bind an unrelated same-payer transfer
+            # (double-charge) — exactly what nonce-binding exists to prevent.
+            auth_nonce=_extract_auth_nonce(payload),
         )
         if recovered:
             return recovered

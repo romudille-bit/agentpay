@@ -653,3 +653,156 @@ class TestUncertainSettleRecovery:
                 _mode_a_signature_header(), _payment_requirements(), rpc_url=RPC_URL_R,
             )
         assert result["success"] is False
+
+
+class TestNonceBoundRecovery:
+    """AGE-65: when the signed authorization's nonce is known, recovery matches
+    the USDC AuthorizationUsed(payer, nonce) event — binding it to THIS exact
+    authorization — then verifies the Transfer inside that tx. A payer's other
+    transfer to the gateway in the window is no longer grabbable."""
+
+    NONCE = "0x" + "a5" * 32
+
+    @pytest.fixture(autouse=True)
+    def fast_recovery(self, monkeypatch):
+        import gateway.base as base_mod
+        monkeypatch.setattr(base_mod, "_RECOVER_ATTEMPTS", 2)
+        monkeypatch.setattr(base_mod, "_RECOVER_DELAY_SECS", 0.0)
+        base_mod._used_base_tx_hashes.clear()
+
+        async def rec_ok(tx, net):
+            return True
+        monkeypatch.setattr(base_mod.sb, "record_tx_hash", rec_ok)
+
+    def _mode_a_header_with_nonce(self):
+        payload = {"payload": {"signature": "0xfake", "from": VALID_PAYER,
+                               "authorization": {"from": VALID_PAYER, "to": PAYTO,
+                                                 "value": "1000", "nonce": self.NONCE}}}
+        return base64.b64encode(json.dumps(payload).encode()).decode()
+
+    def _auth_used_log(self, tx_hash):
+        import gateway.base as base_mod
+        return {
+            "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "topics": [
+                base_mod._AUTH_USED_SIG,
+                "0x" + VALID_PAYER.lower().removeprefix("0x").zfill(64),
+                "0x" + self.NONCE.removeprefix("0x").zfill(64),
+            ],
+            "data": "0x",                       # AuthorizationUsed carries no amount
+            "transactionHash": tx_hash,
+        }
+
+    def _receipt(self, payer, pay_to, amount_atomic, tx_hash):
+        return {
+            "status": "0x1",
+            "logs": [_transfer_log(payer, pay_to, amount_atomic, tx_hash)],
+        }
+
+    @pytest.mark.asyncio
+    async def test_recovers_by_nonce_then_verifies_transfer(self):
+        import gateway.base as base_mod
+        if not base_mod._AUTH_USED_SIG:
+            pytest.skip("eth_utils unavailable — nonce match disabled")
+        tx = "0x" + "9" * 64
+
+        def rpc(request):
+            body = json.loads(request.content)
+            m = body["method"]
+            if m == "eth_blockNumber":
+                return httpx.Response(200, json={"result": "0x1000"})
+            if m == "eth_getLogs":
+                # Must be the AuthorizationUsed filter (nonce-bound), not Transfer.
+                topics = body["params"][0]["topics"]
+                assert topics[0] == base_mod._AUTH_USED_SIG
+                assert topics[2] == "0x" + self.NONCE.removeprefix("0x").zfill(64)
+                return httpx.Response(200, json={"result": [self._auth_used_log(tx)]})
+            if m == "eth_getTransactionReceipt":
+                return httpx.Response(200, json={"result": self._receipt(
+                    VALID_PAYER, PAYTO, 1000, tx)})
+            raise AssertionError(m)
+
+        with respx.mock:
+            respx.post(f"{CDP_URL}/settle").mock(return_value=httpx.Response(500, json={
+                "errorReason": "settle_exact_node_failure",
+                "errorMessage": "transaction did not confirm in time",
+                "payer": VALID_PAYER}))
+            respx.post(RPC_URL_R).mock(side_effect=rpc)
+            result = await settle_base_payment(
+                self._mode_a_header_with_nonce(), _payment_requirements(), rpc_url=RPC_URL_R)
+        assert result["success"] is True
+        assert result["tx_hash"] == tx
+        assert result["reason"] == "ok_recovered"
+
+    @pytest.mark.asyncio
+    async def test_200_body_success_false_recovery_is_also_nonce_bound(self):
+        """Regression (adversarial review 2026-07): the OTHER uncertain-settle
+        branch — CDP returns HTTP 200 with {"success": false, uncertain reason} —
+        must bind recovery to the nonce too. It previously omitted auth_nonce and
+        fell back to the broad amount-only Transfer filter, re-opening the
+        double-charge that AGE-65 closed. Assert eth_getLogs is nonce-scoped."""
+        import gateway.base as base_mod
+        if not base_mod._AUTH_USED_SIG:
+            pytest.skip("eth_utils unavailable — nonce match disabled")
+        tx = "0x" + "7" * 64
+        saw_nonce_filter = {"hit": False}
+
+        def rpc(request):
+            body = json.loads(request.content)
+            m = body["method"]
+            if m == "eth_blockNumber":
+                return httpx.Response(200, json={"result": "0x1000"})
+            if m == "eth_getLogs":
+                topics = body["params"][0]["topics"]
+                # The bug would send a Transfer filter (amount-only, no nonce
+                # in topics[2]); the fix sends the AuthorizationUsed filter.
+                assert topics[0] == base_mod._AUTH_USED_SIG
+                assert topics[2] == "0x" + self.NONCE.removeprefix("0x").zfill(64)
+                saw_nonce_filter["hit"] = True
+                return httpx.Response(200, json={"result": [self._auth_used_log(tx)]})
+            if m == "eth_getTransactionReceipt":
+                return httpx.Response(200, json={"result": self._receipt(
+                    VALID_PAYER, PAYTO, 1000, tx)})
+            raise AssertionError(m)
+
+        with respx.mock:
+            # HTTP 200, success:false, uncertain reason → 200-body recovery branch.
+            respx.post(f"{CDP_URL}/settle").mock(return_value=httpx.Response(200, json={
+                "success": False,
+                "errorReason": "settle_exact_node_failure",
+                "errorMessage": "transaction did not confirm in time",
+                "payer": VALID_PAYER}))
+            respx.post(RPC_URL_R).mock(side_effect=rpc)
+            result = await settle_base_payment(
+                self._mode_a_header_with_nonce(), _payment_requirements(), rpc_url=RPC_URL_R)
+        assert result["success"] is True
+        assert result["tx_hash"] == tx
+        assert saw_nonce_filter["hit"], "recovery did not use the nonce-bound filter"
+
+    @pytest.mark.asyncio
+    async def test_no_authorizationused_event_does_not_recover(self):
+        """If the authorization's nonce was never used on-chain (no
+        AuthorizationUsed log), recovery finds nothing — it cannot fall back to
+        grabbing an unrelated Transfer, because the filter is nonce-scoped."""
+        import gateway.base as base_mod
+        if not base_mod._AUTH_USED_SIG:
+            pytest.skip("eth_utils unavailable")
+
+        def rpc(request):
+            body = json.loads(request.content)
+            m = body["method"]
+            if m == "eth_blockNumber":
+                return httpx.Response(200, json={"result": "0x1000"})
+            if m == "eth_getLogs":
+                return httpx.Response(200, json={"result": []})   # nonce never used
+            raise AssertionError(m)
+
+        with respx.mock:
+            respx.post(f"{CDP_URL}/settle").mock(return_value=httpx.Response(500, json={
+                "errorReason": "settle_exact_node_failure",
+                "errorMessage": "transaction did not confirm in time",
+                "payer": VALID_PAYER}))
+            respx.post(RPC_URL_R).mock(side_effect=rpc)
+            result = await settle_base_payment(
+                self._mode_a_header_with_nonce(), _payment_requirements(), rpc_url=RPC_URL_R)
+        assert result["success"] is False
