@@ -19,8 +19,13 @@ four stages, each its own function:
 """
 
 import asyncio
+import hmac
+import ipaddress
 import logging
+import re
+import socket
 from typing import Optional, Union
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request, Response
@@ -562,9 +567,54 @@ async def _refund_and_502(tool_name: str, payment_id: str, exc: Exception) -> JS
     )
 
 
+# ── AGE-59: endpoint safety (SSRF guard) ─────────────────────────────────────
+
+def _endpoint_is_safe(url: str) -> tuple[bool, str]:
+    """True when `url` is an https endpoint whose host resolves ONLY to
+    public addresses. Blocks SSRF to loopback/private/link-local/metadata
+    (169.254.169.254 is link-local) targets. Blocking DNS work — call via
+    asyncio.to_thread from async code.
+
+    Used at REGISTRATION time (reject early with a clear error) AND at CALL
+    time in _run_tool (re-resolved per call, so a DNS-rebinding endpoint
+    that turned private after registration is still blocked)."""
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False, "unparseable URL"
+    if p.scheme != "https":
+        return False, "endpoint must be https"
+    host = p.hostname
+    if not host:
+        return False, "endpoint has no host"
+    try:
+        infos = socket.getaddrinfo(host, p.port or 443, proto=socket.IPPROTO_TCP)
+    except OSError as e:
+        return False, f"endpoint host does not resolve: {e}"
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False, "endpoint resolved to an unparseable address"
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            return False, f"endpoint resolves to a non-public address ({ip})"
+    return True, "ok"
+
+
 async def _run_tool(tool, resolved: str, tool_name: str, parameters: dict):
     """Execute the tool — proxy endpoint when configured, real APIs otherwise."""
     if not tool.endpoint:
+        return await real_tool_response(resolved, parameters)
+    # AGE-59: call-time SSRF guard. Registration validates too, but the check
+    # re-runs here on every call so (a) tools registered before this guard
+    # existed and (b) DNS-rebinding endpoints are both covered. An unsafe
+    # endpoint degrades to the real-API fallback, same as an unreachable one.
+    safe, why = await asyncio.to_thread(_endpoint_is_safe, tool.endpoint)
+    if not safe:
+        logger.warning(
+            f"Tool endpoint blocked ({why}) for {tool_name} — calling real APIs"
+        )
         return await real_tool_response(resolved, parameters)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1105,9 +1155,95 @@ async def call_tool(
     )
 
 
+# AGE-59: registration validation. Bounds chosen from the live registry
+# (prices ≤ $0.01 today; $1 leaves generous headroom without letting an
+# injected tool demand meaningful money per call).
+_REGISTER_NAME_RE      = re.compile(r"^[a-z][a-z0-9_]{2,39}$")
+_REGISTER_STELLAR_RE   = re.compile(r"^G[A-Z2-7]{55}$")
+_REGISTER_EVM_RE       = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_REGISTER_MAX_PRICE    = Decimal("1")
+_REGISTER_CATEGORIES   = {"data", "defi", "trading", "monitoring", "security"}
+
+
+def _validate_developer_address(addr: str) -> bool:
+    """Stellar ed25519 public strkey (checksum-verified when stellar_sdk is
+    importable, regex shape otherwise) or an EVM address."""
+    if _REGISTER_EVM_RE.match(addr or ""):
+        return True
+    if not _REGISTER_STELLAR_RE.match(addr or ""):
+        return False
+    try:
+        from stellar_sdk import StrKey
+        return StrKey.is_valid_ed25519_public_key(addr)
+    except ImportError:
+        return True  # regex shape already checked
+
+
+async def _validate_registration(body: RegisterToolRequest) -> Optional[str]:
+    """Return an error string for invalid registrations, None when valid."""
+    if not _REGISTER_NAME_RE.match(body.name or ""):
+        return ("invalid name: must match ^[a-z][a-z0-9_]{2,39}$ "
+                "(lowercase slug, 3-40 chars)")
+    if not body.description or len(body.description) > 500:
+        return "invalid description: required, max 500 chars"
+    if body.category not in _REGISTER_CATEGORIES:
+        return f"invalid category: must be one of {sorted(_REGISTER_CATEGORIES)}"
+    try:
+        price = Decimal(str(body.price_usdc))
+        if not price.is_finite() or price < 0 or price > _REGISTER_MAX_PRICE:
+            raise ValueError
+    except Exception:
+        return (f"invalid price_usdc: must be a decimal in "
+                f"[0, {_REGISTER_MAX_PRICE}] USDC")
+    if not _validate_developer_address(body.developer_address):
+        return ("invalid developer_address: must be a Stellar public key "
+                "(G...) or an EVM address (0x + 40 hex)")
+    if not isinstance(body.parameters, dict) or len(str(body.parameters)) > 10_000:
+        return "invalid parameters: must be a JSON object under 10KB"
+    if not body.endpoint:
+        return "invalid endpoint: required"
+    safe, why = await asyncio.to_thread(_endpoint_is_safe, body.endpoint)
+    if not safe:
+        return f"invalid endpoint: {why}"
+    return None
+
+
 @router.post("/tools/register")
-async def register_tool(body: RegisterToolRequest):
-    """Register a new MCP tool in the marketplace."""
+@limiter.limit("10/minute")
+async def register_tool(
+    body: RegisterToolRequest,
+    request: Request,
+    x_register_secret: Optional[str] = Header(None),
+):
+    """Register a new MCP tool in the marketplace.
+
+    AGE-59: this endpoint was unauthenticated and unvalidated — anyone could
+    register a tool with an arbitrary developer_address (redirecting the 85%
+    revenue split) and an arbitrary endpoint (SSRF once called). Now:
+      - 404 when TOOL_REGISTER_SECRET is unset (registration off — there is
+        no third-party developer flow yet; mirrors the flagship-ingest gate)
+      - 401 unless X-Register-Secret matches (constant-time compare)
+      - 422 unless name/price/addresses/endpoint validate; endpoints must be
+        https and resolve only to public addresses
+    """
+    secret = settings.TOOL_REGISTER_SECRET
+    if not secret:
+        raise HTTPException(status_code=404, detail="Not found")
+    # Compare bytes inside try — a non-latin-1 header must be a clean 401,
+    # not a TypeError 500 (the AGE-75 flagship-ingest lesson, applied here).
+    try:
+        authorized = hmac.compare_digest(
+            (x_register_secret or "").encode(), secret.encode()
+        )
+    except Exception:
+        authorized = False
+    if not authorized:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    err = await _validate_registration(body)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+
     from registry import Tool
     try:
         tool = Tool(
@@ -1120,6 +1256,10 @@ async def register_tool(body: RegisterToolRequest):
             category=body.category,
         )
         registry.register_tool(tool)
+        logger.info(
+            f"[REGISTER] tool={body.name} price={body.price_usdc} "
+            f"dev={body.developer_address[:10]}... endpoint={body.endpoint}"
+        )
         return {"status": "registered", "tool": registry.tool_to_dict(tool)}
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

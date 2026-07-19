@@ -358,40 +358,140 @@ class TestCallWithPayment:
 # ── POST /tools/register ─────────────────────────────────────────────────────
 
 class TestRegisterTool:
+    """AGE-59: /tools/register is secret-gated + validated. 404 with no
+    secret configured, 401 on a bad secret, 422 on invalid fields."""
 
-    def test_register_new_tool(self, client):
+    SECRET = "test-register-secret-0123456789abcdef"
+    # Valid Stellar strkey (the mainnet gateway wallet — checksum-valid).
+    DEV = "GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2"
+
+    def _payload(self, **overrides):
+        base = {
+            "name": "test_tool_xyz",
+            "description": "A test tool registered by the suite",
+            "endpoint": "https://example.com/tool",
+            "price_usdc": "0.001",
+            "developer_address": self.DEV,
+            "parameters": {"type": "object", "properties": {}},
+            "category": "data",
+        }
+        base.update(overrides)
+        return base
+
+    def _enable(self, monkeypatch):
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "TOOL_REGISTER_SECRET", self.SECRET)
+
+    def test_register_disabled_without_secret_config(self, client, monkeypatch):
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "TOOL_REGISTER_SECRET", "")
+        r = client.post("/tools/register", json=self._payload())
+        assert r.status_code == 404
+
+    def test_register_wrong_secret_is_401(self, client, monkeypatch):
+        self._enable(monkeypatch)
         r = client.post(
-            "/tools/register",
-            json={
-                "name": "test_tool_xyz",
-                "description": "A test tool registered by the suite",
-                "endpoint": "https://example.com/tool",
-                "price_usdc": "0.001",
-                "developer_address": "GTESTDEV",
-                "parameters": {"type": "object", "properties": {}},
-                "category": "data",
-            },
+            "/tools/register", json=self._payload(),
+            headers={"X-Register-Secret": "wrong"},
+        )
+        assert r.status_code == 401
+        # Missing header is 401 too, not a 500.
+        assert client.post("/tools/register", json=self._payload()).status_code == 401
+
+    def test_register_new_tool_with_secret(self, client, monkeypatch):
+        self._enable(monkeypatch)
+        r = client.post(
+            "/tools/register", json=self._payload(),
+            headers={"X-Register-Secret": self.SECRET},
         )
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "registered"
         assert body["tool"]["name"] == "test_tool_xyz"
 
-    def test_register_duplicate_returns_409(self, client):
-        # token_price already exists in the seed registry
+    def test_register_duplicate_returns_409(self, client, monkeypatch):
+        self._enable(monkeypatch)
         r = client.post(
             "/tools/register",
-            json={
-                "name": "token_price",  # collision
-                "description": "duplicate",
-                "endpoint": "https://example.com",
-                "price_usdc": "0.001",
-                "developer_address": "GTESTDEV",
-                "parameters": {},
-                "category": "data",
-            },
+            json=self._payload(name="token_price"),  # collision with seed
+            headers={"X-Register-Secret": self.SECRET},
         )
         assert r.status_code == 409
+
+    def test_register_rejects_bad_fields(self, client, monkeypatch):
+        self._enable(monkeypatch)
+        cases = [
+            ({"developer_address": "GTESTDEV"}, "developer_address"),   # not a strkey
+            ({"developer_address": "0x1234"}, "developer_address"),     # short EVM
+            ({"price_usdc": "-1"}, "price_usdc"),
+            ({"price_usdc": "50"}, "price_usdc"),                       # above cap
+            ({"price_usdc": "NaN"}, "price_usdc"),
+            ({"name": "Bad Name!"}, "name"),
+            ({"category": "weird"}, "category"),
+            ({"endpoint": "http://example.com/tool"}, "endpoint"),      # not https
+        ]
+        for overrides, field in cases:
+            r = client.post(
+                "/tools/register", json=self._payload(**overrides),
+                headers={"X-Register-Secret": self.SECRET},
+            )
+            assert r.status_code == 422, (overrides, r.status_code, r.text)
+            assert field in r.json()["detail"], (overrides, r.text)
+
+    def test_register_rejects_private_endpoints(self, client, monkeypatch):
+        """SSRF: endpoints resolving to loopback/private/link-local
+        (incl. the cloud metadata address) must be rejected."""
+        self._enable(monkeypatch)
+        for bad in (
+            "https://127.0.0.1/steal",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://10.0.0.5/internal",
+            "https://192.168.1.1/router",
+            "https://localhost/loop",
+        ):
+            r = client.post(
+                "/tools/register", json=self._payload(endpoint=bad),
+                headers={"X-Register-Secret": self.SECRET},
+            )
+            assert r.status_code == 422, (bad, r.status_code, r.text)
+            assert "endpoint" in r.json()["detail"], bad
+
+
+class TestEndpointSafety:
+    """AGE-59: _endpoint_is_safe — the shared registration/call-time guard."""
+
+    def test_blocks_non_https_and_private(self):
+        from gateway.routes.tools import _endpoint_is_safe
+        assert _endpoint_is_safe("http://example.com/x")[0] is False
+        assert _endpoint_is_safe("ftp://example.com/x")[0] is False
+        assert _endpoint_is_safe("https://127.0.0.1/x")[0] is False
+        assert _endpoint_is_safe("https://169.254.169.254/x")[0] is False
+        assert _endpoint_is_safe("https://[::1]/x")[0] is False
+        assert _endpoint_is_safe("not a url")[0] is False
+
+    def test_allows_public_https(self):
+        from gateway.routes.tools import _endpoint_is_safe
+        ok, why = _endpoint_is_safe("https://example.com/tool")
+        assert ok is True, why
+
+    @pytest.mark.asyncio
+    async def test_run_tool_blocks_unsafe_endpoint_at_call_time(self, monkeypatch):
+        """A tool whose endpoint turned private (rebinding / pre-guard
+        registration) must NOT be POSTed to — degrade to real APIs."""
+        import gateway.routes.tools as rt
+
+        called = {}
+
+        async def fake_real(resolved, params):
+            called["real"] = True
+            return {"ok": 1}
+        monkeypatch.setattr(rt, "real_tool_response", fake_real)
+
+        class T:
+            endpoint = "https://127.0.0.1/internal"
+        out = await rt._run_tool(T(), "token_price", "token_price", {})
+        assert out == {"ok": 1}
+        assert called.get("real") is True
 
 
 # ── PR #14: payment_logs lifecycle state machine ─────────────────────────────

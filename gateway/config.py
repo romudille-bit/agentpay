@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     # ingest endpoint disabled (404). Must match the agent's FLAGSHIP_INGEST_SECRET.
     FLAGSHIP_INGEST_SECRET: str = ""
 
+    # AGE-59: shared secret that gates POST /tools/register. There is no
+    # third-party developer registration flow yet, so the endpoint is
+    # OPERATOR-ONLY: empty = registration disabled (404, mirrors the flagship
+    # ingest pattern). Set a ≥128-bit random value to enable. When a real
+    # dev-onboarding flow ships (AGE-71's Supabase-backed registry), replace
+    # with per-developer API keys.
+    TOOL_REGISTER_SECRET: str = ""
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
