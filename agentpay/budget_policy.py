@@ -165,9 +165,16 @@ def budget_policy(
         while requested is None:
             try:
                 entry = input(f"  {prompt} [${suggested}]: ").strip().lstrip("$")
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
+                # No input stream (piped/closed) — accept the suggested default.
                 entry = ""
                 break
+            except KeyboardInterrupt:
+                # AGE-74: Ctrl-C is an explicit "stop", NOT "authorize the
+                # default cap". Re-raise so the agent doesn't silently proceed
+                # to spend on a budget the human never confirmed.
+                print()
+                raise
             requested = _to_decimal(entry or suggested)
             if requested is None:
                 print("  ! enter a positive number, e.g. 0.05")

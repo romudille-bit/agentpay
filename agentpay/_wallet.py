@@ -10,6 +10,8 @@ import base64
 import json
 import httpx
 import logging
+import secrets
+import threading
 from decimal import Decimal
 
 from stellar_sdk import (
@@ -117,6 +119,23 @@ class RefundPending(Exception):
         self.payment_status = payment_status
 
 
+def _is_timeout_error(exc) -> bool:
+    """AGE-68: does this exception look like a submit timeout / transport loss
+    (as opposed to a clean protocol rejection like op_underfunded)? On these
+    the tx may actually have been accepted, so the caller should poll for the
+    precomputed hash before declaring failure."""
+    # A stellar-sdk error carrying result_codes is a definitive on-chain
+    # rejection — NOT a timeout — so never poll on those.
+    extras = getattr(exc, "extras", None)
+    if isinstance(extras, dict) and extras.get("result_codes"):
+        return False
+    name = exc.__class__.__name__.lower()
+    text = f"{name} {str(exc)[:200]}".lower()
+    needles = ("timeout", "timed out", "connect", "read", "temporarily",
+               "connection", "504", "502", "503", "network")
+    return any(n in text for n in needles)
+
+
 def _extract_stellar_reason(exc) -> str:
     """
     Pull a short, clean reason string out of a stellar-sdk exception.
@@ -176,7 +195,13 @@ class AgentWallet:
 
     def __init__(self, secret_key: str, network: str = "testnet", *, base_key: str = None):
         import os
-        self.keypair = Keypair.from_secret(secret_key)
+        # AGE-74: wrap key parsing so a malformed secret raises a CONSTANT
+        # message — a raw stellar_sdk error can echo fragments of the key into
+        # logs/tracebacks.
+        try:
+            self.keypair = Keypair.from_secret(secret_key)
+        except Exception:
+            raise ValueError("invalid Stellar secret key (expected S...)") from None
         self.network = network
         self.server = Server(HORIZON_TESTNET if network == "testnet" else HORIZON_MAINNET)
         self.network_passphrase = (
@@ -209,9 +234,13 @@ class AgentWallet:
                 logger.warning(f"Base wallet init failed: {self.base_disabled_reason}")
                 self._evm_account = None
                 self.base_address = None
-            except Exception as e:
-                self.base_disabled_reason = f"Base key rejected: {str(e)[:120]}"
-                logger.warning(f"Base wallet init failed: {e} — Base payments disabled")
+            except Exception:
+                # AGE-74: CONSTANT message — never echo the exception text,
+                # which can contain fragments of the private key.
+                self.base_disabled_reason = (
+                    "Base key rejected: not a valid EVM private key (0x + 64 hex)"
+                )
+                logger.warning("Base wallet init failed: invalid Base key — Base payments disabled")
                 self._evm_account = None
                 self.base_address = None
         else:
@@ -253,7 +282,15 @@ class AgentWallet:
         Returns:
             {"success": True, "tx_hash": "..."}
             {"success": False, "reason": "..."}
+
+        AGE-68: a submit that TIMES OUT is not a clean failure — Horizon may
+        have accepted the transaction while the HTTP response was lost. The tx
+        hash is deterministic (computed from the signed envelope before submit),
+        so on a timeout-class error we poll Horizon for that exact hash before
+        declaring failure. If it landed, we return success with the real hash
+        instead of reporting a failure the caller would retry into a double-pay.
         """
+        tx_hash_precomputed = ""
         try:
             account = self.server.load_account(self.public_key)
 
@@ -272,9 +309,15 @@ class AgentWallet:
             builder.set_timeout(30)
             tx = builder.build()
             tx.sign(self.keypair)
+            # Deterministic hash of the signed envelope — valid to look up on
+            # Horizon whether or not submit's response makes it back.
+            try:
+                tx_hash_precomputed = tx.hash_hex()
+            except Exception:
+                tx_hash_precomputed = ""
             response = self.server.submit_transaction(tx)
 
-            tx_hash = response.get("hash", "")
+            tx_hash = response.get("hash", "") or tx_hash_precomputed
             self._total_spent += Decimal(amount_usdc)
             logger.info(f"Paid {amount_usdc} USDC → {destination[:8]}... | tx: {tx_hash[:12]}...")
 
@@ -282,8 +325,38 @@ class AgentWallet:
 
         except Exception as e:
             reason = _extract_stellar_reason(e)
+            # AGE-68: on a timeout/transport-class error, the tx may have landed.
+            # Poll Horizon for the precomputed hash before calling it a failure.
+            if tx_hash_precomputed and _is_timeout_error(e):
+                landed = self._await_tx_on_chain(tx_hash_precomputed)
+                if landed:
+                    self._total_spent += Decimal(amount_usdc)
+                    logger.warning(
+                        f"Payment submit timed out but tx CONFIRMED on-chain: "
+                        f"{tx_hash_precomputed[:16]}... — treating as success"
+                    )
+                    return {"success": True, "tx_hash": tx_hash_precomputed}
             logger.error(f"Payment failed: {reason}")
             return {"success": False, "reason": reason}
+
+    def _await_tx_on_chain(self, tx_hash: str, attempts: int = 3, delay: float = 2.0) -> bool:
+        """Poll Horizon for a specific tx hash. True once it appears as a
+        successful transaction; False if it never shows within the window
+        (so the caller can safely treat the payment as not-sent)."""
+        import time as _t
+        from stellar_sdk.exceptions import NotFoundError
+        for i in range(attempts):
+            try:
+                rec = self.server.transactions().transaction(tx_hash).call()
+                if rec.get("successful", True):
+                    return True
+            except NotFoundError:
+                pass
+            except Exception as e:
+                logger.warning(f"tx poll error for {tx_hash[:16]}...: {e}")
+            if i < attempts - 1:
+                _t.sleep(delay)
+        return False
 
     def would_exceed_budget(self, amount_usdc: str, max_budget: str) -> bool:
         """Return True if paying this amount would exceed the budget."""
@@ -573,6 +646,14 @@ class Session:
         # Accepts "0.10", 0.10, or Decimal("0.10") — all do the right thing.
         self.max_spend = Decimal(str(max_spend))
         self._spent = Decimal("0")
+        # AGE-66: guard the budget check→reserve→spend sequence so two threads
+        # calling call() concurrently can't both read the full remaining budget
+        # over seconds of network I/O and both pay. `_reserved` is the sum of
+        # in-flight (broadcast not yet accounted) holds; remaining/would_exceed
+        # count it so a second concurrent call sees the money as already
+        # committed. Reentrant so the guarded helpers can nest.
+        self._lock = threading.RLock()
+        self._reserved = Decimal("0")
         self._call_log: list[dict] = []
         self._tool_cache: dict[str, dict] = {}   # tool_name → full tool metadata
         self._all_tools_cache: list[dict] | None = None
@@ -612,8 +693,11 @@ class Session:
         return _fmt(self.remaining_usd())
 
     def remaining_usd(self) -> Decimal:
-        """Remaining budget as a Decimal — use this for math/comparisons."""
-        return max(self.max_spend - self._spent, Decimal("0"))
+        """Remaining budget as a Decimal — use this for math/comparisons.
+        Counts in-flight reservations (AGE-66) so a concurrent call sees money
+        already committed by another thread's in-progress payment."""
+        with self._lock:
+            return max(self.max_spend - self._spent - self._reserved, Decimal("0"))
 
     def spent(self) -> str:
         """Total spent so far as a formatted DISPLAY string."""
@@ -625,8 +709,27 @@ class Session:
 
     def would_exceed(self, amount_usdc) -> bool:
         """True if adding this cost would exceed the budget. The recommended
-        way to ask "does this fit?" — accepts a str, float, or Decimal."""
-        return (self._spent + Decimal(str(amount_usdc))) > self.max_spend
+        way to ask "does this fit?" — accepts a str, float, or Decimal.
+        Counts in-flight reservations (AGE-66)."""
+        with self._lock:
+            return (self._spent + self._reserved + Decimal(str(amount_usdc))) > self.max_spend
+
+    def _reserve(self, amount) -> bool:
+        """AGE-66: atomically check budget and place a hold. True if the hold
+        was placed (call may proceed); False if it wouldn't fit. Paired with
+        _release() in a finally after the payment attempt."""
+        amt = Decimal(str(amount))
+        with self._lock:
+            if (self._spent + self._reserved + amt) > self.max_spend:
+                return False
+            self._reserved += amt
+            return True
+
+    def _release(self, amount) -> None:
+        """Drop a hold placed by _reserve() (the actual spend is booked
+        separately by _absorb_client_log / _call_x402_url)."""
+        with self._lock:
+            self._reserved = max(self._reserved - Decimal(str(amount)), Decimal("0"))
 
     def tool_cost(self, tool_name: str) -> str:
         """
@@ -809,7 +912,8 @@ class Session:
                 for a in accepts:
                     try:
                         amount_raw = int(a.get("amount", 0))
-                        price_usd = amount_raw / 1_000_000   # USDC has 6 decimals
+                        # AGE-74: Decimal, not binary float, for USDC money.
+                        price_usd = Decimal(amount_raw) / Decimal("1000000")
                         options.append({
                             "price_usd":  price_usd,
                             "network":    a.get("network", ""),
@@ -978,7 +1082,9 @@ class Session:
                 can = bool(self.wallet.base_address) if kind_ == "base" else True  # any Stellar wallet can pay
                 candidates.append({
                     "kind": kind_, "network": a.get("network", ""), "pay_to": a.get("payTo"),
-                    "amount_atomic": atomic, "amount_usdc": f"{atomic / 1_000_000:.6f}",
+                    # AGE-74: Decimal, not float, for the USDC amount string.
+                    "amount_atomic": atomic,
+                    "amount_usdc": f"{Decimal(atomic) / Decimal('1000000'):.6f}",
                     "scheme": a.get("scheme", "exact"), "accept": a, "payable": can,
                 })
 
@@ -1022,12 +1128,13 @@ class Session:
             pay_network = chosen["network"]
             pay_scheme  = chosen["scheme"]
 
-            # ── Budget check ──────────────────────────────────────────────────
-            if self.would_exceed(amount_usdc):
+            # ── Budget check + atomic reservation (AGE-66) ────────────────────
+            if not self._reserve(amount_usdc):
                 raise BudgetExceeded(
                     f"Tool costs ${float(amount_usdc):.4f} but only "
                     f"{self.remaining()} remains (budget: {_fmt(self.max_spend)})"
                 )
+            _url_reserved = Decimal(str(amount_usdc))
 
             # ── Pay on the selected network and retry ─────────────────────────
             # AGE-54/AGE-56: spend is recorded the moment value can leave the
@@ -1044,9 +1151,12 @@ class Session:
             }
 
             def _record_spend(state: str):
+                # AGE-66: book the spend and drop the hold atomically.
                 entry["state"] = state
-                self._spent += Decimal(amount_usdc)
-                self._call_log.append(entry)
+                with self._lock:
+                    self._spent += Decimal(amount_usdc)
+                    self._reserved = max(self._reserved - _url_reserved, Decimal("0"))
+                    self._call_log.append(entry)
 
             if kind == "base":
                 # Base: sign EIP-3009 OFF-CHAIN — nothing is broadcast here. The
@@ -1060,6 +1170,7 @@ class Session:
                 try:
                     x_payment = self.wallet.build_base_payment_signature(base_accept, resource_for_payment)
                 except Exception as e:
+                    self._release(_url_reserved)   # AGE-66: pre-payment, no funds moved
                     raise PaymentFailed(f"evm:could not sign x402 payment: {str(e)[:160]}")
                 payer_address = self.wallet.base_address
 
@@ -1096,11 +1207,17 @@ class Session:
                     entry["tx_hash"] = tx_hash
             else:
                 # Stellar: broadcast the payment, then prove it with the tx_hash.
-                logger.info(f"  402 — paying {amount_usdc} USDC to {pay_to[:10]}... (Stellar)")
+                # AGE-74: bind the memo to this call (resource + fresh nonce)
+                # instead of a constant "agentpay-x402" — makes the on-chain
+                # record attributable to the specific request and non-replayable
+                # as a generic marker. Stellar text memos are ≤28 bytes.
+                _memo = f"ap:{secrets.token_hex(8)}"[:28]
+                logger.info(f"  402 — paying {amount_usdc} USDC to {pay_to[:10]}... (Stellar, memo={_memo})")
                 payment = self.wallet.pay(
-                    destination=pay_to, amount_usdc=amount_usdc, memo="agentpay-x402",
+                    destination=pay_to, amount_usdc=amount_usdc, memo=_memo,
                 )
                 if not payment["success"]:
+                    self._release(_url_reserved)   # AGE-66: pre-payment, no funds moved
                     raise PaymentFailed(payment["reason"])
                 tx_hash = payment["tx_hash"]
                 entry["tx_hash"] = tx_hash
@@ -1237,6 +1354,32 @@ class Session:
             q = Decimal(str(quote))
             return str(min(self.remaining_usd(), q * (Decimal("1") + OVERPAY_TOLERANCE)))
 
+        # AGE-74: per-tool cap as a would-EXCEED check on the RESOLVED target,
+        # not the floor check in _check_call_policies (which only blocks the
+        # NEXT call once already-spent ≥ cap, letting the call that crosses the
+        # cap through, and is keyed on the requested name so a fallback escapes
+        # it). Here we know the real target + price.
+        if target in self._max_per_tool:
+            already = sum(
+                Decimal(e["amount_usdc"]) for e in self._call_log if e["tool"] == target
+            )
+            if already + Decimal(str(price)) > self._max_per_tool[target]:
+                raise BudgetExceeded(
+                    f"Per-tool cap for '{target}': this call ({_fmt(price)}) would "
+                    f"bring spend to {_fmt(already + Decimal(str(price)))}, over the "
+                    f"{_fmt(self._max_per_tool[target])} cap"
+                )
+
+        # AGE-66: place an atomic budget hold before any funds can move. Even
+        # if two threads both cleared would_exceed above, only one gets the
+        # reservation; the loser fails closed rather than double-paying.
+        if not self._reserve(price):
+            raise BudgetExceeded(
+                f"'{target}' costs {_fmt(price)} but the remaining budget was "
+                f"just consumed by a concurrent call ({self.remaining()} left)"
+            )
+        reserved_amt = Decimal(str(price))
+
         client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
         try:
             try:
@@ -1270,6 +1413,20 @@ class Session:
                 # Keep the failed leg's (necessarily $0) entries on the receipt
                 # before the client is replaced — full session visibility.
                 self._absorb_client_log(client, requested=tool_name, target=target)
+                # Re-point the hold at the fallback price (AGE-66). Zero
+                # reserved_amt the instant the release lands: if the re-reserve
+                # below raises BudgetExceeded, the `finally` must NOT release the
+                # original hold a second time. A double-release drives _reserved
+                # negative and, under concurrent Session.call, lets the budget be
+                # overspent by a leg price (adversarial review finding, 2026-07).
+                self._release(reserved_amt)
+                reserved_amt = Decimal("0")
+                if not self._reserve(fallback["price_usdc"]):
+                    raise BudgetExceeded(
+                        f"fallback '{fallback['name']}' no longer fits the "
+                        f"remaining budget ({self.remaining()} left)"
+                    )
+                reserved_amt = Decimal(str(fallback["price_usdc"]))
                 # Set target BEFORE the call so a fallback leg that pays and
                 # then fails still gets its fallback_for tag in the finally.
                 target = fallback["name"]
@@ -1279,6 +1436,8 @@ class Session:
                     prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
                 )
         finally:
+            # AGE-66: drop the hold — the actual spend is booked below.
+            self._release(reserved_amt)
             # AGE-54: fold EVERY payment the client made into the session —
             # success or failure. A broadcast payment (or transmitted signed
             # auth) whose tool call then failed still burned budget; the old
@@ -1299,7 +1458,9 @@ class Session:
         """Pre-payment policy gate shared by registry tools AND external x402
         URLs (AGE-57): allowed_tools allowlist, rate limit, per-tool cap.
         call() is the single entry point, so URL targets can no longer bypass
-        the allowlist by skipping the registry path."""
+        the allowlist by skipping the registry path. AGE-66: rate-window and
+        per-tool-cap reads run under the session lock so concurrent calls
+        can't both slip past the same limit."""
         import time as _time
 
         if self._allowed_tools is not None and name_or_url not in self._allowed_tools:
@@ -1307,16 +1468,17 @@ class Session:
                 f"Tool '{name_or_url}' is not in the session allowlist: {self._allowed_tools}"
             )
 
-        if self._rate_limit is not None:
-            now = _time.monotonic()
-            # Prune calls older than 60 seconds
-            self._rate_window = [t for t in self._rate_window if now - t < 60.0]
-            if len(self._rate_window) >= self._rate_limit:
-                raise BudgetExceeded(
-                    f"Rate limit exceeded: max {self._rate_limit} calls/min "
-                    f"(made {len(self._rate_window)} in the last 60s)"
-                )
-            self._rate_window.append(now)
+        with self._lock:
+            if self._rate_limit is not None:
+                now = _time.monotonic()
+                # Prune calls older than 60 seconds
+                self._rate_window = [t for t in self._rate_window if now - t < 60.0]
+                if len(self._rate_window) >= self._rate_limit:
+                    raise BudgetExceeded(
+                        f"Rate limit exceeded: max {self._rate_limit} calls/min "
+                        f"(made {len(self._rate_window)} in the last 60s)"
+                    )
+                self._rate_window.append(now)
 
         if name_or_url in self._max_per_tool:
             already_spent_on_tool = sum(
@@ -1334,24 +1496,26 @@ class Session:
         """Fold an AgentPayClient's call_log into the session ledger and
         budget. Runs on success AND failure paths (AGE-54): the client records
         an entry the moment value can leave the wallet, so every broadcast
-        payment counts against the cap even when the tool call then failed."""
-        for e in client.call_log:
-            cost = Decimal(str(e.get("amount_usdc", "0")))
-            self._spent += cost
-            entry: dict = {
-                "tool":        e.get("tool", target),
-                "amount_usdc": str(cost),
-                "tx_hash":     e.get("tx_hash", "") or "",
-                "network":     e.get("network", "") or "",
-                "success":     bool(e.get("success")),
-            }
-            if e.get("state"):
-                entry["state"] = e["state"]
-            if target != requested and entry["tool"] == target:
-                entry["fallback_for"] = requested
-            self._call_log.append(entry)
-            if entry["success"]:
-                self._tool_cache.setdefault(entry["tool"], {})["price_usdc"] = str(cost)
+        payment counts against the cap even when the tool call then failed.
+        AGE-66: _spent/_call_log mutations run under the session lock."""
+        with self._lock:
+            for e in client.call_log:
+                cost = Decimal(str(e.get("amount_usdc", "0")))
+                self._spent += cost
+                entry: dict = {
+                    "tool":        e.get("tool", target),
+                    "amount_usdc": str(cost),
+                    "tx_hash":     e.get("tx_hash", "") or "",
+                    "network":     e.get("network", "") or "",
+                    "success":     bool(e.get("success")),
+                }
+                if e.get("state"):
+                    entry["state"] = e["state"]
+                if target != requested and entry["tool"] == target:
+                    entry["fallback_for"] = requested
+                self._call_log.append(entry)
+                if entry["success"]:
+                    self._tool_cache.setdefault(entry["tool"], {})["price_usdc"] = str(cost)
 
     def summary(self) -> dict:
         return {

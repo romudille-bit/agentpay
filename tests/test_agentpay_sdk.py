@@ -838,3 +838,257 @@ class TestBaseLegRecordsSignedAmount:
         e = client.call_log[0]
         assert e["amount_usdc"] == "0.00105"   # signed amount, not body's 0.001
         assert e["state"] == "uncertain_settlement"
+
+
+class TestBudgetReservationLock:
+    """AGE-66: the budget check→reserve→spend sequence is lock-guarded so two
+    concurrent call()s can't both pass would_exceed and double-pay."""
+
+    def test_failed_fallback_rereserve_does_not_double_release(self):
+        """Regression (adversarial review 2026-07): on the PrePaymentError
+        fallback path, the original hold is released and then re-reserved at the
+        fallback price. If the re-reserve loses a concurrent race and raises,
+        the `finally` must NOT release the (already-released) original hold a
+        second time — a double-release drives _reserved negative and lets the
+        budget be overspent by a leg price. After the raise, _reserved must be
+        back to exactly 0, never negative."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+
+        real_reserve = s._reserve
+        calls = {"n": 0}
+
+        def flaky_reserve(amount):
+            calls["n"] += 1
+            # First reserve (original tool) succeeds; the fallback re-reserve
+            # simulates a concurrent loser and fails.
+            if calls["n"] == 1:
+                return real_reserve(amount)
+            return False
+
+        s._reserve = flaky_reserve
+
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            # 503 on the un-paid probe → PrePaymentError → fallback re-point.
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(503, text="down"))
+            with pytest.raises(BudgetExceeded):
+                s.call("token_price", {"symbol": "ETH"})
+
+        # The hold accounting is balanced: not leaked, not double-released.
+        assert s._reserved == Decimal("0")
+        assert s._reserved >= Decimal("0")
+        # And the budget is fully available again — no phantom overspend room
+        # and no phantom debt.
+        assert s.remaining_usd() == Decimal("1.00")
+
+    def test_reserve_counts_against_remaining(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.010")
+        assert s.remaining_usd() == Decimal("0.010")
+        assert s._reserve("0.007") is True
+        # The hold shows up in remaining/would_exceed immediately.
+        assert s.remaining_usd() == Decimal("0.003")
+        assert s.would_exceed("0.005") is True        # 0.007 held + 0.005 > 0.010
+        assert s.would_exceed("0.003") is False
+        # A second reservation that wouldn't fit is refused (no partial hold).
+        assert s._reserve("0.005") is False
+        assert s.remaining_usd() == Decimal("0.003")
+        s._release("0.007")
+        assert s.remaining_usd() == Decimal("0.010")
+
+    def test_concurrent_calls_cannot_exceed_budget(self, monkeypatch):
+        """Two threads race on a budget that fits only ONE $0.001 call. With
+        the reservation lock, exactly one pays and total spend never exceeds
+        the cap; the loser raises BudgetExceeded."""
+        import threading
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.001")
+
+        start = threading.Barrier(2)
+        results = []
+
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            # A slow-ish 402→200 so both threads overlap inside call().
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=VALID_402),
+                httpx.Response(200, json={"tool": "token_price",
+                                          "result": {"price_usd": 1.0},
+                                          "payment": {"amount_usdc": "0.001",
+                                                      "tx_hash": "t",
+                                                      "network": "stellar-testnet"}}),
+                httpx.Response(402, json=VALID_402),
+                httpx.Response(200, json={"tool": "token_price",
+                                          "result": {"price_usd": 1.0},
+                                          "payment": {"amount_usdc": "0.001",
+                                                      "tx_hash": "t2",
+                                                      "network": "stellar-testnet"}}),
+            ])
+
+            def worker():
+                start.wait()
+                try:
+                    s.call("token_price", {"symbol": "ETH"})
+                    results.append("ok")
+                except BudgetExceeded:
+                    results.append("blocked")
+                except Exception as e:
+                    results.append(f"err:{e}")
+
+            ts = [threading.Thread(target=worker) for _ in range(2)]
+            for t in ts: t.start()
+            for t in ts: t.join()
+
+        # Total spend never exceeds the cap, regardless of scheduling.
+        assert s.spent_usd() <= Decimal("0.001")
+        # At most one paid; the other was blocked (never a double-pay).
+        assert results.count("ok") <= 1
+        assert w.pay.call_count <= 1
+
+
+class TestSubmitTimeoutPoll:
+    """AGE-68: a Stellar submit that times out but actually landed must be
+    reported as success (with the precomputed hash), not a failure the caller
+    would retry into a double-pay."""
+
+    def _wallet(self):
+        from stellar_sdk import Keypair
+        from agentpay._wallet import AgentWallet
+        return AgentWallet(secret_key=Keypair.random().secret, network="testnet")
+
+    def test_timeout_but_confirmed_returns_success(self, monkeypatch):
+        w = self._wallet()
+        monkeypatch.setattr(w.server, "load_account", lambda pk: MagicMock())
+
+        class _Tx:
+            def sign(self, kp): pass
+            def hash_hex(self): return "abc123hash"
+        monkeypatch.setattr(
+            "agentpay._wallet.TransactionBuilder",
+            lambda **k: _Builder(_Tx()))
+
+        def _boom(tx):
+            raise Exception("read timed out")
+        monkeypatch.setattr(w.server, "submit_transaction", _boom)
+        # Poll says it DID land.
+        monkeypatch.setattr(w, "_await_tx_on_chain", lambda h, **k: True)
+
+        out = w.pay("GDEST", "0.001", memo="m")
+        assert out["success"] is True
+        assert out["tx_hash"] == "abc123hash"
+
+    def test_timeout_not_found_stays_failure(self, monkeypatch):
+        w = self._wallet()
+        monkeypatch.setattr(w.server, "load_account", lambda pk: MagicMock())
+
+        class _Tx:
+            def sign(self, kp): pass
+            def hash_hex(self): return "abc123hash"
+        monkeypatch.setattr(
+            "agentpay._wallet.TransactionBuilder",
+            lambda **k: _Builder(_Tx()))
+        monkeypatch.setattr(w.server, "submit_transaction",
+                            lambda tx: (_ for _ in ()).throw(Exception("read timed out")))
+        monkeypatch.setattr(w, "_await_tx_on_chain", lambda h, **k: False)
+
+        out = w.pay("GDEST", "0.001")
+        assert out["success"] is False
+
+    def test_clean_rejection_does_not_poll(self, monkeypatch):
+        """A protocol rejection (result_codes) is definitive — no poll, failure."""
+        w = self._wallet()
+        monkeypatch.setattr(w.server, "load_account", lambda pk: MagicMock())
+
+        class _Tx:
+            def sign(self, kp): pass
+            def hash_hex(self): return "abc123hash"
+        monkeypatch.setattr(
+            "agentpay._wallet.TransactionBuilder",
+            lambda **k: _Builder(_Tx()))
+
+        class _Rejected(Exception):
+            extras = {"result_codes": {"operations": ["op_underfunded"]}}
+        monkeypatch.setattr(w.server, "submit_transaction",
+                            lambda tx: (_ for _ in ()).throw(_Rejected()))
+        polled = {"n": 0}
+        monkeypatch.setattr(w, "_await_tx_on_chain",
+                            lambda h, **k: polled.__setitem__("n", polled["n"] + 1) or True)
+
+        out = w.pay("GDEST", "0.001")
+        assert out["success"] is False
+        assert polled["n"] == 0            # never polled a clean rejection
+
+
+class _Builder:
+    """Minimal TransactionBuilder stand-in whose fluent methods return self."""
+    def __init__(self, tx):
+        self._tx = tx
+    def add_text_memo(self, *a, **k): return self
+    def append_payment_op(self, *a, **k): return self
+    def set_timeout(self, *a, **k): return self
+    def build(self): return self._tx
+
+
+class TestPerToolCapWouldExceed:
+    """AGE-74 #6: the per-tool cap blocks the call that WOULD CROSS the cap,
+    not just the next call after it's already exceeded."""
+
+    def test_call_that_crosses_cap_is_blocked(self):
+        w = _session_wallet()
+        # Cap the tool at $0.0015; one $0.001 call fits, a second would cross.
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00",
+                    max_per_tool={"token_price": 0.0015})
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=VALID_402),
+                httpx.Response(200, json={"tool": "token_price",
+                                          "result": {"p": 1},
+                                          "payment": {"amount_usdc": "0.001",
+                                                      "tx_hash": "t",
+                                                      "network": "stellar-testnet"}}),
+            ])
+            s.call("token_price", {"symbol": "ETH"})       # 0.001 spent, fits
+        assert s.spent_usd() == Decimal("0.001")
+        # Second call would bring spend to 0.002 > 0.0015 cap → blocked BEFORE paying.
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            with pytest.raises(BudgetExceeded, match="Per-tool cap"):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 1                        # never paid the 2nd
+
+
+class TestBudgetPromptCtrlC:
+    """AGE-74 #3: Ctrl-C at the attended budget prompt must NOT silently
+    authorize the default cap — it re-raises."""
+
+    def test_keyboardinterrupt_reraises(self, monkeypatch):
+        import sys as _sys
+        import builtins
+        from agentpay.budget_policy import budget_policy
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        def _boom(*a, **k):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(builtins, "input", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            budget_policy(interactive=True, usdc_balance=1.00)
+
+
+class TestKeyParseConstantMessage:
+    """AGE-74 #4: a bad key raises a constant message, never echoing the key."""
+
+    def test_bad_stellar_secret_constant_message(self):
+        from agentpay._wallet import AgentWallet
+        secret = "SBADKEYSHOULDNOTLEAK1234567890ABCDEF"
+        with pytest.raises(ValueError) as ei:
+            AgentWallet(secret_key=secret, network="testnet")
+        assert secret not in str(ei.value)
+        assert "invalid Stellar secret key" in str(ei.value)

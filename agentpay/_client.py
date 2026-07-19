@@ -122,7 +122,10 @@ class AgentPayClient:
         with httpx.Client(timeout=60.0) as client:
 
             # ── First request — no payment ─────────────────────────────────
-            logger.info(f"→ Calling: {tool_name} | params: {parameters}")
+            # AGE-74: log param KEYS only at INFO — values may carry sensitive
+            # payloads (addresses, signatures, API args). Full params at DEBUG.
+            logger.info(f"→ Calling: {tool_name} | param keys: {sorted(parameters.keys()) if isinstance(parameters, dict) else '…'}")
+            logger.debug(f"  {tool_name} params: {parameters}")
             try:
                 resp = client.post(url, json=payload)
             except Exception as e:
