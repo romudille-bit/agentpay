@@ -369,7 +369,11 @@ class TestRegisterTool:
         base = {
             "name": "test_tool_xyz",
             "description": "A test tool registered by the suite",
-            "endpoint": "https://example.com/tool",
+            # Literal public IP, not a hostname: getaddrinfo parses it locally
+            # with no DNS lookup, so the SSRF guard's public-IP check runs
+            # deterministically even on a box with no outbound DNS (the guard
+            # correctly fails closed when a hostname can't resolve).
+            "endpoint": "https://8.8.8.8/tool",
             "price_usdc": "0.001",
             "developer_address": self.DEV,
             "parameters": {"type": "object", "properties": {}},
@@ -470,9 +474,33 @@ class TestEndpointSafety:
         assert _endpoint_is_safe("not a url")[0] is False
 
     def test_allows_public_https(self):
+        # Literal public IP → parsed locally, no DNS, deterministic offline.
         from gateway.routes.tools import _endpoint_is_safe
-        ok, why = _endpoint_is_safe("https://example.com/tool")
+        ok, why = _endpoint_is_safe("https://8.8.8.8/tool")
         assert ok is True, why
+
+    def test_allows_public_hostname_when_dns_available(self, monkeypatch):
+        # Hostname path: mock getaddrinfo so the test never depends on the
+        # box having outbound DNS. Pins that a hostname resolving to a public
+        # IP is allowed.
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(
+            rt.socket, "getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
+        )
+        ok, why = rt._endpoint_is_safe("https://example.com/tool")
+        assert ok is True, why
+
+    def test_hostname_resolving_private_is_blocked(self, monkeypatch):
+        # DNS-rebinding shape: a hostname that resolves to a private IP is
+        # rejected even though the name looks innocuous.
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(
+            rt.socket, "getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("10.0.0.7", 443))],
+        )
+        ok, why = rt._endpoint_is_safe("https://totally-fine.example/tool")
+        assert ok is False
 
     @pytest.mark.asyncio
     async def test_run_tool_blocks_unsafe_endpoint_at_call_time(self, monkeypatch):
