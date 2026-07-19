@@ -332,6 +332,7 @@ def test_ledger_html_served(monkeypatch):
 
 
 def test_ledger_json_shape(monkeypatch):
+    ledger._invalidate_ledger_cache()          # AGE-72: isolate from other tests
     async def _fake_rows():
         return RUN_A + RUN_B
     monkeypatch.setattr(ledger, "_fetch_flagship_rows", _fake_rows)
@@ -344,7 +345,30 @@ def test_ledger_json_shape(monkeypatch):
     assert d["totals"]["runs"] == 2
     assert d["wallets"]["base"].startswith("0x")
     assert d["wallets"]["stellar"].startswith("G")
-    assert resp.headers.get("cache-control") == "no-store"
+    # AGE-72: short public cache instead of no-store.
+    assert resp.headers.get("cache-control") == "public, max-age=60"
+
+
+def test_ledger_json_is_cached_and_invalidated(monkeypatch):
+    """AGE-72: the built payload is cached for a window (no re-query on the
+    next hit) and dropped when a new run is ingested."""
+    ledger._invalidate_ledger_cache()
+    calls = {"n": 0}
+
+    async def _fake_rows():
+        calls["n"] += 1
+        return RUN_A
+    monkeypatch.setattr(ledger, "_fetch_flagship_rows", _fake_rows)
+    from gateway.main import app
+    c = TestClient(app)
+
+    c.get("/ledger.json")
+    c.get("/ledger.json")
+    assert calls["n"] == 1                      # second hit served from cache
+
+    ledger._invalidate_ledger_cache()           # e.g. a new run ingested
+    c.get("/ledger.json")
+    assert calls["n"] == 2                       # rebuilt after invalidation
 
 
 def test_ledger_disabled_404(monkeypatch):

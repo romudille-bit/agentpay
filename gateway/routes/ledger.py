@@ -27,6 +27,7 @@ Design notes:
 """
 
 import logging
+import time as _time
 from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -144,10 +145,31 @@ def _build_timeline(free_calls: list[dict], paid_calls: list[dict],
     return steps
 
 
+# AGE-75: a Stellar public key (G + 55 base32) or an EVM address (0x + 40 hex).
+# Config-sourced addresses are interpolated into a PostgREST `or=(ilike…)`
+# clause, so a stray `%`, `,`, or `(` in LEDGER_FLAGSHIP_ADDRESSES would broaden
+# the filter (and could surface unrelated wallets' rows on the public ledger).
+# Validate shape and drop anything that doesn't match before building the query.
+_ADDR_RE = re.compile(r"^(G[A-Z2-7]{55}|0x[0-9a-fA-F]{40})$")
+
+
 def _flagship_addresses() -> list[str]:
     raw = (settings.LEDGER_FLAGSHIP_ADDRESSES or "").strip()
     if raw:
-        return [a.strip() for a in raw.split(",") if a.strip()]
+        addrs = []
+        for a in (x.strip() for x in raw.split(",")):
+            if not a:
+                continue
+            if _ADDR_RE.match(a):
+                addrs.append(a)
+            else:
+                logger.warning(
+                    f"[ledger] dropping malformed LEDGER_FLAGSHIP_ADDRESSES entry: {a!r}"
+                )
+        if addrs:
+            return addrs
+        logger.error("[ledger] LEDGER_FLAGSHIP_ADDRESSES had no valid entries — "
+                     "using built-in defaults")
     return list(_DEFAULT_FLAGSHIP_ADDRESSES)
 
 
@@ -623,11 +645,32 @@ async def _fetch_flagship_rows() -> list[dict]:
         return []
 
 
+# AGE-72: /ledger.json is public, unauthenticated, and runs 2 Supabase queries
+# + a full Python regroup on every hit — while the underlying data changes at
+# most once a day. Cache the built payload in-process for a short window so a
+# scrape (or the HTML page's per-load fetch) can't multiply Supabase load. The
+# cache is invalidated on a successful run ingest so a new run still appears
+# promptly.
+_LEDGER_JSON_TTL = 60.0
+_ledger_json_cache: dict = {"built_at": 0.0, "payload": None}
+
+
+def _invalidate_ledger_cache() -> None:
+    _ledger_json_cache["payload"] = None
+    _ledger_json_cache["built_at"] = 0.0
+
+
 @router.get("/ledger.json", response_class=JSONResponse)
 async def ledger_json():
     """Machine-readable flagship run history."""
     if not settings.LEDGER_ENABLED:
         raise HTTPException(status_code=404, detail="Not found")
+    cached = _ledger_json_cache["payload"]
+    if cached is not None and (_time.monotonic() - _ledger_json_cache["built_at"]) < _LEDGER_JSON_TTL:
+        return JSONResponse(
+            content=cached,
+            headers={"Cache-Control": f"public, max-age={int(_LEDGER_JSON_TTL)}"},
+        )
     rows = await _fetch_flagship_rows()
     data = group_runs(rows, run_cap=settings.LEDGER_RUN_CAP_USDC)
     metas = await fetch_flagship_runs()
@@ -669,8 +712,13 @@ async def ledger_json():
     }
     data["run_cap_usdc"] = f"{_dec(settings.LEDGER_RUN_CAP_USDC):.2f}"
     data["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
-    # No-store: the page should reflect fresh payment_logs on every load.
-    return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
+    # AGE-72: publish to the short-lived cache and let clients/CDN cache it too.
+    _ledger_json_cache["payload"] = data
+    _ledger_json_cache["built_at"] = _time.monotonic()
+    return JSONResponse(
+        content=data,
+        headers={"Cache-Control": f"public, max-age={int(_LEDGER_JSON_TTL)}"},
+    )
 
 
 @router.post("/v1/flagship/run")
@@ -701,7 +749,20 @@ async def flagship_ingest(request: Request,
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Expected a JSON object")
+    # AGE-75: run_at is the row's key AND the idempotency key. A missing or
+    # unparseable timestamp otherwise fails silently on the 202 path (and, with
+    # AGE-63, would skip the existence check). Reject at the door with a 400.
+    run_at = payload.get("run_at_iso") or payload.get("run_at")
+    if not run_at or _parse_ts(str(run_at)) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="missing or unparseable run_at / run_at_iso (ISO-8601 required)",
+        )
     stored = await insert_flagship_run(payload)
+    if stored:
+        # AGE-72: a new run landed — drop the cached /ledger.json so it shows up
+        # immediately instead of waiting out the TTL.
+        _invalidate_ledger_cache()
     # 200 when persisted; 202 when accepted-but-not-stored (e.g. table not yet
     # created) so the agent sees a 2xx and never fails its run over the ledger.
     # AGE-46: the 202 path was a silent black hole — the agent logged "ingest
