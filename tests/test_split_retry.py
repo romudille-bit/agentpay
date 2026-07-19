@@ -44,7 +44,9 @@ def _patch_stellar_plumbing(submit_side_effect):
 
 @pytest.mark.asyncio
 async def test_split_retries_then_succeeds():
-    # Fail twice (transient), succeed on the third attempt.
+    # Fail twice (transient TIMEOUTS where the tx did NOT land), succeed on the
+    # third attempt. AGE-68: a 504 now triggers an on-chain poll first; here the
+    # poll reports not-found, so the retry is correct.
     server, builder = _patch_stellar_plumbing(
         submit_side_effect=[
             Exception("Horizon 504"),
@@ -55,6 +57,7 @@ async def test_split_retries_then_succeeds():
 
     with patch.object(stellar, "get_server", return_value=server), \
          patch.object(stellar, "TransactionBuilder", return_value=builder), \
+         patch.object(stellar, "_await_tx_on_chain", AsyncMock(return_value=False)), \
          patch.object(stellar.Keypair, "from_secret", return_value=MagicMock(public_key="GGATEWAY")), \
          patch.object(stellar, "get_usdc_asset", return_value=MagicMock()), \
          patch.object(stellar.settings, "SPLIT_MAX_RETRIES", 3), \
@@ -70,6 +73,37 @@ async def test_split_retries_then_succeeds():
     assert result["tx_hash"] == "abc123"
     # Three submit attempts (2 failures + 1 success)
     assert server.submit_transaction.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_split_timeout_confirmed_onchain_does_not_retry():
+    """AGE-68: a submit that times out but actually LANDED on-chain must NOT be
+    retried (that would double-send the dev share). The on-chain poll confirms
+    it, so we stop after one submit and return the confirmed hash."""
+    server, builder = _patch_stellar_plumbing(
+        submit_side_effect=Exception("read timed out")
+    )
+    built = MagicMock()
+    built.hash_hex.return_value = "deadbeefcafe"
+    builder.build.return_value = built
+
+    with patch.object(stellar, "get_server", return_value=server), \
+         patch.object(stellar, "TransactionBuilder", return_value=builder), \
+         patch.object(stellar, "_await_tx_on_chain", AsyncMock(return_value=True)), \
+         patch.object(stellar.Keypair, "from_secret", return_value=MagicMock(public_key="GGATEWAY")), \
+         patch.object(stellar, "get_usdc_asset", return_value=MagicMock()), \
+         patch.object(stellar.settings, "SPLIT_MAX_RETRIES", 3), \
+         patch.object(stellar.settings, "SPLIT_RETRY_BASE_DELAY", 0.0), \
+         patch.object(stellar.settings, "GATEWAY_SECRET_KEY", "S" + "A" * 55):
+        result = await stellar.split_payment(
+            tool_developer_address="GDEV",
+            total_amount_usdc="0.001",
+            gateway_fee_percent=0.15,
+        )
+
+    assert result["success"] is True
+    assert result["tx_hash"] == "deadbeefcafe"
+    assert server.submit_transaction.call_count == 1   # no double-send
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,42 @@ def get_network_passphrase() -> str:
         return Network.TESTNET_NETWORK_PASSPHRASE
     return Network.PUBLIC_NETWORK_PASSPHRASE
 
+def _is_timeout_error(exc) -> bool:
+    """AGE-68: does this look like a submit timeout / transport loss (where the
+    tx may actually have been accepted) rather than a clean protocol rejection
+    (op_underfunded, tx_bad_seq, …)? Result-code-bearing stellar-sdk errors are
+    definitive rejections, never timeouts."""
+    extras = getattr(exc, "extras", None)
+    if isinstance(extras, dict) and extras.get("result_codes"):
+        return False
+    text = f"{exc.__class__.__name__} {str(exc)[:200]}".lower()
+    return any(n in text for n in (
+        "timeout", "timed out", "connect", "read", "temporarily",
+        "connection", "504", "502", "503", "network",
+    ))
+
+
+async def _await_tx_on_chain(tx_hash: str, attempts: int = 3, delay: float = 2.0) -> bool:
+    """AGE-68: poll Horizon for a specific tx hash. True once it appears as a
+    successful transaction; False if it never shows within the window."""
+    from stellar_sdk.exceptions import NotFoundError
+    server = get_server()
+    for i in range(attempts):
+        try:
+            rec = await asyncio.to_thread(
+                lambda: server.transactions().transaction(tx_hash).call()
+            )
+            if rec.get("successful", True):
+                return True
+        except NotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"[stellar] tx poll error for {tx_hash[:16]}...: {e}")
+        if i < attempts - 1:
+            await asyncio.sleep(delay)
+    return False
+
+
 def get_usdc_asset() -> Asset:
     issuer = (
         settings.USDC_ISSUER_TESTNET
@@ -313,6 +349,7 @@ async def split_payment(
     last_error: str = "unknown"
 
     for attempt in range(max_retries + 1):
+        split_hash_precomputed = ""   # AGE-68: set once the tx is built+signed
         try:
             # asyncio.to_thread keeps the event loop free while stellar_sdk's
             # synchronous Horizon call runs on a worker thread. Without this,
@@ -341,8 +378,14 @@ async def split_payment(
             )
 
             tx.sign(gateway_keypair)
+            # AGE-68: deterministic hash so a timed-out submit can be checked
+            # on-chain instead of blindly retried into a double-send.
+            try:
+                split_hash_precomputed = tx.hash_hex()
+            except Exception:
+                split_hash_precomputed = ""
             response = await asyncio.to_thread(server.submit_transaction, tx)
-            split_tx_hash = response.get("hash", "")
+            split_tx_hash = response.get("hash", "") or split_hash_precomputed
 
             if attempt > 0:
                 logger.info(
@@ -353,6 +396,17 @@ async def split_payment(
 
         except Exception as e:
             last_error = str(e)[:200]
+            # AGE-68: a timed-out submit may actually have landed — poll for the
+            # precomputed hash before retrying, so we don't send the dev share
+            # twice. If it confirmed, treat this attempt as success.
+            if split_hash_precomputed and _is_timeout_error(e):
+                if await _await_tx_on_chain(split_hash_precomputed):
+                    split_tx_hash = split_hash_precomputed
+                    logger.warning(
+                        f"Split submit timed out but CONFIRMED on-chain "
+                        f"{split_hash_precomputed[:16]}... — not retrying"
+                    )
+                    break
             if attempt < max_retries:
                 delay = base_delay * (2 ** attempt)
                 logger.warning(
@@ -378,33 +432,14 @@ async def split_payment(
     try:
         logger.info(f"Split sent {developer_share} USDC to {tool_developer_address}")
 
-        # PATCH payment_logs.state='split_done'. Lazy import to
-        # avoid a circular import on module load (services.supabase
-        # doesn't import stellar, but main.py imports both — direct
-        # top-level import here would order-couple them).
-        #
-        # expected_state='verified' guards against the race
-        # where this PATCH could land AFTER the route's awaited terminal
-        # 'payment_done' PATCH and overwrite it. split_payment runs as
-        # a fire-and-forget task scheduled from verify_and_fulfill — by
-        # the time it completes (5-10s of Horizon round-trips), the
-        # route has long since written 'payment_done'. The guard makes
-        # the late split_done a silent no-op on the happy path; it
-        # only lands if the row is still in 'verified' (which it never
-        # is in current production, since the route writes payment_done
-        # before split_payment finishes). This is acceptable —
-        # split_done is informational, not load-bearing.
-        if payment_id:
-            try:
-                from gateway.services.supabase import update_payment_log_state
-                asyncio.create_task(update_payment_log_state(
-                    payment_id, "split_done",
-                    expected_state="verified",
-                    gateway_fee_usdc=str(total - developer_share),
-                ))
-            except Exception as e:
-                # Don't let analytics break the split — just log
-                logger.warning(f"split_done PATCH failed to schedule: {e}")
+        # AGE-73: the old 'split_done' PATCH here was dead. split_payment runs
+        # fire-and-forget from verify_and_fulfill and takes 5-10s of Horizon
+        # round-trips, by which point the route has already written the terminal
+        # 'payment_done' — so the PATCH, guarded to expected_state='verified',
+        # never matched a row and never landed. The gateway fee is recorded on
+        # the payment_done PATCH the route awaits, so nothing is lost by dropping
+        # the dead write. (The 'split_done' state in the lifecycle doc was
+        # aspirational; the happy path is pending → verified → payment_done.)
 
         return {
             "success": True,
