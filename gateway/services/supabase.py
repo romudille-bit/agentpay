@@ -1227,14 +1227,30 @@ async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
 
 
 async def insert_flagship_run(run: dict) -> bool:
-    """INSERT one flagship run summary. Returns True on success.
+    """INSERT one flagship run summary, idempotent on run_at. Returns True on
+    success.
 
     `run` is the agent's posted payload; only known columns are forwarded.
+
+    AGE-63: run_at is the idempotency key. The analyst cron posts once per run,
+    but a retried/duplicated POST used to INSERT a second row → the same run
+    appeared twice on /ledger and double-counted headline totals. We now skip
+    the insert when a row for this run_at already exists (first-write-wins), so
+    a retry of the same run is a no-op on the totals and returns success.
+
+    Chosen over delete-then-insert deliberately: a delete that succeeds before
+    a failing insert would LOSE an already-stored run, whereas check-then-skip
+    has no data-loss window. Schema-agnostic — keys on the run_at column, needs
+    no UNIQUE constraint (a Postgres UNIQUE(run_at) + native upsert is the tidy
+    long-term form, and would additionally let a corrected re-post replace).
+    Rows with no run_at skip the existence check (can't idempotency-key them)
+    and insert as before.
     """
     if not sb_enabled():
         return False
+    run_at = run.get("run_at_iso") or run.get("run_at")
     payload = {
-        "run_at":     run.get("run_at_iso") or run.get("run_at"),
+        "run_at":     run_at,
         "wallet":     run.get("wallet"),
         "max_spend":  run.get("max_spend"),
         "objective":  run.get("objective") or {},
@@ -1250,6 +1266,23 @@ async def insert_flagship_run(run: dict) -> bool:
     }
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            if run_at:
+                # Idempotency guard: if this run_at is already stored, treat the
+                # (re-)post as a successful no-op instead of inserting a dup.
+                exist = await client.get(
+                    f"{settings.SUPABASE_URL}/rest/v1/flagship_runs",
+                    headers={**sb_headers(), "Accept": "application/json"},
+                    params={"run_at": f"eq.{run_at}", "select": "run_at", "limit": "1"},
+                )
+                if exist.status_code == 200 and exist.json():
+                    logger.info(
+                        f"insert_flagship_run: run_at={run_at!r} already stored "
+                        f"— idempotent no-op"
+                    )
+                    return True
+                # A failed existence check is non-fatal: fall through and insert
+                # (worst case reverts to the pre-AGE-63 possible-duplicate, never
+                # a lost or blocked run).
             resp = await client.post(
                 f"{settings.SUPABASE_URL}/rest/v1/flagship_runs",
                 headers=sb_headers(),

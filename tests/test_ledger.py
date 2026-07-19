@@ -244,7 +244,11 @@ def test_reconcile_adds_offgateway_cmc_legs_from_receipt():
         },
     }
     assert ledger.attach_reasoning(out["runs"], [meta]) == 1
-    assert ledger.reconcile_from_receipt(out["runs"]) == 1
+    # AGE-63: only the gateway-settled leg (0xroutehash @ $0.01, in
+    # payment_logs) is verifiable; the two direct CMC legs are agent-attested.
+    from collections import Counter
+    verified_legs = Counter({("0xroutehash", Decimal("0.01")): 1})
+    assert ledger.reconcile_from_receipt(out["runs"], verified_legs) == 1
 
     run = out["runs"][0]
     assert run["reconciled_from_receipt"] is True
@@ -253,8 +257,24 @@ def test_reconcile_adds_offgateway_cmc_legs_from_receipt():
     assert run["spent_usdc"] == "0.03"                 # timeline now matches the receipt
     tools = [s["tool"] for s in run["timeline"]]
     assert "cmc_dex_search" in tools and "cmc_dex_pairs" in tools
+
+    # verified_route settled through the gateway → on-chain, explorer link.
+    vr = next(s for s in run["timeline"] if s["tool"] == "verified_route")
+    assert vr["verification"] == "onchain"
+    assert "basescan.org/tx/0xroutehash" in vr["explorer_url"]
+
+    # The CMC leg never touched payment_logs → agent-attested, NO explorer link
+    # (a link would falsely read as "AgentPay verified this hash on-chain").
     cmc = next(s for s in run["timeline"] if s["tool"] == "cmc_dex_search")
-    assert cmc["kind"] == "paid" and "basescan.org/tx/0xcmcsearch" in cmc["explorer_url"]
+    assert cmc["kind"] == "paid"
+    assert cmc["verification"] == "agent_attested"
+    assert cmc["explorer_url"] is None
+
+    # Run-level split: $0.01 verified (verified_route) + $0.02 attested (2 CMC).
+    assert run["has_attested_spend"] is True
+    assert run["verified_spent_usdc"] == "0.01"
+    assert run["attested_spent_usdc"] == "0.02"
+    assert run["attested_paid_count"] == 2
 
 
 def test_reconcile_skips_non_strategy_runs():
@@ -398,3 +418,230 @@ def test_synthesize_handles_empty_breakdown():
     assert added == 1
     assert runs[0]["spent_usdc"] == "0.00"
     assert runs[0]["paid_count"] == 0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AGE-62: /ledger row-cap freeze (order desc + re-sort asc)
+# ═════════════════════════════════════════════════════════════════════════════
+
+import httpx
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_fetch_flagship_rows_orders_desc_and_resorts_asc(monkeypatch):
+    """AGE-62: the Supabase query must order created_at DESC (so the 2000-row
+    cap keeps the NEWEST runs), then hand rows back chronologically. Regression
+    for the freeze where asc+limit returned the oldest 2000 forever."""
+    monkeypatch.setattr(ledger, "sb_enabled", lambda: True)
+    monkeypatch.setattr(ledger, "_flagship_addresses", lambda: ["0xe16"])
+    monkeypatch.setattr(ledger.settings, "SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setattr(ledger, "sb_headers", lambda: {})
+
+    seen = {}
+    # Supabase returns newest-first (as the desc query asks).
+    newest_first = [
+        {"created_at": "2026-06-12T18:16:53+00:00", "tool_name": "pre_trade_check",
+         "network": "eip155:8453", "amount_usdc": "0.01", "state": "payment_done",
+         "tx_hash": "0xb", "agent_address": "0xe16"},
+        {"created_at": "2026-06-12T18:16:49+00:00", "tool_name": "pre_trade_check",
+         "network": "eip155:8453", "amount_usdc": "0.01", "state": "payment_done",
+         "tx_hash": "0xa", "agent_address": "0xe16"},
+    ]
+
+    def handler(request):
+        seen["order"] = dict(request.url.params).get("order")
+        return httpx.Response(200, json=newest_first)
+
+    import respx
+    with respx.mock:
+        respx.get("https://x.supabase.co/rest/v1/payment_logs").mock(side_effect=handler)
+        rows = await ledger._fetch_flagship_rows()
+
+    assert seen["order"] == "created_at.desc"                 # keep newest 2000
+    # …but returned chronologically for group_runs.
+    assert [r["created_at"] for r in rows] == [
+        "2026-06-12T18:16:49+00:00", "2026-06-12T18:16:53+00:00",
+    ]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AGE-63: /ledger must not present agent-posted hashes as on-chain-verified
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_run_view_labels_verified_vs_attested():
+    from collections import Counter
+    breakdown = [
+        {"tool": "verified_route", "cost": "$0.010", "tx_hash": "0xGATE",
+         "network": "eip155:8453"},
+        {"tool": "https://evil.example/x402/fake", "cost": "$0.010",
+         "tx_hash": "0xFABRICATED", "network": "base"},
+    ]
+    # Only the gateway leg is in payment_logs (keyed (hash_lower, amount)).
+    view = ledger._run_view_from_breakdown(
+        breakdown, Decimal("0.25"),
+        verified_legs=Counter({("0xgate", Decimal("0.01")): 1}))
+
+    gate = next(s for s in view["timeline"] if s["tool"] == "verified_route")
+    fake = next(s for s in view["timeline"] if s["verification"] == "agent_attested")
+    assert gate["verification"] == "onchain" and gate["explorer_url"]
+    # A fabricated / off-gateway hash is never dressed up as verified.
+    assert fake["verification"] == "agent_attested"
+    assert fake["explorer_url"] is None
+    assert view["verified_spent_usdc"] == "0.01"
+    assert view["attested_spent_usdc"] == "0.01"
+    assert view["has_attested_spend"] is True
+
+
+def test_run_view_reused_real_hash_credited_once():
+    """AGE-63 residual: a holder of the ingest secret reuses ONE real gateway
+    hash across three legs at a fabricated $0.05 each. Only the single real
+    settlement ($0.01) may show on-chain; the rest are agent-attested — a real
+    hash can't be replayed to inflate verified spend."""
+    from collections import Counter
+    breakdown = [
+        {"tool": "verified_route", "cost": "$0.050", "tx_hash": "0xREAL", "network": "base"},
+        {"tool": "verified_route", "cost": "$0.050", "tx_hash": "0xREAL", "network": "base"},
+        {"tool": "verified_route", "cost": "$0.050", "tx_hash": "0xREAL", "network": "base"},
+    ]
+    # payment_logs has exactly ONE real leg: 0xreal @ $0.01.
+    view = ledger._run_view_from_breakdown(
+        breakdown, Decimal("0.25"),
+        verified_legs=Counter({("0xreal", Decimal("0.01")): 1}))
+    verifs = [s["verification"] for s in view["timeline"]]
+    # None match: the fabricated cost ($0.05) != the real settled amount ($0.01),
+    # so even the reused real hash stays attested.
+    assert verifs == ["agent_attested", "agent_attested", "agent_attested"]
+    assert view["verified_spent_usdc"] == "0.00"
+
+    # And when the amount DOES match, only the first of the reused legs is
+    # credited on-chain; the copies are consumed-out to attested.
+    view2 = ledger._run_view_from_breakdown(
+        [{"tool": "verified_route", "cost": "$0.010", "tx_hash": "0xREAL", "network": "base"},
+         {"tool": "verified_route", "cost": "$0.010", "tx_hash": "0xREAL", "network": "base"}],
+        Decimal("0.25"),
+        verified_legs=Counter({("0xreal", Decimal("0.01")): 1}))
+    assert [s["verification"] for s in view2["timeline"]] == ["onchain", "agent_attested"]
+    assert view2["verified_spent_usdc"] == "0.01"
+
+
+def test_run_view_no_verified_set_means_all_attested():
+    """Fail safe: with no verified set, nothing may claim on-chain status."""
+    view = ledger._run_view_from_breakdown(
+        [{"tool": "verified_route", "cost": "$0.010", "tx_hash": "0xANY",
+          "network": "base"}],
+        Decimal("0.25"))
+    assert view["timeline"][0]["verification"] == "agent_attested"
+    assert view["timeline"][0]["explorer_url"] is None
+
+
+def test_synthesized_probe_leg_is_attested_without_verified_set():
+    """A prober sweep pays sellers directly (never in payment_logs) → its legs
+    are agent-attested, not falsely on-chain-verified."""
+    runs: list = []
+    from collections import Counter
+    ledger.synthesize_offgateway_runs(runs, [_probe_meta()], run_cap="0.25",
+                                      verified_legs=Counter())
+    leg = runs[0]["timeline"][0]
+    assert leg["kind"] == "paid"
+    assert leg["verification"] == "agent_attested"
+    assert leg["explorer_url"] is None
+    assert runs[0]["has_attested_spend"] is True
+
+
+def test_recompute_totals_splits_verified_and_attested():
+    data = {"runs": [
+        {"spent_usdc": "0.03", "paid_count": 3, "free_count": 1,
+         "attested_spent_usdc": "0.02"},                    # reconciled run
+        {"spent_usdc": "0.02", "paid_count": 2, "free_count": 3},  # pure on-chain
+    ]}
+    ledger._recompute_totals(data)
+    t = data["totals"]
+    assert t["spent_usdc"] == "0.05"
+    assert t["attested_spent_usdc"] == "0.02"
+    assert t["verified_spent_usdc"] == "0.03"
+
+
+def test_ledger_html_marks_attested_legs(monkeypatch):
+    """The public page must render the agent-attested badge + explanatory note
+    (not an explorer link) for off-gateway legs."""
+    async def _rows():
+        return []
+    async def _metas():
+        return [_probe_meta()]
+    monkeypatch.setattr(ledger, "_fetch_flagship_rows", _rows)
+    monkeypatch.setattr(ledger, "fetch_flagship_runs", _metas)
+    monkeypatch.setattr(ledger.settings, "LEDGER_ENABLED", True)
+    from gateway.main import app
+    html = TestClient(app).get("/ledger").text
+    assert "agent-attested" in html
+    assert "tatt" in html            # the badge class ships in the page
+
+
+# ── AGE-63 ingest idempotency ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_insert_flagship_run_skips_duplicate_run_at(monkeypatch):
+    """A retried POST for a run_at that already exists is an idempotent no-op:
+    the existence check finds it and NO insert fires (so /ledger can't show the
+    run twice or double-count totals)."""
+    import gateway.services.supabase as sb
+    monkeypatch.setattr(sb, "sb_enabled", lambda: True)
+    monkeypatch.setattr(sb.settings, "SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setattr(sb, "sb_headers", lambda: {})
+
+    posted = []
+    import respx
+    with respx.mock:
+        respx.get("https://x.supabase.co/rest/v1/flagship_runs").mock(
+            return_value=httpx.Response(200, json=[{"run_at": "2026-06-15T13:04:40+00:00"}]))
+        respx.post("https://x.supabase.co/rest/v1/flagship_runs").mock(
+            side_effect=lambda req: (posted.append(1), httpx.Response(201))[1])
+        ok = await sb.insert_flagship_run(
+            {"run_at_iso": "2026-06-15T13:04:40+00:00", "wallet": "0xe16"})
+
+    assert ok is True            # reported success…
+    assert posted == []          # …but nothing inserted (idempotent no-op)
+
+
+@pytest.mark.asyncio
+async def test_insert_flagship_run_inserts_when_new(monkeypatch):
+    """A run_at not yet stored: existence check is empty → insert proceeds."""
+    import gateway.services.supabase as sb
+    monkeypatch.setattr(sb, "sb_enabled", lambda: True)
+    monkeypatch.setattr(sb.settings, "SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setattr(sb, "sb_headers", lambda: {})
+
+    posted = []
+    import respx
+    with respx.mock:
+        respx.get("https://x.supabase.co/rest/v1/flagship_runs").mock(
+            return_value=httpx.Response(200, json=[]))   # not stored yet
+        respx.post("https://x.supabase.co/rest/v1/flagship_runs").mock(
+            side_effect=lambda req: (posted.append(1), httpx.Response(201))[1])
+        ok = await sb.insert_flagship_run(
+            {"run_at_iso": "2026-06-15T13:04:40+00:00", "wallet": "0xe16"})
+
+    assert ok is True and posted == [1]
+
+
+@pytest.mark.asyncio
+async def test_insert_flagship_run_no_run_at_skips_existence_check(monkeypatch):
+    """A payload with no run_at can't be idempotency-keyed — no existence
+    check (no accidental broad read), just the insert."""
+    import gateway.services.supabase as sb
+    monkeypatch.setattr(sb, "sb_enabled", lambda: True)
+    monkeypatch.setattr(sb.settings, "SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setattr(sb, "sb_headers", lambda: {})
+
+    gets = []
+    import respx
+    with respx.mock:
+        respx.get("https://x.supabase.co/rest/v1/flagship_runs").mock(
+            side_effect=lambda req: (gets.append(1), httpx.Response(200, json=[]))[1])
+        respx.post("https://x.supabase.co/rest/v1/flagship_runs").mock(
+            return_value=httpx.Response(201))
+        ok = await sb.insert_flagship_run({"wallet": "0xe16"})   # no run_at
+
+    assert ok is True
+    assert gets == []

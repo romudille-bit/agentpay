@@ -27,6 +27,7 @@ Design notes:
 """
 
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -363,14 +364,39 @@ def attach_reasoning(runs: list[dict], metas: list[dict]) -> int:
     return enriched
 
 
-def _run_view_from_breakdown(breakdown: list[dict], cap: Decimal) -> dict:
+def _run_view_from_breakdown(
+    breakdown: list[dict], cap: Decimal,
+    verified_legs: "Counter | None" = None,
+) -> dict:
     """Walk an SDK receipt breakdown into the ledger's run-view fields
-    (timeline, paid_calls, counts, spend). PURE. Shared by
-    reconcile_from_receipt and synthesize_offgateway_runs."""
+    (timeline, paid_calls, counts, spend). Shared by reconcile_from_receipt
+    and synthesize_offgateway_runs.
+
+    AGE-63: these views are rebuilt WHOLESALE from the agent-posted receipt,
+    so their tx hashes are only as trustworthy as whoever holds
+    FLAGSHIP_INGEST_SECRET. `verified_legs` is a CONSUMABLE Counter of the
+    gateway-settled legs from payment_logs, keyed on `(tx_hash_lower, amount)`.
+    Each paid leg is tagged `verification`:
+        "onchain"        — an unconsumed payment_logs leg matches BOTH this
+                           leg's tx_hash AND its amount; the match is consumed
+                           so one real settlement can be counted at most once
+                           (a holder of the ingest secret can't reuse a single
+                           real hash across many fabricated legs to inflate
+                           "verified" spend).
+        "agent_attested" — no matching unconsumed on-chain leg. Either a
+                           legitimate off-gateway leg (direct agent→seller x402,
+                           which never touches our books) or a fabricated entry
+                           — indistinguishable from here, so NOT presented as
+                           on-chain-verified.
+    NOTE: not pure — consumes from the passed Counter, which is shared across
+    all runs in one ledger render so matches can't be double-spent between
+    reconcile and synthesize. `verified_legs=None` → all paid legs attested."""
+    vlegs = verified_legs if verified_legs is not None else Counter()
     steps: list[dict] = []
     paid_calls: list[dict] = []
     spent = Decimal("0")
-    free_count = paid_count = 0
+    verified_spent = attested_spent = Decimal("0")
+    free_count = paid_count = attested_count = 0
 
     for i, e in enumerate(breakdown, start=1):
         raw_tool = e.get("tool")
@@ -388,12 +414,30 @@ def _run_view_from_breakdown(breakdown: list[dict], cap: Decimal) -> dict:
         if amt > 0:
             net = _norm_network(e.get("network"))
             tx = e.get("tx_hash") or None
-            explorer = _explorer_url(net, tx)
+            # Match on (hash, amount) AND consume, so a real hash reused across
+            # legs — or with a fabricated cost — is only credited once, for the
+            # exact amount that actually settled.
+            key = (tx.lower(), amt) if tx else None
+            verified = bool(key and vlegs.get(key, 0) > 0)
+            if verified:
+                vlegs[key] -= 1
+            verification = "onchain" if verified else "agent_attested"
+            # Only surface an explorer link for legs we could actually verify —
+            # a link on an unverified hash reads as "we checked this" when we
+            # didn't.
+            explorer = _explorer_url(net, tx) if verified else None
+            if verified:
+                verified_spent += amt
+            else:
+                attested_spent += amt
+                attested_count += 1
             step.update({"kind": "paid", "network": net,
-                         "tx_hash": tx, "explorer_url": explorer})
+                         "tx_hash": tx, "explorer_url": explorer,
+                         "verification": verification})
             paid_calls.append({
                 "tool": name, "amount_usdc": f"{amt:.2f}", "network": net,
                 "tx_hash": tx, "explorer_url": explorer,
+                "verification": verification,
                 "spent_after_usdc": f"{spent:.2f}",
                 "remaining_after_usdc": f"{(cap - spent):.2f}",
             })
@@ -409,11 +453,17 @@ def _run_view_from_breakdown(breakdown: list[dict], cap: Decimal) -> dict:
         "spent_usdc": f"{spent:.2f}",
         "remaining_usdc": f"{(cap - spent):.2f}",
         "under_cap": spent <= cap,
+        # AGE-63: verification breakdown for this receipt-derived view.
+        "verified_spent_usdc": f"{verified_spent:.2f}",
+        "attested_spent_usdc": f"{attested_spent:.2f}",
+        "attested_paid_count": attested_count,
+        "has_attested_spend": attested_count > 0,
     }
 
 
 def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
-                               run_cap: str = "0.25") -> int:
+                               run_cap: str = "0.25",
+                               verified_legs: "Counter | None" = None) -> int:
     """Surface runs that never touched payment_logs at all. PURE — mutates
     `runs` in place (keeps newest-first order); returns the count added.
 
@@ -445,7 +495,7 @@ def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
         if not isinstance(breakdown, list):
             breakdown = []
         cap = _dec(obj.get("cap_usdc") or m.get("max_spend") or run_cap)
-        view = _run_view_from_breakdown(breakdown, cap)
+        view = _run_view_from_breakdown(breakdown, cap, verified_legs)
         runs.append({
             "started": m.get("run_at"),
             "ended": m.get("run_at"),
@@ -476,7 +526,8 @@ def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
     return added
 
 
-def reconcile_from_receipt(runs: list[dict]) -> int:
+def reconcile_from_receipt(runs: list[dict],
+                           verified_legs: "Counter | None" = None) -> int:
     """Rebuild a strategy run's timeline from its SDK receipt breakdown.
 
     PURE — mutates `runs` in place; returns the count reconciled. The
@@ -501,7 +552,7 @@ def reconcile_from_receipt(runs: list[dict]) -> int:
             continue
 
         cap = _dec(run.get("cap_usdc"))
-        run.update(_run_view_from_breakdown(breakdown, cap))
+        run.update(_run_view_from_breakdown(breakdown, cap, verified_legs))
         run["reconciled_from_receipt"] = True
         reconciled += 1
     return reconciled
@@ -509,15 +560,27 @@ def reconcile_from_receipt(runs: list[dict]) -> int:
 
 def _recompute_totals(data: dict) -> None:
     """Recompute top-level totals after reconciliation so /ledger.json's headline
-    numbers match the (possibly reconciled) per-run spend. PURE; mutates `data`."""
+    numbers match the (possibly reconciled) per-run spend. PURE; mutates `data`.
+
+    AGE-63: also splits the headline spend into on-chain-verified vs
+    agent-attested so a consumer can't read the total as all-verified. Runs
+    with no receipt-derived view are fully on-chain (from payment_logs), so
+    their spend counts as verified."""
     runs = data.get("runs") or []
     spent = sum((_dec(r.get("spent_usdc")) for r in runs), Decimal("0"))
+    attested = sum(
+        (_dec(r.get("attested_spent_usdc")) for r in runs
+         if r.get("attested_spent_usdc") is not None),
+        Decimal("0"),
+    )
     data["totals"] = {
         **data.get("totals", {}),
         "runs": len(runs),
         "paid_calls": sum(int(r.get("paid_count") or 0) for r in runs),
         "free_calls": sum(int(r.get("free_count") or 0) for r in runs),
         "spent_usdc": f"{spent:.2f}",
+        "verified_spent_usdc": f"{(spent - attested):.2f}",
+        "attested_spent_usdc": f"{attested:.2f}",
     }
 
 
@@ -528,11 +591,16 @@ async def _fetch_flagship_rows() -> list[dict]:
     addrs = _flagship_addresses()
     # Case-insensitive OR over the allowlist; PostgREST `or=(...)` syntax.
     or_clause = "(" + ",".join(f"agent_address.ilike.{a}" for a in addrs) + ")"
+    # AGE-62: order DESCending so the 2000-row cap keeps the NEWEST runs, not the
+    # oldest. With `created_at.asc + limit`, once the flagship crossed 2000 rows
+    # (~2 months at 30/day) the cap returned the oldest 2000 and new runs silently
+    # stopped appearing on /ledger. We re-sort ascending in Python below so
+    # group_runs (which clusters in chronological order) is unaffected.
     params = {
         "select": "created_at,tool_name,network,amount_usdc,state,tx_hash,agent_address",
         "state": "eq.payment_done",
         "or": or_clause,
-        "order": "created_at.asc",
+        "order": "created_at.desc",
         "limit": "2000",
     }
     try:
@@ -545,7 +613,11 @@ async def _fetch_flagship_rows() -> list[dict]:
         if resp.status_code != 200:
             logger.error(f"ledger fetch error: HTTP {resp.status_code} {resp.text[:200]}")
             return []
-        return resp.json()
+        rows = resp.json()
+        # Newest-2000 came back newest-first; hand downstream the chronological
+        # order it expects.
+        rows.sort(key=lambda r: r.get("created_at") or "")
+        return rows
     except Exception as e:
         logger.error(f"ledger fetch failure: {e}")
         return []
@@ -560,13 +632,27 @@ async def ledger_json():
     data = group_runs(rows, run_cap=settings.LEDGER_RUN_CAP_USDC)
     metas = await fetch_flagship_runs()
     data["runs_with_reasoning"] = attach_reasoning(data["runs"], metas)
+    # AGE-63: the authoritative, CONSUMABLE multiset of legs AgentPay actually
+    # settled through the gateway — keyed on (tx_hash_lower, amount). Receipt-
+    # derived views (reconcile/synthesize) match each paid leg against this and
+    # consume the match, so agent-posted hashes are only shown as on-chain-
+    # verified when a real settlement of that exact amount backs them, and a
+    # single real settlement can't be reused across legs to inflate "verified"
+    # spend. A holder of FLAGSHIP_INGEST_SECRET can no longer publish a
+    # fabricated (or hash-reused) leg as a "verifiable on-chain receipt".
+    verified_legs = Counter(
+        (str(r["tx_hash"]).lower(), _money_to_dec(r.get("amount_usdc")))
+        for r in rows if r.get("tx_hash")
+    )
     # Reconcile off-gateway (e.g. direct CMC x402) spend into strategy-run
     # timelines from the authoritative SDK receipt, and synthesize runs that
     # never touched payment_logs at all (the prober's probe_sweeps pay sellers
-    # directly), then refresh headline totals.
-    data["runs_reconciled"] = reconcile_from_receipt(data["runs"])
+    # directly), then refresh headline totals. Same Counter flows through both
+    # so a match consumed by one can't be re-counted by the other.
+    data["runs_reconciled"] = reconcile_from_receipt(data["runs"], verified_legs)
     data["runs_synthesized"] = synthesize_offgateway_runs(
-        data["runs"], metas, run_cap=settings.LEDGER_RUN_CAP_USDC)
+        data["runs"], metas, run_cap=settings.LEDGER_RUN_CAP_USDC,
+        verified_legs=verified_legs)
     if data["runs_reconciled"] or data["runs_synthesized"]:
         _recompute_totals(data)
     addrs = _flagship_addresses()
@@ -599,7 +685,15 @@ async def flagship_ingest(request: Request,
     secret = settings.FLAGSHIP_INGEST_SECRET
     if not secret:
         raise HTTPException(status_code=404, detail="Not found")
-    if not (x_flagship_secret and hmac.compare_digest(x_flagship_secret, secret)):
+    # Compare bytes inside try/except so a non-latin-1 header is a clean 401,
+    # not a TypeError 500 (also closes the AGE-75 roll-up item for this route).
+    try:
+        authorized = bool(x_flagship_secret) and hmac.compare_digest(
+            x_flagship_secret.encode(), secret.encode()
+        )
+    except Exception:
+        authorized = False
+    if not authorized:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         payload = await request.json()
@@ -701,6 +795,9 @@ _LEDGER_HTML = r"""<!doctype html>
   .tcost.paid{background:rgba(79,124,255,.14);color:var(--base)}
   .tbud{flex:none;color:var(--mut);font-size:11.5px;min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
   .tlink{flex:none;font-size:11px}
+  .tatt{flex:none;font-size:9.5px;border-radius:5px;padding:1px 6px;background:#241f14;color:#d8a24a;border:1px solid #3a3020;letter-spacing:.02em;cursor:help}
+  .attnote{font-size:11px;color:var(--mut);margin:2px 0 8px;line-height:1.5}
+  .attnote .tatt{cursor:default}
   .verds{margin:2px 0}
   .vd{font-size:12.5px;margin:5px 0;color:var(--fg)}
   .verd{font-size:10px;border-radius:5px;padding:1px 7px;font-weight:700;letter-spacing:.03em}
@@ -804,18 +901,30 @@ function planStep(rz, run){
 function execStep(run){
   const items=(run.timeline||[]).map(s=>{
     const cost = s.kind==="paid"? money(s.cost_usdc) : "free";
-    const link = (s.kind==="paid"&&s.explorer_url)
-      ? `<a class="tlink" href="${esc(s.explorer_url)}" target="_blank" rel="noopener">tx ↗</a>` : "";
+    // AGE-63: only an on-chain-verified leg gets the explorer link; an
+    // agent-attested leg (off-gateway or unverifiable) is labelled as such
+    // instead of being dressed up as a checked on-chain receipt.
+    let mark = "";
+    if(s.kind==="paid"){
+      if(s.verification==="agent_attested"){
+        mark = `<span class="tatt" title="Reported by the agent's signed receipt; not settled through AgentPay's gateway, so not independently verified here">agent-attested</span>`;
+      } else if(s.explorer_url){
+        mark = `<a class="tlink" href="${esc(s.explorer_url)}" target="_blank" rel="noopener">tx ↗</a>`;
+      }
+    }
     return `<li>
       <span class="tn">${s.step}</span>
       <div class="tlmain"><span class="tpurpose">${esc(s.purpose)}</span><span class="ttool">${esc(s.tool)}</span></div>
       <span class="tcost ${esc(s.kind)}">${esc(cost)}</span>
       <span class="tbud">${money(s.remaining_usdc)} left</span>
-      ${link}</li>`;
+      ${mark}</li>`;
   }).join("");
   if(!items) return "";
+  const note = run.has_attested_spend
+    ? `<div class="attnote">Some legs in this run settled directly between the agent and the seller (off-gateway), so AgentPay can't independently verify them — they're marked <span class="tatt">agent-attested</span>. On-chain legs link to a block explorer.</div>`
+    : "";
   return `<div class="dstep"><div class="dhead"><span class="dnum">2</span> Spend under the cap — step by step</div>
-    <ul class="tl">${items}</ul></div>`;
+    ${note}<ul class="tl">${items}</ul></div>`;
 }
 
 // ④ the decision the spend bought
