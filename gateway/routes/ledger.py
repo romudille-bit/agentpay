@@ -548,6 +548,57 @@ def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
     return added
 
 
+def _run_keeps_payment_logs_view(run: dict) -> bool:
+    """True if this run will NOT be rebuilt by reconcile_from_receipt — the
+    single predicate shared by reconcile and preconsume_rendered_legs (F4)
+    so the two can never disagree about which runs are receipt-derived."""
+    rz = run.get("reasoning") or {}
+    if (rz.get("kind") or "") != "strategy":
+        return True
+    breakdown = (rz.get("receipt") or {}).get("breakdown")
+    return not (isinstance(breakdown, list) and breakdown)
+
+
+def preconsume_rendered_legs(runs: list[dict],
+                             verified_legs: "Counter | None") -> int:
+    """F4 (2026-07-20): consume from `verified_legs` every settlement already
+    rendered by a run that KEEPS its payment_logs view.
+
+    The Counter is seeded from *every* flagship payment_logs leg, but only
+    receipt-derived views (reconcile/synthesize) consumed from it — legs
+    shown in ordinary runs never did. A holder of FLAGSHIP_INGEST_SECRET
+    could therefore post a fabricated receipt whose leg reuses a real run's
+    public tx_hash + amount: it rendered verification="onchain" with an
+    explorer link, and _recompute_totals counted that one settlement as
+    verified spend twice. Consuming the ordinary runs' legs FIRST means a
+    settlement already displayed on the ledger can't be re-credited to an
+    agent-posted receipt. PURE apart from mutating the Counter; returns the
+    number of legs consumed."""
+    if not verified_legs:
+        return 0
+    # tx → candidate keys. Amounts in run paid_calls are display-formatted
+    # ("%.2f" — a $0.001 leg reads "0.00"), so match on the hash and consume
+    # the settlement's actual (tx, amount) key. payment_logs tx hashes are
+    # unique per settlement, so a tx maps to one real key (Counter
+    # multiplicity covers pathological duplicates).
+    by_tx: dict[str, list] = {}
+    for key in verified_legs:
+        if verified_legs[key] > 0:
+            by_tx.setdefault(key[0], []).append(key)
+    consumed = 0
+    for run in runs:
+        if not _run_keeps_payment_logs_view(run):
+            continue
+        for p in run.get("paid_calls") or []:
+            tx = str(p.get("tx_hash") or "").lower()
+            for key in by_tx.get(tx, ()):
+                if verified_legs.get(key, 0) > 0:
+                    verified_legs[key] -= 1
+                    consumed += 1
+                    break
+    return consumed
+
+
 def reconcile_from_receipt(runs: list[dict],
                            verified_legs: "Counter | None" = None) -> int:
     """Rebuild a strategy run's timeline from its SDK receipt breakdown.
@@ -566,12 +617,10 @@ def reconcile_from_receipt(runs: list[dict],
     """
     reconciled = 0
     for run in runs:
-        rz = run.get("reasoning") or {}
-        if (rz.get("kind") or "") != "strategy":
+        # F4: predicate shared with preconsume_rendered_legs — keep in sync.
+        if _run_keeps_payment_logs_view(run):
             continue
-        breakdown = (rz.get("receipt") or {}).get("breakdown")
-        if not isinstance(breakdown, list) or not breakdown:
-            continue
+        breakdown = ((run.get("reasoning") or {}).get("receipt") or {}).get("breakdown")
 
         cap = _dec(run.get("cap_usdc"))
         run.update(_run_view_from_breakdown(breakdown, cap, verified_legs))
@@ -687,6 +736,11 @@ async def ledger_json():
         (str(r["tx_hash"]).lower(), _money_to_dec(r.get("amount_usdc")))
         for r in rows if r.get("tx_hash")
     )
+    # F4 (2026-07-20): settlements already rendered by ordinary
+    # (non-reconciled) payment_logs runs are consumed FIRST, so a fabricated
+    # receipt reusing a real run's public tx_hash can't get that settlement
+    # credited as "onchain" verified spend a second time.
+    preconsume_rendered_legs(data["runs"], verified_legs)
     # Reconcile off-gateway (e.g. direct CMC x402) spend into strategy-run
     # timelines from the authoritative SDK receipt, and synthesize runs that
     # never touched payment_logs at all (the prober's probe_sweeps pay sellers

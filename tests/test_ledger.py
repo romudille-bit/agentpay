@@ -669,3 +669,75 @@ async def test_insert_flagship_run_no_run_at_skips_existence_check(monkeypatch):
 
     assert ok is True
     assert gets == []
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# F4 (follow-up review 2026-07-20): cross-view hash reuse must not double-count
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_preconsume_blocks_cross_view_hash_reuse():
+    """The verified_legs Counter is seeded from EVERY flagship payment_logs
+    leg, but legs rendered in ordinary (non-reconciled) runs were never
+    consumed from it. A holder of FLAGSHIP_INGEST_SECRET could post a
+    fabricated receipt reusing a real run's public tx_hash + amount and get
+    that one settlement rendered "onchain" (explorer link) and counted as
+    verified spend twice. preconsume_rendered_legs consumes the ordinary
+    runs' legs first, so the reused hash stays agent_attested."""
+    from collections import Counter
+    rows = [
+        _paid("2026-06-15T09:00:00+00:00", "0xREAL"),        # ordinary run
+        _strat_paid("2026-06-15T15:00:00+00:00", "0xGATE"),  # strategy run (6h later)
+    ]
+    out = ledger.group_runs(rows, run_cap="0.25")
+    assert len(out["runs"]) == 2
+
+    meta = {
+        "run_at": "2026-06-15T15:00:00+00:00",
+        "objective": {"kind": "strategy"},
+        "receipt": {"breakdown": [
+            {"tool": "verified_route", "cost": "$0.010", "tx_hash": "0xGATE",
+             "network": "eip155:8453"},
+            # The attack: reuse the ordinary run's public hash + real amount.
+            {"tool": "verified_route", "cost": "$0.010", "tx_hash": "0xREAL",
+             "network": "eip155:8453"},
+        ]},
+    }
+    assert ledger.attach_reasoning(out["runs"], [meta]) == 1
+
+    verified_legs = Counter({("0xreal", Decimal("0.01")): 1,
+                             ("0xgate", Decimal("0.01")): 1})
+    # Mirrors ledger_json order: preconsume, then reconcile.
+    assert ledger.preconsume_rendered_legs(out["runs"], verified_legs) == 1
+    assert ledger.reconcile_from_receipt(out["runs"], verified_legs) == 1
+
+    strat = next(r for r in out["runs"] if r.get("reconciled_from_receipt"))
+    verifs = {s["tx_hash"]: s["verification"]
+              for s in strat["timeline"] if s.get("kind") == "paid"}
+    # The strategy run's own gateway leg is still credited...
+    assert verifs["0xGATE"] == "onchain"
+    # ...but the settlement already displayed by the ordinary run is not
+    # credited a second time.
+    assert verifs["0xREAL"] == "agent_attested"
+
+
+def test_preconsume_leaves_reconciled_runs_legs_alone():
+    """A strategy run's OWN payment_logs legs must stay in the Counter so
+    its receipt legs can still match them — preconsume only consumes for
+    runs that keep the payment_logs view."""
+    from collections import Counter
+    rows = [_strat_paid("2026-06-15T15:00:00+00:00", "0xGATE")]
+    out = ledger.group_runs(rows, run_cap="0.25")
+    meta = {
+        "run_at": "2026-06-15T15:00:00+00:00",
+        "objective": {"kind": "strategy"},
+        "receipt": {"breakdown": [
+            {"tool": "verified_route", "cost": "$0.010", "tx_hash": "0xGATE",
+             "network": "eip155:8453"},
+        ]},
+    }
+    assert ledger.attach_reasoning(out["runs"], [meta]) == 1
+    verified_legs = Counter({("0xgate", Decimal("0.01")): 1})
+    assert ledger.preconsume_rendered_legs(out["runs"], verified_legs) == 0
+    assert ledger.reconcile_from_receipt(out["runs"], verified_legs) == 1
+    leg = out["runs"][0]["timeline"][0]
+    assert leg["verification"] == "onchain"
