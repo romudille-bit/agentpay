@@ -39,6 +39,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from gateway._limiter import limiter
 from gateway.config import settings
 from gateway.services.supabase import (
     fetch_flagship_runs,
@@ -710,7 +711,8 @@ def _invalidate_ledger_cache() -> None:
 
 
 @router.get("/ledger.json", response_class=JSONResponse)
-async def ledger_json():
+@limiter.limit("60/minute")
+async def ledger_json(request: Request):
     """Machine-readable flagship run history."""
     if not settings.LEDGER_ENABLED:
         raise HTTPException(status_code=404, detail="Not found")
@@ -776,6 +778,8 @@ async def ledger_json():
 
 
 @router.post("/v1/flagship/run")
+@limiter.limit("10/minute")   # follow-up low 2026-07-20: the 401 path let the
+                              # ingest secret be brute-forced at line rate
 async def flagship_ingest(request: Request,
                           x_flagship_secret: str | None = Header(default=None)):
     """Ingest a flagship run summary (plan, regime, verdicts, receipt, note).

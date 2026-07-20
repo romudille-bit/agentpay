@@ -597,8 +597,12 @@ def _endpoint_is_safe(url: str) -> tuple[bool, str]:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             return False, "endpoint resolved to an unparseable address"
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
+        # F5 (2026-07-20): `not is_global` instead of enumerating flags — the
+        # flag list missed 100.64.0.0/10 (CGNAT, is_private=False), which is
+        # the very range Railway's internal fabric rides on. is_global is
+        # False for every special-purpose range (private, loopback,
+        # link-local, CGNAT, reserved, multicast, unspecified, ...).
+        if not ip.is_global:
             return False, f"endpoint resolves to a non-public address ({ip})"
     return True, "ok"
 

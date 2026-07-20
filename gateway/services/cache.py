@@ -15,6 +15,7 @@ single-ttl cachetools.TTLCache doesn't fit our per-key TTLs, hence the small
 custom bound.)
 """
 
+import itertools
 import time as _time
 
 # key → (expires_at_monotonic, data). Insertion order is preserved by dict,
@@ -63,7 +64,10 @@ def _evict_one() -> None:
     oldest-inserted. O(1) amortised."""
     now = _time.monotonic()
     # Peek a handful of the oldest entries for an already-expired victim.
-    for k in list(_cache.keys())[:8]:
+    # islice, not list(keys())[:8] — the latter materialised all 5000 keys
+    # per eviction at capacity, defeating the intended O(1) (follow-up
+    # review low, 2026-07-20).
+    for k in list(itertools.islice(_cache, 8)):
         if _cache[k][0] <= now:
             _cache.pop(k, None)
             return

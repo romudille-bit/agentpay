@@ -1473,3 +1473,28 @@ class TestGetProbeBooksNoPendingRow:
         r = client.post("/tools/token_price/call", json={"parameters": {}})
         assert r.status_code == 402
         assert len(supabase_lifecycle_capture["insert"]) == 1
+
+
+class TestEndpointSafetyCgnat:
+    """F5 (follow-up review 2026-07-20): the flag enumeration missed
+    100.64.0.0/10 (CGNAT, is_private=False) — the range Railway's own
+    internal fabric rides on. The guard now requires ip.is_global."""
+
+    def test_blocks_cgnat_range(self):
+        from gateway.routes.tools import _endpoint_is_safe
+        assert _endpoint_is_safe("https://100.64.0.1/x")[0] is False
+        assert _endpoint_is_safe("https://100.127.255.254/x")[0] is False
+
+    def test_hostname_resolving_cgnat_is_blocked(self, monkeypatch):
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(
+            rt.socket, "getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("100.64.0.7", 443))],
+        )
+        ok, why = rt._endpoint_is_safe("https://looks-public.example/tool")
+        assert ok is False
+
+    def test_public_still_allowed(self):
+        from gateway.routes.tools import _endpoint_is_safe
+        ok, why = _endpoint_is_safe("https://8.8.8.8/tool")
+        assert ok is True, why
