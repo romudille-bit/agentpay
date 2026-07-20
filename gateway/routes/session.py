@@ -399,8 +399,11 @@ async def create_session(
             parsed = parse_payment_header(x_payment) or {}
             rejected_pid = parsed.get("id")
             if rejected_pid:
+                # F3 (2026-07-20): header-supplied pid — guard against
+                # clobbering a terminal row (see routes/tools.py).
                 await update_payment_log_state(
                     rejected_pid, "rejected", error_reason=auth["reason"],
+                    expected_state=("pending", "verified"),
                 )
             return JSONResponse(
                 status_code=402,

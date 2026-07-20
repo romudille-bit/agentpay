@@ -1416,3 +1416,60 @@ class TestPaidResponseUpsell:
         rel = r.json()["related"]
         names = {t["tool"] for t in rel["paid_tools"]}
         assert names == {"verified_route", "pre_trade_check"}
+
+
+# ── F3 + F6 (follow-up review 2026-07-20): KPI-integrity guards ──────────────
+
+class TestRejectedPatchGuarded:
+    """F3: the 'rejected' PATCH is keyed on the CALLER'S header-supplied
+    payment id. Without an expected_state filter, anyone replaying
+    X-Payment: tx_hash=garbage,from=X,id=<pid> for a completed payment
+    flips that row payment_done → rejected with attacker-chosen
+    error_reason — the same clobber class the intermediate 'verified'
+    PATCH was guarded against."""
+
+    def test_rejected_patch_carries_expected_state_guard(
+        self, client, supabase_lifecycle_capture, patch_route_verify
+    ):
+        patch_route_verify("replay")
+        first = client.post("/tools/token_price/call", json={"parameters": {}})
+        payment_id = first.json()["payment_id"]
+
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {}},
+            headers={
+                "X-Payment": f"tx_hash=replayhash,from=GAGENT,id={payment_id}",
+                "X-Agent-Address": "GAGENT",
+            },
+        )
+        assert r.status_code == 402
+        rejected = [u for u in supabase_lifecycle_capture["update"]
+                    if u["state"] == "rejected"]
+        assert len(rejected) == 1
+        # The guard: only a non-terminal row may be flipped to rejected.
+        assert rejected[0].get("expected_state") == ("pending", "verified")
+
+
+class TestGetProbeBooksNoPendingRow:
+    """F6: GET /tools/{name}/call is the discovery-probe path (x402scout
+    health-checks every 15 min). It must issue the 402 WITHOUT the
+    fail-closed pending INSERT — mirroring session_create_probe —
+    or every paid tool accrues perpetual phantom 402-abandonments
+    (the AGE-52 pollution class) and a Supabase blip 503s crawlers."""
+
+    def test_get_probe_skips_pending_insert(
+        self, client, supabase_lifecycle_capture
+    ):
+        r = client.get("/tools/token_price/call")
+        assert r.status_code == 402
+        assert r.json()["payment_id"]                      # challenge intact
+        assert supabase_lifecycle_capture["insert"] == []  # no phantom row
+
+    def test_post_challenge_still_books_pending_row(
+        self, client, supabase_lifecycle_capture
+    ):
+        """Real callers POST — the fail-closed INSERT must be unchanged."""
+        r = client.post("/tools/token_price/call", json={"parameters": {}})
+        assert r.status_code == 402
+        assert len(supabase_lifecycle_capture["insert"]) == 1

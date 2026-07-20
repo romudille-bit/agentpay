@@ -644,7 +644,7 @@ async def update_payment_log_state(
     payment_id: str,
     state: str,
     *,
-    expected_state: Optional[str] = None,
+    expected_state: Optional[str | tuple[str, ...] | list[str]] = None,
     clear_fields: Optional[list[str]] = None,
     **fields,
 ) -> None:
@@ -658,13 +658,19 @@ async def update_payment_log_state(
         error_reason              — on failures
         client_ip, user_agent     — populate late if they weren't at insert time
 
-    expected_state: optional WHERE filter. When provided, the
-    PATCH only lands if the row's current state matches. This is the
-    fix for the race where a fire-and-forget intermediate PATCH
-    (e.g. 'verified') could arrive AFTER the awaited terminal PATCH
-    ('payment_done') and overwrite it. With expected_state='pending'
-    on the 'verified' PATCH, the racing-late case becomes a silent
-    no-op (WHERE doesn't match) instead of corrupting the row.
+    expected_state: optional WHERE filter — a single state or a
+    tuple/list of acceptable states. When provided, the PATCH only
+    lands if the row's current state matches. This is the fix for the
+    race where a fire-and-forget intermediate PATCH (e.g. 'verified')
+    could arrive AFTER the awaited terminal PATCH ('payment_done') and
+    overwrite it. With expected_state='pending' on the 'verified'
+    PATCH, the racing-late case becomes a silent no-op (WHERE doesn't
+    match) instead of corrupting the row. F3 (2026-07-20): the
+    'rejected' PATCH is keyed on a HEADER-SUPPLIED payment id, so it
+    passes ('pending', 'verified') — otherwise anyone replaying a
+    known pid with a garbage tx_hash could flip a terminal
+    payment_done row to rejected with attacker-chosen error_reason,
+    corrupting the conversion KPIs.
 
     clear_fields: columns to explicitly set to SQL NULL (AGE-73). The
     **fields path skips None so a caller can't accidentally null a column,
@@ -687,7 +693,10 @@ async def update_payment_log_state(
 
     params = {"payment_id": f"eq.{payment_id}"}
     if expected_state is not None:
-        params["state"] = f"eq.{expected_state}"
+        if isinstance(expected_state, (tuple, list, set)):
+            params["state"] = f"in.({','.join(expected_state)})"
+        else:
+            params["state"] = f"eq.{expected_state}"
 
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:

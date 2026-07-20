@@ -635,6 +635,7 @@ async def _run_tool(tool, resolved: str, tool_name: str, parameters: dict):
 async def _issue_402(
     tool, resolved: str, tool_name: str, body: ToolCallRequest,
     request: Request, agent_address: Optional[str], resource_url: str,
+    log_pending: bool = True,
 ) -> JSONResponse:
     """No payment header → issue a 402 challenge with Stellar + Base options.
 
@@ -642,6 +643,13 @@ async def _issue_402(
     lifecycle as $0 payments so every call gets a payment_logs row and a
     receipt. The SDK skips on-chain settlement for $0 and verify_and_fulfill
     authorizes $0 challenges without requiring a tx.
+
+    log_pending=False (F6, 2026-07-20): discovery probes (GET) skip the
+    fail-closed pending INSERT, mirroring session_create_probe. Crawler
+    health checks (x402scout every 15 min) were minting perpetual phantom
+    pending→abandoned rows per paid tool — the same pollution class the
+    AGE-52 conversion diagnosis spent weeks separating from real demand —
+    and a Supabase blip turned crawler probes into 503s.
     """
     agent_short = (agent_address or "unknown")[:8]
     logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=402_challenge")
@@ -662,7 +670,7 @@ async def _issue_402(
     # (x402-v2 doesn't carry the UUID through PAYMENT-SIGNATURE) and this one
     # gets swept to 'abandoned'; the terminal PATCH overwrites the label with
     # the chain that actually settled, so completed rows stay accurate.
-    if sb_enabled():
+    if sb_enabled() and log_pending:
         client_ip  = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
         row_id = await insert_pending_payment_log(
@@ -748,8 +756,13 @@ async def _settle_stellar(
         # UUID to PATCH; the pending row becomes 'abandoned' via the sweep.
         rejected_pid = (parse_payment_header(x_payment) or {}).get("id")
         if rejected_pid:
+            # F3 (2026-07-20): rejected_pid comes from the CALLER'S header —
+            # without the expected_state guard, replaying a known pid with a
+            # garbage tx_hash flips a terminal payment_done row to rejected
+            # (attacker-chosen error_reason), corrupting conversion KPIs.
             await update_payment_log_state(
                 rejected_pid, "rejected", error_reason=auth["reason"],
+                expected_state=("pending", "verified"),
             )
 
         return JSONResponse(
@@ -1070,9 +1083,13 @@ async def call_tool_get(tool_name: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
     if not tool.active:
         raise HTTPException(status_code=503, detail=f"Tool '{tool_name}' is currently unavailable")
+    # F6 (2026-07-20): GET is the discovery-probe path — no pending row, or
+    # x402scout's 15-min health checks mint perpetual phantom
+    # pending→abandoned rows (and a Supabase blip 503s crawler probes).
     return await _issue_402(
         tool, resolved, tool_name, ToolCallRequest(), request,
         None, f"{GATEWAY_URL}/tools/{tool_name}/call",
+        log_pending=False,
     )
 
 

@@ -1107,3 +1107,31 @@ class TestPersistToolRegistration:
         # the disabled short-circuit returns before touching httpx.
         ok = await persist_tool_registration(self._tool())
         assert ok is False
+
+
+class TestExpectedStateTupleFilter:
+    """F3 (2026-07-20): expected_state accepts a tuple/list → PostgREST
+    in.(...) filter, used by the guarded 'rejected' PATCH."""
+
+    @pytest.mark.asyncio
+    async def test_tuple_expected_state_builds_in_filter(self):
+        from urllib.parse import unquote
+        captured = {}
+
+        def capture_request(request):
+            captured["url"] = str(request.url)
+            return httpx.Response(204)
+
+        with respx.mock:
+            respx.patch(f"{SB}/rest/v1/payment_logs").mock(
+                side_effect=capture_request
+            )
+            await update_payment_log_state(
+                "test-uuid", "rejected",
+                expected_state=("pending", "verified"),
+                error_reason="tx not found",
+            )
+
+        url = unquote(captured["url"])
+        assert "payment_id=eq.test-uuid" in url
+        assert "state=in.(pending,verified)" in url
