@@ -1,8 +1,12 @@
 # Stacks sBTC Adapter — Design & Build Checklist
 
-**Status:** scaffold. Skeletons: `agentpay/_stacks_tx.py` (signing lib),
-`gateway/stacks.py` (settlement adapter). Nothing imports them yet — zero
-runtime impact until wired in.
+**Status:** signing lib IMPLEMENTED (AGE-22, 2026-07-20) — `agentpay/_stacks_tx.py`
+is complete and fixture-validated byte-for-byte against @stacks/transactions v7
+(92 tests, `tests/test_stacks_tx.py`; generator `tools/gen_stacks_fixtures.mjs`),
+plus live-validated against the Hiro testnet node (full deserialize, node txid ==
+pre-broadcast `txid_of()`). Still inert: nothing imports it until AGE-25 wires
+`chain="stacks"`. `gateway/stacks.py` (settlement adapter, AGE-23) remains a
+skeleton.
 
 ## Why this document exists
 
