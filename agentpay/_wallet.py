@@ -717,13 +717,48 @@ class Session:
     def _reserve(self, amount) -> bool:
         """AGE-66: atomically check budget and place a hold. True if the hold
         was placed (call may proceed); False if it wouldn't fit. Paired with
-        _release() in a finally after the payment attempt."""
+        _absorb_and_release() in a finally after the payment attempt."""
         amt = Decimal(str(amount))
         with self._lock:
             if (self._spent + self._reserved + amt) > self.max_spend:
                 return False
             self._reserved += amt
             return True
+
+    def _cap_excluding_hold(self, quote, held) -> str:
+        """F1 (2026-07-20): client-side max_spend ceiling for a call whose own
+        budget hold is already placed. remaining_usd() subtracts _reserved
+        INCLUDING this call's hold, so the old cap double-counted it —
+        cap = min(remaining_before − price, 1.05·price) — falsely rejecting
+        any call with remaining < 2× price (exact-fit budgets failed; every
+        session stranded its last call). Add the hold back, under a single
+        lock acquisition so the snapshot is internally consistent.
+
+        Computed AFTER the hold lands, this is race-free w.r.t. this call's
+        own hold (the actual bug). Its residual staleness toward holds placed
+        after the computation is the one any pre-computed ceiling has —
+        bounded by the overpay-tolerance arm and enforced anyway by
+        reserve + absorb."""
+        q = Decimal(str(quote))
+        with self._lock:
+            remaining_excl = max(
+                self.max_spend - self._spent - self._reserved + Decimal(str(held)),
+                Decimal("0"),
+            )
+        return str(min(remaining_excl, q * (Decimal("1") + OVERPAY_TOLERANCE)))
+
+    def _would_exceed_excluding_hold(self, amount_usdc, held) -> bool:
+        """F1 (2026-07-20): like would_exceed(), but ignores `held` — the hold
+        THIS call already placed. Used for the fallback fit check, which runs
+        while the original hold is still reserved; counting it falsely
+        rejected tight-budget fallbacks."""
+        with self._lock:
+            return (
+                self._spent
+                + self._reserved
+                - Decimal(str(held))
+                + Decimal(str(amount_usdc))
+            ) > self.max_spend
 
     def _release(self, amount) -> None:
         """Drop a hold placed by _reserve() (the actual spend is booked
@@ -1350,9 +1385,11 @@ class Session:
         # more than the remaining session budget, and never more than the
         # quoted price plus a small overpay tolerance. The client hard-fails
         # BEFORE paying or signing if the 402 demands more.
-        def _cap_for(quote) -> str:
-            q = Decimal(str(quote))
-            return str(min(self.remaining_usd(), q * (Decimal("1") + OVERPAY_TOLERANCE)))
+        # F1 (2026-07-20): the cap is computed AFTER this call's own hold is
+        # placed, so it must ADD THE HOLD BACK — see _cap_excluding_hold.
+        # (The old remaining_usd()-based cap double-counted the hold: cap =
+        # min(remaining_before − price, 1.05·price), so exact-fit budgets
+        # failed and every session silently stranded its last call.)
 
         # AGE-74: per-tool cap as a would-EXCEED check on the RESOLVED target,
         # not the floor check in _check_call_policies (which only blocks the
@@ -1384,7 +1421,8 @@ class Session:
         try:
             try:
                 result = client.call_tool(
-                    target, params, max_spend=_cap_for(price),
+                    target, params,
+                    max_spend=self._cap_excluding_hold(price, reserved_amt),
                     prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
                 )
             except (PaymentFailed, RefundPending):
@@ -1405,7 +1443,17 @@ class Session:
                     raise
                 category = tool_info.get("category", "data")
                 fallback = self._find_fallback(category=category, exclude=target)
-                if not (fallback and not self.would_exceed(fallback["price_usdc"])):
+                # F1 (2026-07-20): the fit check runs while THIS call's
+                # original hold is still reserved, so it must exclude it —
+                # would_exceed() counts the hold and falsely rejected
+                # tight-budget fallbacks. The _reserve below stays the
+                # authoritative (fail-closed) check.
+                if not (
+                    fallback
+                    and not self._would_exceed_excluding_hold(
+                        fallback["price_usdc"], reserved_amt
+                    )
+                ):
                     raise
                 logger.warning(
                     f"  '{target}' failed pre-payment ({exc}) — trying '{fallback['name']}'"
@@ -1413,6 +1461,10 @@ class Session:
                 # Keep the failed leg's (necessarily $0) entries on the receipt
                 # before the client is replaced — full session visibility.
                 self._absorb_client_log(client, requested=tool_name, target=target)
+                # ...and clear the absorbed entries so the `finally` can't fold
+                # them in a second time if the re-reserve below raises (dup
+                # $0 receipt rows — follow-up review low, 2026-07-20).
+                client.call_log.clear()
                 # Re-point the hold at the fallback price (AGE-66). Zero
                 # reserved_amt the instant the release lands: if the re-reserve
                 # below raises BudgetExceeded, the `finally` must NOT release the
@@ -1432,18 +1484,24 @@ class Session:
                 target = fallback["name"]
                 client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
                 result = client.call_tool(
-                    target, params, max_spend=_cap_for(fallback["price_usdc"]),
+                    target, params,
+                    max_spend=self._cap_excluding_hold(
+                        fallback["price_usdc"], reserved_amt
+                    ),
                     prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
                 )
         finally:
-            # AGE-66: drop the hold — the actual spend is booked below.
-            self._release(reserved_amt)
-            # AGE-54: fold EVERY payment the client made into the session —
-            # success or failure. A broadcast payment (or transmitted signed
-            # auth) whose tool call then failed still burned budget; the old
-            # code only recorded spend on HTTP 200, so a pay-then-fail loop
-            # spent real USDC while remaining() stayed full.
-            self._absorb_client_log(client, requested=tool_name, target=target)
+            # AGE-54 + AGE-66 + F2 (2026-07-20): fold EVERY payment the client
+            # made into the session (success or failure — a broadcast payment
+            # whose tool call then failed still burned budget) AND drop this
+            # call's hold, in ONE locked section. The previous two-step
+            # release-then-absorb left a window where _reserved was already
+            # decremented but _spent not yet incremented, so a concurrent
+            # _reserve saw inflated remaining and could over-commit the budget
+            # by up to one leg price. Mirrors the URL path's _record_spend.
+            self._absorb_and_release(
+                client, requested=tool_name, target=target, held=reserved_amt
+            )
 
         # Settlement chain from the gateway receipt (e.g. 'stellar-mainnet',
         # 'base', or 'free' for $0 tools) — recorded so it shows on the receipt.
@@ -1499,23 +1557,38 @@ class Session:
         payment counts against the cap even when the tool call then failed.
         AGE-66: _spent/_call_log mutations run under the session lock."""
         with self._lock:
-            for e in client.call_log:
-                cost = Decimal(str(e.get("amount_usdc", "0")))
-                self._spent += cost
-                entry: dict = {
-                    "tool":        e.get("tool", target),
-                    "amount_usdc": str(cost),
-                    "tx_hash":     e.get("tx_hash", "") or "",
-                    "network":     e.get("network", "") or "",
-                    "success":     bool(e.get("success")),
-                }
-                if e.get("state"):
-                    entry["state"] = e["state"]
-                if target != requested and entry["tool"] == target:
-                    entry["fallback_for"] = requested
-                self._call_log.append(entry)
-                if entry["success"]:
-                    self._tool_cache.setdefault(entry["tool"], {})["price_usdc"] = str(cost)
+            self._absorb_client_log_locked(client, requested, target)
+
+    def _absorb_and_release(self, client, requested: str, target: str, held) -> None:
+        """F2 (2026-07-20): book the client's spend AND drop this call's
+        budget hold in ONE locked section — mirroring the URL path's
+        _record_spend. Absorb-before-release inside the same lock means no
+        observer can ever see the hold gone while the spend is unbooked
+        (the overspend direction); the momentary spent+held double-count is
+        impossible too, since both mutations commit atomically."""
+        with self._lock:
+            self._absorb_client_log_locked(client, requested, target)
+            self._reserved = max(self._reserved - Decimal(str(held)), Decimal("0"))
+
+    def _absorb_client_log_locked(self, client, requested: str, target: str) -> None:
+        """Core of _absorb_client_log — caller MUST hold self._lock."""
+        for e in client.call_log:
+            cost = Decimal(str(e.get("amount_usdc", "0")))
+            self._spent += cost
+            entry: dict = {
+                "tool":        e.get("tool", target),
+                "amount_usdc": str(cost),
+                "tx_hash":     e.get("tx_hash", "") or "",
+                "network":     e.get("network", "") or "",
+                "success":     bool(e.get("success")),
+            }
+            if e.get("state"):
+                entry["state"] = e["state"]
+            if target != requested and entry["tool"] == target:
+                entry["fallback_for"] = requested
+            self._call_log.append(entry)
+            if entry["success"]:
+                self._tool_cache.setdefault(entry["tool"], {})["price_usdc"] = str(cost)
 
     def summary(self) -> dict:
         return {

@@ -8,6 +8,38 @@ project uses [Semantic Versioning](https://semver.org/).
 
 _Nothing yet._
 
+## [0.3.1] — 2026-07-20
+
+Regression-fix release for the 0.3.0 budget-cap hardening, from the 2026-07-20
+review follow-up (findings F1/F2/F7). No API changes.
+
+### Fixed
+- **Tight budgets no longer fail deterministically** (F1, HIGH — regression
+  introduced by the AGE-53 cap in 0.3.0). The client-side cap was computed
+  *after* this call's own budget hold was placed, and `remaining_usd()`
+  subtracts that hold — so the cap double-counted it:
+  `min(remaining_before − price, 1.05·price)`. Exact-fit budgets
+  (`max_spend == price`) always raised `BudgetExceeded`, and every session
+  silently stranded its last call once remaining < 2× price. The cap now adds
+  the call's own hold back (`_cap_excluding_hold`), computed under a single
+  lock. The fallback fit check likewise no longer counts the original hold
+  (`_would_exceed_excluding_hold`). Regression tests: exact-fit succeeds,
+  last-call-exhausts-budget succeeds, concurrent exact-fit loser still fails
+  closed.
+- **Spend booking and hold release are now one atomic locked section** (F2).
+  The `finally` previously released the hold and absorbed the client log under
+  two separate lock acquisitions; in the gap a concurrent `call()` saw
+  inflated remaining and could over-reserve by up to one leg price. New
+  `_absorb_and_release()` mirrors the URL path's `_record_spend`.
+- **No duplicate receipt rows when a fallback re-reserve fails** (follow-up
+  low). The failed $0 leg was absorbed once before the fallback hold swap and
+  again by the `finally` if the re-reserve raised; the absorbed entries are
+  now cleared from the old client's log.
+- **`agentpay.__version__` now matches the published version** (F7). The
+  0.3.0 wheel self-reported `0.2.7` because only `pyproject.toml` was bumped.
+  Both are now `0.3.1`, and a pre-publish test
+  (`test_version_matches_pyproject`) fails the suite if they ever diverge.
+
 ## [0.3.0] — 2026-07-19
 
 Breaking payment-safety release from the 2026-07 gateway code review. Every fix

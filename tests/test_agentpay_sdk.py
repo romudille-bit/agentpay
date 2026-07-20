@@ -1092,3 +1092,183 @@ class TestKeyParseConstantMessage:
             AgentWallet(secret_key=secret, network="testnet")
         assert secret not in str(ei.value)
         assert "invalid Stellar secret key" in str(ei.value)
+
+
+# ── F1 (2026-07-20): the client-side cap must EXCLUDE this call's own hold ────
+
+class TestCapExcludesOwnHold:
+    """Follow-up review F1: _reserve() placed the hold before the cap was
+    computed, and the cap used remaining_usd() which subtracts that very
+    hold — so cap = min(remaining_before − price, 1.05·price). Exact-fit
+    budgets failed deterministically and every session silently stranded
+    its last call (regression shipped in 0.3.0, fixed in 0.3.1)."""
+
+    def _mock_paid_call(self, url, pid, price="0.001"):
+        return [
+            httpx.Response(402, json=dict(VALID_402, payment_id=pid,
+                                          amount_usdc=price)),
+            httpx.Response(200, json={
+                "tool": "token_price", "result": {"ok": True},
+                "payment": {"amount_usdc": price, "tx_hash": "t",
+                            "network": "stellar-testnet"},
+            }),
+        ]
+
+    def test_exact_fit_budget_succeeds(self):
+        """max_spend == price: the 0.3.0 cap was 0 → BudgetExceeded('402
+        demands 0.001 … exceeds cap 0'). Must succeed."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.001")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.post(TOOL_URL).mock(
+                side_effect=self._mock_paid_call(TOOL_URL, "exact-fit-1"))
+            result = s.call("token_price", {"symbol": "ETH"})
+        assert result["result"]["ok"] is True
+        assert w.pay.call_count == 1
+        assert s.spent_usd() == Decimal("0.001")
+        assert s.remaining_usd() == Decimal("0")
+
+    def test_last_call_exhausts_budget_succeeds(self):
+        """A $0.003 session making three $0.001 calls must land all three.
+        Under 0.3.0 the third call (remaining < 2× price) was falsely
+        rejected — utilization silently capped at max_spend − price."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.003")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            calls = (self._mock_paid_call(TOOL_URL, "seq-1")
+                     + self._mock_paid_call(TOOL_URL, "seq-2")
+                     + self._mock_paid_call(TOOL_URL, "seq-3"))
+            respx.post(TOOL_URL).mock(side_effect=calls)
+            for _ in range(3):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 3
+        assert s.spent_usd() == Decimal("0.003")
+        assert s.remaining_usd() == Decimal("0")
+
+    def test_concurrent_exact_fit_loser_fails_closed(self):
+        """The fix must NOT weaken AGE-66: with another call's hold in
+        flight consuming the whole budget, a second exact-fit call still
+        fails closed — no payment, nothing recorded."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.001")
+        # Simulate a concurrent in-flight call holding the entire budget.
+        assert s._reserve("0.001") is True
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json={"tools": [
+                    {"name": "token_price", "price_usdc": "0.001",
+                     "category": "data", "active": True}]}))
+            with pytest.raises(BudgetExceeded):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 0
+        assert s.spent_usd() == Decimal("0")
+        s._release("0.001")
+
+    def test_tight_budget_fallback_succeeds(self):
+        """F1 sibling: the fallback fit check ran while the original hold
+        was still reserved, so exact-fit fallbacks were falsely rejected."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.001")
+        fallback_url = f"{GATEWAY}/tools/gas_tracker/call"
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(503, text="down"))   # pre-payment
+            respx.post(fallback_url).mock(side_effect=[
+                httpx.Response(402, json=dict(VALID_402, payment_id="fb-f1")),
+                httpx.Response(200, json={
+                    "tool": "gas_tracker", "result": {"gwei": 9},
+                    "payment": {"amount_usdc": "0.001", "tx_hash": "t"},
+                }),
+            ])
+            result = s.call("token_price", {"symbol": "ETH"})
+        assert result["result"]["gwei"] == 9
+        assert s.spent_usd() == Decimal("0.001")
+        assert s.summary()["breakdown"][-1]["fallback_for"] == "token_price"
+
+
+# ── F2 (2026-07-20): spend booked and hold dropped in ONE locked section ──────
+
+class TestAbsorbAndReleaseAtomic:
+    """Follow-up review F2: release-then-absorb was two lock acquisitions;
+    in the gap _reserved was decremented but _spent not yet incremented, so
+    a concurrent _reserve could over-commit by a leg price."""
+
+    def test_absorb_and_release_books_and_drops_together(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.10")
+        assert s._reserve("0.001") is True
+        fake_client = MagicMock()
+        fake_client.call_log = [{
+            "tool": "token_price", "amount_usdc": "0.001",
+            "tx_hash": "t", "network": "stellar-testnet", "success": True,
+        }]
+        s._absorb_and_release(fake_client, requested="token_price",
+                              target="token_price", held="0.001")
+        assert s.spent_usd() == Decimal("0.001")
+        assert s._reserved == Decimal("0")
+        # Budget headroom is exact — no double-count, no leak.
+        assert s.remaining_usd() == Decimal("0.099")
+
+    def test_no_duplicate_receipt_rows_when_re_reserve_fails(self, monkeypatch):
+        """Low from the follow-up review: if the fallback re-reserve raised,
+        the finally re-absorbed the failed $0 leg → duplicate receipt rows."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        fallback_url = f"{GATEWAY}/tools/gas_tracker/call"
+        real_reserve = s._reserve
+        calls = {"n": 0}
+
+        def flaky_reserve(amount):
+            calls["n"] += 1
+            if calls["n"] == 2:          # the fallback re-reserve
+                return False
+            return real_reserve(amount)
+
+        monkeypatch.setattr(s, "_reserve", flaky_reserve)
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(503, text="down"))   # pre-payment
+            respx.post(fallback_url).mock(
+                return_value=httpx.Response(402, json=VALID_402))
+            with pytest.raises(BudgetExceeded, match="no longer fits"):
+                s.call("token_price", {"symbol": "ETH"})
+        rows = s.summary()["breakdown"]
+        assert len(rows) == len({(r["tool"], r["amount_usdc"], r["tx_hash"],
+                                  r.get("state", "")) for r in rows}), (
+            f"duplicate receipt rows: {rows}")
+        assert s.spent_usd() == Decimal("0")
+        assert s._reserved == Decimal("0")
+
+
+# ── F7 (2026-07-20): __version__ must match pyproject — pre-publish gate ──────
+
+class TestVersionMatchesPyproject:
+    """The 0.3.0 wheel shipped self-reporting 0.2.7 because only pyproject
+    was bumped. This test is the release gate: bump BOTH or it fails."""
+
+    def test_version_matches_pyproject(self):
+        import pathlib
+        import re
+
+        import agentpay
+
+        pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+        m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), re.M)
+        assert m, "could not find version in pyproject.toml"
+        assert agentpay.__version__ == m.group(1), (
+            f"agentpay.__version__ ({agentpay.__version__}) != pyproject "
+            f"({m.group(1)}) — bump both before publishing (F7)")
