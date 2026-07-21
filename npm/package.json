@@ -32,6 +32,7 @@
   ],
   "author": "romudille",
   "license": "MIT",
+  "homepage": "https://agentpay.tools",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/romudille-bit/agentpay.git"

@@ -37,9 +37,10 @@ base = [
 ]
 
 [project.urls]
-Homepage    = "https://github.com/romudille-bit/agentpay"
-Repository  = "https://github.com/romudille-bit/agentpay"
-Issues      = "https://github.com/romudille-bit/agentpay/issues"
+Homepage      = "https://agentpay.tools"
+Documentation = "https://agentpay.tools/llms.txt"
+Repository    = "https://github.com/romudille-bit/agentpay"
+Issues        = "https://github.com/romudille-bit/agentpay/issues"
 
 [tool.setuptools.packages.find]
 include = ["agentpay*"]
