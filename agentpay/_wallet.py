@@ -642,6 +642,11 @@ class AgentWallet:
             "x402Version": 2,
             "scheme": stacks_opt.get("scheme", "exact"),
             "network": expected_caip2,
+            # The gateway binds verification to this challenge id: it looks up
+            # the pending challenge, then requires the memo INSIDE the signed
+            # tx to match it (the memo is the cryptographic binding; this
+            # field is the lookup key). docs/stacks-adapter.md §Wire contract.
+            "payment_id": payment_id,
             "payload": {"signedTransaction": signed.hex(), "txid": txid},
             "accepted": {
                 "scheme": stacks_opt.get("scheme", "exact"),

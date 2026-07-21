@@ -19,6 +19,7 @@ four stages, each its own function:
 """
 
 import asyncio
+import time
 import hmac
 import ipaddress
 import logging
@@ -37,11 +38,13 @@ import registry
 from decimal import Decimal
 
 from gateway import base as base_pay
+from gateway import stacks as stacks_pay
 from gateway._limiter import limiter, wallet_or_ip
 from gateway.config import GATEWAY_URL, offered_pending_network, settings
 from gateway.services.supabase import (
     correlate_pending_challenge,
     insert_pending_payment_log,
+    record_payment_id,
     persist_tool_registration,
     record_tx_hash,
     sb_enabled,
@@ -50,6 +53,7 @@ from gateway.services.supabase import (
 from gateway.services.tools_runtime import real_tool_response
 from gateway.services.transaction_log import append_transaction
 from gateway.x402 import (
+    _lookup_challenge,
     build_402_headers,
     issue_payment_challenge,
     parse_payment_header,
@@ -731,6 +735,15 @@ async def _issue_402(
                 "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
             },
             **({"base": base_option} if base_option else {}),
+            # Stacks/sBTC (AGE-23): present only when the gateway is
+            # configured AND the tool is priced (never for $0 tools) AND a
+            # USD→sats quote is available. Wire contract:
+            # docs/stacks-adapter.md.
+            **({"stacks": stacks_option} if (
+                stacks_option := stacks_pay.build_stacks_402_option(
+                    tool.price_usdc, resource_url,
+                )
+            ) else {}),
         },
     }
 
@@ -828,6 +841,126 @@ async def _settle_base_path(
         "tx_hash":    result["tx_hash"],
         "payer":      result["payer"],
         "network":    result["network"],
+    }
+
+
+async def _settle_stacks_path(
+    tool, tool_name: str, payment_signature: str, payload: dict,
+) -> Union[dict, JSONResponse]:
+    """Stacks payment-signature payload → verify, consume, broadcast, confirm
+    (AGE-23). `payload` is the already-decoded payment-signature JSON (the
+    dispatcher decoded it to route on network="stacks:…").
+
+    Returns the auth dict on success, or a JSONResponse on failure. The
+    response bodies carry the payment_status the SDK's retry logic keys on
+    (docs/stacks-adapter.md §Wire contract):
+      - "rejected"  → nothing broadcast/settleable; SDK zeroes the leg and
+        re-signs ONCE on a nonce conflict.
+      - "uncertain" → the tx may be live; SDK keeps the spend recorded.
+    """
+    if not stacks_pay.stacks_configured():
+        raise HTTPException(status_code=503,
+                            detail="Stacks payment not configured on this gateway")
+
+    def _reject(reason: str, status: int = 402) -> JSONResponse:
+        return JSONResponse(
+            status_code=status,
+            content={"error": "Stacks payment settlement failed",
+                     "payment_status": "rejected", "error_reason": reason},
+        )
+
+    # ── payment_id binding: the payload names the challenge; the memo inside
+    # the signed tx must match it (verified below), and the challenge fixes
+    # the expected amount. Missing/unknown id ⇒ nothing to verify against.
+    payment_id = str(payload.get("payment_id") or "")
+    if not payment_id:
+        return _reject("missing_payment_id")
+    challenge = await _lookup_challenge(payment_id)
+    if challenge is None:
+        return _reject("unknown_or_expired_payment_id")
+    if challenge.get("expires_at") and challenge["expires_at"] < time.time():
+        return _reject("challenge_expired")
+    if challenge.get("tool_name") and challenge["tool_name"] not in (tool.name, tool_name):
+        return _reject("challenge_tool_mismatch")
+
+    expected_sats = stacks_pay.stacks_quote_sats(challenge.get("amount_usdc")
+                                                 or tool.price_usdc)
+    if expected_sats is None:
+        raise HTTPException(status_code=503,
+                            detail="Stacks pricing unavailable on this gateway")
+
+    logger.info(f"[PAYMENT] tool={tool_name} network=stacks verifying "
+                f"payment-signature (payment {payment_id[:8]}…)")
+    auth = await stacks_pay.verify_stacks_payment(
+        payment_signature,
+        expected_amount_sats=expected_sats,
+        expected_recipient=settings.STACKS_GATEWAY_ADDRESS,
+        payment_id=payment_id,
+    )
+    if not auth["authorized"]:
+        logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=FAILED "
+                    f"reason={auth['reason']}")
+        await update_payment_log_state(
+            payment_id, "rejected", error_reason=auth["reason"],
+            expected_state=("pending", "verified"),
+        )
+        return _reject(auth["reason"])
+
+    # ── consume the CHALLENGE before broadcast (fail closed): a second tx
+    # against the same payment_id must never double-fulfil. The txid consume
+    # inside settle_stacks_payment guards the tx itself.
+    if sb_enabled():
+        pid_recorded = await record_payment_id(payment_id)
+        if pid_recorded is False:
+            return _reject("payment_id_already_used_replay")
+        if pid_recorded is None:
+            return JSONResponse(status_code=502, content={
+                "error": "Stacks settlement deferred",
+                "payment_status": "uncertain",
+                "error_reason": ("replay_check_unavailable: durable store "
+                                 "unreachable — retry the same proof"),
+            })
+
+    signed_tx = bytes.fromhex(payload["payload"]["signedTransaction"])
+    settle = await stacks_pay.settle_stacks_payment(
+        signed_tx, auth["txid"], payment_id=payment_id,
+        payment_payload=payload,
+        requirements={
+            "scheme": "exact",
+            "network": (payload.get("network") or ""),
+            "amount": str(auth["amount_sats"]),
+            "asset": "sbtc",
+            "payTo": settings.STACKS_GATEWAY_ADDRESS,
+        },
+    )
+    if not settle["ok"]:
+        status = "REPLAY_ATTACK" if settle["reason"] == "replay_attack" else "FAILED"
+        logger.info(f"[PAYMENT] tool={tool_name} network=stacks status={status} "
+                    f"state={settle['state']} reason={settle['reason']}")
+        if settle["state"] == "rejected":
+            await update_payment_log_state(
+                payment_id, "rejected", error_reason=settle["reason"],
+                expected_state=("pending", "verified"),
+            )
+            return _reject(settle["reason"])
+        # uncertain → 502; the SDK keeps the spend recorded, support resolves.
+        return JSONResponse(status_code=502, content={
+            "error": "Stacks settlement uncertain",
+            "payment_status": "uncertain",
+            "error_reason": settle["reason"],
+            "payment_id": payment_id,
+            "txid": settle["txid"],
+        })
+
+    logger.info(f"[PAYMENT] tool={tool_name} network=stacks "
+                f"agent={auth['sender'][:8]}... status=OK "
+                f"state={settle['state']} tx={settle['txid'][:16]}")
+    return {
+        "authorized": True,
+        "tx_hash":    settle["txid"],
+        "payer":      auth["sender"],
+        "network":    f"stacks-{settings.STACKS_NETWORK}",
+        "recovered":  settle["state"] == "ok_recovered",
     }
 
 
@@ -1150,7 +1283,28 @@ async def call_tool(
             _is_free_tool = Decimal(str(tool.price_usdc or "0")) == 0
         except Exception:
             _is_free_tool = False
-        if _is_free_tool:
+        # ── Stacks dispatch (AGE-23): HTTP headers are case-insensitive, so
+        # the lowercase dialect can't be routed on casing — route on the
+        # payload's CAIP-2 network instead. Priced tools only: a stacks
+        # payload on a $0 tool falls through to _settle_free_v2 (free proofs
+        # never touch a chain).
+        _ps_payload, _ps_err = stacks_pay.decode_payment_signature(payment_signature)
+        _is_stacks = (
+            not _is_free_tool
+            and isinstance(_ps_payload, dict)
+            and str(_ps_payload.get("network") or "").startswith("stacks")
+        )
+        if _is_stacks:
+            auth = await _settle_stacks_path(tool, tool_name, payment_signature,
+                                             _ps_payload)
+            if isinstance(auth, JSONResponse):
+                return auth
+            # Verified payer = the tx's origin signer (c32) — same
+            # verified-wins rule as the Base path.
+            agent_address = auth["payer"] or agent_address
+            payment_id = auth.get("tx_hash", "")
+            is_base = True   # tx-keyed payment_logs row semantics
+        elif _is_free_tool:
             # Wall E fix: standard v2 payload on a $0 tool — accept as the
             # free proof, never attempt a real settlement of $0. Nothing is
             # verified on a $0 call, so the declared address may keep priority.

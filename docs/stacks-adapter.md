@@ -12,8 +12,13 @@
   re-sign-once, lowercase dialect (19 tests, `tests/test_stacks_sdk.py`).
   The client side is live but inert until the gateway offers a
   `payment_options.stacks` block.
-- `gateway/stacks.py` (settlement adapter, AGE-23) remains a skeleton. It MUST
-  implement the wire contract below — the SDK already emits it.
+- gateway settlement adapter IMPLEMENTED (AGE-23, 2026-07-21) —
+  `gateway/stacks.py` (verify: full SIP-005 decode + memo binding + mandatory
+  post-condition; settle: atomic pre-broadcast txid consume, facilitator →
+  direct-Hiro degradation, ok_recovered polling) wired into
+  `routes/tools.py` behind `STACKS_ENABLED` (default false — inert).
+  36 tests in `tests/test_stacks_gateway.py`. USD→sats quoting is the M1
+  stopgap `STACKS_FIXED_BTC_USD` fixed rate until AGE-24 lands live FX.
 
 ## Wire contract (defined by AGE-25, consumed by AGE-23/24)
 
@@ -46,6 +51,8 @@ wallet's network.
   "x402Version": 2,
   "scheme": "exact",
   "network": "stacks:2147483648",
+  "payment_id": "<uuid>",                       // challenge lookup key; the tx's
+                                                 // memo must bind to the same id
   "payload": {
     "signedTransaction": "<hex SIP-005 tx>",   // complete, unbroadcast
     "txid": "<hex sha512/256>"                  // pre-broadcast, replay key
@@ -56,8 +63,13 @@ wallet's network.
 }
 ```
 
-The gateway must recompute `txid_of(signedTransaction)` and IGNORE the
+The gateway recomputes `txid_of(signedTransaction)` and IGNORES the
 client-supplied txid for the replay consume (never trust the header's copy).
+It resolves the pending challenge by `payment_id`, then requires the memo
+INSIDE the signed tx to match it (prefix rule — the (buff 34) memo truncates
+36-char UUIDs to 34); the challenge fixes the expected sats. The payment_id
+is consumed (record_payment_id, fail-closed) BEFORE broadcast so a second tx
+can never double-fulfil one challenge.
 
 **settle responses the SDK understands** (on non-200, JSON body):
 - `payment_status: "rejected"` + `error_reason` matching `/bad|conflicting|

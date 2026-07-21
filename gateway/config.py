@@ -55,6 +55,23 @@ class Settings(BaseSettings):
     STELLAR_FACILITATOR_URL: str = "https://channels.openzeppelin.com/x402"
     STELLAR_FACILITATOR_ENABLED: bool = False
 
+    # ── Stacks / sBTC settlement (AGE-23) ─────────────────────────────────────
+    # Inert by default: with STACKS_ENABLED false (or no gateway address) the
+    # 402 never offers a stacks option and the settle path 503s.
+    STACKS_ENABLED: bool = False
+    STACKS_NETWORK: str = "testnet"          # "testnet" | "mainnet"
+    STACKS_HIRO_API: str = ""                # default derived from STACKS_NETWORK
+    STACKS_FACILITATOR_URL: str = ""         # empty ⇒ direct-broadcast mode only
+    STACKS_GATEWAY_ADDRESS: str = ""         # c32 (SP…/ST…); fund STX for fees
+    STACKS_SBTC_CONTRACT: str = ""           # default derived from STACKS_NETWORK
+    STACKS_SETTLE_TIMEOUT_S: float = 30.0
+    STACKS_CONFIRM_POLL_S: float = 3.0
+    STACKS_CONFIRM_MAX_POLLS: int = 20
+    STACKS_SUGGESTED_FEE_MICROSTX: int = 3000
+    # M1 stopgap USD→sats quote rate (e.g. "97000"). AGE-24 replaces this
+    # with a live FX source + per-payment rate/quote recording.
+    STACKS_FIXED_BTC_USD: str = ""
+
     # Base / EVM payment option (via Coinbase CDP x402 facilitator)
     # Default network is mainnet ("base") to match BASE_RPC_URL below — using
     # "base-sepolia" with a mainnet RPC produced silent verification failures

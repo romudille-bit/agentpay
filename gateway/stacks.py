@@ -1,8 +1,9 @@
 """
 gateway/stacks.py — Stacks/sBTC settlement adapter (AGE-23).
 
-STATUS: SKELETON (2026-07-20). Not imported by main.py/routes yet — safe to
-ship inert. Design doc: docs/stacks-adapter.md (12-point checklist).
+STATUS: IMPLEMENTED (2026-07-21). Wired into routes/tools.py behind
+settings.STACKS_ENABLED (default False — inert until configured).
+Design doc + wire contract: docs/stacks-adapter.md (12-point checklist).
 
 Third settlement adapter, third settlement model:
   - Stellar (stellar.py): agent broadcasts; gateway only verifies.
@@ -12,59 +13,70 @@ Third settlement adapter, third settlement model:
     when the facilitator is down. Every failure mode between broadcast and
     confirmation lands on us.
 
-Hard requirements (each anchored where it must be enforced):
+Hard requirements (each anchored where it is enforced below):
 
   [CHECKLIST #6] — replay consume FAILS CLOSED and happens PRE-settle.
       Stacks txid is deterministic from the signed tx before broadcast
-      (agentpay._stacks_tx.txid_of), so consume the txid BEFORE /settle using
-      the same in-memory check-and-add + AWAITED Supabase insert pattern as
-      base.py:settle_base_payment (TOCTOU rationale: docs/DESIGN_NOTES.md).
+      (agentpay._stacks_tx.txid_of): settle_stacks_payment consumes the txid
+      BEFORE any broadcast using the same in-memory check-and-add + AWAITED
+      Supabase insert pattern as base.py:settle_base_payment.
 
-  [CHECKLIST #5] — verification decodes the Clarity contract call
+  [CHECKLIST #5] — verify_stacks_payment decodes the Clarity contract call
       (sbtc-token::transfer args: amount, sender, recipient, memo) and binds
       memo → payment_id. Amount alone is meaningless when every tool costs
       the same (AGE-64 lesson).
 
-  [CHECKLIST #10] — the receipt insert is AWAITED before the terminal
-      payment_done PATCH (H5 receipt-write race).
+  Post-conditions are refused, not repaired: a tx without the exact
+      sent-equal fungible post-condition is unsafe to broadcast on the
+      client's behalf — verification rejects it.
 
   Recovery from day one (`settle_exact_node_failure` → `ok_recovered`,
-      live Base incident 2026-06-11): on settle timeout/error, poll Hiro by
-      txid; if the tx confirmed, fulfil as `ok_recovered` instead of charging
-      the agent for nothing.
+      live Base incident 2026-06-11): on ambiguous broadcast/confirm
+      failure, poll Hiro by txid; if the tx confirmed, return `ok_recovered`
+      instead of charging the agent for nothing.
 
-  Facilitator posture (documented in docs/stacks-adapter.md "known limitations"): facilitator is
-      convenience, not a hard dependency. Two young stacks exist (tony1908's
-      x402-stacks; aibtcdev worker + sponsor-relay). The payment artifact is
-      a complete signed tx → a dead facilitator degrades to direct
-      `POST /v2/transactions` on Hiro + confirmation polling.
+  Facilitator posture: convenience, not a hard dependency. The payment
+      artifact is a complete signed tx → a dead facilitator degrades to
+      direct `POST /v2/transactions` on Hiro + confirmation polling.
 
-  Header dialect #3: lowercase `payment-required` / `payment-signature` /
-      `payment-response`, CAIP-2 `stacks:1` / `stacks:2147483648`. Parse
-      case-insensitively; never mix with X-Payment (Stellar) or
-      PAYMENT-SIGNATURE (Base) handling.
+  Header dialect #3: the payload travels in `payment-signature` (HTTP
+      headers are case-insensitive, so routing keys on the payload's CAIP-2
+      `network: "stacks:…"`, not on header casing). Never mixed with
+      X-Payment (Stellar) or the Base PAYMENT-SIGNATURE handling.
 
-Proposed settings (config.py additions when wiring starts):
-    STACKS_NETWORK            ("testnet" | "mainnet")
-    STACKS_HIRO_API           (https://api.testnet.hiro.so / api.hiro.so)
-    STACKS_FACILITATOR_URL    (empty ⇒ direct-broadcast mode only)
-    STACKS_SBTC_CONTRACT      (defaults per network from _stacks_tx)
-    STACKS_GATEWAY_ADDRESS    (c32; receives payments — fund STX for fees)
-    STACKS_SETTLE_TIMEOUT_S   (default 30)
-    STACKS_CONFIRM_POLL_S / STACKS_CONFIRM_MAX_POLLS
-
-Mirrors the 4-stage structure of gateway/routes/tools.py:
-    402-issue → verify → settle/broadcast → fulfil+record.
-
-Acceptance (AGE-23): testnet payment settles through the facilitator;
-kill-the-facilitator test settles via direct Hiro broadcast; replayed txid
-rejected; settle-timeout path produces ok_recovered.
+Settle-response contract (docs/stacks-adapter.md §Wire contract — the SDK's
+retry logic depends on it):
+  - state "rejected"  ⇒ the node/facilitator REFUSED the tx (it is in no
+    mempool and can never settle). The SDK zeroes the leg; on a nonce
+    conflict it re-signs once. NEVER return rejected for an ambiguous
+    timeout.
+  - state "uncertain" ⇒ broadcast may have happened; the SDK keeps the
+    spend recorded.
 """
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import json
 import logging
+from decimal import Decimal
 from typing import Optional
+
+import httpx
+
+from agentpay._stacks_tx import (
+    SBTC_ASSET_NAME,
+    SBTC_CONTRACT_MAINNET,
+    SBTC_CONTRACT_TESTNET,
+    STACKS_MAINNET_CAIP2,
+    STACKS_TESTNET_CAIP2,
+    c32_address,
+    sats_from_usd,
+    txid_of,
+)
+from gateway.config import settings
+from gateway.services import supabase as sb
 
 logger = logging.getLogger("gateway.stacks")
 
@@ -72,7 +84,338 @@ __all__ = [
     "verify_stacks_payment",
     "settle_stacks_payment",
     "poll_confirmation",
+    "decode_sbtc_transfer",
+    "decode_payment_signature",
+    "build_stacks_402_option",
+    "stacks_quote_sats",
+    "stacks_configured",
 ]
+
+# In-memory fast guard for txid consumption (mirrors _used_base_tx_hashes in
+# gateway/base.py — single-process guard when Supabase is disabled/unreachable).
+_used_stacks_txids: set[str] = set()
+
+# Node rejection reasons that are DEFINITIVE — the tx was refused at
+# broadcast, is in no mempool, and can never settle. Only these may produce
+# state "rejected" from a broadcast attempt. (Hiro /v2/transactions error
+# body: {"error": "transaction rejected", "reason": "<one of these>", ...})
+_DEFINITIVE_REJECTIONS = (
+    "BadNonce",
+    "ConflictingNonceInMempool",
+    "NotEnoughFunds",
+    "FeeTooLow",
+    "SignatureValidation",
+    "BadTransactionVersion",
+    "BadAddressVersionByte",
+    "NoSuchContract",
+    "NoSuchPublicFunction",
+    "BadFunctionArgument",
+    "DeserializationFailure",
+    "EstimatorError",
+)
+
+# Overpay flag threshold, mirroring stellar.py's `overpaid` flag: accept but
+# flag anything >2x the quote. Small under-tolerance absorbs FX drift between
+# the 402 quote and verification (AGE-24 owns the real FX; with the M1 fixed
+# rate the two are identical, so this only matters once live rates land).
+_OVERPAY_FLAG_FACTOR = Decimal("2")
+_UNDERPAY_TOLERANCE = Decimal("0.98")
+
+# SIP-005 wire constants needed for DECODING (the SDK's _stacks_tx owns the
+# encoding side; these mirror it — see that module's serializer for the spec
+# references).
+_TX_VERSION_TO_NETWORK = {0x00: "mainnet", 0x80: "testnet"}
+_AUTH_STANDARD, _AUTH_SPONSORED = 0x04, 0x05
+_HASH_MODE_P2PKH = 0x00
+_SPENDING_CONDITION_LEN = 1 + 20 + 8 + 8 + 1 + 65
+_ADDR_VERSION_P2PKH = {"mainnet": 22, "testnet": 26}
+
+_PC_TYPE_FUNGIBLE = 0x01
+_PC_PRINCIPAL_ORIGIN, _PC_PRINCIPAL_STANDARD, _PC_PRINCIPAL_CONTRACT = 0x01, 0x02, 0x03
+_FT_SENT_EQ = 0x01
+
+_PAYLOAD_CONTRACT_CALL = 0x02
+_CV_INT, _CV_UINT, _CV_BUFFER = 0x00, 0x01, 0x02
+_CV_TRUE, _CV_FALSE = 0x03, 0x04
+_CV_PRINCIPAL_STANDARD, _CV_PRINCIPAL_CONTRACT = 0x05, 0x06
+_CV_NONE, _CV_SOME = 0x09, 0x0A
+
+
+# ── config helpers ────────────────────────────────────────────────────────────
+
+
+def stacks_configured() -> bool:
+    return bool(settings.STACKS_ENABLED and settings.STACKS_GATEWAY_ADDRESS)
+
+
+def _network() -> str:
+    return "mainnet" if settings.STACKS_NETWORK == "mainnet" else "testnet"
+
+
+def _caip2() -> str:
+    return STACKS_MAINNET_CAIP2 if _network() == "mainnet" else STACKS_TESTNET_CAIP2
+
+
+def _network_label() -> str:
+    """payment_logs / tx-consume network discriminator."""
+    return f"stacks-{_network()}"
+
+
+def _hiro_api() -> str:
+    if settings.STACKS_HIRO_API:
+        return settings.STACKS_HIRO_API.rstrip("/")
+    return (
+        "https://api.hiro.so" if _network() == "mainnet"
+        else "https://api.testnet.hiro.so"
+    )
+
+
+def _sbtc_contract() -> str:
+    if settings.STACKS_SBTC_CONTRACT:
+        return settings.STACKS_SBTC_CONTRACT
+    return SBTC_CONTRACT_MAINNET if _network() == "mainnet" else SBTC_CONTRACT_TESTNET
+
+
+def stacks_quote_sats(price_usdc) -> Optional[int]:
+    """USD→sats quote for a 402 offer.
+
+    M1 stopgap: a fixed rate from STACKS_FIXED_BTC_USD. AGE-24 replaces this
+    with a live rate source + per-payment quote/rate recording in
+    payment_logs. Rounding rule (ceil to the sat — never quote fewer sats
+    than the USD price) lives in agentpay._stacks_tx.sats_from_usd, the
+    single source of truth both sides share.
+
+    Returns None when unquotable — the 402 then simply omits the stacks
+    option (fail-quiet: Stellar/Base remain offered).
+    """
+    rate = settings.STACKS_FIXED_BTC_USD
+    if not rate:
+        return None
+    try:
+        return sats_from_usd(Decimal(str(price_usdc)), Decimal(str(rate)))
+    except Exception as e:
+        logger.warning(f"[STACKS] quote failed for {price_usdc} USD: {e}")
+        return None
+
+
+def build_stacks_402_option(price_usdc, resource_url: str = "") -> Optional[dict]:
+    """The `payment_options.stacks` block of AgentPay's native 402
+    (docs/stacks-adapter.md §Wire contract). None when Stacks isn't
+    configured/quotable — the 402 then omits the option entirely.
+
+    $0 tools never offer a stacks option: free calls must never touch the
+    signing path (the SDK's free:<id> proof flow handles them chain-free).
+    """
+    if not stacks_configured():
+        return None
+    try:
+        if Decimal(str(price_usdc or "0")) == 0:
+            return None
+    except Exception:
+        return None
+    sats = stacks_quote_sats(price_usdc)
+    if sats is None:
+        return None
+    return {
+        "scheme": "exact",
+        "network": _caip2(),
+        "amount_sats": sats,
+        "amount_usdc": str(price_usdc),
+        "pay_to": settings.STACKS_GATEWAY_ADDRESS,
+        "fee_microstx": settings.STACKS_SUGGESTED_FEE_MICROSTX,
+        "asset": "sbtc",
+        "header": "payment-signature: <base64(StacksPaymentPayload JSON)>",
+    }
+
+
+# ── payload + transaction decoding ───────────────────────────────────────────
+
+
+def decode_payment_signature(header: str) -> tuple[Optional[dict], str]:
+    """base64 `payment-signature` → payload dict, or (None, reason)."""
+    try:
+        raw = base64.b64decode(header + "=" * (-len(header) % 4))
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return None, "payload_not_an_object"
+        return payload, ""
+    except Exception:
+        return None, "invalid_payment_signature_encoding"
+
+
+class _Reader:
+    """Bounds-checked cursor over the serialized tx. Any overrun raises
+    ValueError — decode_sbtc_transfer turns that into a clean rejection."""
+
+    def __init__(self, data: bytes):
+        self.data = data
+        self.pos = 0
+
+    def take(self, n: int) -> bytes:
+        if n < 0 or self.pos + n > len(self.data):
+            raise ValueError("truncated transaction")
+        out = self.data[self.pos : self.pos + n]
+        self.pos += n
+        return out
+
+    def u8(self) -> int:
+        return self.take(1)[0]
+
+    def uint(self, n: int) -> int:
+        return int.from_bytes(self.take(n), "big")
+
+    def lp_name(self) -> str:
+        ln = self.u8()
+        return self.take(ln).decode("ascii")
+
+    def address(self) -> tuple[int, bytes]:
+        version = self.u8()
+        return version, self.take(20)
+
+
+def _read_clarity_value(r: _Reader):
+    """Minimal Clarity value decoder — exactly the types a SIP-010 transfer
+    can carry as args. Unknown type prefixes reject the tx (we broadcast on
+    the client's behalf; anything we can't fully parse is unsafe)."""
+    t = r.u8()
+    if t == _CV_UINT:
+        return ("uint", r.uint(16))
+    if t == _CV_INT:
+        return ("int", int.from_bytes(r.take(16), "big", signed=True))
+    if t == _CV_BUFFER:
+        ln = r.uint(4)
+        return ("buffer", r.take(ln))
+    if t in (_CV_TRUE, _CV_FALSE):
+        return ("bool", t == _CV_TRUE)
+    if t == _CV_PRINCIPAL_STANDARD:
+        version, h160 = r.address()
+        return ("principal", c32_address(version, h160))
+    if t == _CV_PRINCIPAL_CONTRACT:
+        version, h160 = r.address()
+        name = r.lp_name()
+        return ("principal", f"{c32_address(version, h160)}.{name}")
+    if t == _CV_NONE:
+        return ("none", None)
+    if t == _CV_SOME:
+        return ("some", _read_clarity_value(r))
+    raise ValueError(f"unsupported Clarity value type 0x{t:02x}")
+
+
+def decode_sbtc_transfer(tx: bytes) -> dict:
+    """Deserialize a signed SIP-005 contract-call transaction far enough to
+    verify an sBTC transfer: header, origin spending condition, post-
+    conditions, and the contract-call payload with Clarity args.
+
+    Raises ValueError on anything malformed/unsupported — the caller maps
+    that to a verification rejection (we never broadcast bytes we can't
+    fully account for).
+    """
+    r = _Reader(tx)
+    version = r.u8()
+    network = _TX_VERSION_TO_NETWORK.get(version)
+    if network is None:
+        raise ValueError("unknown transaction version byte")
+    r.take(4)  # chain id (redundant with the version byte for our purposes)
+    auth_type = r.u8()
+    if auth_type not in (_AUTH_STANDARD, _AUTH_SPONSORED):
+        raise ValueError("unsupported auth type")
+    hash_mode = r.u8()
+    if hash_mode != _HASH_MODE_P2PKH:
+        raise ValueError("unsupported origin hash mode (single-sig P2PKH only)")
+    signer = r.take(20)
+    nonce = r.uint(8)
+    fee = r.uint(8)
+    r.u8()       # key encoding
+    r.take(65)   # signature
+    sponsored = auth_type == _AUTH_SPONSORED
+    if sponsored:
+        r.take(_SPENDING_CONDITION_LEN)  # sponsor spending condition
+    r.u8()  # anchor mode
+    pc_mode = r.u8()
+    pc_count = r.uint(4)
+    if pc_count > 16:
+        raise ValueError("unreasonable post-condition count")
+    post_conditions = []
+    for _ in range(pc_count):
+        pc_type = r.u8()
+        if pc_type != _PC_TYPE_FUNGIBLE:
+            # STX / NFT post-conditions never appear on our transfers.
+            raise ValueError("unsupported post-condition type")
+        p_type = r.u8()
+        if p_type == _PC_PRINCIPAL_ORIGIN:
+            pc_sender = "origin"
+        elif p_type == _PC_PRINCIPAL_STANDARD:
+            v, h = r.address()
+            pc_sender = c32_address(v, h)
+        elif p_type == _PC_PRINCIPAL_CONTRACT:
+            v, h = r.address()
+            pc_sender = f"{c32_address(v, h)}.{r.lp_name()}"
+        else:
+            raise ValueError("unknown post-condition principal type")
+        av, ah = r.address()
+        asset_contract = f"{c32_address(av, ah)}.{r.lp_name()}"
+        asset_name = r.lp_name()
+        code = r.u8()
+        amount = r.uint(8)
+        post_conditions.append({
+            "sender": pc_sender,
+            "asset_contract": asset_contract,
+            "asset_name": asset_name,
+            "condition_code": code,
+            "amount": amount,
+        })
+
+    payload_type = r.u8()
+    if payload_type != _PAYLOAD_CONTRACT_CALL:
+        raise ValueError("not a contract call")
+    cv, ch = r.address()
+    contract_id = f"{c32_address(cv, ch)}.{r.lp_name()}"
+    function = r.lp_name()
+    arg_count = r.uint(4)
+    if arg_count > 8:
+        raise ValueError("unreasonable arg count")
+    args = [_read_clarity_value(r) for _ in range(arg_count)]
+    if r.pos != len(tx):
+        raise ValueError("trailing bytes after payload")
+
+    sender_address = c32_address(_ADDR_VERSION_P2PKH[network], signer)
+
+    # SIP-010 transfer args: (amount uint) (sender principal)
+    # (recipient principal) (memo (optional (buff 34)))
+    amount = arg_sender = arg_recipient = memo = None
+    if function == "transfer" and len(args) == 4:
+        if args[0][0] == "uint":
+            amount = args[0][1]
+        if args[1][0] == "principal":
+            arg_sender = args[1][1]
+        if args[2][0] == "principal":
+            arg_recipient = args[2][1]
+        if args[3][0] == "some" and args[3][1][0] == "buffer":
+            memo = args[3][1][1]
+
+    return {
+        "network": network,
+        "sponsored": sponsored,
+        "sender": sender_address,
+        "nonce": nonce,
+        "fee": fee,
+        "pc_mode": pc_mode,
+        "post_conditions": post_conditions,
+        "contract_id": contract_id,
+        "function": function,
+        "amount": amount,
+        "arg_sender": arg_sender,
+        "arg_recipient": arg_recipient,
+        "memo": memo,
+    }
+
+
+# ── verification ─────────────────────────────────────────────────────────────
+
+
+def _fail(reason: str) -> dict:
+    return {"authorized": False, "reason": reason, "txid": "",
+            "sender": "", "amount_sats": 0, "overpaid": False}
 
 
 async def verify_stacks_payment(
@@ -84,22 +427,216 @@ async def verify_stacks_payment(
 ) -> dict:
     """Decode + statically verify a signed-but-unbroadcast sBTC transfer.
 
-    Steps (NO network I/O except a nonce/balance sanity read):
-      1. base64-decode the lowercase `payment-signature` payload.
-      2. Deserialize (SIP-005); require a contract call on the configured
-         sbtc-token contract, function `transfer`.
-      3. [CHECKLIST #5] decode Clarity args; require memo == payment_id
-         (prefix rule as Stellar: startswith either way), recipient ==
-         expected_recipient, amount >= expected_amount_sats (small overpay
-         tolerance only — AGE-24 owns the FX/tolerance numbers).
-      4. Require the post-condition asserting exactly `amount` sats leave the
-         sender — refuse unsafe txs rather than broadcasting them.
-      5. Compute txid = txid_of(signed_tx) for the caller's replay consume.
-
-    Returns {"authorized": bool, "reason": str, "txid": str, "sender": str,
-             "amount_sats": int} — same contract shape as stellar/base verify.
+    NO network I/O: everything here is checkable from the bytes. Same result
+    contract shape as stellar/base verify:
+    {"authorized", "reason", "txid", "sender", "amount_sats", "overpaid"}.
+    The txid is RECOMPUTED from the signed bytes — the header's copy is
+    never trusted (wire contract).
     """
-    raise NotImplementedError("AGE-23")
+    payload, err = decode_payment_signature(payment_header)
+    if err:
+        return _fail(err)
+    inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    signed_hex = inner.get("signedTransaction") or ""
+    try:
+        signed_tx = bytes.fromhex(signed_hex)
+        if not signed_tx:
+            raise ValueError()
+    except Exception:
+        return _fail("missing_or_invalid_signed_transaction")
+
+    try:
+        tx = decode_sbtc_transfer(signed_tx)
+    except ValueError as e:
+        return _fail(f"malformed_stacks_tx: {e}")
+
+    if tx["network"] != _network():
+        return _fail("wrong_network")
+    if tx["contract_id"] != _sbtc_contract():
+        return _fail("wrong_contract")
+    if tx["function"] != "transfer":
+        return _fail("not_a_transfer")
+    if tx["amount"] is None or tx["arg_sender"] is None or tx["arg_recipient"] is None:
+        return _fail("malformed_transfer_args")
+    # SIP-010: tx-sender must equal the sender arg, or the contract aborts —
+    # refuse rather than broadcast a guaranteed abort.
+    if tx["arg_sender"] != tx["sender"]:
+        return _fail("sender_mismatch")
+    if tx["arg_recipient"] != expected_recipient:
+        return _fail("wrong_recipient")
+
+    # ── [CHECKLIST #5] memo → payment_id binding ─────────────────────────────
+    # The memo carries payment_id[:34] (the SIP-010 buff cap truncates UUIDs);
+    # prefix rule both ways, mirroring the Stellar memo match.
+    if not tx["memo"]:
+        return _fail("missing_memo_binding")
+    try:
+        memo_str = tx["memo"].decode("utf-8")
+    except Exception:
+        return _fail("undecodable_memo")
+    if not (payment_id.startswith(memo_str) or memo_str.startswith(payment_id)):
+        return _fail("memo_payment_id_mismatch")
+
+    # ── amount (AGE-24 owns the FX; small drift tolerance only) ──────────────
+    floor_sats = int(Decimal(expected_amount_sats) * _UNDERPAY_TOLERANCE)
+    if tx["amount"] < max(floor_sats, 1):
+        return _fail(
+            f"underpaid: got {tx['amount']} sats, need {expected_amount_sats}"
+        )
+    overpaid = Decimal(tx["amount"]) > Decimal(expected_amount_sats) * _OVERPAY_FLAG_FACTOR
+    if overpaid:
+        logger.warning(
+            f"[STACKS] overpaid transfer flagged: {tx['amount']} sats vs "
+            f"{expected_amount_sats} quoted (payment {payment_id[:8]}…)"
+        )
+
+    # ── mandatory post-condition: exactly-N-sats-leave-sender ────────────────
+    # This is what makes broadcasting a stranger's signed tx safe; a transfer
+    # without it (or with a weaker code) is refused, never repaired.
+    pc_ok = any(
+        pc["condition_code"] == _FT_SENT_EQ
+        and pc["amount"] == tx["amount"]
+        and pc["asset_contract"] == _sbtc_contract()
+        and pc["asset_name"] == SBTC_ASSET_NAME
+        and pc["sender"] in ("origin", tx["sender"])
+        for pc in tx["post_conditions"]
+    )
+    if not pc_ok:
+        return _fail("unsafe_post_conditions")
+
+    return {
+        "authorized": True,
+        "reason": "ok",
+        "txid": txid_of(signed_tx),
+        "sender": tx["sender"],
+        "amount_sats": tx["amount"],
+        "overpaid": overpaid,
+    }
+
+
+# ── confirmation polling ─────────────────────────────────────────────────────
+
+
+async def poll_confirmation(txid: str, *, max_polls: Optional[int] = None) -> dict:
+    """GET /extended/v1/tx/{txid} until success/abort/timeout.
+
+    Returns {"status": "success" | "rejected" | "timeout", "reason": str}.
+    abort_by_post_condition is the post-condition doing its job — a definitive
+    rejection, not an uncertainty. not-found-yet keeps polling (broadcast
+    propagation lag).
+    """
+    polls = max_polls if max_polls is not None else settings.STACKS_CONFIRM_MAX_POLLS
+    url = f"{_hiro_api()}/extended/v1/tx/{txid}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for attempt in range(max(polls, 1)):
+            if attempt:
+                await asyncio.sleep(settings.STACKS_CONFIRM_POLL_S)
+            try:
+                resp = await client.get(url)
+            except Exception as e:
+                logger.warning(f"[STACKS] confirm poll error for {txid[:16]}…: {e}")
+                continue
+            if resp.status_code == 404:
+                continue  # not indexed yet
+            try:
+                status = str(resp.json().get("tx_status", ""))
+            except Exception:
+                continue
+            if status == "success":
+                return {"status": "success", "reason": "ok"}
+            if status.startswith("abort_") or status.startswith("dropped_"):
+                return {"status": "rejected", "reason": status}
+            # "pending" (or unknown) → keep polling
+    return {"status": "timeout", "reason": "confirmation_timeout"}
+
+
+# ── settlement ───────────────────────────────────────────────────────────────
+
+
+async def _broadcast_direct(signed_tx: bytes, txid: str) -> dict:
+    """Direct `POST /v2/transactions` on Hiro.
+
+    Returns {"outcome": "accepted" | "rejected" | "uncertain", "reason": str}.
+    A same-txid re-broadcast is node-level idempotent: "already in mempool"
+    counts as accepted.
+    """
+    url = f"{_hiro_api()}/v2/transactions"
+    try:
+        async with httpx.AsyncClient(timeout=settings.STACKS_SETTLE_TIMEOUT_S) as client:
+            resp = await client.post(
+                url, content=signed_tx,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+    except Exception as e:
+        return {"outcome": "uncertain", "reason": f"broadcast_error: {str(e)[:120]}"}
+
+    if resp.status_code == 200:
+        return {"outcome": "accepted", "reason": "ok"}
+
+    reason_code, full = "", ""
+    try:
+        body = resp.json()
+        reason_code = str(body.get("reason", ""))
+        full = json.dumps(body)[:300]
+    except Exception:
+        full = resp.text[:300]
+
+    low = full.lower()
+    if reason_code not in _DEFINITIVE_REJECTIONS and "already" in low and (
+        "mempool" in low or "chain" in low
+    ):
+        # "transaction already exists" phrasing means OUR txid is known —
+        # treat as accepted and poll. (ConflictingNonceInMempool is a
+        # DIFFERENT tx holding our nonce; that one stays a rejection.)
+        return {"outcome": "accepted", "reason": "already_known"}
+    if reason_code in _DEFINITIVE_REJECTIONS:
+        return {"outcome": "rejected", "reason": f"broadcast rejected: {reason_code}"}
+    if resp.status_code == 400:
+        # Unknown 400 shape: the node refused it — a 400 never broadcasts.
+        return {"outcome": "rejected", "reason": f"broadcast rejected: {full[:160]}"}
+    return {"outcome": "uncertain", "reason": f"broadcast_http_{resp.status_code}"}
+
+
+async def _settle_via_facilitator(payment_payload: dict, requirements: dict) -> dict:
+    """POST {STACKS_FACILITATOR_URL}/settle (x402 v2 shape).
+
+    Returns {"outcome": "ok" | "rejected" | "unavailable" | "uncertain",
+             "reason": str}. Anything transport-shaped is "unavailable" —
+    the caller degrades to direct broadcast (facilitator posture: the young
+    facilitator stacks are convenience, never a hard dependency).
+    """
+    url = settings.STACKS_FACILITATOR_URL.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=settings.STACKS_SETTLE_TIMEOUT_S) as client:
+            resp = await client.post(
+                f"{url}/settle",
+                json={
+                    "x402Version": 2,
+                    "paymentPayload": payment_payload,
+                    "paymentRequirements": requirements,
+                },
+            )
+    except Exception as e:
+        return {"outcome": "unavailable",
+                "reason": f"facilitator_unreachable: {str(e)[:120]}"}
+
+    if resp.status_code >= 500:
+        return {"outcome": "unavailable", "reason": f"facilitator_http_{resp.status_code}"}
+    try:
+        data = resp.json()
+    except Exception:
+        return {"outcome": "unavailable", "reason": "facilitator_bad_body"}
+
+    if resp.status_code == 200 and data.get("success"):
+        return {"outcome": "ok", "reason": "ok"}
+
+    err = str(data.get("errorReason") or data.get("reason") or data.get("error") or "")
+    if any(code in err for code in _DEFINITIVE_REJECTIONS):
+        return {"outcome": "rejected", "reason": f"broadcast rejected: {err[:160]}"}
+    # Ambiguous failure (timeout waiting for confirmation, unknown error):
+    # the facilitator may have broadcast. Caller polls, then direct-broadcasts.
+    return {"outcome": "uncertain",
+            "reason": err[:160] or f"facilitator_http_{resp.status_code}"}
 
 
 async def settle_stacks_payment(
@@ -107,36 +644,125 @@ async def settle_stacks_payment(
     txid: str,
     *,
     payment_id: str,
+    payment_payload: Optional[dict] = None,
+    requirements: Optional[dict] = None,
 ) -> dict:
     """Broadcast + confirm. THE ORDER IS THE SECURITY MODEL:
 
-      1. [CHECKLIST #6] atomically consume `txid` (in-memory check-and-add +
-         AWAITED Supabase insert, fail-CLOSED on infra error) — BEFORE any
-         broadcast attempt. A replayed txid dies here.
-      2. Try facilitator /settle when STACKS_FACILITATOR_URL is set.
-      3. Facilitator down/timeout/5xx → direct `POST /v2/transactions` (Hiro).
-      4. Timeout or ambiguous error AFTER broadcast → poll_confirmation();
-         confirmed ⇒ return state "ok_recovered" (never charge-for-nothing,
-         never double-broadcast: same txid ⇒ node-level idempotent).
-      5. Definitive rejection (node rejects tx) ⇒ un-consume is NOT allowed —
-         the consume stays (fail-closed); return rejected with the node
-         reason.
+      1. [CHECKLIST #6] atomically consume `txid` — in-memory check-and-add
+         + AWAITED Supabase insert, fail-CLOSED on infra error — BEFORE any
+         broadcast attempt. A replayed txid dies here. `txid` MUST be
+         recomputed server-side from `signed_tx` by the caller (never the
+         header's copy).
+      2. Facilitator /settle when STACKS_FACILITATOR_URL is set.
+      3. Facilitator down/5xx/unreachable → direct Hiro broadcast.
+      4. Ambiguous outcome AFTER any broadcast attempt → poll_confirmation;
+         confirmed ⇒ "ok_recovered" (never charge-for-nothing; same-txid
+         re-broadcast is node-level idempotent).
+      5. DEFINITIVE node rejection ⇒ "rejected" (the consume stays — fail
+         closed; the SDK re-signs with a fresh nonce, producing a new txid).
 
-    Returns {"ok": bool, "state": "ok"|"ok_recovered"|"rejected"|"uncertain",
-             "txid": str, "reason": str}.
-    Caller (routes) must [CHECKLIST #10] await the receipt insert before the
-    terminal payment_done PATCH, and use expected_state guards on every
-    header-keyed PATCH (F3 lesson).
+    Returns {"ok", "state": "ok"|"ok_recovered"|"rejected"|"uncertain",
+             "txid", "reason"}.
     """
-    raise NotImplementedError("AGE-23")
+    label = _network_label()
 
+    # ── 1. atomic pre-broadcast consume ([CHECKLIST #6], fail closed) ────────
+    if txid in _used_stacks_txids:
+        return {"ok": False, "state": "rejected", "txid": txid,
+                "reason": "replay_attack"}
+    _used_stacks_txids.add(txid)
+    if sb.sb_enabled():
+        recorded = await sb.record_tx_hash(txid, label)
+        if recorded is False:
+            return {"ok": False, "state": "rejected", "txid": txid,
+                    "reason": "replay_attack"}
+        if recorded is None:
+            # Durable consume unconfirmed (AGE-60 pattern): broadcasting now
+            # would make this payment replayable after a restart. Release the
+            # in-memory hold so the SAME proof can retry once the store is
+            # back. Retryable — deliberately NOT "rejected" (nothing was
+            # refused by a node; the SDK must keep the leg intact).
+            _used_stacks_txids.discard(txid)
+            return {"ok": False, "state": "uncertain", "txid": txid,
+                    "reason": ("replay_check_unavailable: durable replay store "
+                               "unreachable — retry the same proof")}
 
-async def poll_confirmation(txid: str, *, max_polls: Optional[int] = None) -> dict:
-    """GET /extended/v1/tx/{txid} until success/abort/timeout.
+    # ── 2./3. broadcast: facilitator first, direct Hiro as the fallback ──────
+    broadcast_attempted = False
+    if settings.STACKS_FACILITATOR_URL and payment_payload is not None:
+        fac = await _settle_via_facilitator(payment_payload, requirements or {})
+        if fac["outcome"] == "ok":
+            confirm = await poll_confirmation(txid)
+            if confirm["status"] == "success":
+                return {"ok": True, "state": "ok", "txid": txid, "reason": "ok"}
+            if confirm["status"] == "rejected":
+                return {"ok": False, "state": "rejected", "txid": txid,
+                        "reason": confirm["reason"]}
+            # Facilitator said ok but we can't see it confirmed — uncertain;
+            # never claim settled without proof either way.
+            return {"ok": False, "state": "uncertain", "txid": txid,
+                    "reason": "facilitator_ok_unconfirmed"}
+        if fac["outcome"] == "rejected":
+            return {"ok": False, "state": "rejected", "txid": txid,
+                    "reason": fac["reason"]}
+        if fac["outcome"] == "uncertain":
+            broadcast_attempted = True
+            # The facilitator may have broadcast before failing — check the
+            # chain BEFORE re-broadcasting (the ok_recovered lesson).
+            confirm = await poll_confirmation(
+                txid, max_polls=max(settings.STACKS_CONFIRM_MAX_POLLS // 2, 2)
+            )
+            if confirm["status"] == "success":
+                logger.info(f"[STACKS] settle RECOVERED (facilitator ambiguous, "
+                            f"tx confirmed): {txid[:20]}…")
+                return {"ok": True, "state": "ok_recovered", "txid": txid,
+                        "reason": "ok_recovered"}
+            if confirm["status"] == "rejected":
+                return {"ok": False, "state": "rejected", "txid": txid,
+                        "reason": confirm["reason"]}
+        # "unavailable" (or uncertain + unconfirmed) → degrade to direct.
+        logger.warning(f"[STACKS] facilitator degraded ({fac['reason']}) — "
+                       f"direct Hiro broadcast for {txid[:20]}…")
 
-    Used by the ok_recovered path and by the fulfil loop. Distinguish:
-    tx_status success / abort_by_response / abort_by_post_condition (the
-    post-condition doing its job — report as rejected, not uncertain) /
-    not-found-yet (keep polling).
-    """
-    raise NotImplementedError("AGE-23")
+    direct = await _broadcast_direct(signed_tx, txid)
+    if direct["outcome"] == "rejected":
+        if broadcast_attempted:
+            # A rejected re-broadcast after an ambiguous facilitator attempt
+            # can mean the FIRST broadcast is live (e.g. our own tx now holds
+            # the nonce in the mempool) — poll once more before answering.
+            confirm = await poll_confirmation(txid)
+            if confirm["status"] == "success":
+                return {"ok": True, "state": "ok_recovered", "txid": txid,
+                        "reason": "ok_recovered"}
+            if confirm["status"] == "timeout":
+                return {"ok": False, "state": "uncertain", "txid": txid,
+                        "reason": f"rebroadcast_rejected_after_ambiguous: {direct['reason']}"}
+        return {"ok": False, "state": "rejected", "txid": txid,
+                "reason": direct["reason"]}
+    if direct["outcome"] == "uncertain" and not broadcast_attempted:
+        # Transport failure before any known broadcast — the tx may or may
+        # not have reached the node. Poll; confirmed ⇒ ok_recovered.
+        confirm = await poll_confirmation(txid)
+        if confirm["status"] == "success":
+            return {"ok": True, "state": "ok_recovered", "txid": txid,
+                    "reason": "ok_recovered"}
+        if confirm["status"] == "rejected":
+            return {"ok": False, "state": "rejected", "txid": txid,
+                    "reason": confirm["reason"]}
+        return {"ok": False, "state": "uncertain", "txid": txid,
+                "reason": direct["reason"]}
+
+    # accepted (directly, or after an ambiguous prior attempt) → confirm.
+    confirm = await poll_confirmation(txid)
+    if confirm["status"] == "success":
+        state = "ok_recovered" if broadcast_attempted else "ok"
+        return {"ok": True, "state": state, "txid": txid, "reason": confirm["reason"]
+                if state == "ok" else "ok_recovered"}
+    if confirm["status"] == "rejected":
+        # abort_by_post_condition / abort_by_response: mined and aborted —
+        # the post-condition did its job. Definitive.
+        return {"ok": False, "state": "rejected", "txid": txid,
+                "reason": confirm["reason"]}
+    return {"ok": False, "state": "uncertain", "txid": txid,
+            "reason": "broadcast_accepted_pending_confirmation"}

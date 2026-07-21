@@ -121,6 +121,7 @@ class TestStacksHappyPath:
         payload, tx, nonce = _decode_ps_header(retry_req.headers["payment-signature"])
         assert payload["network"] == "stacks:2147483648"
         assert payload["accepted"]["asset"] == "sbtc"
+        assert payload["payment_id"] == "pay_stacks_test_0001"
         assert nonce == 7
         # [CHECKLIST #5] challenge binding travels in the tx memo.
         assert b"pay_stacks_test_0001" in tx
