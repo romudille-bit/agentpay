@@ -24,6 +24,7 @@ so Session budgets count every real payment even when the tool then fails.
 
 import httpx
 import logging
+import re
 from decimal import Decimal
 
 from agentpay._wallet import (
@@ -88,6 +89,184 @@ class AgentPayClient:
         except (ValueError, ArithmeticError):
             return None
 
+    def _settle_stacks(self, client, url: str, payload: dict, data: dict,
+                       tool_name: str, *, max_spend, record):
+        """
+        The Stacks leg of call_tool (AGE-25): sign-don't-broadcast sBTC
+        settlement over the Stacks x402 rail.
+
+        Checklist anchors (docs/stacks-adapter.md):
+          [#1] the option's USD amount is bounded by the cap BEFORE signing
+               (fail closed on an unparseable amount);
+          [#2] spend is recorded the moment the signed tx is TRANSMITTED —
+               once the gateway holds it, it can broadcast it;
+          [#3] after transmission there is no fallback to another chain —
+               every failure is surfaced with the spend recorded, except a
+               DEFINITIVE broadcast rejection (nothing in any mempool), which
+               zeroes the leg;
+          [#7] has no Stacks analog (a signed tx never expires): mitigation is
+               the wallet's one-in-flight nonce serialization + the gateway's
+               pre-settle replay consume on txid;
+          [#9] the wallet-level spend counter moves on confirmed settle.
+
+        Stale-nonce retry (the one safe re-sign): if the gateway reports the
+        broadcast was REJECTED for a nonce conflict, the signed tx was refused
+        by the node — it is in no mempool and can never settle. Re-fetch the
+        nonce and re-sign ONCE. Any non-rejected failure keeps the spend
+        recorded and is never re-signed (that could double-pay).
+
+        Returns (retry_response, txid). Raises PaymentFailed / BudgetExceeded
+        pre-transmission; post-transmission failures raise the generic
+        "after payment" Exception via the shared non-200 handling upstream.
+        """
+        stacks_opt = (data.get("payment_options") or {}).get("stacks")
+        if stacks_opt is None:
+            raise PaymentFailed(
+                f"chain='stacks' requested for '{tool_name}' but the gateway "
+                f"did not offer a Stacks payment option."
+            )
+        if not getattr(self.wallet, "stacks_address", None):
+            why = (
+                getattr(self.wallet, "stacks_disabled_reason", None)
+                or "no Stacks key configured (pass stacks_key= or set STACKS_AGENT_KEY)"
+            )
+            raise PaymentFailed(
+                f"chain='stacks' requested for '{tool_name}' but {why}"
+            )
+
+        # ── [CHECKLIST #1] bound by cap BEFORE signing; fail closed ─────────
+        amount_usd = None
+        try:
+            usd = stacks_opt.get("amount_usdc")
+            amount_usd = Decimal(str(usd)) if usd is not None else None
+        except (ValueError, ArithmeticError):
+            amount_usd = None
+        if max_spend is not None:
+            if amount_usd is None:
+                raise PaymentFailed(
+                    f"stacks option for '{tool_name}' has an unparseable USD "
+                    f"amount — refusing to sign"
+                )
+            if amount_usd > Decimal(str(max_spend)):
+                raise BudgetExceeded(
+                    f"Stacks option for '{tool_name}' would sign for "
+                    f"{amount_usd} USD, which exceeds the cap for this call "
+                    f"({max_spend} USD) — refusing to sign"
+                )
+
+        payment_id = data["payment_id"]
+        logger.info(
+            f"  Signing Stacks sBTC transfer ({stacks_opt.get('amount_sats')} sats"
+            f" ≈ {amount_usd if amount_usd is not None else '?'} USD)..."
+        )
+
+        # One in-flight signed tx per wallet: hold the wallet's Stacks lock
+        # across sign→transmit→response so concurrent calls serialize their
+        # sequential nonces instead of racing them.
+        with self.wallet._stacks_lock:
+            try:
+                built = self.wallet.build_stacks_payment(stacks_opt, payment_id, url)
+            except (BudgetExceeded, PaymentFailed):
+                raise
+            except Exception as e:
+                # Strictly pre-payment (nothing signed left the process), but
+                # the chain was explicitly demanded — no cross-chain fallback.
+                raise PaymentFailed(f"stacks settlement failed: {str(e)[:160]}")
+
+            attempt = 0
+            while True:
+                attempt += 1
+                # ── [CHECKLIST #2] the signed tx is about to LEAVE the
+                # process — record the spend NOW, not at HTTP 200.
+                entry = record(
+                    "signed_tx_transmitted",
+                    built["txid"],
+                    amount=amount_usd if amount_usd is not None else None,
+                )
+                entry["network"] = "stacks"
+                try:
+                    retry = client.post(
+                        url,
+                        json=payload,
+                        headers={
+                            # Third header dialect: lowercase (Stacks x402 v2).
+                            "payment-signature": built["header"],
+                            "x-agent-address":   self.wallet.stacks_address,
+                        },
+                    )
+                except Exception as e:
+                    # ── [CHECKLIST #3] transmitted → the gateway may hold a
+                    # broadcastable tx. Settlement uncertain; never fall back.
+                    self.wallet.note_stacks_nonce_used(built["nonce"])
+                    entry["state"] = "uncertain_settlement"
+                    raise Exception(
+                        f"Tool call failed after payment — the signed Stacks "
+                        f"tx was transmitted, settlement uncertain, spend "
+                        f"recorded: {e}"
+                    )
+
+                if retry.status_code == 200:
+                    self.wallet.note_stacks_nonce_used(built["nonce"])
+                    self.wallet.note_stacks_settled(amount_usd or 0)  # [#9]
+                    return retry, built["txid"]
+
+                # ── Non-200: only a DEFINITIVE broadcast rejection is safe to
+                # act on here; everything else goes to the shared handling
+                # with the spend intact.
+                try:
+                    body = retry.json()
+                except Exception:
+                    body = {}
+                reason = str(
+                    (body or {}).get("error_reason")
+                    or (body or {}).get("reason")
+                    or (body or {}).get("detail")
+                    or ""
+                )
+                rejected = str((body or {}).get("payment_status") or "") in (
+                    "rejected", "not_settled"
+                )
+                nonce_conflict = bool(
+                    re.search(r"(?i)(bad|conflicting|stale)[ _-]{0,3}nonce", reason)
+                )
+                if rejected and nonce_conflict and attempt == 1:
+                    # The node refused the tx at broadcast — it is in no
+                    # mempool and can never settle. Zero the leg, re-fetch the
+                    # nonce, re-sign ONCE.
+                    entry["amount_usdc"] = "0"
+                    entry["state"] = "stale_nonce_resigned"
+                    self.wallet.reset_stacks_nonce()
+                    logger.warning(
+                        f"  Stacks settle rejected (stale nonce) — re-signing "
+                        f"once: {reason[:80]}"
+                    )
+                    try:
+                        built = self.wallet.build_stacks_payment(
+                            stacks_opt, payment_id, url
+                        )
+                    except Exception as e:
+                        raise PaymentFailed(
+                            f"stacks re-sign after stale nonce failed: {str(e)[:160]}"
+                        )
+                    continue
+                if rejected:
+                    # Definitive rejection, non-nonce (bad post-condition,
+                    # malformed tx, replay refused): nothing settled, nothing
+                    # in a mempool. $0 risk — zero the leg and surface a
+                    # typed failure.
+                    entry["amount_usdc"] = "0"
+                    entry["state"] = "rejected"
+                    self.wallet.reset_stacks_nonce()
+                    raise PaymentFailed(
+                        f"stacks settlement rejected: "
+                        f"{(reason or retry.text)[:200]}"
+                    )
+                # Refund contract, 5xx, uncertain — the tx may be live.
+                # Keep the spend recorded; the shared non-200 handling
+                # classifies it (RefundPending / uncertain_settlement).
+                self.wallet.note_stacks_nonce_used(built["nonce"])
+                return retry, built["txid"]
+
     def call_tool(
         self,
         tool_name: str,
@@ -111,6 +290,11 @@ class AgentPayClient:
             Base option — this is the path that keeps AgentPay's listing live on
             Bazaar. Stellar is used as the automatic fallback otherwise.
           - prefer_chain="stellar" forces the legacy Stellar settlement.
+          - prefer_chain="stacks" settles sBTC over the Stacks x402 rail
+            (sign-don't-broadcast, AGE-25). Stacks is never a silent default:
+            it is only reached via an explicit Session(prefer_chain=) /
+            call(chain=), and an unusable Stacks path raises PaymentFailed —
+            never a fallback onto another chain.
           - chain_is_explicit=True means the caller demanded this chain; if it
             isn't usable a PaymentFailed is raised instead of falling back.
         Free ($0) tools never settle on-chain and ignore prefer_chain entirely.
@@ -235,6 +419,12 @@ class AgentPayClient:
                     raise PrePaymentError(
                         f"free tool '{tool_name}' retry failed: {e}"
                     )
+            elif prefer_chain == "stacks":
+                # ── Paid tool, chain="stacks": sign-don't-broadcast (AGE-25) ──
+                retry, tx_hash = self._settle_stacks(
+                    client, url, payload, data, tool_name,
+                    max_spend=max_spend, record=_record,
+                )
             else:
                 # ── Paid tool: prefer Base (Mode A) → fall back to Stellar ──
                 base_opt = (data.get("payment_options") or {}).get("base")
@@ -435,7 +625,8 @@ class AgentPayClient:
 
                 entry["state"] = (
                     "uncertain_settlement"
-                    if entry["state"] == "signed_auth_transmitted"
+                    if entry["state"] in ("signed_auth_transmitted",
+                                          "signed_tx_transmitted")
                     else "paid_no_result"
                 )
                 raise Exception(f"Tool call failed after payment: {retry.text}")
@@ -465,7 +656,9 @@ class AgentPayClient:
             if entry is not None:
                 entry["success"] = True
                 entry["tx_hash"] = tx_hash
-                if entry["state"] in ("paid_awaiting_result", "signed_auth_transmitted"):
+                if entry["state"] in ("paid_awaiting_result",
+                                      "signed_auth_transmitted",
+                                      "signed_tx_transmitted"):
                     entry["state"] = "settled"
                 # Settlement network from the gateway receipt, if present.
                 if isinstance(result, dict):

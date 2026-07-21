@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 
 HORIZON_TESTNET = "https://horizon-testnet.stellar.org"
 HORIZON_MAINNET = "https://horizon.stellar.org"
+
+# ── Stacks (sBTC) settlement (AGE-25) ────────────────────────────────────────
+STACKS_API_TESTNET = "https://api.testnet.hiro.so"
+STACKS_API_MAINNET = "https://api.hiro.so"
+# Suggested STX network fee when neither the 402's stacks option nor the
+# STACKS_FEE_MICROSTX env var provides one. sBTC contract calls land
+# comfortably under this on testnet; the gateway's 402 can always override.
+DEFAULT_STACKS_FEE_MICROSTX = 3000
 USDC_ISSUER_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
 USDC_ISSUER_MAINNET = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
@@ -177,6 +185,9 @@ class AgentWallet:
         base_key:     Optional Base/EVM private key (0x...) for paying
                       x402 tools that only accept Base USDC.
                       Read from env var BASE_AGENT_KEY if not passed.
+        stacks_key:   Optional Stacks private key (64 hex, or 66 hex ending
+                      in 01) for sBTC settlement over the Stacks x402 rail.
+                      Read from env var STACKS_AGENT_KEY if not passed.
 
     Example:
         wallet = AgentWallet(
@@ -193,7 +204,8 @@ class AgentWallet:
     # ERC20 transfer(address,uint256) selector
     _ERC20_TRANSFER_SIG = bytes.fromhex("a9059cbb")
 
-    def __init__(self, secret_key: str, network: str = "testnet", *, base_key: str = None):
+    def __init__(self, secret_key: str, network: str = "testnet", *,
+                 base_key: str = None, stacks_key: str = None):
         import os
         # AGE-74: wrap key parsing so a malformed secret raises a CONSTANT
         # message — a raw stellar_sdk error can echo fragments of the key into
@@ -246,6 +258,45 @@ class AgentWallet:
         else:
             self._evm_account = None
             self.base_address = None
+
+        # ── Stacks/sBTC wallet (optional, AGE-25) ─────────────────────────────
+        # sign-don't-broadcast: the SDK signs a complete sBTC transfer and
+        # hands it to the gateway, which broadcasts (gateway/stacks.py).
+        # stacks_disabled_reason records WHY Stacks is unavailable so payment
+        # errors can say so instead of failing bare.
+        self.stacks_disabled_reason: str | None = None
+        self._stacks_keypair = None
+        self.stacks_address: str | None = None
+        # Serializes the whole sign→transmit→response leg: Stacks nonces are
+        # sequential, so there is ONE in-flight signed tx per wallet
+        # (docs/stacks-adapter.md). _stacks_next_nonce tracks our local
+        # successor so back-to-back legs don't reuse a nonce the chain read
+        # hasn't caught up to yet.
+        self._stacks_lock = threading.Lock()
+        self._stacks_next_nonce: int | None = None
+        _stacks_key = stacks_key or os.environ.get("STACKS_AGENT_KEY")
+        if _stacks_key:
+            try:
+                from agentpay._stacks_tx import StacksKeypair
+                self._stacks_keypair = StacksKeypair.from_secret(_stacks_key)
+                self.stacks_address = self._stacks_keypair.address(
+                    "mainnet" if network == "mainnet" else "testnet"
+                )
+                logger.info(f"Stacks wallet loaded: {self.stacks_address[:8]}...")
+            except ImportError:
+                self.stacks_disabled_reason = (
+                    "eth-keys not installed — run: pip install \"agentpay-x402[base]\" "
+                    "(if you have a venv, make sure it's activated)"
+                )
+                logger.warning(f"Stacks wallet init failed: {self.stacks_disabled_reason}")
+            except Exception:
+                # [CHECKLIST #8]: CONSTANT message — never echo the exception
+                # text, which can contain fragments of the private key.
+                self.stacks_disabled_reason = (
+                    "Stacks key rejected: not a valid Stacks private key "
+                    "(64 hex, or 66 hex ending in 01)"
+                )
+                logger.warning("Stacks wallet init failed: invalid Stacks key — Stacks payments disabled")
 
     @property
     def public_key(self) -> str:
@@ -502,6 +553,133 @@ class AgentWallet:
         }
         return base64.b64encode(json.dumps(payment_payload).encode()).decode()
 
+    # ── Stacks/sBTC payment path (AGE-25) ─────────────────────────────────────
+
+    @property
+    def _stacks_api_base(self) -> str:
+        import os
+        return os.environ.get("STACKS_API_URL") or (
+            STACKS_API_MAINNET if self.network == "mainnet" else STACKS_API_TESTNET
+        )
+
+    def fetch_stacks_nonce(self) -> int:
+        """Next valid account nonce from the Stacks node (`/v2/accounts`)."""
+        resp = httpx.get(
+            f"{self._stacks_api_base}/v2/accounts/{self.stacks_address}?proof=0",
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return int(resp.json()["nonce"])
+
+    def build_stacks_payment(self, stacks_opt: dict, payment_id: str, resource_url: str) -> dict:
+        """Sign — but DO NOT broadcast — an sBTC transfer for a 402 stacks
+        option, and build the lowercase `payment-signature` header payload.
+
+        Sign-don't-broadcast semantics: the return value is a complete signed
+        transaction the GATEWAY will broadcast (facilitator /settle, or direct
+        Hiro). Once the header leaves the process the tx is live — the caller
+        records the spend at transmission, not at HTTP 200 ([CHECKLIST #2]).
+
+        The caller MUST hold self._stacks_lock across sign→transmit→response:
+        Stacks nonces are sequential, so exactly one signed tx may be in
+        flight per wallet. Nonce = max(chain's next nonce, our local
+        successor) — the local successor covers mempool lag right after a
+        prior leg settled.
+
+        `stacks_opt` is the `payment_options.stacks` block of AgentPay's 402:
+        {amount_sats, amount_usdc, pay_to, network (CAIP-2), fee_microstx?,
+        scheme?}. Budget cap math stays in USD (amount_usdc); amount_sats is
+        what gets signed. [CHECKLIST #7]'s validity-window clamp has no Stacks
+        analog (a signed tx never expires) — the mitigation is this
+        serialization plus the gateway's pre-settle replay consume on txid.
+
+        Returns {"header", "txid", "nonce", "amount_sats", "amount_usd"}.
+        """
+        import os
+        from agentpay import _stacks_tx
+        if self._stacks_keypair is None:
+            raise RuntimeError(
+                "Stacks wallet not configured. Pass stacks_key= to AgentWallet "
+                "or set STACKS_AGENT_KEY env var."
+            )
+        network = "mainnet" if self.network == "mainnet" else "testnet"
+        expected_caip2 = (
+            _stacks_tx.STACKS_MAINNET_CAIP2 if network == "mainnet"
+            else _stacks_tx.STACKS_TESTNET_CAIP2
+        )
+        offered = stacks_opt.get("network") or expected_caip2
+        if offered != expected_caip2:
+            raise ValueError(
+                f"402 stacks option targets {offered} but this wallet is on "
+                f"{expected_caip2} — refusing to sign"
+            )
+        amount_sats = int(stacks_opt["amount_sats"])
+        pay_to = stacks_opt.get("pay_to") or stacks_opt.get("payTo")
+        if not pay_to:
+            raise ValueError("402 stacks option has no pay_to address")
+        fee = int(
+            stacks_opt.get("fee_microstx")
+            or os.environ.get("STACKS_FEE_MICROSTX")
+            or DEFAULT_STACKS_FEE_MICROSTX
+        )
+        chain_nonce = self.fetch_stacks_nonce()
+        nonce = (
+            chain_nonce if self._stacks_next_nonce is None
+            else max(chain_nonce, self._stacks_next_nonce)
+        )
+        unsigned = _stacks_tx.build_sbtc_transfer(
+            sender=self._stacks_keypair,
+            recipient=pay_to,
+            amount_sats=amount_sats,
+            payment_id=payment_id,   # [CHECKLIST #5] memo = challenge binding
+            nonce=nonce,
+            fee_microstx=fee,
+            network=network,
+        )
+        signed = _stacks_tx.sign_transaction(unsigned, self._stacks_keypair)
+        txid = _stacks_tx.txid_of(signed)
+        payload = {
+            "x402Version": 2,
+            "scheme": stacks_opt.get("scheme", "exact"),
+            "network": expected_caip2,
+            "payload": {"signedTransaction": signed.hex(), "txid": txid},
+            "accepted": {
+                "scheme": stacks_opt.get("scheme", "exact"),
+                "network": expected_caip2,
+                "amount": str(amount_sats),
+                "asset": "sbtc",
+                "payTo": pay_to,
+                "resource": resource_url,
+                "mimeType": "application/json",
+            },
+        }
+        header = base64.b64encode(json.dumps(payload).encode()).decode()
+        return {
+            "header": header,
+            "txid": txid,
+            "nonce": nonce,
+            "amount_sats": amount_sats,
+            "amount_usd": stacks_opt.get("amount_usdc"),
+        }
+
+    def note_stacks_nonce_used(self, nonce: int) -> None:
+        """The signed tx carrying `nonce` is live (transmitted) or settled —
+        the next leg must sign nonce+1 even if the chain read lags."""
+        self._stacks_next_nonce = nonce + 1
+
+    def reset_stacks_nonce(self) -> None:
+        """Definitive broadcast rejection (e.g. BadNonce): the signed tx is
+        dead and our local successor may be wrong — refetch from chain."""
+        self._stacks_next_nonce = None
+
+    def note_stacks_settled(self, amount_usd) -> None:
+        """[CHECKLIST #9]: wallet-level spend counter must move for
+        sign-don't-broadcast settles too, not only for local broadcasts."""
+        try:
+            self._total_spent += Decimal(str(amount_usd))
+        except Exception:
+            pass
+
 
 # ── Budget-Aware Session ──────────────────────────────────────────────────────
 
@@ -638,8 +816,10 @@ class Session:
     ):
         self.wallet = wallet
         self.gateway_url = gateway_url.rstrip("/")
-        # Default settlement chain for external x402 tools that offer several
-        # (e.g. "base" or "stellar"). Overridable per-call via call(..., chain=).
+        # Default settlement chain for tools that offer several (e.g. "base",
+        # "stellar", or "stacks"). Overridable per-call via call(..., chain=).
+        # "stacks" is never a silent default — it only settles when explicitly
+        # preferred here or per-call (AGE-25).
         self._prefer_chain = prefer_chain.lower() if prefer_chain else None
         # Coerce through str() so a float cap is EXACT: Decimal(0.10) drifts to
         # 0.1000000000000000055…, but Decimal(str(0.10)) == Decimal("0.10").
@@ -1308,7 +1488,10 @@ class Session:
           - Any external x402-compatible URL ("https://api.oatp.cc/tools/tx_explainer")
 
         For external URLs that offer payment on several chains, `chain=` ("base"
-        or "stellar") picks which to settle on; without it, the Session's
+        or "stellar") picks which to settle on; for AgentPay registry tools
+        `chain="stacks"` selects sBTC settlement over the Stacks x402 rail
+        (sign-don't-broadcast; requires stacks_key= on the wallet). Without
+        chain=, the Session's
         prefer_chain (or cheapest payable option) is used. The chosen chain is
         recorded on the result (``.network``) and the receipt.
 

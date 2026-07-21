@@ -1,12 +1,75 @@
 # Stacks sBTC Adapter — Design & Build Checklist
 
-**Status:** signing lib IMPLEMENTED (AGE-22, 2026-07-20) — `agentpay/_stacks_tx.py`
-is complete and fixture-validated byte-for-byte against @stacks/transactions v7
-(92 tests, `tests/test_stacks_tx.py`; generator `tools/gen_stacks_fixtures.mjs`),
-plus live-validated against the Hiro testnet node (full deserialize, node txid ==
-pre-broadcast `txid_of()`). Still inert: nothing imports it until AGE-25 wires
-`chain="stacks"`. `gateway/stacks.py` (settlement adapter, AGE-23) remains a
-skeleton.
+**Status:**
+- signing lib IMPLEMENTED (AGE-22, 2026-07-20) — `agentpay/_stacks_tx.py`,
+  fixture-validated byte-for-byte against @stacks/transactions v7 (92 tests,
+  `tests/test_stacks_tx.py`; generator `tools/gen_stacks_fixtures.mjs`), plus
+  live-validated against the Hiro testnet node (full deserialize, node txid ==
+  pre-broadcast `txid_of()`).
+- SDK payment path IMPLEMENTED (AGE-25, 2026-07-21) — `chain="stacks"` /
+  `Session(prefer_chain="stacks")` in `_client.py`/`_wallet.py`:
+  sign-don't-broadcast, one-in-flight nonce serialization, stale-nonce
+  re-sign-once, lowercase dialect (19 tests, `tests/test_stacks_sdk.py`).
+  The client side is live but inert until the gateway offers a
+  `payment_options.stacks` block.
+- `gateway/stacks.py` (settlement adapter, AGE-23) remains a skeleton. It MUST
+  implement the wire contract below — the SDK already emits it.
+
+## Wire contract (defined by AGE-25, consumed by AGE-23/24)
+
+**402 offer** — the gateway advertises Stacks in AgentPay's native 402 body as
+`payment_options.stacks` (AGE-24 computes amount_sats/amount_usdc at
+402-issuance):
+
+```json
+{
+  "payment_options": { "stacks": {
+      "scheme": "exact",
+      "network": "stacks:2147483648",     // CAIP-2; stacks:1 on mainnet
+      "amount_sats": 1030,                 // what gets signed (sBTC, sats)
+      "amount_usdc": "0.001",              // USD-at-quote — budget/cap math
+      "pay_to": "ST…",                     // gateway c32 address
+      "fee_microstx": 500                  // suggested STX network fee (optional)
+  }}
+}
+```
+
+The SDK bounds `amount_usdc` by the session cap BEFORE signing (fail-closed on
+an unparseable amount) and refuses a CAIP-2 network that doesn't match the
+wallet's network.
+
+**payment retry** — lowercase `payment-signature` header (third dialect) +
+`x-agent-address` (c32). Header value = base64 JSON:
+
+```json
+{
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "stacks:2147483648",
+  "payload": {
+    "signedTransaction": "<hex SIP-005 tx>",   // complete, unbroadcast
+    "txid": "<hex sha512/256>"                  // pre-broadcast, replay key
+  },
+  "accepted": { "scheme": "exact", "network": "…", "amount": "<sats>",
+                "asset": "sbtc", "payTo": "ST…", "resource": "<url>",
+                "mimeType": "application/json" }
+}
+```
+
+The gateway must recompute `txid_of(signedTransaction)` and IGNORE the
+client-supplied txid for the replay consume (never trust the header's copy).
+
+**settle responses the SDK understands** (on non-200, JSON body):
+- `payment_status: "rejected"` + `error_reason` matching `/bad|conflicting|
+  stale.{0,3}nonce/i` → the SDK zeroes the leg and re-signs ONCE with a fresh
+  chain nonce. Return `rejected` ONLY when the node refused the broadcast
+  (nothing in any mempool) — never for an ambiguous timeout.
+- `payment_status: "rejected"` (non-nonce reason, e.g.
+  `abort_by_post_condition`) → SDK zeroes the leg, raises PaymentFailed.
+- `payment_status: "refund_pending"/"refund_disabled"` → standard RefundPending
+  contract, spend stays recorded.
+- anything else non-200 → SDK keeps the spend recorded as
+  `uncertain_settlement` and treats the nonce as consumed.
 
 ## Why this document exists
 
