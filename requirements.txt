@@ -7,6 +7,9 @@ pydantic==2.7.0
 pydantic-settings==2.4.0
 slowapi==0.1.9
 eth-account>=0.11.0   # EVM wallet — Base mainnet x402 payments
+eth-keys>=0.4.0       # secp256k1 signing for the Stacks/sBTC settlement path
+                      # (gateway/stacks.py → agentpay._stacks_tx). eth-account
+                      # already pulls it, but stacks.py is a direct consumer.
 x402[evm]>=0.1.0      # EIP-3009 Mode-A signing for EXTERNAL x402 URLs (SDK
                       # _wallet.py pay path; the prober's T1 probes need this —
                       # without it every settle fails. Live incident 2026-07-10)

@@ -12,9 +12,10 @@ implementation of exactly what the x402 payment path needs — a signed SIP-010
 
 Specs: SIP-005 (transaction encoding), SIP-010 (fungible token trait),
 Hiro API (`POST /v2/transactions`, `GET /extended/v1/tx/{txid}`).
-Curve: secp256k1 — same as EVM; primitives come from `eth_keys` (already in
-the dependency tree via eth-account; RFC6979 deterministic signatures, so
-output is byte-identical to stacks.js/noble for the same inputs).
+Curve: secp256k1 — same as EVM; primitives come from `eth_keys`, a CORE
+dependency (its pure-python NativeECCBackend needs no coincurve; RFC6979
+deterministic signatures, so output is byte-identical to stacks.js/noble for
+the same inputs).
 
 Fixture-validated against @stacks/transactions v7 output
 (tests/fixtures/stacks_tx_fixtures.json, generator: tools/gen_stacks_fixtures.mjs):

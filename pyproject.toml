@@ -25,10 +25,15 @@ dependencies = [
     "stellar-sdk>=10.0.0",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
+    # secp256k1 signing for the Stacks/sBTC path (agentpay/_stacks_tx.py).
+    # Light + pure-python: eth-keys' NativeECCBackend needs no coincurve, and
+    # eth-keys itself only pulls eth-typing + eth-utils.
+    "eth-keys>=0.4.0",
 ]
 
 # Optional: pay tools that settle on Base/EVM (off-chain EIP-3009 via the CDP
-# facilitator). Core install is Stellar-only and light; add this for Base.
+# facilitator). Core install covers Stellar + Stacks/sBTC and stays light; add
+# this for Base.
 #   pip install "agentpay-x402[base]"
 [project.optional-dependencies]
 base = [
