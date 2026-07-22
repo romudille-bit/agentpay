@@ -68,8 +68,10 @@ class Settings(BaseSettings):
     STACKS_CONFIRM_POLL_S: float = 3.0
     STACKS_CONFIRM_MAX_POLLS: int = 20
     STACKS_SUGGESTED_FEE_MICROSTX: int = 3000
-    # M1 stopgap USD→sats quote rate (e.g. "97000"). AGE-24 replaces this
-    # with a live FX source + per-payment rate/quote recording.
+    # USD→sats FX (AGE-24): live BTC/USD from CoinGecko, cached this many
+    # seconds. STACKS_FIXED_BTC_USD is the fallback floor when the live fetch
+    # fails (and the sole source if you'd rather pin the rate manually).
+    STACKS_RATE_CACHE_S: float = 60.0
     STACKS_FIXED_BTC_USD: str = ""
 
     # Base / EVM payment option (via Coinbase CDP x402 facilitator)

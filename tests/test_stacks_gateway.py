@@ -65,10 +65,28 @@ def stacks_settings(monkeypatch):
     monkeypatch.setattr(settings, "STACKS_CONFIRM_POLL_S", 0.01)
     monkeypatch.setattr(settings, "STACKS_CONFIRM_MAX_POLLS", 3)
     monkeypatch.setattr(settings, "STACKS_SETTLE_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(settings, "STACKS_RATE_CACHE_S", 60.0)
     monkeypatch.setattr(sb, "sb_enabled", lambda: False)
     stacks_pay._used_stacks_txids.clear()
+    # AGE-24: reset the live-rate cache + per-payment quote store so module
+    # state never leaks between tests.
+    stacks_pay._rate_cache["rate"] = None
+    stacks_pay._rate_cache["at"] = 0.0
+    stacks_pay._stacks_quotes.clear()
     yield
     stacks_pay._used_stacks_txids.clear()
+    stacks_pay._rate_cache["rate"] = None
+    stacks_pay._rate_cache["at"] = 0.0
+    stacks_pay._stacks_quotes.clear()
+
+
+COINGECKO = r"https://api\.coingecko\.com/api/v3/simple/price.*"
+
+
+def _mock_coingecko(usd):
+    return respx.get(url__regex=COINGECKO).mock(
+        return_value=httpx.Response(200, json={"bitcoin": {"usd": usd}})
+    )
 
 
 def _signed_tx(amount_sats=1030, payment_id=PAYMENT_ID, recipient=None,
@@ -420,30 +438,129 @@ class TestSettle:
 
 class TestQuoteAndOption:
 
-    def test_option_shape(self):
-        opt = stacks_pay.build_stacks_402_option("0.001", "https://x/tools/t/call")
+    async def test_option_shape_live_rate(self):
+        with respx.mock:
+            cg = _mock_coingecko(100000)
+            opt = await stacks_pay.build_stacks_402_option(
+                "0.001", "https://x/tools/t/call")
+        assert cg.call_count == 1
         assert opt["network"] == "stacks:2147483648"
         assert opt["amount_usdc"] == "0.001"
         assert opt["pay_to"] == GATEWAY_ADDR
+        assert opt["btc_usd_rate"] == "100000"
         # $0.001 at $100k/BTC = 1 sat exactly (ceil rule)
         assert opt["amount_sats"] == 1
 
-    def test_zero_price_never_offers_stacks(self):
-        assert stacks_pay.build_stacks_402_option("0.000") is None
-        assert stacks_pay.build_stacks_402_option("0") is None
+    async def test_ceils_never_undercharges(self):
+        # $0.001 at $97,123/BTC = 1.029… sats → 2, never 1.
+        with respx.mock:
+            _mock_coingecko(97123)
+            sats = await stacks_pay.stacks_quote_sats("0.001")
+        assert sats == 2
 
-    def test_unconfigured_gateway_offers_nothing(self, monkeypatch):
+    async def test_zero_price_never_offers_stacks(self):
+        # Returns before any rate fetch — no respx needed.
+        assert await stacks_pay.build_stacks_402_option("0.000") is None
+        assert await stacks_pay.build_stacks_402_option("0") is None
+
+    async def test_unconfigured_gateway_offers_nothing(self, monkeypatch):
         monkeypatch.setattr(settings, "STACKS_ENABLED", False)
-        assert stacks_pay.build_stacks_402_option("0.001") is None
+        assert await stacks_pay.build_stacks_402_option("0.001") is None
+        # Configured but no rate available (live fails + no fixed fallback):
         monkeypatch.setattr(settings, "STACKS_ENABLED", True)
         monkeypatch.setattr(settings, "STACKS_FIXED_BTC_USD", "")
-        assert stacks_pay.build_stacks_402_option("0.001") is None
+        with respx.mock:  # CoinGecko unmocked → live fetch fails
+            assert await stacks_pay.build_stacks_402_option("0.001") is None
 
-    def test_quote_ceils_never_undercharges(self):
-        settings_rate = Decimal("97123")
-        sats = stacks_pay.stacks_quote_sats("0.001")
-        # rate fixture is 100000 → exactly 1 sat
-        assert sats == 1
+
+class TestLiveRate:
+
+    async def test_fallback_to_fixed_when_live_fails(self, monkeypatch):
+        monkeypatch.setattr(settings, "STACKS_FIXED_BTC_USD", "80000")
+        with respx.mock:  # CoinGecko unmocked → raises → fixed fallback
+            sats = await stacks_pay.stacks_quote_sats("0.01")
+        # $0.01 at $80k = 12.5 sats → 13 (ceil)
+        assert sats == 13
+
+    async def test_no_source_at_all_returns_none(self, monkeypatch):
+        monkeypatch.setattr(settings, "STACKS_FIXED_BTC_USD", "")
+        with respx.mock:
+            assert await stacks_pay.stacks_quote_sats("0.01") is None
+
+    async def test_rate_is_cached(self):
+        with respx.mock:
+            cg = _mock_coingecko(100000)
+            r1 = await stacks_pay._btc_usd_rate()
+            r2 = await stacks_pay._btc_usd_rate()
+        assert r1 == r2 == Decimal("100000")
+        assert cg.call_count == 1   # second call served from cache
+
+    async def test_cache_expires(self, monkeypatch):
+        monkeypatch.setattr(settings, "STACKS_RATE_CACHE_S", 0.0)  # never fresh
+        with respx.mock:
+            cg = _mock_coingecko(100000)
+            await stacks_pay._btc_usd_rate()
+            await stacks_pay._btc_usd_rate()
+        assert cg.call_count == 2
+
+    async def test_live_preferred_over_fixed(self, monkeypatch):
+        monkeypatch.setattr(settings, "STACKS_FIXED_BTC_USD", "1")  # absurd floor
+        with respx.mock:
+            _mock_coingecko(100000)
+            sats = await stacks_pay.stacks_quote_sats("0.001")
+        assert sats == 1   # used the live 100k, not the fixed 1
+
+
+class TestQuoteStableAcrossFxMove:
+    """The AGE-24 crux: the sats quoted at 402-ISSUANCE are what settle
+    verifies against — a BTC move between issue and settle must not fail the
+    amount check."""
+
+    class _Tool:
+        name = "verified_route"
+        price_usdc = "0.01"
+
+    async def test_settle_uses_issuance_quote_not_requote(self, monkeypatch):
+        import gateway.routes.tools as rt
+
+        # 1. Issue: quote $0.01 at $100k/BTC → 10 sats, stored under payment_id.
+        with respx.mock:
+            _mock_coingecko(100000)
+            opt = await stacks_pay.build_stacks_402_option(
+                "0.01", "https://x/tools/verified_route/call",
+                payment_id=PAYMENT_ID)
+        assert opt["amount_sats"] == 10
+        assert stacks_pay.stacks_quoted_sats(PAYMENT_ID)["sats"] == 10
+
+        # 2. Agent signs a tx paying the QUOTED 10 sats.
+        tx = _signed_tx(amount_sats=10, payment_id=PAYMENT_ID)
+        header = _header_for(tx, payment_id=PAYMENT_ID)
+        payload = json.loads(base64.b64decode(header))
+
+        # 3. Settle while BTC has HALVED to $50k (a re-quote would demand 20
+        #    sats and reject the 10-sat tx as underpaid).
+        challenge = {"payment_id": PAYMENT_ID, "tool_name": "verified_route",
+                     "amount_usdc": "0.01", "expires_at": 9999999999.0}
+        async def _lookup(pid):
+            return challenge if pid == PAYMENT_ID else None
+        monkeypatch.setattr(rt, "_lookup_challenge", _lookup)
+        async def _noop(*a, **k):
+            return None
+        monkeypatch.setattr(rt, "update_payment_log_state", _noop)
+        monkeypatch.setattr(rt, "sb_enabled", lambda: False)
+
+        with respx.mock:
+            _mock_coingecko(50000)          # rate moved — must be IGNORED
+            _hiro_broadcast_ok()
+            _hiro_status("success")
+            auth = await rt._settle_stacks_path(
+                self._Tool(), "verified_route", header, payload)
+
+        assert isinstance(auth, dict) and auth["authorized"]   # used stored 10
+        assert auth["amount_sats"] == 10
+        assert auth["btc_usd_rate"] == "100000"                # issuance rate
+        # quote consumed on terminal settle
+        assert stacks_pay.stacks_quoted_sats(PAYMENT_ID) is None
 
 
 # ── route-level binding (_settle_stacks_path) ────────────────────────────────
@@ -474,6 +591,9 @@ class TestSettleStacksPath:
             return None
         monkeypatch.setattr(rt, "update_payment_log_state", _noop_update)
         monkeypatch.setattr(rt, "sb_enabled", lambda: False)
+        # Issuance always stores the quote; store 1 sat @ $100k so settle reads
+        # it back (no live fetch) — matches the _header default amount_sats=1.
+        stacks_pay._remember_quote(PAYMENT_ID, 1, Decimal("100000"))
         yield
 
     def _header(self, amount_sats=1, payment_id=PAYMENT_ID):
@@ -492,6 +612,21 @@ class TestSettleStacksPath:
         assert auth["tx_hash"] == txid_of(tx)
         assert auth["payer"] == PAYER.address("testnet")
         assert auth["network"] == "stacks-testnet"
+
+    async def test_requotes_when_no_stored_quote(self):
+        # Quote lost (restart / multi-worker / GET-issued 402): settle
+        # re-quotes at the current live rate instead of failing.
+        stacks_pay.forget_stacks_quote(PAYMENT_ID)
+        header, tx = self._header(amount_sats=1)   # 0.001 @ $100k = 1 sat
+        payload = json.loads(base64.b64decode(header))
+        with respx.mock:
+            _mock_coingecko(100000)
+            _hiro_broadcast_ok()
+            _hiro_status("success")
+            auth = await self.rt._settle_stacks_path(
+                self._Tool(), "verified_route", header, payload)
+        assert isinstance(auth, dict) and auth["authorized"]
+        assert auth["btc_usd_rate"] == "100000"
 
     async def test_unknown_payment_id_is_rejected_body(self):
         header, _ = self._header(payment_id="99999999-aaaa-bbbb-cccc-dddddddddddd")

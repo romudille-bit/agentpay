@@ -702,6 +702,13 @@ async def _issue_402(
 
     base_option, payment_required_header, accepts_entry = _base_402_option(tool, resource_url)
 
+    # AGE-24: compute the Stacks option (live USD→sats quote) before building
+    # the body — the quote fetch is async, and passing the payment_id records
+    # the quote so settle reads it back instead of re-quoting.
+    stacks_option = await stacks_pay.build_stacks_402_option(
+        tool.price_usdc, resource_url, payment_id=challenge.payment_id,
+    )
+
     headers = build_402_headers(challenge)
     if payment_required_header:
         headers["PAYMENT-REQUIRED"] = payment_required_header
@@ -735,15 +742,12 @@ async def _issue_402(
                 "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
             },
             **({"base": base_option} if base_option else {}),
-            # Stacks/sBTC (AGE-23): present only when the gateway is
+            # Stacks/sBTC (AGE-23/24): present only when the gateway is
             # configured AND the tool is priced (never for $0 tools) AND a
-            # USD→sats quote is available. Wire contract:
-            # docs/stacks-adapter.md.
-            **({"stacks": stacks_option} if (
-                stacks_option := stacks_pay.build_stacks_402_option(
-                    tool.price_usdc, resource_url,
-                )
-            ) else {}),
+            # USD→sats quote is available. Passing challenge.payment_id stores
+            # the quoted sats + rate so settle verifies against THIS quote
+            # (FX-drift safety). Wire contract: docs/stacks-adapter.md.
+            **({"stacks": stacks_option} if stacks_option else {}),
         },
     }
 
@@ -883,11 +887,21 @@ async def _settle_stacks_path(
     if challenge.get("tool_name") and challenge["tool_name"] not in (tool.name, tool_name):
         return _reject("challenge_tool_mismatch")
 
-    expected_sats = stacks_pay.stacks_quote_sats(challenge.get("amount_usdc")
-                                                 or tool.price_usdc)
-    if expected_sats is None:
-        raise HTTPException(status_code=503,
-                            detail="Stacks pricing unavailable on this gateway")
+    # AGE-24: verify against the quote recorded at 402-ISSUANCE, not a fresh
+    # re-quote — a BTC move between issue and settle must not fail the amount
+    # check (the challenge's own expiry, already checked above, is the quote's
+    # validity window). Re-quote only if the stored quote is gone (restart /
+    # multi-worker / GET-issued 402); the verify tolerance absorbs the drift.
+    quoted = stacks_pay.stacks_quoted_sats(payment_id)
+    if quoted is not None:
+        expected_sats, quote_rate = quoted["sats"], quoted["rate"]
+    else:
+        requote = await stacks_pay.stacks_quote(
+            challenge.get("amount_usdc") or tool.price_usdc)
+        if requote is None:
+            raise HTTPException(status_code=503,
+                                detail="Stacks pricing unavailable on this gateway")
+        expected_sats, quote_rate = requote[0], str(requote[1])
 
     logger.info(f"[PAYMENT] tool={tool_name} network=stacks verifying "
                 f"payment-signature (payment {payment_id[:8]}…)")
@@ -900,6 +914,7 @@ async def _settle_stacks_path(
     if not auth["authorized"]:
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=FAILED "
                     f"reason={auth['reason']}")
+        stacks_pay.forget_stacks_quote(payment_id)
         await update_payment_log_state(
             payment_id, "rejected", error_reason=auth["reason"],
             expected_state=("pending", "verified"),
@@ -938,6 +953,7 @@ async def _settle_stacks_path(
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status={status} "
                     f"state={settle['state']} reason={settle['reason']}")
         if settle["state"] == "rejected":
+            stacks_pay.forget_stacks_quote(payment_id)
             await update_payment_log_state(
                 payment_id, "rejected", error_reason=settle["reason"],
                 expected_state=("pending", "verified"),
@@ -955,12 +971,17 @@ async def _settle_stacks_path(
     logger.info(f"[PAYMENT] tool={tool_name} network=stacks "
                 f"agent={auth['sender'][:8]}... status=OK "
                 f"state={settle['state']} tx={settle['txid'][:16]}")
+    stacks_pay.forget_stacks_quote(payment_id)
     return {
         "authorized": True,
         "tx_hash":    settle["txid"],
         "payer":      auth["sender"],
         "network":    f"stacks-{settings.STACKS_NETWORK}",
         "recovered":  settle["state"] == "ok_recovered",
+        # AGE-24: receipt-level record of what was quoted + paid (durable
+        # payment_logs rate columns are the M2 follow-up).
+        "amount_sats":  auth["amount_sats"],
+        "btc_usd_rate": quote_rate,
     }
 
 

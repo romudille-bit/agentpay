@@ -17,8 +17,16 @@
   post-condition; settle: atomic pre-broadcast txid consume, facilitator →
   direct-Hiro degradation, ok_recovered polling) wired into
   `routes/tools.py` behind `STACKS_ENABLED` (default false — inert).
-  36 tests in `tests/test_stacks_gateway.py`. USD→sats quoting is the M1
-  stopgap `STACKS_FIXED_BTC_USD` fixed rate until AGE-24 lands live FX.
+  43 tests in `tests/test_stacks_gateway.py`.
+- USD→sats pricing IMPLEMENTED (AGE-24, 2026-07-22) — live BTC/USD from
+  CoinGecko `/simple/price` (the feed `token_price` uses; keyless), cached
+  `STACKS_RATE_CACHE_S` (60s), falling back to `STACKS_FIXED_BTC_USD` then a
+  stale cached value then omitting the option. The sats quoted at
+  402-**issuance** are stored per `payment_id` and settle verifies against
+  THAT quote (not a re-quote), so a BTC move between issue and settle can't
+  fail the amount check; the challenge's own expiry is the quote's validity
+  window. Rate + sats surfaced on the 402 option (`btc_usd_rate`) and the
+  settle receipt. Ceil-to-sat rounding is `_stacks_tx.sats_from_usd`.
 
 ## Wire contract (defined by AGE-25, consumed by AGE-23/24)
 
@@ -33,6 +41,7 @@
       "network": "stacks:2147483648",     // CAIP-2; stacks:1 on mainnet
       "amount_sats": 1030,                 // what gets signed (sBTC, sats)
       "amount_usdc": "0.001",              // USD-at-quote — budget/cap math
+      "btc_usd_rate": "97000",             // AGE-24: rate this quote used
       "pay_to": "ST…",                     // gateway c32 address
       "fee_microstx": 500                  // suggested STX network fee (optional)
   }}
@@ -155,9 +164,11 @@ it must be enforced.
 - `gateway/stacks.py` — settlement adapter: facilitator verify/settle,
   direct-Hiro fallback, `ok_recovered` poll path, atomic pre-settle txid
   consume, Clarity contract-call decode for verification.
-- Pricing — USD→sats FX at 402-issuance + overpay tolerance; USDCx as the
-  dollar-priced option. Rate + quoted amount + validity window recorded in
-  payment_logs for receipt auditability.
+- Pricing (AGE-24) — live BTC/USD (CoinGecko, cached, fixed fallback);
+  quote-at-issuance stored per payment_id and read back at settle; rate + sats
+  on the 402 option and the settle receipt. Durable per-payment rate columns
+  in `payment_logs` are the M2 auditability follow-up (the table has no
+  metadata column today). USDCx deferred (see below).
 - Testnet: at least one nonzero-priced tool on the testnet registry (the
   free-funnel pricing left testnet with no payable tool), so the capped
   session, real payment, and over-cap rejection are all demonstrable.
@@ -171,8 +182,18 @@ it must be enforced.
 - Agents need STX for network fees, unless a sponsored-relay path co-signs;
   the sponsored-transaction flag is supported in the wire format from day
   one, relay integration itself comes later.
-- sBTC is BTC-denominated: dollar prices require FX at issuance; USDCx
-  remains the dollar-priced alternative.
+- sBTC is BTC-denominated: dollar prices require FX at issuance.
+- **USDCx DEFERRED (AGE-24 decision, 2026-07-22).** USDCx (Circle
+  xReserve-backed USDC on Stacks) would sidestep FX, but the grant milestones
+  require the **sBTC** path specifically, and x402 dollar-stablecoin demand on
+  Stacks is ~nil today (see the x402-demand-reality note). It's additive, not
+  a blocker — revisit post-M1 if a concrete USDCx buyer appears. The FX path
+  above makes the sBTC quote dollar-accurate in the meantime.
+- Multi-worker note: the issuance→settle quote store is in-memory
+  single-process (like `_pending_challenges`). Fine for the short 402→settle
+  window on a single gateway worker; if gateway-testnet runs >1 worker, a
+  quote issued on worker A and settled on worker B falls back to a re-quote
+  (tolerance absorbs the drift). Durable quote storage is the M2 hardening.
 - No mature Python Stacks signing lib exists — `_stacks_tx.py` is a minimal,
   spec-documented implementation (SIP-005/SIP-010), fixture-validated against
   stacks.js. secp256k1 primitives come from the existing dependency tree.
