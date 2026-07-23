@@ -518,7 +518,13 @@ class AgentWallet:
         from x402.mechanisms.evm.exact.client import ExactEvmScheme
         from x402.schemas import PaymentRequirements
 
-        amount  = str(accept["amount"])
+        _atomic = _x402_amount_atomic(accept)
+        if _atomic is None:
+            # Standard x402 uses maxAmountRequired; AgentPay uses amount. If a
+            # 402 carries neither, it's malformed — a clear error beats the old
+            # bare KeyError('amount').
+            raise KeyError("x402 payment requirements missing amount / maxAmountRequired")
+        amount  = str(_atomic)
         asset   = accept.get("asset") or self.BASE_USDC
         pay_to  = accept["payTo"]
         network = accept.get("network", "eip155:8453")
@@ -706,6 +712,32 @@ OVERPAY_TOLERANCE = Decimal("0.05")   # 5% relative
 # year-long window and settle the signed authorization long after the
 # session is gone.
 MAX_AUTH_VALIDITY_SECONDS = 600
+
+
+def _x402_amount_atomic(entry: dict):
+    """Atomic amount from an x402 payment-requirements ('accepts') entry.
+
+    Tolerates BOTH AgentPay's native `amount` key and the STANDARD x402 v2
+    `maxAmountRequired`. Standard-compliant sellers (a growing share of the
+    ecosystem) send only `maxAmountRequired`; reading `amount` alone priced
+    those options at $0 — so they won the "cheapest" selection — and then
+    raised KeyError('amount') at signing. That is the prober's 2026-07-23
+    systemic failure, and it hit any agent paying such a URL, not just the
+    prober. An explicit `amount` of 0 is honoured (a real free option); only
+    a missing/blank `amount` falls through to `maxAmountRequired`.
+
+    Returns the atomic int, or None when neither key is present/parseable
+    (callers skip such an option rather than mis-pricing it at $0).
+    """
+    raw = entry.get("amount")
+    if raw is None or raw == "":
+        raw = entry.get("maxAmountRequired")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return None
 
 
 def _fmt(amount) -> str:
@@ -1131,7 +1163,9 @@ class Session:
                 options = []
                 for a in accepts:
                     try:
-                        amount_raw = int(a.get("amount", 0))
+                        amount_raw = _x402_amount_atomic(a)
+                        if amount_raw is None:
+                            continue   # no readable price — skip, don't price at $0
                         # AGE-74: Decimal, not binary float, for USDC money.
                         price_usd = Decimal(amount_raw) / Decimal("1000000")
                         options.append({
@@ -1295,9 +1329,8 @@ class Session:
                 kind_ = _chain_kind(a.get("network"))
                 if kind_ is None:
                     continue
-                try:
-                    atomic = int(a.get("amount", 0))
-                except (ValueError, TypeError):
+                atomic = _x402_amount_atomic(a)
+                if atomic is None:
                     continue
                 can = bool(self.wallet.base_address) if kind_ == "base" else True  # any Stellar wallet can pay
                 candidates.append({
