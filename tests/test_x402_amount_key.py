@@ -20,7 +20,7 @@ from decimal import Decimal
 
 import pytest
 
-from agentpay._wallet import _x402_amount_atomic
+from agentpay._wallet import _normalize_evm_network, _x402_amount_atomic
 
 
 class TestX402AmountReader:
@@ -60,21 +60,48 @@ class TestX402AmountReader:
         assert Decimal(atomic) / Decimal("1000000") == Decimal("0.003")
 
 
-class TestBuildBaseSignatureMaxAmountRequired:
-    """build_base_payment_signature must sign an accept that uses only the
-    standard `maxAmountRequired` key (the exact prober failure). Needs the
-    [base] extra (x402[evm]); skipped where it isn't installed."""
+class TestEvmNetworkNormalize:
+    """The x402 signing lib requires CAIP-2 (eip155:CHAIN_ID); live services
+    often advertise a friendly name ('base') — the prober's 2026-07-23
+    failure #2 ('Unsupported network format: base')."""
 
-    def test_signs_standard_maxAmountRequired_accept(self):
-        pytest.importorskip("x402")
+    def test_friendly_base_maps_to_caip2(self):
+        assert _normalize_evm_network("base") == "eip155:8453"
+        assert _normalize_evm_network("Base") == "eip155:8453"
+        assert _normalize_evm_network("base-mainnet") == "eip155:8453"
+
+    def test_base_sepolia_maps(self):
+        assert _normalize_evm_network("base-sepolia") == "eip155:84532"
+
+    def test_already_caip2_passes_through(self):
+        assert _normalize_evm_network("eip155:8453") == "eip155:8453"
+        assert _normalize_evm_network("eip155:84532") == "eip155:84532"
+
+    def test_blank_defaults_to_base_mainnet(self):
+        assert _normalize_evm_network(None) == "eip155:8453"
+        assert _normalize_evm_network("") == "eip155:8453"
+
+    def test_unknown_passes_through_for_lib_to_validate(self):
+        assert _normalize_evm_network("eip155:1") == "eip155:1"
+
+
+class TestBuildBaseSignatureExternalCompat:
+    """build_base_payment_signature must sign a standard external 402 —
+    `maxAmountRequired` price AND a friendly `network: "base"` (the two
+    prober failures). Needs the [base] extra (x402[evm]); skipped otherwise."""
+
+    def _wallet(self):
         from stellar_sdk import Keypair
 
         from agentpay._wallet import AgentWallet
-
-        w = AgentWallet(
+        return AgentWallet(
             secret_key=Keypair.random().secret, network="testnet",
             base_key="0x" + "11" * 32,   # valid throwaway EVM key
         )
+
+    def test_signs_standard_maxAmountRequired_accept(self):
+        pytest.importorskip("x402")
+        w = self._wallet()
         accept = {
             "scheme": "exact",
             "network": "eip155:8453",
@@ -83,7 +110,32 @@ class TestBuildBaseSignatureMaxAmountRequired:
             "asset": w.BASE_USDC,
             "maxTimeoutSeconds": 60,
         }
-        # Before the fix this raised KeyError('amount'); now it signs for 1000.
         header = w.build_base_payment_signature(accept, "https://svc.example/tool")
         decoded = json.loads(base64.b64decode(header))
         assert decoded["accepted"]["amount"] == "1000"
+
+    def test_signs_friendly_network_base(self):
+        # The exact prober failure #2: network='base' + maxAmountRequired.
+        pytest.importorskip("x402")
+        w = self._wallet()
+        accept = {
+            "scheme": "exact",
+            "network": "base",               # friendly name, NOT CAIP-2
+            "maxAmountRequired": "3000",
+            "payTo": "0x" + "22" * 20,
+            "asset": w.BASE_USDC,
+            "maxTimeoutSeconds": 60,
+        }
+        # Before the fix: "Unsupported network format: base". Now it signs and
+        # the accepted block carries the normalized CAIP-2 network.
+        header = w.build_base_payment_signature(accept, "https://svc.example/tool")
+        decoded = json.loads(base64.b64decode(header))
+        assert decoded["accepted"]["network"] == "eip155:8453"
+        assert decoded["accepted"]["amount"] == "3000"
+
+    def test_missing_payto_raises_clear(self):
+        pytest.importorskip("x402")
+        w = self._wallet()
+        accept = {"scheme": "exact", "network": "base", "maxAmountRequired": "1000"}
+        with pytest.raises(KeyError, match="payTo"):
+            w.build_base_payment_signature(accept, "https://svc.example/tool")

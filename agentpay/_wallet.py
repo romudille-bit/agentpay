@@ -526,8 +526,13 @@ class AgentWallet:
             raise KeyError("x402 payment requirements missing amount / maxAmountRequired")
         amount  = str(_atomic)
         asset   = accept.get("asset") or self.BASE_USDC
-        pay_to  = accept["payTo"]
-        network = accept.get("network", "eip155:8453")
+        # payTo is standard x402; tolerate a pay_to alias, clear error if neither.
+        pay_to  = accept.get("payTo") or accept.get("pay_to")
+        if not pay_to:
+            raise KeyError("x402 payment requirements missing payTo")
+        # Live services often advertise 'base' instead of CAIP-2 eip155:8453;
+        # the signing lib requires CAIP-2. Normalize before it validates.
+        network = _normalize_evm_network(accept.get("network"))
         scheme_name = accept.get("scheme", "exact")
         # AGE-67/AGE-56: maxTimeoutSeconds comes from the SERVER'S 402 and
         # becomes the signed authorization's validBefore window. Clamp it so a
@@ -738,6 +743,31 @@ def _x402_amount_atomic(entry: dict):
         return int(raw)
     except (ValueError, TypeError):
         return None
+
+
+# Friendly EVM network names → CAIP-2. The x402 signing lib requires CAIP-2
+# (eip155:CHAIN_ID); standard x402 uses it too, but many LIVE services
+# advertise a friendly name ("base"), which raised
+# "Unsupported network format: base (expected eip155:CHAIN_ID)" at signing —
+# the prober's 2026-07-23 failure #2, revealed once the amount bug was fixed.
+_EVM_NETWORK_CAIP2 = {
+    "base": "eip155:8453",
+    "base-mainnet": "eip155:8453",
+    "base-sepolia": "eip155:84532",
+    "base-testnet": "eip155:84532",
+}
+
+
+def _normalize_evm_network(net) -> str:
+    """Map a friendly EVM network name to CAIP-2. An already-CAIP-2 value passes
+    through; a blank one defaults to Base mainnet (the wallet's chain); an
+    unknown non-empty value passes through so the x402 lib can validate it."""
+    n = str(net or "").strip().lower()
+    if not n:
+        return "eip155:8453"
+    if n.startswith("eip155:"):
+        return n
+    return _EVM_NETWORK_CAIP2.get(n, n)
 
 
 def _fmt(amount) -> str:
