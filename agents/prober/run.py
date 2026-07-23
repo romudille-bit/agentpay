@@ -154,6 +154,10 @@ def probe_paid(session, cand: dict) -> dict:
     """T1: settle a real payment via the SDK, judge delivery. The Session cap
     is the only spend authority — would_exceed() gates before every call."""
     from agentpay import PaymentFailed, RefundPending
+    try:
+        from agentpay import UnsupportedChainPayment
+    except ImportError:                       # older SDK without the typed class
+        UnsupportedChainPayment = ()
 
     price = cand.get("price_usd") or Decimal("0.01")
     if session.would_exceed(price):
@@ -173,6 +177,19 @@ def probe_paid(session, cand: dict) -> dict:
         settle_ok = http_ok = True
         data = getattr(r, "data", r)
         tx_hash = getattr(r, "tx", None)
+    except UnsupportedChainPayment as e:
+        # Seller only settles on chains our wallet can't (e.g. Avalanche
+        # eip155:43114). Unmet demand on an unsupported chain, NOT a delivery
+        # failure — record the chain (authoritative, from the live 402) and
+        # mark the row unscoreable so it never enters delivery_rate or the
+        # FATAL 0/N denominator. Surfaced as a grant signal by AGE-81.
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        _chains = list(getattr(e, "offered_networks", None) or [])
+        return _probe_row(
+            cand, "paid",
+            error=f"unsupported chain: {', '.join(_chains) or '?'}",
+            skipped=True, latency_ms=latency_ms, unsupported_chain=_chains,
+        )
     except PaymentFailed as e:
         latency_ms = int((time.monotonic() - t0) * 1000)
         error = f"settle failed: {str(e)[:200]}"
@@ -344,6 +361,16 @@ def main() -> int:
             "buyer-side systemic failure; NOT publishing seller scores")
         return 1
     probes.extend(paid_rows)
+
+    # AGE-80: sellers that only settle on chains we can't (e.g. Avalanche
+    # eip155:43114) are recorded, never scored. Surface them as unmet demand —
+    # a discovery/grant signal (persisted + shown on /probes by AGE-81).
+    _unsupported = [r for r in paid_rows if r.get("unsupported_chain")]
+    if _unsupported:
+        _uchains = sorted({c for r in _unsupported for c in r["unsupported_chain"]})
+        log(f"unsettleable-chain demand: {len(_unsupported)} paid service(s) on "
+            f"{_uchains} — no settlement rail, tracked as unmet demand, NOT a "
+            f"delivery failure")
 
     # 4. SCORE — local pass over this run's rows for the note/log; the
     # AUTHORITATIVE scores are rebuilt gateway-side over the full 30d window

@@ -58,6 +58,31 @@ class PaymentFailed(Exception):
     pass
 
 
+class UnsupportedChainPayment(PaymentFailed):
+    """
+    Raised when a 402's ONLY payment options are on chains this wallet cannot
+    settle — e.g. a Base/Stellar wallet meeting an Avalanche-only
+    (eip155:43114) or Arbitrum-only (eip155:42161) seller.
+
+    This is NOT a settlement failure: no signature is produced and no value can
+    move, so the seller must never be scored as a delivery failure. It
+    subclasses PaymentFailed so existing ``except PaymentFailed`` handlers keep
+    catching it, but carries the offered CAIP-2 networks so a caller (the
+    Active Prober) can record the unserved-chain demand — a discovery signal,
+    not a fault. (AGE-80)
+
+    Attributes:
+        offered_networks: CAIP-2 networks the 402 advertised that we can't
+                          settle (authoritative — read from the live 402, not
+                          from stale discovery metadata).
+        settleable:       the chains this wallet CAN pay on.
+    """
+    def __init__(self, message: str, offered_networks=None, settleable=None):
+        super().__init__(message)
+        self.offered_networks = list(offered_networks or [])
+        self.settleable = list(settleable or [])
+
+
 class PrePaymentError(Exception):
     """
     Raised when a tool call fails BEFORE any funds move and BEFORE any
@@ -533,6 +558,18 @@ class AgentWallet:
         # Live services often advertise 'base' instead of CAIP-2 eip155:8453;
         # the signing lib requires CAIP-2. Normalize before it validates.
         network = _normalize_evm_network(accept.get("network"))
+        if not _is_base_settleable(network):
+            # Defense in depth: never sign a Base USDC authorization for a chain
+            # the facilitator can't settle (Avalanche eip155:43114, Arbitrum
+            # eip155:42161, …). Selection already filters these; if one still
+            # reaches here, refuse cleanly instead of transmitting a doomed auth
+            # that spends but never confirms. (AGE-80)
+            raise UnsupportedChainPayment(
+                f"cannot settle a Base payment on {network!r} "
+                f"(settleable: {sorted(_BASE_SETTLEABLE_CAIP2)})",
+                offered_networks=[network],
+                settleable=sorted(_BASE_SETTLEABLE_CAIP2),
+            )
         scheme_name = accept.get("scheme", "exact")
         # AGE-67/AGE-56: maxTimeoutSeconds comes from the SERVER'S 402 and
         # becomes the signed authorization's validBefore window. Clamp it so a
@@ -768,6 +805,28 @@ def _normalize_evm_network(net) -> str:
     if n.startswith("eip155:"):
         return n
     return _EVM_NETWORK_CAIP2.get(n, n)
+
+
+# Base chains this wallet can actually SETTLE on (Base mainnet + sepolia). The
+# Base signer builds an EIP-3009 USDC authorization the CDP facilitator settles
+# on Base; it cannot settle any other eip155 chain. _chain_kind() historically
+# treated ANY eip155:* as Base, so an Avalanche- (eip155:43114) or Arbitrum-
+# only (eip155:42161) seller was mistaken for Base: a doomed auth was signed +
+# transmitted (real spend, never confirmed) and the seller was mis-scored as a
+# delivery failure. (AGE-80)
+_BASE_SETTLEABLE_CAIP2 = frozenset({"eip155:8453", "eip155:84532"})
+
+
+def _is_base_settleable(net) -> bool:
+    """True iff `net` is a Base chain this wallet can settle on — Base mainnet
+    (8453) / sepolia (84532), or a friendly 'base…' alias. Every other eip155
+    chain (Avalanche, Arbitrum, Optimism, Polygon, Solana, …) is False."""
+    n = str(net or "").strip().lower()
+    if not n:
+        return False
+    if n.startswith("base"):
+        return True
+    return _normalize_evm_network(n) in _BASE_SETTLEABLE_CAIP2
 
 
 def _fmt(amount) -> str:
@@ -1348,7 +1407,10 @@ class Session:
             # ── Normalise into payable candidates, tagged by chain ────────────
             def _chain_kind(net) -> str | None:
                 n = str(net or "").lower()
-                if "eip155" in n or n.startswith("base"):
+                # Base is settleable ONLY on Base chain-ids (8453 / 84532), not
+                # every eip155:* — an Avalanche/Arbitrum-only seller must not be
+                # mistaken for Base. (AGE-80)
+                if _is_base_settleable(n):
                     return "base"
                 if "stellar" in n:
                     return "stellar"
@@ -1396,8 +1458,20 @@ class Session:
                 pool = base_payable or payable_opts
                 chosen = min(pool, key=lambda c: c["amount_atomic"])
             else:
-                offered = sorted({c["kind"] for c in candidates}) or \
-                          sorted({str(a.get("network", "?")) for a in accepts})
+                if not candidates:
+                    # No advertised option is on a chain AgentPay can settle at
+                    # all (distinct from a missing-key case). Unmet demand on an
+                    # unsupported chain, NOT a settlement failure — surface the
+                    # offered networks structurally so the prober records the
+                    # chain instead of scoring the seller as a failure. (AGE-80)
+                    unsettleable = sorted({str(a.get("network", "?")) for a in accepts})
+                    raise UnsupportedChainPayment(
+                        f"{url} requires payment on {unsettleable}, none of which "
+                        f"AgentPay can settle (settleable: {sorted(set(wallet_can))}).",
+                        offered_networks=unsettleable,
+                        settleable=sorted(set(wallet_can)),
+                    )
+                offered = sorted({c["kind"] for c in candidates})
                 raise PaymentFailed(
                     f"{url} requires payment on {offered}, but your wallet can only pay "
                     f"on {sorted(set(wallet_can))}. Add a Base key (base_key= / "
