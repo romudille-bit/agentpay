@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 import registry
 
+from dataclasses import replace
 from decimal import Decimal
 
 from gateway import base as base_pay
@@ -414,10 +415,37 @@ def _wants_html(request: Request) -> bool:
     return is_search_crawler(request.headers.get("user-agent", ""))
 
 
+def _demo_price_overrides() -> dict:
+    """Testnet-only paid-tool prices for the M1 Stacks demo (AGE-77). Parses
+    settings.TESTNET_PAID_TOOLS ('token_price:0.01,foo:0.02') into {name: price}.
+    Empty on mainnet (env unset) so the free-funnel registry prices are untouched."""
+    raw = (settings.TESTNET_PAID_TOOLS or "").strip()
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for pair in raw.split(","):
+        name, sep, price = pair.partition(":")
+        name, price = name.strip(), price.strip()
+        if sep and name and price:
+            out[name] = price
+    return out
+
+
+def _apply_demo_pricing(tool):
+    """Return the tool with its testnet demo price applied, else unchanged.
+    None-safe (an unresolved tool passes straight through). AGE-77."""
+    if tool is None:
+        return tool
+    price = _demo_price_overrides().get(tool.name)
+    if price is None or price == tool.price_usdc:
+        return tool
+    return replace(tool, price_usdc=price)
+
+
 @router.get("/tools")
 async def list_tools(request: Request, category: Optional[str] = None):
     """List all available tools with pricing (HTML for browsers, JSON default)."""
-    tools = registry.list_tools(category=category)
+    tools = [_apply_demo_pricing(t) for t in registry.list_tools(category=category)]
     if _wants_html(request):
         from gateway.tool_pages import render_tools_index
         return Response(content=render_tools_index(tools, GATEWAY_URL),
@@ -438,7 +466,7 @@ async def get_tool(tool_name: str, request: Request):
     agents keep the JSON contract.
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
-    tool = registry.get_tool(resolved)
+    tool = _apply_demo_pricing(registry.get_tool(resolved))
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
     if _wants_html(request):
@@ -459,7 +487,7 @@ async def head_tool(tool_name: str):
     Also advertises the Base/EVM payment option when BASE_GATEWAY_ADDRESS is set.
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
-    tool = registry.get_tool(resolved)
+    tool = _apply_demo_pricing(registry.get_tool(resolved))
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
     headers = {
@@ -1236,7 +1264,7 @@ async def call_tool_get(tool_name: str, request: Request):
     failure session_create had before GET /v1/session/create existed.
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
-    tool = registry.get_tool(resolved)
+    tool = _apply_demo_pricing(registry.get_tool(resolved))
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
     if not tool.active:
@@ -1276,7 +1304,7 @@ async def call_tool(
       4. PAYMENT-SIGNATURE → _settle_base_path, then _execute_and_log
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
-    tool = registry.get_tool(resolved)
+    tool = _apply_demo_pricing(registry.get_tool(resolved))
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
     if not tool.active:

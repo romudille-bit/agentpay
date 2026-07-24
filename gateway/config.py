@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     STACKS_RATE_CACHE_S: float = 60.0
     STACKS_FIXED_BTC_USD: str = ""
 
+    # AGE-77: testnet-only demo pricing. Comma list of tool:price overrides,
+    # e.g. "token_price:0.01". Applied at request time on the testnet gateway so
+    # the M1 sBTC demo has a nonzero-priced tool; UNSET on mainnet, so the
+    # free-funnel registry prices are untouched.
+    TESTNET_PAID_TOOLS: str = ""
+
     # Base / EVM payment option (via Coinbase CDP x402 facilitator)
     # Default network is mainnet ("base") to match BASE_RPC_URL below — using
     # "base-sepolia" with a mainnet RPC produced silent verification failures
