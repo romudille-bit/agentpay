@@ -18,7 +18,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "registry"))
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://twdtvssqfpgydsvwqglt.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_zpw1bVbwENxB1LAlq-v3nA_cVk6Uv8U")
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]  # required from env; never hardcode (a key was leaked in git history - rotate + set in Railway)
 
 # ── DDL ───────────────────────────────────────────────────────────────────────
 
