@@ -21,6 +21,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="talentapp:project_verification" content="66b96b96aeaf7290a818df11aeb312fcb16df2354b18a06a97ead06556829383a1e1831fc259cc5e6b34a8a83c6af2a13f3bae5035d1a2b6822769fc4cb90989">
 <title>AgentPay — the economic intelligence layer for MCP servers and AI agents</title>
 <meta name="description" content="AgentPay is the economic intelligence layer for MCP servers and AI agents. Hard budget caps enforced at the payment layer. Cost awareness before every call. Full session receipts. 20 tools, 17 free.">
 <meta property="og:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
