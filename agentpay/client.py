@@ -11,6 +11,7 @@ from agentpay._wallet import (
     UnsupportedChainPayment,
     PrePaymentError,
     RefundPending,
+    SettlementUncertain,
     ToolResult,
 )
 
@@ -197,5 +198,5 @@ class Session(_Session):
 
 __all__ = ["AgentWallet", "Session", "ToolResult", "BudgetExceeded", "PaymentFailed",
            "UnsupportedChainPayment",
-           "PrePaymentError", "RefundPending", "faucet_wallet", "quickstart",
+           "PrePaymentError", "RefundPending", "SettlementUncertain", "faucet_wallet", "quickstart",
            "TESTNET_GATEWAY", "MAINNET_GATEWAY"]

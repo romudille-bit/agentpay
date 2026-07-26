@@ -21,7 +21,7 @@ import pytest
 import respx
 
 from agentpay._client import AgentPayClient
-from agentpay._wallet import PaymentFailed, RefundPending
+from agentpay._wallet import PaymentFailed, RefundPending, SettlementUncertain
 
 
 GATEWAY = "https://gateway-fake.example"
@@ -647,7 +647,7 @@ class TestSignedAuthNotTreatedAsUnspent:
                 httpx.Response(402, json=self._base_402()),
                 httpx.Response(500, text="server pretends nothing settled"),
             ])
-            with pytest.raises(Exception, match="Tool call failed after payment"):
+            with pytest.raises(SettlementUncertain):
                 client.call_tool("token_price", {"symbol": "ETH"})
         assert fake_wallet.pay.call_count == 0             # NO Stellar re-pay
         e = client.call_log[0]
@@ -833,7 +833,7 @@ class TestBaseLegRecordsSignedAmount:
                 httpx.Response(402, json=challenge),
                 httpx.Response(500, text="rejected"),
             ])
-            with pytest.raises(Exception, match="after payment"):
+            with pytest.raises(SettlementUncertain):
                 client.call_tool("token_price", {}, max_spend="0.00105")
         e = client.call_log[0]
         assert e["amount_usdc"] == "0.00105"   # signed amount, not body's 0.001

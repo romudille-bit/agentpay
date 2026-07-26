@@ -32,7 +32,7 @@ import respx
 from stellar_sdk import Keypair
 
 from agentpay._client import AgentPayClient
-from agentpay._wallet import AgentWallet, BudgetExceeded, PaymentFailed
+from agentpay._wallet import AgentWallet, BudgetExceeded, PaymentFailed, SettlementUncertain
 
 GATEWAY = "https://gateway-fake.example"
 TOOL_URL = f"{GATEWAY}/tools/verified_route/call"
@@ -400,7 +400,7 @@ class TestSpendRecordedNoFallback:
                 httpx.Response(402, json=_stacks_402()),
                 httpx.ConnectError("boom"),
             ])
-            with pytest.raises(Exception, match="settlement uncertain"):
+            with pytest.raises(SettlementUncertain):
                 client.call_tool(
                     "verified_route", {}, max_spend="0.0011",
                     prefer_chain="stacks", chain_is_explicit=True,
@@ -419,7 +419,7 @@ class TestSpendRecordedNoFallback:
                 httpx.Response(402, json=_stacks_402()),
                 httpx.Response(500, text="edge exploded"),
             ])
-            with pytest.raises(Exception, match="after payment"):
+            with pytest.raises(SettlementUncertain):
                 client.call_tool(
                     "verified_route", {}, max_spend="0.0011",
                     prefer_chain="stacks", chain_is_explicit=True,

@@ -33,6 +33,7 @@ from agentpay._wallet import (
     PaymentFailed,
     PrePaymentError,
     RefundPending,
+    SettlementUncertain,
 )
 
 logger = logging.getLogger(__name__)
@@ -193,16 +194,22 @@ class AgentPayClient:
                             "payment-signature": built["header"],
                             "x-agent-address":   self.wallet.stacks_address,
                         },
+                        # AGE-26: the gateway broadcasts + polls confirmation
+                        # server-side (STACKS_CONFIRM_MAX_POLLS × POLL_S). Give
+                        # the client well over that window so it RECEIVES the
+                        # reply (with the txid) rather than blind-timing-out at
+                        # the shared 60s and losing the tx id.
+                        timeout=180.0,
                     )
                 except Exception as e:
                     # ── [CHECKLIST #3] transmitted → the gateway may hold a
                     # broadcastable tx. Settlement uncertain; never fall back.
                     self.wallet.note_stacks_nonce_used(built["nonce"])
                     entry["state"] = "uncertain_settlement"
-                    raise Exception(
-                        f"Tool call failed after payment — the signed Stacks "
-                        f"tx was transmitted, settlement uncertain, spend "
-                        f"recorded: {e}"
+                    raise SettlementUncertain(
+                        f"signed Stacks tx transmitted; settlement not confirmed "
+                        f"in time (spend recorded, the tx may be live): {e}",
+                        tx_hash=built["txid"], network="stacks",
                     )
 
                 if retry.status_code == 200:
@@ -520,10 +527,10 @@ class AgentPayClient:
                             )
                         except Exception as e:
                             entry["state"] = "uncertain_settlement"
-                            raise Exception(
-                                f"Tool call failed after payment — the signed Base "
-                                f"authorization was transmitted, settlement uncertain, "
-                                f"spend recorded: {e}"
+                            raise SettlementUncertain(
+                                f"signed Base authorization transmitted; settlement "
+                                f"uncertain (spend recorded): {e}",
+                                tx_hash="", network="base",
                             )
 
                 if retry is None:
@@ -623,12 +630,16 @@ class AgentPayClient:
                         f"{retry.status_code} {retry.text[:200]}"
                     )
 
-                entry["state"] = (
-                    "uncertain_settlement"
-                    if entry["state"] in ("signed_auth_transmitted",
-                                          "signed_tx_transmitted")
-                    else "paid_no_result"
-                )
+                _uncertain = entry["state"] in ("signed_auth_transmitted",
+                                                "signed_tx_transmitted")
+                entry["state"] = "uncertain_settlement" if _uncertain else "paid_no_result"
+                if _uncertain:
+                    raise SettlementUncertain(
+                        f"payment transmitted; the gateway did not confirm "
+                        f"settlement (the tx may be live): {retry.text[:200]}",
+                        tx_hash=tx_hash or "",
+                        network=("stacks" if prefer_chain == "stacks" else "base"),
+                    )
                 raise Exception(f"Tool call failed after payment: {retry.text}")
 
             try:

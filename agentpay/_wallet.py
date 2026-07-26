@@ -83,6 +83,29 @@ class UnsupportedChainPayment(PaymentFailed):
         self.settleable = list(settleable or [])
 
 
+class SettlementUncertain(PaymentFailed):
+    """
+    Raised when a signed payment WAS transmitted but the gateway could not
+    confirm settlement within the request window. The transaction may be — and
+    on the Stacks rail usually is — live on-chain, confirming asynchronously
+    (Stacks testnet blocks take minutes; the gateway can't hold an open HTTP
+    connection that long). Distinct from PaymentFailed (nothing settled) and
+    RefundPending (settled, then the tool failed).
+
+    The spend is recorded; DO NOT retry (a retry would double-pay) — verify
+    ``tx_hash`` on-chain instead. Subclasses PaymentFailed so existing
+    ``except PaymentFailed`` handlers still catch it.
+
+    Attributes:
+        tx_hash:  the transmitted transaction id, when known.
+        network:  the settlement network ("stacks" / "base").
+    """
+    def __init__(self, message: str, *, tx_hash: str = "", network: str = ""):
+        super().__init__(message)
+        self.tx_hash = tx_hash
+        self.network = network
+
+
 class PrePaymentError(Exception):
     """
     Raised when a tool call fails BEFORE any funds move and BEFORE any
