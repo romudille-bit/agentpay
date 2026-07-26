@@ -26,6 +26,13 @@ from __future__ import annotations
 import os
 import sys
 
+# Run `python examples/stacks_m1_demo.py` from the repo root without an
+# editable install: if agentpay is not importable, add the repo root to the path.
+try:
+    import agentpay  # noqa: F401
+except ModuleNotFoundError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 TESTNET_GATEWAY = "https://gateway-testnet-production.up.railway.app"
 TOOL = "token_price"
 PARAMS = {"symbol": "BTC"}
