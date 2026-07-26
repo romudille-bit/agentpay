@@ -42,3 +42,19 @@ def test_catchable_as_payment_failed_with_tx():
         assert getattr(caught, "tx_hash", None) == "0xdeadbeef"
     else:
         pytest.fail("SettlementUncertain was not caught as PaymentFailed")
+
+
+
+def test_public_session_forwards_governance_kwargs():
+    # The public Session wrapper must forward per-tool caps / allowlists /
+    # rate limits to the internal session (AGE-26 — the M1 over-cap demo).
+    from unittest.mock import MagicMock
+    from decimal import Decimal
+
+    from agentpay import Session
+    s = Session(MagicMock(), max_spend="0.05", gateway_url="https://x.example",
+                max_per_tool={"token_price": 0.005}, allowed_tools=["token_price"],
+                rate_limit=30)
+    assert s._max_per_tool["token_price"] == Decimal("0.005")
+    assert s._allowed_tools == ["token_price"]
+    assert s._rate_limit == 30

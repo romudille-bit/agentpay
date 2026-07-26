@@ -189,11 +189,15 @@ class Session(_Session):
     """
     def __init__(self, wallet: AgentWallet, max_spend: str = "0.10",
                  testnet: bool = False, gateway_url: str = None,
-                 prefer_chain: str = None):
+                 prefer_chain: str = None, allowed_tools: list = None,
+                 max_per_tool: dict = None, rate_limit: int = None):
         if gateway_url is None:
             gateway_url = TESTNET_GATEWAY if testnet else MAINNET_GATEWAY
+        # Forward the governance controls _wallet.Session supports so the public
+        # API can set per-tool caps / allowlists / rate limits too (AGE-26).
         super().__init__(wallet=wallet, gateway_url=gateway_url, max_spend=max_spend,
-                         prefer_chain=prefer_chain)
+                         prefer_chain=prefer_chain, allowed_tools=allowed_tools,
+                         max_per_tool=max_per_tool, rate_limit=rate_limit)
 
 
 __all__ = ["AgentWallet", "Session", "ToolResult", "BudgetExceeded", "PaymentFailed",

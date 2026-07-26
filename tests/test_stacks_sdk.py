@@ -194,7 +194,8 @@ class TestStacksHardRequirement:
                     prefer_chain="stacks", chain_is_explicit=True,
                 )
 
-    def test_no_stacks_wallet_raises_with_reason(self):
+    def test_no_stacks_wallet_raises_with_reason(self, monkeypatch):
+        monkeypatch.delenv("STACKS_AGENT_KEY", raising=False)
         wallet = AgentWallet(secret_key=Keypair.random().secret, network="testnet")
         assert wallet.stacks_address is None
         client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)
@@ -474,7 +475,8 @@ class TestStacksWalletKey:
                          network="mainnet", stacks_key=STACKS_KEY)
         assert w2.stacks_address == FIXTURES["keys"][0]["address_mainnet"]
 
-    def test_no_key_no_stacks(self):
+    def test_no_key_no_stacks(self, monkeypatch):
+        monkeypatch.delenv("STACKS_AGENT_KEY", raising=False)
         w = AgentWallet(secret_key=Keypair.random().secret, network="testnet")
         assert w.stacks_address is None
         assert w.stacks_disabled_reason is None
