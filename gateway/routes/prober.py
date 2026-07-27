@@ -27,6 +27,7 @@ import re
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from agents.prober.probe import need_leaderboard as _need_leaderboard
 from agents.prober.probe import score
 from gateway.config import settings
 from gateway.services.supabase import (
@@ -90,6 +91,12 @@ async def scores_json():
             "paid_probes": row.get("paid_probes"),
             "delivery_rate": row.get("delivery_rate"),
             "delivery_factor": row.get("delivery_factor"),
+            # AGE-83: "provisional" = a single paid probe, so 0.0/1.0 says
+            # nothing about whether the next call would work. The prober's
+            # re-probe queue targets these first. The prober also reads this
+            # field back off /scores.json, so it must stay in the payload.
+            "confidence": row.get("confidence"),
+            "no_delivery_probes": row.get("no_delivery_probes"),
             "latency_p50_ms": row.get("latency_p50_ms"),
             "flags": row.get("flags") or [],
             "mpp_option": bool(row.get("mpp_option")),
@@ -106,6 +113,10 @@ async def scores_json():
                       "(factor 1.0); these scores feed verified_route ranking."),
             "count": len(services),
             "services": services,
+            # AGE-83: the head-to-head a buyer actually wants — "for pdf ocr,
+            # A delivers and B doesn't". Only paid-probed services appear;
+            # unprobed is neutral, not last.
+            "by_need": _need_leaderboard(services),
             # AgentPay's own paid tools are code-excluded from probing (a
             # trust oracle must not score itself). Their delivery evidence is
             # real customers' receipted paid calls — verifiable on /ledger.

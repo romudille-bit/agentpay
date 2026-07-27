@@ -121,7 +121,10 @@ def test_scores_this_run_when_window_unreadable(monkeypatch):
     assert body["window_rows"] == 0
     assert len(body["scores"]) == 1
     assert body["scores"][0]["paid_probes"] == 1     # fell back to run rows
-    assert body["scores"][0]["delivery_factor"] == 1.15
+    # AGE-83: one paid probe earns the PROVISIONAL boost, not the full 1.15 —
+    # succeed-twice-to-trust.
+    assert body["scores"][0]["delivery_factor"] == 1.05
+    assert body["scores"][0]["confidence"] == "provisional"
 
 
 def test_202_when_storage_partial(monkeypatch):

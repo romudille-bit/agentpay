@@ -68,6 +68,20 @@ ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS name text;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS need text;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS network text;  -- settlement chain (CAIP-2)
 
+-- AGE-83: a delivery verdict resting on ONE paid probe is not a verdict.
+--   confidence         — 'provisional' (1 paid probe) | 'confirmed' (>=2) | NULL
+--   no_delivery_probes — paid probes that settled and delivered nothing; the
+--                        count the took_payment_no_delivery flag is built from
+-- The gateway degrades gracefully when this block hasn't been applied yet (see
+-- _SCORE_COLUMNS_OPTIONAL in gateway/services/supabase.py): scores keep being
+-- written and read, minus these two fields. The re-probe queue is NOT affected —
+-- retest_queue() keys off paid_probes + delivery_rate, both of which predate
+-- AGE-83. What is lost without this block is the public confidence tier on
+-- /scores.json and /probes: a verdict resting on one probe stops being labelled
+-- as one, which is the whole point of the field.
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS confidence text;
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS no_delivery_probes integer;
+
 -- RLS: raw probes private, scores public-read (the gateway's secret key
 -- bypasses RLS for all reads/writes either way).
 ALTER TABLE service_probes ENABLE ROW LEVEL SECURITY;

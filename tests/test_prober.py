@@ -461,3 +461,273 @@ class TestSelfExclusion:
                              pay_to="0x9999")]}
         sel = probe.select_candidates(ranked, top_k=3)
         assert all("agentpay.tools" not in c["url"] for c in sel["t0"])
+
+
+# ── AGE-83: delivery-verification coverage ─────────────────────────────────────
+
+class TestCallSpec:
+    """The seller publishes how to call it; use that instead of one generic
+    guess per need. On the 2026-07-27 sweep 10 of 12 paid settles were burned
+    on pre-delivery param rejections."""
+
+    CONCRETE_GET = {"method": "GET", "type": "http",
+                    "queryParams": {"url": "https://example.com/file.pdf"}}
+    CONCRETE_POST = {"method": "POST", "bodyType": "json", "type": "http",
+                     "body": {"url": "https://example.com/f.pdf"}}
+    SCHEMA_FORM = {"properties": {"input": {"properties": {
+        "method": {"const": "GET"},
+        "queryParams": {"properties": {"url": {"type": "string"},
+                                       "pages": {"type": "integer"}},
+                        "required": ["url"]}}}}}
+
+    def test_advertised_method_is_read(self):
+        assert probe.call_spec(cand(input_spec=self.CONCRETE_GET))["method"] == "GET"
+        assert probe.call_spec(cand(input_spec=self.CONCRETE_POST))["method"] == "POST"
+
+    def test_our_known_good_value_beats_the_sellers_placeholder(self):
+        # The seller's example is example.com — a real probe needs a real PDF.
+        spec = probe.call_spec(cand(need="pdf ocr", input_spec=self.CONCRETE_GET))
+        assert spec["params"]["url"] == probe.NEED_PARAMS["pdf ocr"]["url"]
+        assert spec["source"] == "advertised"
+
+    def test_undeclared_fields_are_dropped(self):
+        # NEED_PARAMS shotguns q AND query; a strict validator
+        # (additionalProperties: false — seen live) rejects the extra one.
+        spec = probe.call_spec(cand(need="web search", input_spec={
+            "method": "GET", "queryParams": {"q": "example"}}))
+        assert set(spec["params"]) == {"q"}
+
+    def test_schema_form_keys_are_understood(self):
+        spec = probe.call_spec(cand(need="pdf ocr", input_spec=self.SCHEMA_FORM))
+        assert spec["method"] == "GET"
+        assert spec["params"]["url"] == probe.NEED_PARAMS["pdf ocr"]["url"]
+        # a bare {"type": "integer"} is a schema node, not a usable value
+        assert "pages" not in spec["params"]
+
+    def test_falls_back_to_need_guess_without_a_spec(self):
+        spec = probe.call_spec(cand(need="token price"))
+        assert spec["params"] == probe.NEED_PARAMS["token price"]
+        assert spec["source"] == "need_guess"
+
+    def test_bare_need_string_still_works(self):
+        assert probe.params_for("token price") == probe.NEED_PARAMS["token price"]
+        assert probe.params_for(None) == {}
+
+
+class TestPaidCoverage:
+    def test_needs_are_round_robined_not_alphabetical(self):
+        # 8 needs × top_k 3 against a 15-probe cap: alphabetical order gave the
+        # first five needs every slot and "web search" none at all (gap 5).
+        ranked = {n: [cand(url=f"https://{n}.com/{i}", pay_to=f"0x{n}{i}")
+                      for i in range(3)]
+                  for n in ("a need", "b need", "c need", "d need", "e need",
+                            "f need", "g need", "web search")}
+        sel = probe.select_candidates(ranked, max_paid=8, top_k=3)
+        assert {c["need"] for c in sel["t1"]} == set(ranked)   # every need paid
+        assert any(c["need"] == "web search" for c in sel["t1"])
+
+    def test_price_ceiling_keeps_one_endpoint_from_eating_the_cap(self):
+        # A single $0.25 probe took half the $0.50 run cap on 2026-07-27.
+        ranked = {"n": [cand(url="https://premium.com/ask", pay_to="0x1", price="0.25"),
+                        cand(url="https://cheap.com/t", pay_to="0x2", price="0.01")]}
+        sel = probe.select_candidates(ranked, max_probe_usd=Decimal("0.05"))
+        assert [c["url"] for c in sel["t1"]] == ["https://cheap.com/t"]
+        # ...and it is REPORTED, not silently dropped
+        assert [c["url"] for c in sel["too_expensive"]] == ["https://premium.com/ask"]
+        assert len(sel["t0"]) == 2      # still gets the free liveness check
+
+    def test_unpriced_candidate_is_not_ceiling_blocked(self):
+        ranked = {"n": [cand(url="https://x.com/t", pay_to="0x1")]}
+        ranked["n"][0]["price_usd"] = None
+        sel = probe.select_candidates(ranked, max_probe_usd=Decimal("0.05"))
+        assert len(sel["t1"]) == 1
+
+
+class TestRetestQueue:
+    @staticmethod
+    def row(url, n, rate, **kw):
+        return {"resource_url": url, "name": url, "paid_probes": n,
+                "delivery_rate": rate, "need": "pdf ocr", **kw}
+
+    def test_provisional_failures_come_first(self):
+        q = probe.retest_queue([
+            self.row("https://confirmed-fail/x", 3, 0.0),
+            self.row("https://provisional-ok/x", 1, 1.0),
+            self.row("https://provisional-fail/x", 1, 0.0),
+        ])
+        assert [c["url"] for c in q] == ["https://provisional-fail/x",
+                                         "https://provisional-ok/x",
+                                         "https://confirmed-fail/x"]
+
+    def test_confirmed_winners_are_not_requeued(self):
+        q = probe.retest_queue([self.row("https://proven/x", 4, 1.0)])
+        assert q == []
+
+    def test_unprobed_services_are_not_requeued(self):
+        q = probe.retest_queue([self.row("https://never/x", 0, None)])
+        assert q == []
+
+    def test_retest_is_probed_before_fresh_candidates(self):
+        # One-strike-and-rotate was the bug: "PDF to Text" failed once on
+        # 07-20 and was never probed again (gap 3).
+        ranked = {"pdf ocr": [cand(url="https://fresh.com/t", pay_to="0xf")]}
+        retest = probe.retest_queue([self.row("https://failed-once.com/t", 1, 0.0)])
+        sel = probe.select_candidates(ranked, retest=retest, max_paid=1)
+        assert [c["url"] for c in sel["t1"]] == ["https://failed-once.com/t"]
+
+    def test_retest_inherits_todays_advertised_call_shape(self):
+        # A score row knows the URL but not how to call it; today's ranking does.
+        spec = {"method": "GET", "queryParams": {"url": "https://e.com/f.pdf"}}
+        ranked = {"pdf ocr": [cand(url="https://x.com/t", pay_to="0x1",
+                                   input_spec=spec)]}
+        retest = probe.retest_queue([self.row("https://x.com/t", 1, 0.0)])
+        sel = probe.select_candidates(ranked, retest=retest)
+        assert sel["t1"][0]["input_spec"] == spec
+
+
+class TestFlagMatchesTheData:
+    """The flag has to use the SAME definition of delivery as delivery_rate.
+    Four services sat at 0.0 while every sweep reported '0 flagged' (gap 4)."""
+
+    def test_settled_200_with_empty_body_is_a_non_delivery(self):
+        p = probe_row(settle_ok=True, http_ok=True, response_nonempty=False)
+        assert probe.took_payment_no_delivery(p) is True
+        assert probe.paid_but_no_data(True, True) is False   # the old, narrow test
+
+    def test_flag_fires_on_repeated_empty_deliveries(self):
+        # X (Twitter) JSON API: 5 paid probes, delivery_rate 0.0, zero flags.
+        rows = [probe_row(days_ago=d, http_ok=True, response_nonempty=False)
+                for d in (1, 2, 3)]
+        s = probe.score(rows, now=NOW)[0]
+        assert s["delivery_rate"] == 0.0
+        assert probe.FLAG_NO_DELIVERY in s["flags"]
+        assert s["no_delivery_probes"] == 3
+
+    def test_single_failure_stays_unconfirmed(self):
+        s = probe.score([probe_row(http_ok=True, response_nonempty=False)],
+                        now=NOW)[0]
+        assert s["flags"] == [probe.FLAG_NO_DELIVERY_UNCONFIRMED]
+
+    def test_schema_mismatch_after_payment_counts_as_no_delivery(self):
+        p = probe_row(settle_ok=True, http_ok=True, response_nonempty=True,
+                      schema_ok=False)
+        assert probe.took_payment_no_delivery(p) is True
+
+    def test_a_delivering_service_is_never_flagged(self):
+        rows = [probe_row(days_ago=d) for d in (1, 2)]
+        assert probe.score(rows, now=NOW)[0]["flags"] == []
+
+
+class TestConfidence:
+    def test_one_probe_is_provisional_both_ways(self):
+        ok = probe.score([probe_row()], now=NOW)[0]
+        assert ok["confidence"] == "provisional"
+        assert ok["delivery_factor"] == probe.FACTOR_PROVISIONAL_GOOD
+
+        bad = probe.score([probe_row(http_ok=False)], now=NOW)[0]
+        assert bad["confidence"] == "provisional"
+        # downranked, but not buried on a single data point
+        assert bad["delivery_factor"] == probe.FACTOR_PROVISIONAL_BAD
+
+    def test_two_probes_confirm_the_verdict(self):
+        rows = [probe_row(days_ago=d) for d in (1, 2)]
+        s = probe.score(rows, now=NOW)[0]
+        assert s["confidence"] == "confirmed"
+        assert s["delivery_factor"] == probe.FACTOR_GOOD
+
+        rows = [probe_row(days_ago=d, http_ok=False) for d in (1, 2)]
+        s = probe.score(rows, now=NOW)[0]
+        assert s["confidence"] == "confirmed"
+        assert s["delivery_factor"] == probe.FACTOR_BAD
+
+    def test_unprobed_is_neutral_with_no_confidence(self):
+        s = probe.score([probe_row(probe_type="free")], now=NOW)[0]
+        assert s["confidence"] is None
+        assert s["delivery_factor"] == probe.FACTOR_UNPROBED
+
+
+class TestNeedLeaderboard:
+    def test_head_to_head_within_a_need(self):
+        rows = probe.score(
+            [probe_row("https://good.com/t", days_ago=d) for d in (1, 2)] +
+            [probe_row("https://bad.com/t", days_ago=d, http_ok=False)
+             for d in (1, 2)],
+            now=NOW)
+        for r in rows:                       # score() carries need through
+            r["need"] = "pdf ocr"
+        board = probe.need_leaderboard(rows)
+        assert [r["resource_url"] for r in board["pdf ocr"]] == \
+               ["https://good.com/t", "https://bad.com/t"]
+
+    def test_confirmed_outranks_provisional_at_equal_rate(self):
+        rows = probe.score(
+            [probe_row("https://twice.com/t", days_ago=d) for d in (1, 2)] +
+            [probe_row("https://once.com/t")], now=NOW)
+        for r in rows:
+            r["need"] = "news"
+        assert [r["confidence"] for r in probe.need_leaderboard(rows)["news"]] == \
+               ["confirmed", "provisional"]
+
+    def test_unprobed_services_are_absent_not_last(self):
+        rows = probe.score([probe_row(probe_type="free")], now=NOW)
+        assert probe.need_leaderboard(rows) == {}
+
+
+class TestRailDetection:
+    """AGE-83 gap 6: mpp_options: 0 is a real read (verified 2026-07-27 against
+    96 live listings / 229 options — nobody advertises MPP or Tempo). The USDG
+    label, though, was structurally dead: it looked for eip155:46630 while
+    every live USDG listing advertises eip155:4663."""
+
+    USDG_402 = {"accepts": [{
+        "scheme": "exact", "network": "eip155:4663", "amount": "50000",
+        "payTo": "0x50ab", "asset": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "extra": {"name": "Global Dollar", "version": "1"}}]}
+
+    def test_live_usdg_option_is_detected(self):
+        assert probe.t0_checks(402, self.USDG_402)["usdg_option"] is True
+
+    def test_asset_name_alone_is_enough(self):
+        opt = {"network": "eip155:1", "amount": "1000",
+               "extra": {"name": "Global Dollar"}}
+        assert probe.t0_checks(402, {"accepts": [opt]})["usdg_option"] is True
+
+    def test_plain_usdc_on_base_is_not_usdg(self):
+        r = probe.t0_checks(402, WELLFORMED_402)
+        assert r["usdg_option"] is False and r["mpp_option"] is False
+
+
+class TestOutputKeysDeliveryCheck:
+    """rank()'s projection dropped the advertised response shape, so a paid
+    call answering {"error": "..."} with HTTP 200 counted as DELIVERED — it
+    was merely non-empty. AGE-83."""
+
+    KEYS = ["url", "pages", "word_count", "text"]
+
+    def test_error_body_fails_the_advertised_shape(self):
+        r = probe.t1_evaluate({"error": "bad request"}, self.KEYS)
+        assert r["response_nonempty"] is True
+        assert r["schema_ok"] is False
+
+    def test_real_payload_passes(self):
+        r = probe.t1_evaluate({"url": "u", "pages": 3, "text": "hi"}, self.KEYS)
+        assert r["schema_ok"] is True
+
+    def test_no_advertised_keys_still_skips_rather_than_penalises(self):
+        assert probe.t1_evaluate({"anything": 1}, [])["schema_ok"] is None
+        assert probe.t1_evaluate({"anything": 1}, None)["schema_ok"] is None
+
+
+class TestRetestDedup:
+    def test_a_retest_row_without_pay_to_is_not_probed_twice(self):
+        # /scores.json publishes no pay_to, so the retest row's dedup key was
+        # (host, "") while today's ranking had (host, "0xabc") — the sweep paid
+        # DeepSeek twice in one run (AGE-83 dry run, 2026-07-27).
+        ranked = {"llm inference": [cand(url="https://api.deepseek/x402",
+                                         pay_to="0xabc")]}
+        retest = [{"url": "https://api.deepseek/x402", "name": "DeepSeek",
+                   "pay_to": "", "need": "llm inference", "retest": True}]
+        sel = probe.select_candidates(ranked, retest=retest)
+        assert len(sel["t1"]) == 1
+        assert len(sel["t0"]) == 1
+        assert sel["t1"][0]["pay_to"] == "0xabc"   # enriched from the ranking

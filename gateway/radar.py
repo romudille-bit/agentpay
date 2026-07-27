@@ -132,6 +132,14 @@ def parse_resources(data: dict) -> list[dict]:
             price = None
         ext = (r.get("extensions") or rd.get("extensions") or {}).get("bazaar") or {}
         out_schema = a.get("outputSchema") or ext.get("info", {}).get("output") or ext.get("schema")
+        # How the seller says to CALL it: {method, type, queryParams|body,
+        # bodyType}. Sellers publish this on the Bazaar listing and they mean
+        # it — a GET-with-?url= service rejects a POSTed JSON body.
+        # AGE-83: the prober used to send one generic guess per need and burned
+        # 10 of 12 paid settles (2026-07-27 sweep) on pre-delivery param
+        # rejections; carrying the advertised input spec is what turns those
+        # into scoreable delivery probes.
+        in_spec = a.get("inputSchema") or (ext.get("info") or {}).get("input")
         q = r.get("quality") or {}
         out.append({
             "name": r.get("serviceName") or rd.get("serviceName") or url.rsplit("/", 1)[-1],
@@ -152,8 +160,39 @@ def parse_resources(data: dict) -> list[dict]:
             # Raw first `accepts` entry so verified_route can hand the buyer a
             # ready-to-pay x402 challenge without a second fetch.
             "accepts": a,
+            # Advertised call shape (AGE-83). None when the seller published
+            # none — callers fall back to their own guess.
+            "input_spec": in_spec if isinstance(in_spec, dict) and in_spec else None,
+            # Top-level keys the seller says come BACK — the cheap half of the
+            # output schema, and the only part a delivery check needs. Without
+            # it a paid call answering {"error": "bad request"} with HTTP 200
+            # is merely "non-empty", so it scored as DELIVERED (AGE-83).
+            "output_keys": _schema_top_keys(out_schema),
         })
     return out
+
+
+_SCHEMA_RESERVED = {"type", "description", "required", "title", "$schema",
+                    "additionalProperties", "example"}
+
+
+def _schema_top_keys(out_schema: object) -> list[str]:
+    """Top-level response keys from an outputSchema-ish blob. Pure.
+
+    Tolerant of the shapes Bazaar listings actually use: JSON-Schema
+    {properties: {...}}, the bazaar extension's {output: {example: {...}}},
+    or a bare example object.
+    """
+    if not isinstance(out_schema, dict) or not out_schema:
+        return []
+    for key in ("properties", "output", "example"):
+        inner = out_schema.get(key)
+        if isinstance(inner, dict) and inner:
+            nested = _schema_top_keys(inner)
+            if nested:
+                return nested
+            return [k for k in inner if k not in _SCHEMA_RESERVED]
+    return [k for k in out_schema if k not in _SCHEMA_RESERVED]
 
 
 def filter_chain(cands: Iterable[dict], chain: Optional[str]) -> list[dict]:
@@ -234,6 +273,10 @@ def _delivery_why(row: dict) -> str:
             lat = f", median {int(p50)}ms" if isinstance(p50, (int, float)) else ""
             parts.append(f"probed {n}× in {row.get('window_days', 30)}d, "
                          f"{pct} delivered{lat}")
+            # AGE-83: never let one probe read like a track record. A single
+            # data point is stated as one data point.
+            if row.get("confidence") == "provisional":
+                parts.append("single probe so far — not yet confirmed")
     if row.get("mpp_option"):
         parts.append("also payable via MPP/Tempo")
     if row.get("usdg_option"):
@@ -410,6 +453,14 @@ def _public(s: Optional[dict]) -> Optional[dict]:
         out["mpp_option"] = True   # [MR-3] label only — never settled by us
     if s.get("usdg_option"):
         out["usdg_option"] = True  # AGE-18 label only — never settled by us
+    # AGE-83: how to call it and what comes back. This projection is what the
+    # prober consumes from rank(), and dropping these was why probes guessed
+    # their params and never checked the response against the advertised shape.
+    # Both are small; the full accepts blob stays off the public payload.
+    if s.get("input_spec"):
+        out["input_spec"] = s["input_spec"]
+    if s.get("output_keys"):
+        out["output_keys"] = s["output_keys"]
     return out
 
 
@@ -572,9 +623,15 @@ def _ready_to_pay(s: Optional[dict]) -> Optional[dict]:
     """The buyer-facing 'how to pay this' block for the recommendation."""
     if not s:
         return None
-    return {"url": s["url"], "network": s["network_caip2"] or s["network"],
-            "price_usd": (str(s["price_usd"]) if s["price_usd"] is not None else None),
-            "accepts": s.get("accepts") or {}}
+    out = {"url": s["url"], "network": s["network_caip2"] or s["network"],
+           "price_usd": (str(s["price_usd"]) if s["price_usd"] is not None else None),
+           "accepts": s.get("accepts") or {}}
+    # AGE-83: hand the buyer the seller's advertised call shape (method +
+    # query/body params) alongside the payment block. "Ready to pay" is only
+    # half the answer if the buyer still has to guess how to call it.
+    if s.get("input_spec"):
+        out["input_spec"] = s["input_spec"]
+    return out
 
 
 def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decimal,

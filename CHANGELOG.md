@@ -6,7 +6,18 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+- **GET-served x402 resources were being called with no arguments** (AGE-83,
+  HIGH). When the seller's 402 declared `input.method: GET`, the SDK retried
+  with `client.get(url, headers=…)` and silently dropped the caller's `params`
+  — so the resource was paid for, then called with nothing. Sellers answered
+  with an error or an empty body and looked like non-deliverers. Live evidence:
+  `x402.shizu.me/pdf` (`GET ?url=`) scored 0.0 delivery across three paid
+  Prober probes while being a working service. Params are now merged into the
+  query string (`_with_query`): explicit params already in the URL win, values
+  are URL-encoded, non-scalars JSON-encoded, `None`s dropped. POST resources
+  are unchanged, and the signed `resource` is still the query-stripped URL, so
+  signature matching is unaffected.
 
 ## [0.3.1] — 2026-07-20
 

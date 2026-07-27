@@ -7,8 +7,9 @@ x402 marketplace as a REAL paying customer, then scores each service on
 whether it delivered — the axis usage-ranking can't see (PROBER_SPEC).
 
 Each run:
-  1. SELECT  — canonical needs × rank() top-K + recent verified_route
-               recommendations → deduped candidates, paid set capped
+  1. SELECT  — unsettled verdicts to re-probe + recent verified_route
+               recommendations + canonical needs × rank() top-K, interleaved
+               round-robin → deduped candidates, paid set capped
   2. T0      — free probes on ALL candidates: alive? 402 well-formed?
                price honest? MPP option advertised? [MR-3]
   3. T1      — paid probes on the capped set via Session.call(url), inside a
@@ -26,6 +27,11 @@ Identity & config (env):
                             (fresh identity per run — anti-special-casing)
   PROBER_MAX_SPEND        — hard cap per run in USDC (default "0.50")
   PROBER_MAX_PAID_PROBES  — cap on paid probes per run (default 15)
+  PROBER_MAX_PROBE_USD    — per-probe price ceiling (default "0.05"); above it
+                            a service stays T0-only, so one premium endpoint
+                            can't eat the run cap (AGE-83)
+  PROBER_RETEST_MAX       — unsettled verdicts to re-probe per run (default 6;
+                            0 disables re-probing)
   PROBER_NEEDS            — comma list overriding the canonical needs
   PROBER_JITTER_MAX_S     — random start delay in seconds (default 0; the
                             Railway cron sets this for ±jitter)
@@ -131,6 +137,24 @@ def recent_recommendations(days: int = 7) -> list[dict]:
     return out
 
 
+def current_scores() -> list[dict]:
+    """The published 30d delivery scores — the input to the re-probe queue.
+
+    The runner holds no history (it's a credential-free HTTP customer), so it
+    reads its own public output to find out which verdicts are still resting on
+    a single probe. Best-effort: [] on any failure means "no re-probes this
+    run", never a failed sweep."""
+    try:
+        req = urllib.request.Request(f"{GATEWAY}/scores.json",
+                                     headers={"User-Agent": PROBE_UA})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+        return [s for s in (data.get("services") or []) if isinstance(s, dict)]
+    except Exception as e:
+        log(f"scores fetch failed (re-probes skipped): {e}")
+        return []
+
+
 # ── Probes (I/O) ───────────────────────────────────────────────────────────────
 
 def probe_free(cand: dict) -> dict:
@@ -168,11 +192,14 @@ def probe_paid(session, cand: dict) -> dict:
     tx_hash = None
     error = None
     data = None
+    # The seller's own advertised call shape when it published one, a
+    # per-need guess otherwise. Generic {} is rejected pre-payment by most
+    # real services (first-sweep finding), and a need-guess that ignores the
+    # advertised fields is rejected by strict ones (AGE-83).
+    spec = probe.call_spec(cand)
     t0 = time.monotonic()
     try:
-        # Plausible params by discovery need — generic {} is rejected
-        # pre-payment by most real services (first-sweep finding).
-        r = session.call(cand["url"], probe.params_for(cand.get("need")))
+        r = session.call(cand["url"], spec["params"])
         latency_ms = int((time.monotonic() - t0) * 1000)
         settle_ok = http_ok = True
         data = getattr(r, "data", r)
@@ -220,9 +247,20 @@ def probe_paid(session, cand: dict) -> dict:
         or "wallet can only pay" in error
         or "is not usable for" in error
     ):
-        return _probe_row(cand, "paid", error=error, skipped=True)
+        # AGE-83: this branch is where paid coverage went to die — on the
+        # 2026-07-27 sweep 10 of 12 settles landed here, real money spent for
+        # an unscoreable row. Record WHY (advertised spec vs our guess) so the
+        # next sweep's coverage loss is diagnosable instead of invisible.
+        return _probe_row(cand, "paid", error=error, skipped=True,
+                          param_source=spec["source"])
 
-    out_schema = (cand.get("accepts") or {}).get("outputSchema")
+    # What the seller said comes BACK. rank()'s public projection carries
+    # `output_keys`; ledger-sourced recommendations carry a raw `accepts`.
+    # Before AGE-83 ranked candidates had neither, so nearly every paid probe
+    # judged delivery on "non-empty" alone — and a 200 carrying
+    # {"error": "…"} passed as delivered.
+    out_schema = (cand.get("output_keys")
+                  or (cand.get("accepts") or {}).get("outputSchema"))
     checks = probe.t1_evaluate(data, out_schema) if http_ok else \
         {"response_nonempty": False, "schema_ok": None}
     return _probe_row(
@@ -304,6 +342,9 @@ def main() -> int:
 
     max_spend = os.environ.get("PROBER_MAX_SPEND", "0.50")
     max_paid = int(os.environ.get("PROBER_MAX_PAID_PROBES", str(probe.DEFAULT_MAX_PAID)))
+    max_probe = Decimal(os.environ.get("PROBER_MAX_PROBE_USD",
+                                       str(probe.DEFAULT_MAX_PROBE_USD)))
+    retest_max = int(os.environ.get("PROBER_RETEST_MAX", "6"))
     needs = _needs_from_env()
 
     # Fresh identity per run unless pinned — the funded key is Base-only.
@@ -326,8 +367,20 @@ def main() -> int:
     # 1. SELECT
     ranked = rank_needs(needs, Decimal(str(max_spend)))
     recent = recent_recommendations()
-    sel = probe.select_candidates(ranked, recent, max_paid=max_paid)
+    retest = probe.retest_queue(current_scores(), limit=retest_max) if retest_max else []
+    if retest:
+        log(f"re-probing {len(retest)} unsettled verdict(s): "
+            + ", ".join(str(c.get("name"))[:28] for c in retest))
+    sel = probe.select_candidates(ranked, recent, max_paid=max_paid,
+                                  retest=retest, max_probe_usd=max_probe)
     log(f"candidates: {len(sel['t0'])} total, {len(sel['t1'])} paid-eligible")
+    if sel["too_expensive"]:
+        # Never silently cover less: a skipped premium endpoint is a coverage
+        # gap the reader deserves to see, not an absence in the table.
+        log(f"{len(sel['too_expensive'])} above the ${max_probe} per-probe ceiling "
+            "— T0 only, left unprobed-neutral: "
+            + ", ".join(f"{c.get('name')} (${c.get('price_usd')})"
+                        for c in sel["too_expensive"][:5]))
 
     # 2. T0 — free probes on everything
     probes: list[dict] = []
@@ -378,15 +431,37 @@ def main() -> int:
     scores = probe.score(probes)
     flagged = [r for r in scores if probe.FLAG_NO_DELIVERY in r["flags"]]
     for r in flagged:
-        log(f"⚠ {r['resource_url']}: {probe.FLAG_NO_DELIVERY}")
+        log(f"⚠ {r['resource_url']}: {probe.FLAG_NO_DELIVERY} "
+            f"({r['no_delivery_probes']}/{r['paid_probes']} paid probes)")
+    for r in scores:
+        if probe.FLAG_NO_DELIVERY_UNCONFIRMED in r["flags"]:
+            log(f"· {r['resource_url']}: {probe.FLAG_NO_DELIVERY_UNCONFIRMED} "
+                "— dropped from recommendations, re-probe queued")
 
     # 5. PUBLISH
     receipt = s.spending_summary()
     settled = sum(1 for p in paid_rows if p.get("settle_ok"))
+    scoreable = sum(1 for p in paid_rows if not p.get("skipped"))
+    wasted = sum(1 for p in paid_rows
+                 if p.get("skipped") and "spend recorded" in str(p.get("error") or ""))
+    unconfirmed = [r for r in scores
+                   if probe.FLAG_NO_DELIVERY_UNCONFIRMED in r["flags"]]
+    board = probe.need_leaderboard(scores)
+    contested = {n: rows for n, rows in board.items() if len(rows) > 1}
+    # The note is what a human skims on /ledger, so it has to carry the bad
+    # news too. It used to say only "N flagged" — and N was structurally 0
+    # while four services sat at 0.0 delivery (AGE-83 gap 4).
     note = (f"AgentPay prober — {run_at}\n"
-            f"Probed {len(sel['t0'])} services ({settled} paid settles) across "
-            f"{len(needs)} needs; {t0_wf} well-formed 402s; "
-            f"{len(flagged)} flagged {probe.FLAG_NO_DELIVERY}")
+            f"Probed {len(sel['t0'])} services ({scoreable} scoreable paid probes) "
+            f"across {len(needs)} needs; {t0_wf} well-formed 402s; "
+            f"{len(flagged)} flagged {probe.FLAG_NO_DELIVERY}, "
+            f"{len(unconfirmed)} unconfirmed")
+    if wasted:
+        note += (f"; {wasted} paid probe(s) unscoreable — the seller rejected "
+                 f"the request after settlement")
+    if contested:
+        note += ("; head-to-head delivery on " +
+                 ", ".join(f"{n} ({len(r)} providers)" for n, r in contested.items()))
     print("\n" + note + "\n", flush=True)
     print("PROBER_SWEEP " + json.dumps({
         "run_at": run_at, "goal": "probe_sweep", "note": note,
@@ -410,6 +485,14 @@ def main() -> int:
             "scores": scores,
             "t0": {"total": len(sel["t0"]), "alive": t0_alive,
                    "wellformed": t0_wf, "mpp_options": t0_mpp},
+            # AGE-83: paid coverage is the differentiator, so it gets reported
+            # as a first-class number instead of being inferred from `scores`.
+            "t1": {"attempted": len(sel["t1"]), "settled": settled,
+                   "scoreable": scoreable, "unscoreable_after_settle": wasted,
+                   "retested": len(retest),
+                   "over_price_ceiling": len(sel["too_expensive"]),
+                   "price_ceiling_usd": str(max_probe)},
+            "need_leaderboard": board,
         }},
         "receipt": receipt, "note": note,
     })

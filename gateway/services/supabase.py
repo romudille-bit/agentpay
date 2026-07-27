@@ -1398,11 +1398,24 @@ _PROBE_COLUMNS = (
     "tx_hash", "error",
 )
 
+# AGE-83 additions. The gateway deploys from git; service_probes.sql is applied
+# BY HAND in the Supabase SQL editor, so there is always a window where the code
+# knows a column the table doesn't. PostgREST answers an unknown column with a
+# 400 for the WHOLE request — which would blank /scores.json and freeze every
+# score row until someone noticed. So these are listed separately and dropped on
+# a 400, degrading to the pre-AGE-83 shape instead of to nothing.
+_SCORE_COLUMNS_OPTIONAL = ("confidence", "no_delivery_probes")
+
 _SCORE_COLUMNS = (
     "resource_url", "name", "need", "network", "window_days", "paid_probes", "delivery_rate",
     "delivery_factor", "latency_p50_ms", "last_ok_at", "last_fail_at", "flags",
     "mpp_option", "usdg_option", "price_usdc",
+    *_SCORE_COLUMNS_OPTIONAL,
 )
+
+
+def _without_optional(cols) -> tuple:
+    return tuple(c for c in cols if c not in _SCORE_COLUMNS_OPTIONAL)
 
 
 async def insert_service_probes(rows: list[dict]) -> bool:
@@ -1467,19 +1480,32 @@ async def upsert_service_scores(rows: list[dict]) -> bool:
     if not sb_enabled() or not rows:
         return False
     now = datetime.now(timezone.utc).isoformat()
-    payload = [{**{k: r.get(k) for k in _SCORE_COLUMNS}, "updated_at": now}
-               for r in rows if r.get("resource_url")]
-    if not payload:
+
+    def _payload(cols) -> list[dict]:
+        return [{**{k: r.get(k) for k in cols}, "updated_at": now}
+                for r in rows if r.get("resource_url")]
+
+    if not _payload(_SCORE_COLUMNS):
         return False
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
-            resp = await client.post(
-                f"{settings.SUPABASE_URL}/rest/v1/service_scores",
-                headers={**sb_headers(),
-                         "Prefer": "resolution=merge-duplicates,return=minimal"},
-                params={"on_conflict": "resource_url"},
-                json=payload,
-            )
+            async def _post(cols):
+                return await client.post(
+                    f"{settings.SUPABASE_URL}/rest/v1/service_scores",
+                    headers={**sb_headers(),
+                             "Prefer": "resolution=merge-duplicates,return=minimal"},
+                    params={"on_conflict": "resource_url"},
+                    json=_payload(cols),
+                )
+            resp = await _post(_SCORE_COLUMNS)
+            if resp.status_code == 400 and any(
+                    c in resp.text for c in _SCORE_COLUMNS_OPTIONAL):
+                # Migration not applied yet — write the columns the table does
+                # have rather than losing the whole rescore (AGE-83).
+                logger.warning("upsert_service_scores: service_probes.sql not "
+                               "applied (missing %s) — writing without them",
+                               ", ".join(_SCORE_COLUMNS_OPTIONAL))
+                resp = await _post(_without_optional(_SCORE_COLUMNS))
         if resp.status_code not in (200, 201, 204):
             logger.error(f"upsert_service_scores error: HTTP {resp.status_code} "
                          f"body={resp.text[:200]}")
@@ -1561,11 +1587,16 @@ async def fetch_service_scores() -> dict[str, dict]:
         return {}
     try:
         async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
-            resp = await client.get(
-                f"{settings.SUPABASE_URL}/rest/v1/service_scores",
-                headers={**sb_headers(), "Accept": "application/json"},
-                params={"select": ",".join(_SCORE_COLUMNS) + ",updated_at"},
-            )
+            async def _get(cols):
+                return await client.get(
+                    f"{settings.SUPABASE_URL}/rest/v1/service_scores",
+                    headers={**sb_headers(), "Accept": "application/json"},
+                    params={"select": ",".join(cols) + ",updated_at"},
+                )
+            resp = await _get(_SCORE_COLUMNS)
+            if resp.status_code == 400 and any(
+                    c in resp.text for c in _SCORE_COLUMNS_OPTIONAL):
+                resp = await _get(_without_optional(_SCORE_COLUMNS))
         if resp.status_code != 200:
             if resp.status_code != 404:
                 logger.error(f"fetch_service_scores error: HTTP {resp.status_code}")

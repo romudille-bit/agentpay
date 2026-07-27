@@ -195,3 +195,76 @@ def test_extra_respects_chain_filter():
     out = radar.rank_from_payload(SAMPLE, "x", Decimal("0.01"),
                                   chain="arbitrum-stack", extra=[base_extra])
     assert "https://base.example/extra" not in {r["url"] for r in out["results"]}
+
+
+# ── AGE-83: the seller's advertised call shape ─────────────────────────────────
+
+def test_parse_resources_carries_the_advertised_input_spec():
+    """Bazaar listings publish {method, queryParams|body} — without it the
+    prober guesses, and a GET-with-?url= service rejects a POSTed body."""
+    payload = {"resources": [{
+        "resource": "https://x402.shizu.me/pdf",
+        "serviceName": "PDF to Text",
+        "accepts": [{"amount": "5000", "network": "eip155:8453", "payTo": "0xa"}],
+        "extensions": {"bazaar": {"info": {
+            "input": {"method": "GET", "type": "http",
+                      "queryParams": {"url": "https://example.com/file.pdf"}},
+            "output": {"type": "json"}}}},
+    }]}
+    c = radar.parse_resources(payload)[0]
+    assert c["input_spec"]["method"] == "GET"
+    assert "url" in c["input_spec"]["queryParams"]
+
+
+def test_parse_resources_input_spec_is_none_when_unpublished():
+    payload = {"resources": [{"resource": "https://a.com/t",
+                              "accepts": [{"amount": "1000", "network": "eip155:8453"}]}]}
+    assert radar.parse_resources(payload)[0]["input_spec"] is None
+
+
+def test_ready_to_pay_hands_the_buyer_the_call_shape():
+    spec = {"method": "GET", "queryParams": {"q": "x"}}
+    rec = radar._ready_to_pay({"url": "https://a.com/t", "network_caip2": "eip155:8453",
+                               "network": "base", "price_usd": Decimal("0.01"),
+                               "accepts": {"amount": "10000"}, "input_spec": spec})
+    assert rec["input_spec"] == spec
+
+
+def test_delivery_why_says_when_a_verdict_rests_on_one_probe():
+    why = radar._delivery_why({"paid_probes": 1, "delivery_rate": 1.0,
+                               "window_days": 30, "confidence": "provisional"})
+    assert "not yet confirmed" in why
+    confirmed = radar._delivery_why({"paid_probes": 4, "delivery_rate": 1.0,
+                                     "window_days": 30, "confidence": "confirmed"})
+    assert "not yet confirmed" not in confirmed
+
+
+def test_parse_resources_extracts_advertised_output_keys():
+    payload = {"resources": [{
+        "resource": "https://x402.shizu.me/pdf",
+        "accepts": [{"amount": "5000", "network": "eip155:8453"}],
+        "extensions": {"bazaar": {"info": {"output": {
+            "type": "json",
+            "example": {"url": "u", "pages": 3, "word_count": 412, "text": "…"}}}}},
+    }]}
+    c = radar.parse_resources(payload)[0]
+    assert set(c["output_keys"]) == {"url", "pages", "word_count", "text"}
+    # ...and it survives the public projection the prober consumes
+    assert set(radar._public({**c, "network_caip2": "eip155:8453", "quality": 0,
+                              "flags": []})["output_keys"]) == set(c["output_keys"])
+
+
+def test_json_schema_output_shape_is_understood():
+    payload = {"resources": [{
+        "resource": "https://a.com/t",
+        "accepts": [{"amount": "1000", "network": "eip155:8453",
+                     "outputSchema": {"type": "object", "properties": {
+                         "result": {"type": "string"}, "cached": {"type": "boolean"}}}}],
+    }]}
+    assert set(radar.parse_resources(payload)[0]["output_keys"]) == {"result", "cached"}
+
+
+def test_output_keys_empty_when_seller_published_nothing():
+    payload = {"resources": [{"resource": "https://a.com/t",
+                              "accepts": [{"amount": "1000", "network": "eip155:8453"}]}]}
+    assert radar.parse_resources(payload)[0]["output_keys"] == []

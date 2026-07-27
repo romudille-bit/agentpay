@@ -48,13 +48,91 @@ NEED_PARAMS: dict[str, dict] = {
 }
 
 
-def params_for(need: Optional[str]) -> dict:
-    """Best-guess request params for a candidate's discovery need. PURE."""
-    return dict(NEED_PARAMS.get(need or "", {}))
+def _is_schema_stub(v: object) -> bool:
+    """True when a spec value is a JSON-Schema node ({"type": "string"}) rather
+    than a usable example value."""
+    return isinstance(v, dict) and bool(
+        {"type", "const", "enum", "properties", "$ref"} & set(v))
+
+
+def _spec_fields(spec: object) -> tuple[str, dict]:
+    """(method, advertised-field→example) from a seller's input spec. PURE.
+
+    Handles the two shapes Bazaar listings use:
+      concrete  {"method":"GET","queryParams":{"url":"https://…/f.pdf"}}
+      schema    {"properties":{"input":{"properties":{"body":{"properties":…}}}}}
+    Returns ("", {}) for anything unrecognisable — callers fall back to a guess.
+    """
+    if not isinstance(spec, dict) or not spec:
+        return "", {}
+    inner = spec.get("properties")
+    if isinstance(inner, dict) and isinstance(inner.get("input"), dict):
+        spec = inner["input"]                       # unwrap the JSON-Schema form
+        inner = spec.get("properties")
+    node = inner if isinstance(inner, dict) else spec
+
+    method = ""
+    for src in (spec, node):
+        raw = src.get("method") if isinstance(src, dict) else None
+        if isinstance(raw, dict):                   # schema form: {"const":"GET"}
+            raw = raw.get("const") or (raw.get("enum") or [None])[0]
+        m = str(raw or "").upper()
+        if m in ("GET", "POST"):
+            method = m
+            break
+
+    fields: dict = {}
+    for key in ("queryParams", "body", "params", "query"):
+        blob = node.get(key) if isinstance(node, dict) else None
+        if isinstance(blob, dict) and isinstance(blob.get("properties"), dict):
+            blob = blob["properties"]               # schema form
+        if isinstance(blob, dict) and blob:
+            fields = dict(blob)
+            break
+    return method, fields
+
+
+def call_spec(cand: dict | str | None) -> dict:
+    """How to call this candidate: {"method", "params", "source"}. PURE.
+
+    Precedence per field: OUR need-based value (known-good, e.g. a real PDF
+    URL) > the seller's own example > drop. Fields the seller did NOT declare
+    are dropped — one live listing sets `additionalProperties: false`, and the
+    old shotgun approach (sending both `q` and `query`, `symbol` and `token`)
+    is exactly what a strict validator rejects.
+
+    AGE-83: on the 2026-07-27 sweep 10 of 12 paid settles were burned on
+    pre-delivery param rejections because every probe sent one generic guess
+    per need and ignored the call shape the seller published.
+    """
+    if isinstance(cand, str) or cand is None:
+        cand = {"need": cand}
+    guess = dict(NEED_PARAMS.get(cand.get("need") or "", {}))
+    method, advertised = _spec_fields(cand.get("input_spec"))
+    if not advertised:
+        return {"method": method, "params": guess,
+                "source": "need_guess" if guess else "none"}
+    params: dict = {}
+    for key, example in advertised.items():
+        if key in guess:
+            params[key] = guess[key]
+        elif example is not None and not _is_schema_stub(example):
+            params[key] = example
+    return {"method": method, "params": params, "source": "advertised"}
+
+
+def params_for(cand: dict | str | None) -> dict:
+    """Request params for a candidate (or a bare need string). PURE."""
+    return call_spec(cand)["params"]
 
 TOP_K_PER_NEED = 3          # survivors taken per need from rank()
 DEFAULT_MAX_PAID = 15       # PROBER_MAX_PAID_PROBES default
 WINDOW_DAYS = 30            # scoring window
+# Per-probe price ceiling. A single $0.25 endpoint ate half the $0.50 run cap
+# on 2026-07-27 and the sweep ended "cap reached" with $0.07 left — one
+# premium probe cost us ~5 cheap ones. Above the ceiling a service stays T0
+# (free liveness) and unprobed-neutral rather than starving the sweep.
+DEFAULT_MAX_PROBE_USD = Decimal("0.05")
 
 # delivery_factor thresholds (PROBER_SPEC "Scoring model")
 FACTOR_UNPROBED = 1.0       # neutral — never punish absence of data
@@ -62,6 +140,16 @@ FACTOR_GOOD = 1.15          # rate >= 0.9 — modest boost; usage still dominate
 FACTOR_BAD = 0.25           # rate < 0.5 — heavy downrank
 GOOD_RATE = 0.9
 BAD_RATE = 0.5
+
+# AGE-83 (gap 2): with N=1 a delivery_rate is 0.0 or 1.0 and NOTHING else —
+# a one-off timeout is indistinguishable from a service that never delivers,
+# and a single lucky call is indistinguishable from a reliable one. So a
+# single probe moves the factor only halfway: fail-twice-to-bury,
+# succeed-twice-to-trust. Both tiers are reported in `confidence` so the
+# public leaderboard can say WHY a service sits where it does.
+MIN_PROBES_CONFIRMED = 2
+FACTOR_PROVISIONAL_BAD = 0.5    # 1 probe, no delivery — downranked, not buried
+FACTOR_PROVISIONAL_GOOD = 1.05  # 1 probe, delivered — earned, not yet trusted
 
 # Self-exclusion (enforced, not just policy): the trust oracle must never
 # score its own tools — the 1.15× boost on our own board would be
@@ -97,45 +185,147 @@ def _dedup_key(cand: dict) -> tuple[str, str]:
     return (host, (cand.get("pay_to") or "").lower())
 
 
+def retest_queue(scores: Iterable[dict], limit: int = 6) -> list[dict]:
+    """Services whose delivery verdict is not yet settled → re-probe first. PURE.
+
+    AGE-83 (gap 3): the old sweep was one-strike-and-rotate. "PDF to Text"
+    failed once on 07-20, was never probed again, and the prober moved on to a
+    different provider that is now "trusted" on a single 1/1 success. Neither
+    verdict was ever tested twice, so neither is worth anything.
+
+    Priority (a settled verdict is worth more than a new unsettled one):
+      1. provisional failures  — one 0.0; confirm the accusation or clear it
+      2. provisional successes — one 1.0; earn the trust boost or lose it
+      3. confirmed failures     — cheapest possible redemption path, so a
+                                  service that fixes itself can climb back
+    Already-confirmed successes are NOT re-queued: they enter the sweep through
+    normal ranking, and re-paying a proven deliverer buys little.
+    """
+    tiers: tuple[list[dict], list[dict], list[dict]] = ([], [], [])
+    for row in scores or ():
+        url = (row or {}).get("resource_url")
+        n = row.get("paid_probes") or 0
+        rate = row.get("delivery_rate")
+        if not url or not n or rate is None:
+            continue
+        cand = {
+            "url": url,
+            "name": row.get("name") or url,
+            "pay_to": (row.get("pay_to") or "").lower(),
+            "network": row.get("network") or "",
+            "need": row.get("need"),
+            "price_usd": _as_decimal(row.get("price_usdc")),
+            "retest": True,
+        }
+        if n < MIN_PROBES_CONFIRMED:
+            tiers[0 if rate < GOOD_RATE else 1].append(cand)
+        elif rate < BAD_RATE:
+            tiers[2].append(cand)
+    out = [c for tier in tiers for c in tier]
+    return out[:limit] if limit else out
+
+
+def _as_decimal(v: object) -> Optional[Decimal]:
+    if v is None:
+        return None
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _round_robin(ranked: dict[str, list[dict]], top_k: int) -> list[tuple[dict, str]]:
+    """Interleave needs: every need's #1 candidate before any need's #2. PURE.
+
+    AGE-83 (gap 5): the old loop was `for need in sorted(ranked)` — strictly
+    alphabetical — so with 8 needs × top_k 3 against a 15-probe cap, the first
+    five needs consumed every paid slot and "wallet screening" / "web search"
+    never got a paid probe at all. A per-need delivery leaderboard is
+    impossible if whole needs are never paid.
+    """
+    out: list[tuple[dict, str]] = []
+    for i in range(top_k):
+        for need in sorted(ranked):
+            row = ranked[need]
+            if i < len(row):
+                out.append((row[i], need))
+    return out
+
+
 def select_candidates(
     ranked: dict[str, list[dict]],
     recent: Iterable[dict] = (),
     max_paid: int = DEFAULT_MAX_PAID,
     top_k: int = TOP_K_PER_NEED,
+    retest: Iterable[dict] = (),
+    max_probe_usd: Optional[Decimal] = DEFAULT_MAX_PROBE_USD,
 ) -> dict[str, list[dict]]:
     """Budget-bounded, deterministic candidate selection. PURE.
 
     `ranked` maps need → rank()['results'] (already junk-filtered survivors,
     quality-sorted). `recent` is any service verified_route recommended in the
     last 7 days (freshness guarantee — never recommend something unprobed).
+    `retest` is retest_queue() output — unsettled verdicts, probed first.
 
-    Returns {"t1": capped paid set, "t0": full deduped set} — T0 free probes
-    run on everything regardless (they cost nothing).
+    Paid-set priority: retest → recent recommendations → round-robin over
+    needs. Candidates priced above `max_probe_usd` are T0-only (see
+    DEFAULT_MAX_PROBE_USD) and returned under "too_expensive" so the run can
+    say what it declined instead of silently covering less.
+
+    Returns {"t1": capped paid set, "t0": full deduped set, "too_expensive":
+    [...]} — T0 free probes run on everything regardless (they cost nothing).
     """
     paid: list[dict] = []
     t0: list[dict] = []
+    too_expensive: list[dict] = []
     seen: set[tuple[str, str]] = set()
+    seen_urls: set[str] = set()
+
+    # A retest row from /scores.json knows the URL but not the seller's
+    # advertised call shape; today's ranking does. Merge so a re-probe is at
+    # least as well-formed as a first probe.
+    by_url = {c.get("url"): c for row in ranked.values() for c in row if c.get("url")}
 
     def add(cand: dict, need: Optional[str]) -> None:
         if not cand or not cand.get("url"):
             return
+        known = by_url.get(cand["url"]) or {}
+        # Enrich BEFORE deduping. A retest row comes from /scores.json, which
+        # publishes no pay_to, so its dedup key was (host, "") — a different
+        # key from the same service's (host, "0x…") in today's ranking, and
+        # the sweep paid DeepSeek twice in one run.
+        # cand wins on identity/need; the ranked row fills in what it can't
+        # know. "" counts as absent, not as an override — a score row carries
+        # pay_to="" and must not blank out the address the ranking has.
+        cand = {**known,
+                **{k: v for k, v in cand.items() if v is not None and v != ""},
+                "need": need}
         if is_own_service(cand):        # enforced self-exclusion
             return
         key = _dedup_key(cand)
-        if key in seen:
+        if key in seen or cand["url"] in seen_urls:
             return
         seen.add(key)
-        cand = {**cand, "need": need}   # human category for scores/leaderboard
+        seen_urls.add(cand["url"])
         t0.append(cand)
+        # rank()'s public projection stringifies price_usd; ledger and score
+        # inputs carry Decimal or None. Normalise before comparing.
+        price = _as_decimal(cand.get("price_usd"))
+        if max_probe_usd is not None and price is not None and price > max_probe_usd:
+            too_expensive.append(cand)
+            return
         if len(paid) < max_paid:
             paid.append(cand)
 
-    # Recent recommendations FIRST — the freshness guarantee outranks sweep order.
+    # Unsettled verdicts FIRST — a second data point on a service we already
+    # paid is worth more than a first on one we haven't (AGE-83 gap 2/3).
+    for cand in retest:
+        add(cand, need=cand.get("need") or "retest")
+    # Recent recommendations next — the freshness guarantee outranks sweep order.
     for cand in recent:
         add(cand, need="recently recommended")
-    for need in sorted(ranked):
-        for cand in ranked[need][:top_k]:
-            add(cand, need=need)
+    for cand, need in _round_robin(ranked, top_k):
+        add(cand, need=need)
     # T0 breadth: free probes cost nothing, so the WHOLE survivor list gets a
     # T0 check (alive / wellformed / price / rails) — only the top-k enter the
     # paid set. This is what makes the leaderboard grow faster than the budget.
@@ -144,12 +334,13 @@ def select_candidates(
             if not cand or not cand.get("url") or is_own_service(cand):
                 continue
             key = _dedup_key(cand)
-            if key in seen:
+            if key in seen or cand["url"] in seen_urls:
                 continue
             seen.add(key)
+            seen_urls.add(cand["url"])
             t0.append({**cand, "need": need})
 
-    return {"t1": paid, "t0": t0}
+    return {"t1": paid, "t0": t0, "too_expensive": too_expensive}
 
 
 # ── T0 (free probes) ───────────────────────────────────────────────────────────
@@ -191,17 +382,37 @@ def _option_sane(opt: dict) -> bool:
 
 
 _MPP_MARKERS = ("mpp", "tempo")
-_USDG_MARKERS = ("usdg", "eip155:46630", "robinhood")
+# AGE-83: `usdg_option` was structurally always False. The marker list said
+# "eip155:46630", but every live USDG listing (ArbiPulse, Agent402.tools,
+# Concierge Agent — 5 options in the 2026-07-27 catalog) advertises
+# `eip155:4663` with asset 0x5fc5360D…d168 and extra.name "Global Dollar".
+# "eip155:4663" is also a prefix of "46630", so keeping both costs nothing.
+_USDG_MARKERS = ("usdg", "eip155:4663", "eip155:46630", "robinhood",
+                 "global dollar", "0x5fc5360d0400a0fd4f2af552add042d716f1d168")
 
 
 def _option_hay(opt: dict) -> str:
-    return " ".join(
-        str(opt.get(k, "")) for k in ("network", "scheme", "rail", "chain", "asset", "protocol")
-    ).lower()
+    """Searchable text for rail labels. Includes `extra.name` — the human asset
+    name ("Global Dollar", "USD Coin") is often the only place the rail is
+    spelled out, and leaving it out is half of why USDG never matched."""
+    parts = [str(opt.get(k, "")) for k in
+             ("network", "scheme", "rail", "chain", "asset", "protocol")]
+    extra = opt.get("extra")
+    if isinstance(extra, dict):
+        parts.append(str(extra.get("name", "")))
+    return " ".join(parts).lower()
 
 
 def _is_mpp_option(opt: dict) -> bool:
-    """[MR-3] Does this option advertise MPP/Tempo? Detection only, never settled."""
+    """[MR-3] Does this option advertise MPP/Tempo? Detection only, never settled.
+
+    AGE-83 (gap 6) verified 2026-07-27: `mpp_options: 0` on every sweep is a
+    REAL read, not a stubbed field. A catalog sweep of 96 unique listings /
+    229 payment options across 14 networks (Base, Solana, Polygon, Arbitrum,
+    World, Avalanche, Monad, Celo, Stellar, Algorand, XRPL, …) found ZERO
+    advertising MPP or Tempo. The parser is exercised on every live 402; the
+    marketplace simply doesn't offer the rail yet.
+    """
     return any(m in _option_hay(opt) for m in _MPP_MARKERS)
 
 
@@ -309,10 +520,13 @@ def t1_evaluate(data: object, out_schema: dict | None = None,
     return {"response_nonempty": nonempty, "schema_ok": schema_ok}
 
 
-def _schema_keys(out_schema: dict | None) -> list[str]:
+def _schema_keys(out_schema: dict | list | None) -> list[str]:
     """Advertised top-level keys from an outputSchema-ish dict. Tolerant of the
     common shapes: JSON-schema {properties: {...}}, bazaar info.output {...},
-    or a plain example object."""
+    a plain example object — or an already-extracted list of key names, which
+    is what rank()'s `output_keys` hands us (AGE-83)."""
+    if isinstance(out_schema, list):
+        return [k for k in out_schema if isinstance(k, str)]
     if not isinstance(out_schema, dict) or not out_schema:
         return []
     props = out_schema.get("properties")
@@ -326,22 +540,52 @@ def _schema_keys(out_schema: dict | None) -> list[str]:
 
 
 def paid_but_no_data(settle_ok: bool, http_ok: bool) -> bool:
-    """The worst flag: took money, gave nothing."""
+    """The worst outcome: took money, gave nothing back at the HTTP level.
+
+    NOTE (AGE-83): this is the NARROW test — settled but no 200. It misses the
+    other half of "took payment, delivered nothing": a 200 carrying an empty
+    body or a payload that doesn't match the advertised schema. Use
+    `took_payment_no_delivery()` for the flag; this stays for the raw
+    settle-vs-HTTP distinction.
+    """
     return bool(settle_ok and not http_ok)
+
+
+def took_payment_no_delivery(p: dict) -> bool:
+    """Did this paid probe settle and fail to deliver? PURE.
+
+    The flag must use the SAME definition of delivery as delivery_rate does,
+    or the summary contradicts the scores. It used to be `settled ∧ ¬HTTP-200`,
+    which is strictly narrower: X (Twitter) JSON API sat at delivery_rate 0.0
+    over 5 paid probes and PDF to Text at 0.0 over 3, and BOTH carried zero
+    flags — every sweep reported "0 flagged took_payment_no_delivery" while
+    the score table showed four services at 0.0. A ledger skim read as a clean
+    bill of health. Money left the wallet and nothing usable came back: that
+    is the failure, whatever HTTP status dressed it up.
+    """
+    return bool(p.get("settle_ok")) and not _delivered(p)
 
 
 # ── SCORE ──────────────────────────────────────────────────────────────────────
 
-def delivery_factor(rate: Optional[float], probed: bool) -> float:
+def delivery_factor(rate: Optional[float], probed: bool,
+                    n_probes: Optional[int] = None) -> float:
     """PROBER_SPEC scoring model. PURE.
 
-        unprobed            → 1.00  (neutral)
-        probed, rate ≥ 0.9  → 1.15
-        probed, 0.5–0.9     → 1.00 − 0.5×(0.9 − rate)
-        probed, < 0.5       → 0.25
+        unprobed              → 1.00  (neutral)
+        1 probe,  delivered   → 1.05  (provisional — succeed-twice-to-trust)
+        1 probe,  no delivery → 0.50  (provisional — fail-twice-to-bury)
+        ≥2 probes, rate ≥ 0.9 → 1.15
+        ≥2 probes, 0.5–0.9    → 1.00 − 0.5×(0.9 − rate)
+        ≥2 probes, < 0.5      → 0.25
+
+    `n_probes` is optional for backwards compatibility; omitting it keeps the
+    pre-AGE-83 confirmed-tier behaviour.
     """
     if not probed or rate is None:
         return FACTOR_UNPROBED
+    if n_probes is not None and n_probes < MIN_PROBES_CONFIRMED:
+        return FACTOR_PROVISIONAL_GOOD if rate >= GOOD_RATE else FACTOR_PROVISIONAL_BAD
     if rate >= GOOD_RATE:
         return FACTOR_GOOD
     if rate >= BAD_RATE:
@@ -389,10 +633,10 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
         delivered = sum(1 for p in paid if _delivered(p))
         rate = (delivered / n) if n else None
         flags: list[str] = []
-        no_delivery = sum(
-            1 for p in paid
-            if paid_but_no_data(bool(p.get("settle_ok")), bool(p.get("http_ok"))))
-        if no_delivery >= 2:
+        # AGE-83: same delivery definition as delivery_rate — a settled probe
+        # that returns 200-with-nothing is a non-delivery, not a clean run.
+        no_delivery = sum(1 for p in paid if took_payment_no_delivery(p))
+        if no_delivery >= MIN_PROBES_CONFIRMED:
             flags.append(FLAG_NO_DELIVERY)              # confirmed → public ⚠
         elif no_delivery == 1:
             flags.append(FLAG_NO_DELIVERY_UNCONFIRMED)  # rec-drop only
@@ -421,7 +665,13 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
             "window_days": window_days,
             "paid_probes": n,
             "delivery_rate": round(rate, 4) if rate is not None else None,
-            "delivery_factor": delivery_factor(rate, probed=n > 0),
+            "delivery_factor": delivery_factor(rate, probed=n > 0, n_probes=n),
+            # AGE-83: how much this row is worth believing. "provisional" = a
+            # single paid probe, so 0.0/1.0 carries no signal about whether the
+            # next call would work; the re-probe queue targets these first.
+            "confidence": (None if not n else
+                           "confirmed" if n >= MIN_PROBES_CONFIRMED else "provisional"),
+            "no_delivery_probes": no_delivery,
             "latency_p50_ms": int(latencies[len(latencies) // 2]) if latencies else None,
             "last_ok_at": max(d for d in oks if d).isoformat() if any(oks) else None,
             "last_fail_at": max(d for d in fails if d).isoformat() if any(fails) else None,
@@ -431,6 +681,43 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
             "price_usdc": priced[-1]["price_usdc"] if priced else None,
         })
     return rows
+
+
+def need_leaderboard(scores: Iterable[dict],
+                     min_probes: int = 1) -> dict[str, list[dict]]:
+    """Per-need delivery ranking: "for pdf-ocr, A delivers and B doesn't". PURE.
+
+    AGE-83 (gap 5): usage ranking says what's popular; only a paid comparison
+    of two providers for the SAME need says what works. That comparison is
+    exactly what a buyer pays verified_route for, and it was impossible while
+    the sweep paid at most one provider per need.
+
+    Only paid-probed services appear — an unprobed service is neutral, not
+    last. Ordered best-first: delivery rate desc, confirmed above provisional,
+    then faster p50.
+    """
+    board: dict[str, list[dict]] = {}
+    for row in scores or ():
+        n = (row or {}).get("paid_probes") or 0
+        if n < min_probes or row.get("delivery_rate") is None:
+            continue
+        board.setdefault(row.get("need") or "uncategorised", []).append({
+            "name": row.get("name"),
+            "resource_url": row.get("resource_url"),
+            "delivery_rate": row.get("delivery_rate"),
+            "paid_probes": n,
+            "confidence": row.get("confidence"),
+            "latency_p50_ms": row.get("latency_p50_ms"),
+            "price_usdc": row.get("price_usdc"),
+            "flags": row.get("flags") or [],
+        })
+    for need, rows in board.items():
+        rows.sort(key=lambda r: (
+            -(r.get("delivery_rate") or 0.0),
+            0 if r.get("confidence") == "confirmed" else 1,
+            r.get("latency_p50_ms") if r.get("latency_p50_ms") is not None else 10**9,
+        ))
+    return dict(sorted(board.items()))
 
 
 def _parse_ts(iso: object) -> Optional[datetime]:

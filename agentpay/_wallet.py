@@ -907,6 +907,39 @@ def _wrap_result(r):
     return ToolResult(r) if isinstance(r, dict) and not isinstance(r, ToolResult) else r
 
 
+def _with_query(url: str, params: dict | None) -> str:
+    """Merge `params` into `url`'s query string — for GET-served x402 resources.
+
+    A GET resource takes its arguments in the URL, so a POST-shaped params dict
+    has nowhere else to go. Before AGE-83 the SDK simply dropped them
+    (`client.get(url, headers=...)`), so every GET-served seller was called
+    with no arguments at all — it took the payment, then answered with an
+    error or an empty body, and looked like a non-deliverer. Live evidence:
+    x402.shizu.me/pdf (GET ?url=) scored 0.0 across three paid prober probes
+    while being a working service.
+
+    Caller-supplied query params in `url` win over `params` (the caller was
+    explicit). Non-scalar values are JSON-encoded; None values are dropped.
+    """
+    if not params:
+        return url
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+    parts = urlsplit(url)
+    existing = dict(parse_qsl(parts.query, keep_blank_values=True))
+    merged: dict[str, str] = {}
+    for k, v in params.items():
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            merged[str(k)] = "true" if v else "false"
+        elif isinstance(v, (str, int, float)):
+            merged[str(k)] = str(v)
+        else:
+            merged[str(k)] = json.dumps(v, default=str)
+    merged.update(existing)          # explicit URL params are authoritative
+    return urlunsplit(parts._replace(query=urlencode(merged)))
+
+
 def _decode_payment_required_header(headers) -> dict | None:
     """Decode an x402 v2 PAYMENT-REQUIRED (or X-PAYMENT-REQUIRED) header.
 
@@ -1370,7 +1403,9 @@ class Session:
             try:
                 resp = client.post(url, json=params)
                 if resp.status_code == 405:
-                    resp = client.get(url)
+                    # GET-only server: params belong in the query string, not a
+                    # discarded body (AGE-83).
+                    resp = client.get(_with_query(url, params))
             except Exception as e:
                 raise PrePaymentError(f"External x402 call failed: {e}")
 
@@ -1563,7 +1598,11 @@ class Session:
                 # the auth may still have reached the server.
                 _record_spend("signed_auth_transmitted")
                 try:
-                    retry = (client.get(url, headers=_headers) if req_method == "GET"
+                    # GET: arguments ride the query string (AGE-83). The signed
+                    # `resource` is resource_for_payment (query-stripped), so
+                    # adding params here can't break the signature match.
+                    retry = (client.get(_with_query(url, params), headers=_headers)
+                             if req_method == "GET"
                              else client.post(url, json=params, headers=_headers))
                 except Exception as e:
                     entry["state"] = "uncertain_settlement"
@@ -1616,7 +1655,8 @@ class Session:
                 x_payment = base64.b64encode(json.dumps(proof_payload).encode()).decode()
                 _headers = {"X-Payment": x_payment, "X-Agent-Address": payer_address}
                 try:
-                    retry = (client.get(url, headers=_headers) if req_method == "GET"
+                    retry = (client.get(_with_query(url, params), headers=_headers)
+                             if req_method == "GET"
                              else client.post(url, json=params, headers=_headers))
                 except Exception as e:
                     entry["state"] = "paid_no_result"
