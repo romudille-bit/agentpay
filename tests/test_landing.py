@@ -48,13 +48,16 @@ def test_root_json_for_agent(client):
     assert "discovery" in body
 
 
-def test_root_json_when_no_accept_header(client):
-    """No Accept header → defaults to JSON (legacy agent / curl behaviour)."""
-    r = client.get("/")
+def test_root_html_for_generic_client(client):
+    """No / `*/*` Accept → HTML, so site-verification bots and crawlers
+    (Talent Protocol, Google Site Verification, bingbot, plain curl) see the
+    <head> verification metas. JSON is reserved for clients that explicitly
+    send Accept: application/json (see test_root_json_for_agent). This is the
+    fix for verification crawlers getting the JSON manifest and missing the
+    verification tags."""
+    r = client.get("/")   # httpx TestClient sends Accept: */*
     assert r.status_code == 200
-    # curl with no Accept sends */* — should still return JSON, not HTML,
-    # because we only return HTML when text/html is explicitly requested.
-    assert r.headers["content-type"].startswith("application/json")
+    assert r.headers["content-type"].startswith("text/html")
 
 
 def test_root_json_when_browser_explicitly_requests_json(client):

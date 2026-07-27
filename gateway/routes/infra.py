@@ -55,13 +55,16 @@ async def root(request: Request):
         return Response(content=build_llms_txt(), media_type="text/markdown",
                         headers=headers)
 
-    # Browsers ask for text/html; search crawlers (bingbot & co.) send
-    # Accept: */* and were getting the JSON manifest — Bing flagged it as an
-    # HTML document with no <title>. Serve crawlers the landing page too
-    # (dynamic serving); explicit application/json still wins.
+    # Browsers ask for text/html; search crawlers AND site-verification bots
+    # (bingbot, Google Site Verification, Talent Protocol, plain curl) send
+    # Accept: */* (or none) and were getting the JSON manifest — so their
+    # crawlers never saw the <head> verification metas (google-site-verification,
+    # talentapp:project_verification) and verification kept failing. Serve HTML
+    # to any generic/crawler request; explicit application/json still wins.
     from gateway.tool_pages import is_search_crawler
     wants_html = "application/json" not in accept and (
         "text/html" in accept
+        or accept.strip() in ("", "*/*")
         or is_search_crawler(request.headers.get("user-agent", ""))
     )
     if wants_html:
