@@ -611,16 +611,25 @@ class AgentWallet:
         )
         payload_dict = scheme.create_payment_payload(requirements)
 
+        # AGE-90: `accepted` ECHOES the seller's chosen accepts entry VERBATIM.
+        # We used to reconstruct it — normalized network, stringified amount,
+        # clamped timeout, plus injected `resource`/`mimeType` keys. Strict v2
+        # middlewares deep-compare `accepted` against their own advertised
+        # entry, and the injected keys alone produced "No matching payment
+        # requirements" → a fresh 402 {} — the 7-seller rejection cluster that
+        # capped two prober sweeps. Root-caused live 2026-07-28: removing the
+        # two injected keys flips ApiToll/Otto from matcher rejection straight
+        # through to signature verification. Tolerant matchers (5-field subset,
+        # like x402's own Python server) accept the echo just the same, since
+        # it is by definition exactly what the seller advertised. All
+        # normalization (CAIP-2 network, amount key, timeout clamp) still
+        # applies to the SIGNED authorization above — only the declarative
+        # echo is verbatim.
         payment_payload = {
             "x402Version": 2,
             "payload": payload_dict,
             "resource": {"url": resource_url, "mimeType": "application/json"},
-            "accepted": {
-                "scheme": scheme_name, "network": network, "amount": amount,
-                "asset": asset, "payTo": pay_to, "maxTimeoutSeconds": timeout,
-                "resource": resource_url, "mimeType": "application/json",
-                "extra": extra,
-            },
+            "accepted": json.loads(json.dumps(accept)),   # deep copy, untouched
         }
         return base64.b64encode(json.dumps(payment_payload).encode()).decode()
 

@@ -118,7 +118,11 @@ class TestBuildBaseGuardRefusesUnsettleable:
         }
         header = w.build_base_payment_signature(accept, "https://svc.example/tool")
         decoded = json.loads(base64.b64decode(header))
-        assert decoded["accepted"]["network"] == "eip155:8453"
+        # AGE-90: accepted echoes the seller's vocabulary verbatim ('base'
+        # stays 'base'); the CAIP-2 normalization feeds the signer, and the
+        # settleable-chain guard proves it ran (an unsettleable chain raises).
+        assert decoded["accepted"]["network"] == "base"
+        assert decoded["payload"]["authorization"]["value"] == "1000"
 
 
 class TestProberScoreIgnoresUnsupported:

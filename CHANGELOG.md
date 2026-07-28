@@ -7,6 +7,22 @@ project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`accepted` now echoes the seller's accepts entry verbatim** (AGE-90,
+  HIGH — unblocks ~half the paid x402 marketplace). The X-PAYMENT envelope's
+  `accepted` block was reconstructed — normalized network, stringified
+  amount, clamped timeout, plus injected `resource`/`mimeType` keys. Strict
+  v2 middlewares deep-compare `accepted` against their own advertised entry;
+  the injected keys alone produced `"No matching payment requirements"` and
+  a fresh `402 {}` on every paid retry — a stable 7-seller rejection cluster
+  across two prober sweeps (ApiToll, AgentUtility, GEDX402, Agent402, JMT,
+  Otto AI, kadec0), with the reason hidden in the re-challenge's
+  PAYMENT-REQUIRED header, which error truncation never surfaced. Root-caused
+  live 2026-07-28: echoing the entry verbatim flips the rejecting sellers
+  from matcher rejection straight to signature verification. Normalization
+  (CAIP-2 network, amount-key tolerance, AGE-67 timeout clamp) still applies
+  to the SIGNED authorization — only the declarative echo is verbatim, which
+  tolerant subset-matchers accept identically. Note: `accepted.network` now
+  carries the seller's own vocabulary (e.g. `"base"`), not normalized CAIP-2.
 - **GET-served x402 resources were being called with no arguments** (AGE-83,
   HIGH). When the seller's 402 declared `input.method: GET`, the SDK retried
   with `client.get(url, headers=…)` and silently dropped the caller's `params`
