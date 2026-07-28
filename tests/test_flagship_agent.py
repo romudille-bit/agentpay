@@ -192,3 +192,72 @@ class TestFreeIntelHelpers:
 
     def test_context_line_all_missing(self):
         assert context_line(None, None, None) == ""
+
+
+class TestRegimeLineAGE85:
+    """AGE-85: the regime line printed "funding leans crowded-short (bullish
+    signal)" verbatim on 6 of 6 run days — asymmetric thresholds (bearish gate
+    5x wider than bullish), plurality voting over a mostly-neutral basket, and
+    a headline carried by alts while BTC/ETH sat flat."""
+
+    @staticmethod
+    def row(asset, sentiment):
+        return {"asset": asset, "sentiment": sentiment}
+
+    def test_symmetric_thresholds_around_funding_equilibrium(self):
+        from gateway.services.tools_runtime import _funding_sentiment
+        assert _funding_sentiment(0.01) == "neutral"     # the equilibrium itself
+        assert _funding_sentiment(0.0) == "neutral"
+        assert _funding_sentiment(-0.0046) == "neutral"  # ETH median, 07-23
+        assert _funding_sentiment(-0.011) == "bullish"
+        assert _funding_sentiment(0.031) == "bearish"    # was neutral pre-fix
+        assert _funding_sentiment(0.04) == "bearish"     # was NEUTRAL pre-fix: the asymmetry
+        # equidistant from equilibrium → same classification strength
+        assert _funding_sentiment(0.01 - 0.021) == "bullish"
+        assert _funding_sentiment(0.01 + 0.021) == "bearish"
+
+    def test_the_observed_week_reads_unremarkable(self):
+        # Reconstruction of 07-23: BTC/ETH neutral, a couple of tail alts
+        # below -0.01 voting bullish, everything else neutral. The old code
+        # printed the full-conviction bullish headline off this.
+        rates = ([self.row("BTC", "neutral")] * 2 + [self.row("ETH", "neutral")] * 2
+                 + [self.row("SOL", "neutral"), self.row("BNB", "neutral"),
+                    self.row("XRP", "neutral"), self.row("AVAX", "neutral")]
+                 + [self.row("DOGE", "bullish"), self.row("OP", "bullish")])
+        line = regime_line({"value": 28, "value_classification": "Fear"}, {"rates": rates})
+        assert "crowded-short" not in line
+        assert "funding unremarkable" in line
+
+    def test_broad_tilt_without_core_is_attributed_honestly(self):
+        # Enough alts vote (>=1/3 share) but BTC/ETH stay neutral: the line
+        # must say the majors don't confirm it, not claim the market leans.
+        rates = ([self.row("BTC", "neutral"), self.row("ETH", "neutral")]
+                 + [self.row(a, "bullish") for a in ("SOL", "DOGE", "AVAX", "OP")])
+        line = regime_line(None, {"rates": rates})
+        assert line.startswith("BTC/ETH funding neutral; broader basket crowded-short")
+
+    def test_core_confirmed_signal_reads_as_btc_eth(self):
+        rates = ([self.row("BTC", "bullish"), self.row("ETH", "bullish")]
+                 + [self.row("SOL", "neutral")])
+        line = regime_line(None, {"rates": rates})
+        assert "BTC/ETH funding crowded-short (bullish signal)" in line
+
+    def test_crowded_long_is_reachable(self):
+        # The old asymmetry made this side nearly unreachable in practice.
+        rates = [self.row("BTC", "bearish"), self.row("ETH", "bearish"),
+                 self.row("SOL", "neutral")]
+        line = regime_line(None, {"rates": rates})
+        assert "crowded-long (bearish signal)" in line
+
+    def test_vote_share_floor_blocks_plurality_of_the_few(self):
+        # 2 bullish vs 0 bearish out of 9 — 22% share, under the 1/3 floor.
+        rates = ([self.row(a, "neutral") for a in
+                  ("BTC", "ETH", "SOL", "BNB", "XRP", "AVAX", "ARB")]
+                 + [self.row("DOGE", "bullish"), self.row("OP", "bullish")])
+        assert _funding_bias({"rates": rates}) == "balanced"
+
+    def test_funding_bias_still_fires_with_real_share(self):
+        rates = [self.row("BTC", "bearish"), self.row("ETH", "bearish"),
+                 self.row("SOL", "bullish")]
+        assert _funding_bias({"rates": rates}) == "crowded-long"
+        assert _funding_bias({"rates": []}) is None

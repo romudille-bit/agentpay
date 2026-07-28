@@ -823,6 +823,28 @@ async def _fetch_yield_scanner(client: httpx.AsyncClient, params: dict) -> dict:
     }
 
 
+# AGE-85: symmetric ±0.02 band around the +0.01%/8h perp-funding EQUILIBRIUM
+# (the default rate a balanced book settles at — plain 0 is not the neutral
+# point). The old gates were −0.01/+0.05: the bearish side sat 4bp from
+# equilibrium while the bullish side sat 2bp, so in a near-zero-funding week
+# the basket was structurally predisposed to vote bullish — the flagship
+# printed "crowded-short (bullish signal)" 6 days out of 6. "Crowded" now
+# means the same 2bp deviation either way: < −0.01 or > +0.03.
+_FUNDING_EQUILIBRIUM_PCT = 0.01
+_FUNDING_CROWDED_BAND_PCT = 0.02
+
+
+def _funding_sentiment(rate_pct: float) -> str:
+    """Classify one venue's funding rate (% per 8h). PURE, module-level so the
+    symmetry is unit-testable (the old asymmetric gates lived un-tested inside
+    the fetcher for six weeks)."""
+    if rate_pct < _FUNDING_EQUILIBRIUM_PCT - _FUNDING_CROWDED_BAND_PCT:
+        return "bullish"   # shorts pay longs → market leans short → contrarian long
+    if rate_pct > _FUNDING_EQUILIBRIUM_PCT + _FUNDING_CROWDED_BAND_PCT:
+        return "bearish"   # longs pay shorts → overcrowded longs
+    return "neutral"
+
+
 async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
     asset = params.get("asset", "").strip().upper()
 
@@ -916,15 +938,8 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
 
     rows.sort(key=lambda r: abs(r["funding_rate_pct"]), reverse=True)
 
-    def sentiment(rate_pct: float) -> str:
-        if rate_pct < -0.01:
-            return "bullish"   # shorts pay longs → market leans long
-        if rate_pct > 0.05:
-            return "bearish"   # longs pay shorts → overcrowded longs
-        return "neutral"
-
     for r in rows:
-        r["sentiment"] = sentiment(r["funding_rate_pct"])
+        r["sentiment"] = _funding_sentiment(r["funding_rate_pct"])
 
     return {
         "asset":    asset or "major",

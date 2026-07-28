@@ -131,8 +131,43 @@ def run_backtest(symbol: str) -> dict | None:
 
 # ── Note composition (pure — unit-tested) ─────────────────────────────────────
 
+# AGE-85: a "crowded" call needs a real share of venues behind it, not a
+# plurality of the non-neutral few — 3 bullish vs 0 bearish out of 20 mostly
+# neutral rows used to print "crowded-short" with full conviction.
+_FUNDING_VOTE_SHARE = 1 / 3
+
+# The regime headline speaks for the market, so it must be anchored to what
+# BTC/ETH funding actually shows — on 07-23 the majors were flat-neutral and
+# the "bullish" headline was carried entirely by smaller basket members.
+_CORE_ASSETS = ("BTC", "ETH")
+
+
+def _funding_vote(rates: list[dict]) -> str | None:
+    """Crowding vote over funding rows: 'crowded-long' | 'crowded-short' |
+    'balanced' | None (no data). A side must beat the other AND carry at
+    least _FUNDING_VOTE_SHARE of all rated venues. PURE."""
+    if not rates:
+        return None
+    bear = sum(1 for r in rates if r.get("sentiment") == "bearish")
+    bull = sum(1 for r in rates if r.get("sentiment") == "bullish")
+    floor = len(rates) * _FUNDING_VOTE_SHARE
+    if bear > bull and bear >= floor:
+        return "crowded-long"
+    if bull > bear and bull >= floor:
+        return "crowded-short"
+    return "balanced"
+
+
 def regime_line(fear_greed: dict | None, funding: dict | None) -> str:
-    """One-line market regime from free intel. Defensive on missing data."""
+    """One-line market regime from free intel. Defensive on missing data.
+
+    AGE-85: the funding half is split into the CORE read (BTC/ETH — the
+    assets the note's verdicts are about) and the broad basket. The headline
+    only claims a signal the core supports; a broad-only tilt is reported as
+    exactly that. With symmetric thresholds + the vote-share floor, "funding
+    unremarkable" is now the common honest state instead of a six-day
+    "crowded-short (bullish signal)" loop.
+    """
     parts = []
     fg = (fear_greed or {}).get("value")
     fg_label = (fear_greed or {}).get("value_classification")
@@ -140,12 +175,17 @@ def regime_line(fear_greed: dict | None, funding: dict | None) -> str:
         parts.append(f"Fear & Greed {fg} ({fg_label})")
     rates = (funding or {}).get("rates") or []
     if rates:
-        bearish = sum(1 for r in rates if r.get("sentiment") == "bearish")
-        bullish = sum(1 for r in rates if r.get("sentiment") == "bullish")
-        if bearish > bullish:
-            parts.append("funding leans crowded-long (bearish signal)")
-        elif bullish > bearish:
-            parts.append("funding leans crowded-short (bullish signal)")
+        core = [r for r in rates if r.get("asset") in _CORE_ASSETS]
+        label = {"crowded-long": "crowded-long (bearish signal)",
+                 "crowded-short": "crowded-short (bullish signal)"}
+        core_vote = _funding_vote(core)
+        broad_vote = _funding_vote(rates)
+        if core_vote in label:
+            parts.append(f"BTC/ETH funding {label[core_vote]}")
+        elif broad_vote in label:
+            # Honest attribution: the majors don't confirm it, say so.
+            prefix = "BTC/ETH funding neutral; " if core else ""
+            parts.append(f"{prefix}broader basket {label[broad_vote]}")
         else:
             parts.append("funding unremarkable")
     return "; ".join(parts) if parts else "regime data unavailable"
@@ -386,12 +426,11 @@ def select_goal(day_ordinal: int, force: str = "",
 
 
 def _funding_bias(funding: dict | None) -> str | None:
-    rates = (funding or {}).get("rates") or []
-    if not rates:
-        return None
-    bear = sum(1 for r in rates if r.get("sentiment") == "bearish")
-    bull = sum(1 for r in rates if r.get("sentiment") == "bullish")
-    return "crowded-long" if bear > bull else "crowded-short" if bull > bear else "balanced"
+    """AGE-85: same vote-share rule as the regime line — a bias needs
+    ≥1/3 of rated venues behind it, not a plurality of the non-neutral few.
+    This feeds /ledger regime findings and the strategy entry-bias gate, so
+    it must not claim conviction a mostly-neutral basket doesn't have."""
+    return _funding_vote((funding or {}).get("rates") or [])
 
 
 def compact_verdict(v: dict) -> dict:
