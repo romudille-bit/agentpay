@@ -176,8 +176,15 @@ def probe_free(cand: dict) -> dict:
 
 def probe_paid(session, cand: dict) -> dict:
     """T1: settle a real payment via the SDK, judge delivery. The Session cap
-    is the only spend authority — would_exceed() gates before every call."""
-    from agentpay import PaymentFailed, RefundPending
+    is the only spend authority — would_exceed() gates before every call.
+
+    AGE-86 contract: the ONLY rows this returns un-skipped are ones where a
+    payment verifiably settled (success or RefundPending). Everything else is
+    classified into an `outcome` and marked skipped — raw evidence, never a
+    delivery observation. Fail closed: when we cannot prove money moved, we
+    do not publish a claim about the seller.
+    """
+    from agentpay import PaymentFailed, PrePaymentError, RefundPending
     try:
         from agentpay import UnsupportedChainPayment
     except ImportError:                       # older SDK without the typed class
@@ -185,7 +192,19 @@ def probe_paid(session, cand: dict) -> dict:
 
     price = cand.get("price_usd") or Decimal("0.01")
     if session.would_exceed(price):
-        return _probe_row(cand, "paid", error="skipped: cap reached", skipped=True)
+        return _probe_row(cand, "paid", error="skipped: cap reached",
+                          skipped=True, outcome="cap_reached")
+
+    # AGE-87: URLs with unsubstituted path params (…/api/:name) were probed
+    # LITERALLY — X (Twitter) JSON API accumulated six "failures" against a
+    # template that was never a real endpoint. Fill known params; refuse to
+    # pay for an unresolvable one.
+    url = probe.fill_path_template(cand["url"])
+    if url is None:
+        return _probe_row(cand, "paid", skipped=True,
+                          outcome="unfilled_path_template",
+                          error="skipped: URL path template has unresolvable "
+                                "params — not probeable as listed")
 
     settle_ok = http_ok = False
     latency_ms = None
@@ -193,13 +212,11 @@ def probe_paid(session, cand: dict) -> dict:
     error = None
     data = None
     # The seller's own advertised call shape when it published one, a
-    # per-need guess otherwise. Generic {} is rejected pre-payment by most
-    # real services (first-sweep finding), and a need-guess that ignores the
-    # advertised fields is rejected by strict ones (AGE-83).
+    # per-need guess otherwise (AGE-83/AGE-87 — seller's example wins).
     spec = probe.call_spec(cand)
     t0 = time.monotonic()
     try:
-        r = session.call(cand["url"], spec["params"])
+        r = session.call(url, spec["params"])
         latency_ms = int((time.monotonic() - t0) * 1000)
         settle_ok = http_ok = True
         data = getattr(r, "data", r)
@@ -216,42 +233,50 @@ def probe_paid(session, cand: dict) -> dict:
             cand, "paid",
             error=f"unsupported chain: {', '.join(_chains) or '?'}",
             skipped=True, latency_ms=latency_ms, unsupported_chain=_chains,
+            outcome="unsupported_chain",
         )
-    except PaymentFailed as e:
+    except PrePaymentError as e:
+        # AGE-86: nothing was paid — DNS failure, connection refused, a non-402
+        # response, an unparseable 402. This is a statement about reachability
+        # (ours or theirs), never about delivery. Before this clause the
+        # generic handler scored these 0.0 against the seller: X (Twitter)
+        # JSON API reached 0.25× "confirmed" on six DNS failures.
         latency_ms = int((time.monotonic() - t0) * 1000)
-        error = f"settle failed: {str(e)[:200]}"
+        return _probe_row(cand, "paid", error=f"pre-payment: {str(e)[:200]}",
+                          skipped=True, latency_ms=latency_ms,
+                          outcome="unreachable", param_source=spec["source"])
+    except PaymentFailed as e:
+        # Our payment didn't complete (signing, wallet, broadcast). Money may
+        # not have moved; the fault axis is payment, not delivery.
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        return _probe_row(cand, "paid", error=f"settle failed: {str(e)[:200]}",
+                          skipped=True, latency_ms=latency_ms,
+                          outcome="settle_failed", param_source=spec["source"])
     except RefundPending as e:
-        # Payment settled but the tool failed to deliver → the worst outcome.
+        # Payment settled but the tool failed to deliver → the worst outcome,
+        # and the ONE unsettled-looking case that stays scoreable: money
+        # provably moved.
         latency_ms = int((time.monotonic() - t0) * 1000)
         settle_ok, http_ok = True, False
         error = f"paid, no delivery (refund pending): {str(e)[:200]}"
     except Exception as e:
+        # Post-transmission rejections land here ("settlement uncertain,
+        # spend recorded: 4xx/5xx…"): the signed auth left the wire, the
+        # seller answered non-200, and we cannot prove whether they settled.
+        # AGE-86: fail closed — unscoreable, whatever the status code. The
+        # old guard matched only "spend recorded): 4", so DeepSeek's 502
+        # (relaying a 400 WE caused with model="default") fell through and
+        # was scored 0.0 against them. AGE-88 reconciles these on-chain;
+        # if one settled AND returned nothing, THAT is a took-payment case
+        # to promote — with evidence, not by default.
         latency_ms = int((time.monotonic() - t0) * 1000)
         error = str(e)[:200]
-
-    # Buyer-side failures are unscoreable — no money moved and the fault is
-    # ours, not the seller's delivery. Marked skipped: kept in raw evidence,
-    # never enters delivery_rate. Cases:
-    #   - pre-payment request rejections (400/404/405/422): our generic params
-    #   - chain incompatibility ("wallet can only pay on …"): a Solana-only
-    #     seller must not be scored 0.25 because OUR wallet is Base/Stellar
-    # NOTE (AGE-56): the SDK's 4xx-rejection message changed from
-    # "…(no payment settled): 4xx" to "…(settlement uncertain, spend
-    # recorded): 4xx" — a transmitted signed auth is now treated as
-    # potentially spent. For scoring purposes a 4xx param-rejection is
-    # still a buyer-side fault, so it stays skipped/unscoreable.
-    if error and not settle_ok and (
-        "spend recorded): 4" in error
-        or "no payment settled): 4" in error   # pre-AGE-56 SDK message
-        or "Expected 200 or 402" in error
-        or "wallet can only pay" in error
-        or "is not usable for" in error
-    ):
-        # AGE-83: this branch is where paid coverage went to die — on the
-        # 2026-07-27 sweep 10 of 12 settles landed here, real money spent for
-        # an unscoreable row. Record WHY (advertised spec vs our guess) so the
-        # next sweep's coverage loss is diagnosable instead of invisible.
+        outcome = ("payment_rejected"
+                   if ("spend recorded" in error or "settlement uncertain" in error
+                       or "no payment settled" in error)
+                   else "unreachable")
         return _probe_row(cand, "paid", error=error, skipped=True,
+                          latency_ms=latency_ms, outcome=outcome,
                           param_source=spec["source"])
 
     # What the seller said comes BACK. rank()'s public projection carries
@@ -264,9 +289,9 @@ def probe_paid(session, cand: dict) -> dict:
     checks = probe.t1_evaluate(data, out_schema) if http_ok else \
         {"response_nonempty": False, "schema_ok": None}
     return _probe_row(
-        cand, "paid", error=error,
+        cand, "paid", error=error, outcome="settled",
         settle_ok=settle_ok, http_ok=http_ok, latency_ms=latency_ms,
-        tx_hash=tx_hash, **checks,
+        tx_hash=tx_hash, param_source=spec["source"], **checks,
     )
 
 
@@ -393,22 +418,32 @@ def main() -> int:
     log(f"T0 done: {t0_alive}/{len(sel['t0'])} alive, {t0_wf} well-formed, "
         f"{t0_mpp} advertise MPP [MR-3]")
 
-    # 3. T1 — paid probes, cap-gated
+    # 3. T1 — paid probes, cap-gated. EVERY row is logged, skipped or not —
+    # on 2026-07-28, 8 of 13 paid settles left no trace anywhere (not logged,
+    # not stored), and the entire post-mortem had to be reconstructed by
+    # inference from the run receipt (AGE-87 root cause 4).
     paid_rows: list[dict] = []
     for cand in sel["t1"]:
         row = probe_paid(s, cand)
         paid_rows.append(row)
-        if not row.get("skipped"):
-            err = f" | err: {row['error']}" if row.get("error") else ""
+        err = f" | err: {row['error']}" if row.get("error") else ""
+        if row.get("skipped"):
+            log(f"T1 {cand['name']}: UNSCOREABLE ({row.get('outcome')}) "
+                f"params={row.get('param_source', '?')}{err}")
+        else:
             log(f"T1 {cand['name']}: settle={row.get('settle_ok')} "
                 f"http={row.get('http_ok')} nonempty={row.get('response_nonempty')} "
                 f"schema={row.get('schema_ok')} {row.get('latency_ms')}ms "
                 f"| tx {row.get('tx_hash')}{err}")
 
-    # Systemic buyer-side guard: if EVERY paid attempt failed to settle, the
-    # problem is almost certainly ours (SDK, wallet, funds, network) — abort
-    # without publishing rather than scoring 15 innocent sellers 0.0.
-    attempted = [r for r in paid_rows if not r.get("skipped")]
+    # Systemic buyer-side guard: if payments were attempted and NONE settled,
+    # the problem is almost certainly ours (SDK, wallet, funds, network) —
+    # abort without publishing rather than scoring 15 innocent sellers 0.0.
+    # (Under AGE-86 skipped rows can't hurt sellers anyway; this guard now
+    # protects the SPEND, not the scores.)
+    attempted = [r for r in paid_rows
+                 if r.get("outcome") in ("settled", "payment_rejected",
+                                         "settle_failed")]
     if attempted and not any(r.get("settle_ok") for r in attempted):
         log(f"FATAL: 0/{len(attempted)} paid probes settled — treating as a "
             "buyer-side systemic failure; NOT publishing seller scores")
@@ -442,23 +477,30 @@ def main() -> int:
     receipt = s.spending_summary()
     settled = sum(1 for p in paid_rows if p.get("settle_ok"))
     scoreable = sum(1 for p in paid_rows if not p.get("skipped"))
-    wasted = sum(1 for p in paid_rows
-                 if p.get("skipped") and "spend recorded" in str(p.get("error") or ""))
+    by_outcome = {}
+    for p in paid_rows:
+        by_outcome[p.get("outcome") or "?"] = by_outcome.get(p.get("outcome") or "?", 0) + 1
+    rejected = by_outcome.get("payment_rejected", 0)
+    unreachable = by_outcome.get("unreachable", 0)
     unconfirmed = [r for r in scores
                    if probe.FLAG_NO_DELIVERY_UNCONFIRMED in r["flags"]]
     board = probe.need_leaderboard(scores)
     contested = {n: rows for n, rows in board.items() if len(rows) > 1}
     # The note is what a human skims on /ledger, so it has to carry the bad
-    # news too. It used to say only "N flagged" — and N was structurally 0
-    # while four services sat at 0.0 delivery (AGE-83 gap 4).
+    # news too — and label failures by WHOSE failure they were. "The seller
+    # rejected the request after settlement" turned out to describe our own
+    # bad params relayed back to us (AGE-86/AGE-87).
     note = (f"AgentPay prober — {run_at}\n"
-            f"Probed {len(sel['t0'])} services ({scoreable} scoreable paid probes) "
-            f"across {len(needs)} needs; {t0_wf} well-formed 402s; "
+            f"Probed {len(sel['t0'])} services ({scoreable} settled+scoreable "
+            f"paid probes) across {len(needs)} needs; {t0_wf} well-formed 402s; "
             f"{len(flagged)} flagged {probe.FLAG_NO_DELIVERY}, "
             f"{len(unconfirmed)} unconfirmed")
-    if wasted:
-        note += (f"; {wasted} paid probe(s) unscoreable — the seller rejected "
-                 f"the request after settlement")
+    if rejected:
+        note += (f"; {rejected} probe(s) transmitted a payment the seller "
+                 f"rejected — settlement unconfirmed, excluded from delivery "
+                 f"scores pending on-chain reconciliation")
+    if unreachable:
+        note += f"; {unreachable} unreachable pre-payment (never scored)"
     if contested:
         note += ("; head-to-head delivery on " +
                  ", ".join(f"{n} ({len(r)} providers)" for n, r in contested.items()))
@@ -470,11 +512,12 @@ def main() -> int:
     log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
         f"across {receipt['calls']} calls")
 
-    # Skipped rows are local diagnostics only: service_probes has no
-    # `skipped` column, so a stored one is indistinguishable from a real
-    # failed probe and would poison every future window rescore.
-    storable = [p for p in probes if not p.get("skipped")]
-    ingest = publish_run(storable, {
+    # AGE-87: skipped rows ARE stored now — with `skipped`/`outcome`/`error`
+    # columns, so an unscoreable probe is auditable from the database instead
+    # of reconstructed from the receipt. score() excludes skipped rows from
+    # every metric, and the gateway falls back to dropping them entirely if
+    # the migration hasn't been applied (see insert_service_probes).
+    ingest = publish_run(probes, {
         "run_at": run_at, "run_at_iso": run_at_iso, "wallet": wallet.base_address,
         "max_spend": str(max_spend),
         "objective": {"kind": "probe_sweep", "goal_text":
@@ -487,8 +530,12 @@ def main() -> int:
                    "wellformed": t0_wf, "mpp_options": t0_mpp},
             # AGE-83: paid coverage is the differentiator, so it gets reported
             # as a first-class number instead of being inferred from `scores`.
+            # AGE-86: `outcomes` breaks the attempts down by WHAT happened —
+            # settled / payment_rejected / unreachable / settle_failed /
+            # unfilled_path_template / cap_reached — so a bad sweep is
+            # diagnosable from the ledger alone.
             "t1": {"attempted": len(sel["t1"]), "settled": settled,
-                   "scoreable": scoreable, "unscoreable_after_settle": wasted,
+                   "scoreable": scoreable, "outcomes": by_outcome,
                    "retested": len(retest),
                    "over_price_ceiling": len(sel["too_expensive"]),
                    "price_ceiling_usd": str(max_probe)},

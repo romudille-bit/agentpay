@@ -250,14 +250,20 @@ class TestScore:
         assert rows[0]["delivery_factor"] == 1.0  # unprobed = neutral
 
     def test_last_ok_and_fail_timestamps(self):
+        # AGE-86: last_fail_at marks a SETTLED probe that didn't deliver.
+        # An unsettled probe (settle_ok=False) is not the seller's failure
+        # and must set neither timestamp.
         rows = probe.score([
             probe_row(days_ago=2),
-            probe_row(days_ago=1, settle_ok=False, http_ok=False,
-                      response_nonempty=False),
+            probe_row(days_ago=1, settle_ok=True, http_ok=False,
+                      response_nonempty=False),      # paid, nothing back
+            probe_row(days_ago=0, settle_ok=False, http_ok=False,
+                      response_nonempty=False),      # our settle failed
         ], now=NOW)
         r = rows[0]
         assert r["last_ok_at"] == (NOW - timedelta(days=2)).isoformat()
         assert r["last_fail_at"] == (NOW - timedelta(days=1)).isoformat()
+        assert r["settle_failures"] == 1
 
     def test_groups_by_url_sorted(self):
         rows = probe.score([
@@ -731,3 +737,247 @@ class TestRetestDedup:
         assert len(sel["t1"]) == 1
         assert len(sel["t0"]) == 1
         assert sel["t1"][0]["pay_to"] == "0xabc"   # enriched from the ranking
+
+
+# ── AGE-86: only settled payments are delivery evidence ────────────────────────
+
+class TestSettledOnlyScoring:
+    """delivery_rate is a claim about what happens AFTER money moves. Before
+    this gate, X (Twitter) JSON API sat publicly at 0.25× "confirmed" over six
+    probes in which no payment was ever transmitted (its host didn't resolve)."""
+
+    def test_x_twitter_regression_unsettled_rows_never_score(self):
+        # The exact live case: 6 paid-type rows, none settled.
+        rows = probe.score(
+            [probe_row("https://x.1x402.sh/api/:name", days_ago=d,
+                       settle_ok=False, http_ok=False, response_nonempty=False)
+             for d in range(6)], now=NOW)
+        r = rows[0]
+        assert r["paid_probes"] == 0
+        assert r["delivery_rate"] is None
+        assert r["delivery_factor"] == 1.0        # unprobed-neutral, not 0.25
+        assert r["confidence"] is None
+        assert r["settle_failures"] == 6          # visible as what it is
+        assert r["flags"] == []
+        assert r["last_fail_at"] is None          # not the seller's failure
+
+    def test_settle_failures_never_dilute_a_good_rate(self):
+        rows = probe.score(
+            [probe_row(days_ago=1), probe_row(days_ago=2)] +
+            [probe_row(days_ago=3, settle_ok=False, http_ok=False,
+                       response_nonempty=False)], now=NOW)
+        r = rows[0]
+        assert r["paid_probes"] == 2
+        assert r["delivery_rate"] == 1.0          # 2/2 settled, not 2/3
+        assert r["delivery_factor"] == probe.FACTOR_GOOD
+        assert r["settle_failures"] == 1
+
+    def test_flag_requires_settled_evidence(self):
+        # Unsettled failures can NEVER produce the public accusation.
+        rows = probe.score(
+            [probe_row(days_ago=d, settle_ok=False, http_ok=False,
+                       response_nonempty=False) for d in (1, 2, 3)], now=NOW)
+        assert rows[0]["flags"] == []
+        # ...but genuine settled non-deliveries still confirm it.
+        rows = probe.score(
+            [probe_row(days_ago=d, settle_ok=True, http_ok=False,
+                       response_nonempty=False) for d in (1, 2)], now=NOW)
+        assert probe.FLAG_NO_DELIVERY in rows[0]["flags"]
+        assert rows[0]["no_delivery_probes"] == 2
+
+    def test_latency_comes_from_settled_probes_only(self):
+        # A 14ms DNS failure must not become the service's p50.
+        rows = probe.score([
+            probe_row(days_ago=1, latency_ms=4000),
+            probe_row(days_ago=2, settle_ok=False, http_ok=False,
+                      response_nonempty=False, latency_ms=14),
+        ], now=NOW)
+        assert rows[0]["latency_p50_ms"] == 4000
+
+
+class TestProbePaidClassification:
+    """AGE-86 in run.py: every T1 outcome is classified, and only verifiable
+    settles produce scoreable rows. Fail closed — no proof of payment, no
+    claim about the seller."""
+
+    class _Session:
+        def __init__(self, exc=None, result=None):
+            self._exc, self._result = exc, result
+        def would_exceed(self, price):
+            return False
+        def call(self, url, params):
+            self.called_url, self.called_params = url, params
+            if self._exc:
+                raise self._exc
+            return self._result
+
+    @staticmethod
+    def _cand(**kw):
+        c = cand(url=kw.pop("url", "https://svc.example/tool"))
+        c.update(kw)
+        return c
+
+    def test_dns_failure_is_unreachable_not_scored(self):
+        # The X (Twitter) case: PrePaymentError before any 402.
+        from agentpay import PrePaymentError
+        from agents.prober import run as prober_run
+        row = prober_run.probe_paid(self._Session(
+            exc=PrePaymentError("External x402 call failed: [Errno -2] "
+                                "Name or service not known")), self._cand())
+        assert row["skipped"] is True
+        assert row["outcome"] == "unreachable"
+
+    def test_post_transmission_5xx_is_payment_rejected_not_scored(self):
+        # The DeepSeek case: 502 wrapping the 400 WE caused. The old guard
+        # matched only "spend recorded): 4" and scored this 0.0.
+        from agents.prober import run as prober_run
+        row = prober_run.probe_paid(self._Session(
+            exc=Exception("External x402 call rejected after auth transmission "
+                          "(settlement uncertain, spend recorded): 502 "
+                          '{"error":"upstream_error"}')), self._cand())
+        assert row["skipped"] is True
+        assert row["outcome"] == "payment_rejected"
+
+    def test_settle_failure_is_classified_not_scored(self):
+        from agentpay import PaymentFailed
+        from agents.prober import run as prober_run
+        row = prober_run.probe_paid(self._Session(
+            exc=PaymentFailed("insufficient balance")), self._cand())
+        assert row["skipped"] is True
+        assert row["outcome"] == "settle_failed"
+
+    def test_refund_pending_stays_scoreable(self):
+        # Money provably moved and nothing came back — THE flag case.
+        from agentpay import RefundPending
+        from agents.prober import run as prober_run
+        row = prober_run.probe_paid(self._Session(
+            exc=RefundPending("no result")), self._cand())
+        assert not row.get("skipped")
+        assert row["settle_ok"] is True and row["http_ok"] is False
+
+    def test_success_is_settled_and_scoreable(self):
+        from agents.prober import run as prober_run
+        row = prober_run.probe_paid(self._Session(
+            result={"text": "data"}), self._cand())
+        assert not row.get("skipped")
+        assert row["outcome"] == "settled"
+        assert row["settle_ok"] is True
+
+    def test_unresolvable_path_template_is_never_paid(self):
+        from agents.prober import run as prober_run
+        s = self._Session(result={"x": 1})
+        row = prober_run.probe_paid(s, self._cand(
+            url="https://api.gocreativeai.com/v1/twitter/tweets/user/:var1"))
+        assert row["skipped"] is True
+        assert row["outcome"] == "unfilled_path_template"
+        assert not hasattr(s, "called_url")      # no money was risked
+
+    def test_known_path_template_is_filled_before_paying(self):
+        from agents.prober import run as prober_run
+        s = self._Session(result={"x": 1})
+        prober_run.probe_paid(s, self._cand(url="https://x.1x402.sh/api/:name"))
+        assert s.called_url == "https://x.1x402.sh/api/coinbase"
+
+
+# ── AGE-87: send what the seller published ─────────────────────────────────────
+
+class TestSellerExampleWins:
+    """The seller's published example is the one request shape they tested.
+    AGE-83 had precedence backwards and burned 5 of 8 wasted settles in one
+    sweep on values the listing contradicted."""
+
+    def test_deepseek_regression_seller_model_wins(self):
+        spec = {"method": "POST", "bodyType": "json", "body": {
+            "model": "deepseek-v4-flash",
+            "messages": [{"role": "user", "content": "What is the capital of France?"}]}}
+        s = probe.call_spec(cand(need="llm inference", input_spec=spec))
+        assert s["params"]["model"] == "deepseek-v4-flash"     # not "default"
+        assert s["params"]["messages"][0]["content"] == "What is the capital of France?"
+
+    def test_otto_regression_seller_symbol_wins(self):
+        spec = {"method": "GET", "queryParams": {"symbol": "BTC"}}
+        s = probe.call_spec(cand(need="token price", input_spec=spec))
+        assert s["params"]["symbol"] == "BTC"                  # not "ETH"
+
+    def test_placeholder_example_falls_back_to_our_value(self):
+        # example.com is a stand-in, not a working input — our real PDF wins.
+        spec = {"method": "GET",
+                "queryParams": {"url": "https://example.com/file.pdf"}}
+        s = probe.call_spec(cand(need="pdf ocr", input_spec=spec))
+        assert s["params"]["url"] == probe.NEED_PARAMS["pdf ocr"]["url"]
+
+    def test_atlas_regression_declared_method_no_fields_sends_nothing(self):
+        # {"method": "GET"} bare is an instruction: call me with nothing.
+        # Atlas delivered 3/3 to a bare GET and 4xx'd when we appended an
+        # uninvited ?symbol=BTC&token=BTC.
+        s = probe.call_spec(cand(need="market data",
+                                 input_spec={"method": "GET", "type": "http"}))
+        assert s["params"] == {}
+        assert s["source"] == "advertised_empty"
+
+    def test_no_spec_at_all_still_uses_the_need_guess(self):
+        s = probe.call_spec(cand(need="market data"))
+        assert s["params"] == probe.NEED_PARAMS["market data"]
+        assert s["source"] == "need_guess"
+
+
+class TestFillPathTemplate:
+    def test_plain_url_unchanged(self):
+        assert probe.fill_path_template("https://a.com/t?x=1") == "https://a.com/t?x=1"
+
+    def test_known_params_filled(self):
+        assert probe.fill_path_template("https://x.1x402.sh/api/:name") == \
+            "https://x.1x402.sh/api/coinbase"
+        assert probe.fill_path_template("https://e.rip/token/:address").endswith(
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+        assert probe.fill_path_template("https://l.ge.com/v1/llm/:model").endswith(
+            "/gpt-4o-mini")
+
+    def test_brace_style_filled(self):
+        assert probe.fill_path_template("https://a.com/u/{handle}/x") == \
+            "https://a.com/u/coinbase/x"
+
+    def test_unresolvable_param_returns_none(self):
+        assert probe.fill_path_template(
+            "https://api.gocreativeai.com/v1/twitter/tweets/user/:var1") is None
+
+    def test_port_is_not_a_template(self):
+        assert probe.fill_path_template("https://a.com:8443/t") == \
+            "https://a.com:8443/t"
+
+
+# ── AGE-88: on-chain reconciliation of uncertain settlements ───────────────────
+
+class TestReconcileSettlements:
+    ENTRIES = [
+        {"tool": "https://ok.example/a", "cost": "$0.05", "state": "settled",
+         "success": True},
+        {"tool": "https://maybe.example/b", "cost": "$0.05",
+         "state": "uncertain_settlement"},
+        {"tool": "https://never.example/c", "cost": "$0.01",
+         "state": "uncertain_settlement"},
+    ]
+
+    def test_settled_but_rejected_is_detected(self):
+        # TWO 0.05 transfers on-chain: the confirmed one anchors the first,
+        # so the uncertain $0.05 entry provably settled too.
+        transfers = [{"to": "0xA", "value": "50000", "hash": "0xaaa"},
+                     {"to": "0xB", "value": "50000", "hash": "0xbbb"}]
+        r = probe.reconcile_settlements(self.ENTRIES, transfers)
+        assert r[0]["resolution"] == "confirmed"
+        assert r[1]["resolution"] == "settled_on_chain"     # took the money
+        assert r[1]["tx_hash"] == "0xbbb"
+        assert r[2]["resolution"] == "no_onchain_evidence"
+
+    def test_confirmed_settle_cannot_lend_its_evidence(self):
+        # Only ONE 0.05 transfer — it belongs to the confirmed entry; the
+        # uncertain one must not borrow it.
+        transfers = [{"to": "0xA", "value": "50000", "hash": "0xaaa"}]
+        r = probe.reconcile_settlements(self.ENTRIES, transfers)
+        assert r[0]["resolution"] == "confirmed"
+        assert r[1]["resolution"] == "no_onchain_evidence"
+
+    def test_no_transfers_no_evidence(self):
+        r = probe.reconcile_settlements(self.ENTRIES, [])
+        assert [x["resolution"] for x in r] == \
+            ["confirmed", "no_onchain_evidence", "no_onchain_evidence"]

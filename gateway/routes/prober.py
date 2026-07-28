@@ -97,6 +97,11 @@ async def scores_json():
             # field back off /scores.json, so it must stay in the payload.
             "confidence": row.get("confidence"),
             "no_delivery_probes": row.get("no_delivery_probes"),
+            # AGE-86: payments of ours that did not settle — a different
+            # claim from delivery ("wouldn't take my payment" is not "took my
+            # payment and gave nothing"), so it rides as its own field and
+            # never touches delivery_rate or the factor.
+            "settle_failures": row.get("settle_failures"),
             "latency_p50_ms": row.get("latency_p50_ms"),
             "flags": row.get("flags") or [],
             "mpp_option": bool(row.get("mpp_option")),

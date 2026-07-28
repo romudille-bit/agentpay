@@ -18,6 +18,7 @@ Pipeline (see PROBER_SPEC, 2026-07-07):
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, Optional
@@ -108,17 +109,89 @@ def call_spec(cand: dict | str | None) -> dict:
     if isinstance(cand, str) or cand is None:
         cand = {"need": cand}
     guess = dict(NEED_PARAMS.get(cand.get("need") or "", {}))
-    method, advertised = _spec_fields(cand.get("input_spec"))
+    spec = cand.get("input_spec")
+    method, advertised = _spec_fields(spec)
     if not advertised:
+        # AGE-87: a spec that declares a METHOD but no fields is an
+        # instruction, not an omission — the seller says "call me with
+        # nothing." Atlas Market Data declares {"method": "GET"} bare,
+        # delivered 3/3 to a bare GET, and 4xx'd the sweep where we
+        # appended an uninvited ?symbol=BTC&token=BTC from the need-guess.
+        if method:
+            return {"method": method, "params": {}, "source": "advertised_empty"}
         return {"method": method, "params": guess,
                 "source": "need_guess" if guess else "none"}
+    # AGE-87 precedence flip (2026-07-28 regression): the SELLER's example
+    # wins — it is known-good by construction, the one request shape they
+    # tested. AGE-83 had this backwards (our need-guess first) and burned 5
+    # of 8 wasted settles in one sweep on values the listing contradicted:
+    # model "default" vs the declared "deepseek-v4-flash", username
+    # "coinbase" vs the declared "bankrbot", symbol "ETH" vs the declared
+    # "BTC". Our need-guess is the fallback for fields whose example is a
+    # placeholder (example.com URLs and the like) or a bare schema stub.
     params: dict = {}
     for key, example in advertised.items():
-        if key in guess:
-            params[key] = guess[key]
-        elif example is not None and not _is_schema_stub(example):
+        if not _is_schema_stub(example) and not _is_placeholder(example):
             params[key] = example
+        elif key in guess:
+            params[key] = guess[key]
     return {"method": method, "params": params, "source": "advertised"}
+
+
+# Values sellers publish as stand-ins, not as working inputs. A probe built
+# on one of these would test the seller's placeholder, not the seller.
+_PLACEHOLDER_MARKERS = ("example.com", "example.org", "example.net",
+                        "your_", "your-", "<", "xxxx", "changeme", "lorem ipsum")
+
+
+def _is_placeholder(v: object) -> bool:
+    """Is this advertised example value a stand-in rather than a usable input?
+    Non-strings (numbers, dicts, lists) are taken at face value. PURE."""
+    if v is None:
+        return True
+    if not isinstance(v, str):
+        return False
+    s = v.strip().lower()
+    return not s or any(m in s for m in _PLACEHOLDER_MARKERS)
+
+
+# AGE-87 (root cause 3): catalogue URLs with unsubstituted path params —
+# https://x.1x402.sh/api/:name, …/user/:var1 — were probed LITERALLY, so those
+# probes could never succeed. Known param names get a plausible value; a URL
+# with any unresolvable segment left is unprobeable and must be skipped, not
+# paid for.
+_PATH_PARAM_VALUES = {
+    "name": "coinbase", "handle": "coinbase", "username": "coinbase",
+    "user": "coinbase",
+    "symbol": "BTC", "token": "BTC", "coin": "BTC", "ticker": "BTC",
+    "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "wallet": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "model": "gpt-4o-mini",
+    "query": "bitcoin", "q": "bitcoin", "topic": "bitcoin",
+}
+
+_PATH_PARAM_RE = re.compile(r"(?<=/)(?::(\w+)|\{(\w+)\})(?=/|$|\?)")
+
+
+def fill_path_template(url: str) -> Optional[str]:
+    """Substitute :param / {param} path segments with plausible values. PURE.
+
+    Returns the filled URL, the original URL when it has no templates, or
+    None when a segment can't be resolved (e.g. :var1) — the caller must NOT
+    pay to probe an unresolvable URL, and must not score the seller for it.
+    """
+    unresolved = []
+
+    def sub(m: "re.Match[str]") -> str:
+        key = (m.group(1) or m.group(2) or "").lower()
+        val = _PATH_PARAM_VALUES.get(key)
+        if val is None:
+            unresolved.append(key)
+            return m.group(0)
+        return val
+
+    filled = _PATH_PARAM_RE.sub(sub, url)
+    return None if unresolved else filled
 
 
 def params_for(cand: dict | str | None) -> dict:
@@ -629,21 +702,33 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
         # rejection before any payment) — raw evidence only, never delivery.
         paid = [p for p in group
                 if p.get("probe_type") == "paid" and not p.get("skipped")]
-        n = len(paid)
-        delivered = sum(1 for p in paid if _delivered(p))
+        # AGE-86: DELIVERY IS A CLAIM ABOUT WHAT HAPPENS AFTER MONEY MOVES.
+        # A probe that never settled — DNS failure, connection refused, a
+        # payment the seller's facilitator rejected — says nothing about
+        # whether the seller delivers, so it must never enter delivery_rate.
+        # Before this gate, X (Twitter) JSON API sat publicly at 0.25×
+        # "confirmed" over SIX probes in which no payment was EVER
+        # transmitted (its host didn't resolve), and the flag stayed at 0
+        # for all 82 services because every 0.0 in the corpus was a settle
+        # failure, not a delivery failure. Settle failures are kept as their
+        # own signal (`settle_failures`), labelled as what they are.
+        settled = [p for p in paid if p.get("settle_ok")]
+        n = len(settled)
+        settle_failures = len(paid) - n
+        delivered = sum(1 for p in settled if _delivered(p))
         rate = (delivered / n) if n else None
         flags: list[str] = []
         # AGE-83: same delivery definition as delivery_rate — a settled probe
         # that returns 200-with-nothing is a non-delivery, not a clean run.
-        no_delivery = sum(1 for p in paid if took_payment_no_delivery(p))
+        no_delivery = sum(1 for p in settled if took_payment_no_delivery(p))
         if no_delivery >= MIN_PROBES_CONFIRMED:
             flags.append(FLAG_NO_DELIVERY)              # confirmed → public ⚠
         elif no_delivery == 1:
             flags.append(FLAG_NO_DELIVERY_UNCONFIRMED)  # rec-drop only
-        latencies = sorted(p["latency_ms"] for p in paid
+        latencies = sorted(p["latency_ms"] for p in settled
                            if isinstance(p.get("latency_ms"), (int, float)))
-        oks = [_parse_ts(p.get("probed_at")) for p in paid if _delivered(p)]
-        fails = [_parse_ts(p.get("probed_at")) for p in paid if not _delivered(p)]
+        oks = [_parse_ts(p.get("probed_at")) for p in settled if _delivered(p)]
+        fails = [_parse_ts(p.get("probed_at")) for p in settled if not _delivered(p)]
         # [MR-3] MPP/Tempo label: known from FREE probes too (T0 parses every
         # live 402), so it aggregates over ALL window probes, not just paid.
         mpp = any(p.get("mpp_option") for p in group)
@@ -663,7 +748,10 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
             "need": needed[-1]["need"] if needed else None,
             "network": networked[-1]["network"] if networked else None,
             "window_days": window_days,
+            # paid_probes keeps its public meaning — probes where we actually
+            # paid. Settle failures are counted separately, never as delivery.
             "paid_probes": n,
+            "settle_failures": settle_failures,
             "delivery_rate": round(rate, 4) if rate is not None else None,
             "delivery_factor": delivery_factor(rate, probed=n > 0, n_probes=n),
             # AGE-83: how much this row is worth believing. "provisional" = a
@@ -718,6 +806,69 @@ def need_leaderboard(scores: Iterable[dict],
             r.get("latency_p50_ms") if r.get("latency_p50_ms") is not None else 10**9,
         ))
     return dict(sorted(board.items()))
+
+
+def reconcile_settlements(entries: Iterable[dict],
+                          transfers: Iterable[dict]) -> list[dict]:
+    """Match a run receipt's payment entries against on-chain USDC transfers
+    from the prober wallet. PURE — the I/O lives in
+    tools/reconcile_prober_spend.py.
+
+    AGE-88: an `uncertain_settlement` entry means a signed EIP-3009 auth left
+    the wire and the seller answered non-200 — the SDK fails closed and counts
+    the spend, but nobody knows whether the seller actually settled. The
+    answer IS payer-observable: `transferWithAuthorization` emits a normal
+    ERC-20 Transfer event from our wallet regardless of who submitted the tx,
+    so the wallet's token-transfer history is ground truth.
+
+    entries:   receipt `breakdown` rows — {"tool", "cost" ("$0.0075"),
+               "state" ("settled" | "uncertain_settlement" | …)}
+    transfers: token txs FROM the wallet — {"to", "value" (atomic 6dp str),
+               "hash", "timeStamp"?} — pre-filtered by the caller to the run's
+               time window.
+
+    Confirmed-settled entries anchor their transfers first, so a successful
+    $0.05 call can't lend its on-chain evidence to an uncertain $0.05 one.
+    Returns one row per entry: {"tool", "cost", "state", "resolution":
+    "confirmed" | "settled_on_chain" | "no_onchain_evidence", "tx_hash"?}.
+    """
+    def _atomic(cost: object) -> Optional[int]:
+        try:
+            return int(Decimal(str(cost).lstrip("$")) * 1_000_000)
+        except (InvalidOperation, ValueError):
+            return None
+
+    pool: list[dict] = [dict(t) for t in transfers]
+
+    def _claim(amount: Optional[int]) -> Optional[dict]:
+        for i, t in enumerate(pool):
+            try:
+                if int(Decimal(str(t.get("value")))) == amount:
+                    return pool.pop(i)
+            except (InvalidOperation, ValueError, TypeError):
+                continue
+        return None
+
+    entries = list(entries)
+    out: list[dict] = [dict(tool=e.get("tool"), cost=e.get("cost"),
+                            state=e.get("state")) for e in entries]
+    # Pass 1 — anchor confirmed settles to their transfers.
+    for e, o in zip(entries, out):
+        if e.get("state") == "settled" or e.get("success"):
+            t = _claim(_atomic(e.get("cost")))
+            o["resolution"] = "confirmed"
+            o["tx_hash"] = (t or {}).get("hash") or e.get("tx_hash") or None
+    # Pass 2 — resolve the uncertain ones against what's left.
+    for e, o in zip(entries, out):
+        if "resolution" in o:
+            continue
+        t = _claim(_atomic(e.get("cost")))
+        if t is not None:
+            o["resolution"] = "settled_on_chain"   # they DID take the money
+            o["tx_hash"] = t.get("hash")
+        else:
+            o["resolution"] = "no_onchain_evidence"
+    return out
 
 
 def _parse_ts(iso: object) -> Optional[datetime]:

@@ -1390,12 +1390,24 @@ async def fetch_flagship_runs(limit: int = 200) -> list[dict]:
 
 # Columns forwarded to service_probes — anything else in a posted row is
 # dropped (the runner also carries name/skipped fields the table doesn't).
+# AGE-86/87 probe-row additions, deployable ahead of the hand-applied SQL
+# migration (same rationale as _SCORE_COLUMNS_OPTIONAL below):
+#   skipped      — unscoreable row kept as raw evidence; score() excludes it
+#                  from every metric
+#   outcome      — WHY: settled | payment_rejected | unreachable |
+#                  settle_failed | unsupported_chain | unfilled_path_template |
+#                  cap_reached
+#   param_source — advertised | advertised_empty | need_guess | none — makes a
+#                  rejection attributable to our request vs the seller's spec
+_PROBE_COLUMNS_OPTIONAL = ("skipped", "outcome", "param_source")
+
 _PROBE_COLUMNS = (
     "probed_at", "resource_url", "name", "need", "pay_to", "network", "price_usdc",
     "probe_type", "alive", "x402_wellformed", "price_matches", "mpp_option",
     "usdg_option",
     "settle_ok", "http_ok", "latency_ms", "response_nonempty", "schema_ok",
     "tx_hash", "error",
+    *_PROBE_COLUMNS_OPTIONAL,
 )
 
 # AGE-83 additions. The gateway deploys from git; service_probes.sql is applied
@@ -1404,7 +1416,10 @@ _PROBE_COLUMNS = (
 # 400 for the WHOLE request — which would blank /scores.json and freeze every
 # score row until someone noticed. So these are listed separately and dropped on
 # a 400, degrading to the pre-AGE-83 shape instead of to nothing.
-_SCORE_COLUMNS_OPTIONAL = ("confidence", "no_delivery_probes")
+_SCORE_COLUMNS_OPTIONAL = ("confidence", "no_delivery_probes",
+                           # AGE-86: probes where our payment did not settle —
+                           # never delivery evidence, published as its own count
+                           "settle_failures")
 
 _SCORE_COLUMNS = (
     "resource_url", "name", "need", "network", "window_days", "paid_probes", "delivery_rate",
@@ -1414,27 +1429,54 @@ _SCORE_COLUMNS = (
 )
 
 
-def _without_optional(cols) -> tuple:
-    return tuple(c for c in cols if c not in _SCORE_COLUMNS_OPTIONAL)
+def _without_optional(cols, optional=None) -> tuple:
+    optional = optional if optional is not None else _SCORE_COLUMNS_OPTIONAL
+    return tuple(c for c in cols if c not in optional)
 
 
 async def insert_service_probes(rows: list[dict]) -> bool:
-    """Bulk-INSERT raw probe rows. Returns True on success."""
+    """Bulk-INSERT raw probe rows (including skipped/unscoreable evidence
+    rows — AGE-87). Returns True on success.
+
+    Pre-migration fallback: if the table lacks the AGE-86/87 columns, retry
+    with the legacy column set AND drop skipped rows — a skipped row stored
+    without its `skipped` flag would be indistinguishable from a real failed
+    probe and poison every future window rescore (the exact bug class AGE-86
+    exists to kill)."""
     if not rows:
         return True          # nothing to write = vacuous success
     if not sb_enabled():
         return False
-    payload = [{k: r.get(k) for k in _PROBE_COLUMNS} for r in rows
-               if r.get("resource_url")]
-    if not payload:
+
+    def _payload(cols, keep_skipped: bool) -> list[dict]:
+        return [{k: r.get(k) for k in cols} for r in rows
+                if r.get("resource_url") and (keep_skipped or not r.get("skipped"))]
+
+    if not _payload(_PROBE_COLUMNS, keep_skipped=True):
         return False
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
-            resp = await client.post(
-                f"{settings.SUPABASE_URL}/rest/v1/service_probes",
-                headers=sb_headers(),
-                json=payload,
-            )
+            async def _post(cols, keep_skipped):
+                body = _payload(cols, keep_skipped)
+                if not body:
+                    return None
+                return await client.post(
+                    f"{settings.SUPABASE_URL}/rest/v1/service_probes",
+                    headers=sb_headers(),
+                    json=body,
+                )
+            resp = await _post(_PROBE_COLUMNS, keep_skipped=True)
+            if resp is not None and resp.status_code == 400 and any(
+                    c in resp.text for c in _PROBE_COLUMNS_OPTIONAL):
+                logger.warning("insert_service_probes: service_probes.sql not "
+                               "applied (missing %s) — storing scoreable rows "
+                               "only, without them",
+                               ", ".join(_PROBE_COLUMNS_OPTIONAL))
+                resp = await _post(
+                    _without_optional(_PROBE_COLUMNS, _PROBE_COLUMNS_OPTIONAL),
+                    keep_skipped=False)
+        if resp is None:
+            return True      # only skipped rows and no columns to hold them
         if resp.status_code not in (200, 201, 204):
             logger.error(f"insert_service_probes error: HTTP {resp.status_code} "
                          f"body={resp.text[:200]}")
@@ -1454,16 +1496,24 @@ async def fetch_service_probes(window_days: int = 30, limit: int = 5000) -> list
     cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
     try:
         async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
-            resp = await client.get(
-                f"{settings.SUPABASE_URL}/rest/v1/service_probes",
-                headers={**sb_headers(), "Accept": "application/json"},
-                params={
-                    "select":    ",".join(_PROBE_COLUMNS),
-                    "probed_at": f"gte.{cutoff}",
-                    "order":     "probed_at.desc",
-                    "limit":     str(limit),
-                },
-            )
+            async def _get(cols):
+                return await client.get(
+                    f"{settings.SUPABASE_URL}/rest/v1/service_probes",
+                    headers={**sb_headers(), "Accept": "application/json"},
+                    params={
+                        "select":    ",".join(cols),
+                        "probed_at": f"gte.{cutoff}",
+                        "order":     "probed_at.desc",
+                        "limit":     str(limit),
+                    },
+                )
+            resp = await _get(_PROBE_COLUMNS)
+            if resp.status_code == 400 and any(
+                    c in resp.text for c in _PROBE_COLUMNS_OPTIONAL):
+                # Migration not applied → skipped rows were never stored
+                # (see insert fallback), so the legacy shape is complete.
+                resp = await _get(
+                    _without_optional(_PROBE_COLUMNS, _PROBE_COLUMNS_OPTIONAL))
         if resp.status_code != 200:
             if resp.status_code != 404:   # 404 = table not created yet
                 logger.error(f"fetch_service_probes error: HTTP {resp.status_code}")

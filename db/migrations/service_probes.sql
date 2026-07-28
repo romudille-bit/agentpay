@@ -82,6 +82,28 @@ ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS network text;  -- settlement
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS confidence text;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS no_delivery_probes integer;
 
+-- AGE-86/87: delivery is a claim about what happens AFTER money moves.
+-- Probe rows now record their outcome so an unscoreable probe is auditable
+-- from the database (2026-07-28: 8 of 13 paid probes left no trace anywhere),
+-- and scores publish settle failures as their own count instead of laundering
+-- them into delivery_rate (which put a DNS failure on the public leaderboard
+-- as a 0.25× "confirmed" non-deliverer).
+--   service_probes.skipped       — unscoreable evidence row; excluded from
+--                                  every score by probe.score()
+--   service_probes.outcome       — settled | payment_rejected | unreachable |
+--                                  settle_failed | unsupported_chain |
+--                                  unfilled_path_template | cap_reached
+--   service_probes.param_source  — advertised | advertised_empty | need_guess
+--                                  | none (whose request shape was it?)
+--   service_scores.settle_failures — paid-type probes whose payment did not
+--                                    settle; NEVER part of delivery_rate
+-- Graceful degradation applies (see _PROBE_COLUMNS_OPTIONAL /
+-- _SCORE_COLUMNS_OPTIONAL): pre-migration, skipped rows simply aren't stored.
+ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS skipped boolean;
+ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS outcome text;
+ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS param_source text;
+ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS settle_failures integer;
+
 -- RLS: raw probes private, scores public-read (the gateway's secret key
 -- bypasses RLS for all reads/writes either way).
 ALTER TABLE service_probes ENABLE ROW LEVEL SECURITY;
