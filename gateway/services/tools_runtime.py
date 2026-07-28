@@ -680,7 +680,18 @@ async def _fetch_token_security(client: httpx.AsyncClient, params: dict) -> dict
     address = params.get("contract_address", "").strip().lower()
     chain   = params.get("chain", "ethereum").lower()
 
-    chain_id = "56" if chain == "bsc" else "1"
+    # AGE-84: pre_trade_check now auto-resolves majors on their HOME chains
+    # (ARB lives on Arbitrum, OP on Optimism), so the GoPlus chain map has to
+    # cover more than mainnet+BSC. GoPlus uses plain EVM chain ids.
+    chain_id = {
+        "ethereum": "1", "eth": "1",
+        "bsc": "56", "binance": "56",
+        "arbitrum": "42161",
+        "optimism": "10",
+        "base": "8453",
+        "polygon": "137",
+        "avalanche": "43114",
+    }.get(chain, "1")
 
     resp = await client.get(
         f"https://api.gopluslabs.io/api/v1/token_security/{chain_id}",
@@ -1416,8 +1427,35 @@ def _ptc_crowding(oi: dict, side: str) -> dict:
     return out
 
 
+# AGE-84: symbol → (chain, contract) for tokens the flagship's rotation — and
+# any caller passing just a symbol — should get screened WITHOUT having to know
+# the address. GoPlus is keyed by contract, so before this map the security leg
+# ran 0% of the time on symbol-only calls: every flagship "ok" this July was
+# computed from 3 of 4 factors with contract-risk screening silently off.
+_PTC_KNOWN_TOKENS: dict[str, tuple[str, str]] = {
+    "LINK": ("ethereum", "0x514910771af9ca656af840dff83e8264ecf986ca"),
+    "UNI":  ("ethereum", "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
+    "AAVE": ("ethereum", "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9"),
+    "PEPE": ("ethereum", "0x6982508145454ce325ddbe47a25d4ec3d2311933"),
+    "SHIB": ("ethereum", "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce"),
+    # Screened on their HOME chain — the L1 bridge copies aren't what trades.
+    "ARB":  ("arbitrum", "0x912ce59144191c1204e64559fe8253a0e49e6548"),
+    "OP":   ("optimism", "0x4200000000000000000000000000000000000042"),
+}
+
+# Native L1/L2 gas assets: there is no token contract to screen, so the factor
+# is N/A — explicitly, not silently. (Wrapped versions exist, but a perp/spot
+# position in the native asset carries no honeypot/mint/blacklist risk.)
+_PTC_NATIVE_ASSETS = frozenset({
+    "BTC", "ETH", "SOL", "AVAX", "DOGE", "ADA", "XRP", "BNB", "LTC",
+    "TRX", "DOT", "ATOM", "NEAR", "SUI", "TON", "XLM", "BCH", "ETC",
+})
+
+
 def _ptc_security(sec: dict | None) -> dict:
     if sec is None:
+        # Pre-AGE-84 sentinel — kept for tolerance, but _fetch_pre_trade_check
+        # no longer produces it: every path now yields ran / n/a / unknown.
         return {"level": "skipped", "reason": "no token_address provided"}
     if sec.get("error"):
         return {"level": "unknown", "reason": f"security scan unavailable: {sec['error']}"}
@@ -1442,6 +1480,35 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
         side = "long"
     token_address = (params.get("token_address") or "").strip()
 
+    # AGE-84: resolve the security leg for EVERY call, not only when the caller
+    # already knows the contract. Before this, the flagship passed symbols only,
+    # so security was skipped on 100% of runs — and "skipped" was then silently
+    # dropped from the verdict, printing "ok" on tokens whose contract risk was
+    # never screened, on a public ledger. Resolution order:
+    #   explicit token_address > known-token map > native (n/a) > unknown.
+    chain = params.get("chain", "ethereum")
+    security_static: dict | None = None
+    if not token_address:
+        known = _PTC_KNOWN_TOKENS.get(symbol)
+        if known:
+            chain, token_address = known
+        elif symbol in _PTC_NATIVE_ASSETS:
+            # No contract exists; visibly N/A rather than silently absent.
+            security_static = {
+                "level": "n/a",
+                "reason": f"{symbol} is a native chain asset — no token "
+                          "contract to screen",
+            }
+        else:
+            # A token that HAS a contract somewhere, which we can't resolve.
+            # This is precisely the case contract screening exists for, so it
+            # must weigh on the verdict — "ok" cannot be claimed unscreened.
+            security_static = {
+                "level": "unknown",
+                "reason": f"no known contract address for {symbol} — contract "
+                          "risk unscreened (pass token_address to screen)",
+            }
+
     jobs = {
         "orderbook_depth": real_tool_response("orderbook_depth", {"symbol": symbol}),
         "funding_rates":   real_tool_response("funding_rates",   {"asset": symbol}),
@@ -1450,7 +1517,7 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
     if token_address:
         jobs["token_security"] = real_tool_response(
             "token_security",
-            {"contract_address": token_address, "chain": params.get("chain", "ethereum")},
+            {"contract_address": token_address, "chain": chain},
         )
     values = await asyncio.gather(*jobs.values(), return_exceptions=True)
     comp = {
@@ -1462,9 +1529,14 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
         "liquidity": _ptc_liquidity(comp["orderbook_depth"], size_usd),
         "carry":     _ptc_carry(comp["funding_rates"], side),
         "crowding":  _ptc_crowding(comp["open_interest"], side),
-        "security":  _ptc_security(comp.get("token_security") if token_address else None),
+        "security":  (security_static if security_static is not None
+                      else _ptc_security(comp.get("token_security"))),
     }
-    considered = [f["level"] for f in factors.values() if f["level"] != "skipped"]
+    # n/a is excluded with a visible trace (native assets genuinely have no
+    # contract); "unknown" COUNTS — missing data is never "ok". The old
+    # "skipped" exclusion is kept for tolerance but no longer produced.
+    considered = [f["level"] for f in factors.values()
+                  if f["level"] not in ("skipped", "n/a")]
     worst = max(considered, key=lambda lv: _PTC_RANK.get(lv, 1))
     verdict = {0: "ok", 1: "caution", 2: "avoid"}[_PTC_RANK.get(worst, 1)]
 

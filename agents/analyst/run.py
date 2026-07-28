@@ -225,10 +225,14 @@ def compose_note(
     ]
     for sym, v in verdicts.items():
         factors = v.get("factors", {})
+        # AGE-84: "unknown" belongs here too — it caps the verdict at caution,
+        # so the note must say WHY ("contract risk unscreened") instead of
+        # printing an unexplained CAUTION. ("n/a" stays out: a native asset's
+        # security leg is visibly n/a in the data but never drives verdicts.)
         worst = [
             f"{name}: {f.get('reason', '?')}"
             for name, f in factors.items()
-            if f.get("level") in ("caution", "avoid")
+            if f.get("level") in ("caution", "avoid", "unknown")
         ]
         detail = f" ({'; '.join(worst)})" if worst else ""
         lines.append(f"  {sym}: {v.get('verdict', '?').upper()}{detail}")

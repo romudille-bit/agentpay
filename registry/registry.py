@@ -563,9 +563,13 @@ _TOOLS: dict[str, Tool] = {
         description=(
             "One-call pre-trade sanity check: 'I want to long $X of SYMBOL — is now sane?' "
             "Combines live orderbook slippage at YOUR size, cross-exchange funding (carry cost), "
-            "open-interest crowding, and optional contract security into a single ok/caution/avoid "
-            "verdict with a per-factor breakdown. Replaces four API integrations and the judgment "
-            "layer on top of them. Raw component data embedded so you can apply your own thresholds."
+            "open-interest crowding, and contract security (GoPlus) into a single ok/caution/avoid "
+            "verdict with a per-factor breakdown. Major ERC-20 addresses (LINK, UNI, ARB, OP, "
+            "AAVE, PEPE, SHIB) resolve automatically; native assets (BTC, ETH, SOL, ...) report "
+            "security n/a; an unrecognized token without token_address reads 'unknown' and caps "
+            "the verdict at caution — an unscreened contract can never read 'ok'. Replaces four "
+            "API integrations and the judgment layer on top of them. Raw component data embedded "
+            "so you can apply your own thresholds."
         ),
         endpoint="https://agentpay.tools/tools/pre_trade_check",
         price_usdc="0.01",
@@ -590,7 +594,10 @@ _TOOLS: dict[str, Tool] = {
                 },
                 "token_address": {
                     "type": "string",
-                    "description": "Optional ERC-20 contract address — adds a GoPlus security scan",
+                    "description": ("Optional ERC-20 contract address for the GoPlus security "
+                                    "scan. Auto-resolved for major tokens; required for a full "
+                                    "verdict on tokens the resolver doesn't know (otherwise "
+                                    "security reads 'unknown' and caps the verdict at caution)"),
                 },
             },
             "required": ["symbol"],

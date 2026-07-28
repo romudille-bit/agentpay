@@ -52,7 +52,10 @@ class TestPreTradeCheck:
         assert r["factors"]["liquidity"]["level"] == "ok"
         assert r["factors"]["carry"]["level"] == "ok"
         assert r["factors"]["crowding"]["level"] == "ok"
-        assert r["factors"]["security"]["level"] == "skipped"
+        # AGE-84: ETH is a native asset — the security factor is explicitly
+        # n/a (no contract exists), never a silent "skipped".
+        assert r["factors"]["security"]["level"] == "n/a"
+        assert "native" in r["factors"]["security"]["reason"]
         assert "orderbook_depth" in r["components"]
 
     @pytest.mark.asyncio
@@ -124,3 +127,129 @@ class TestPreTradeCheck:
         assert t is not None
         assert t.price_usdc == "0.01"
         assert t.category == "trading"
+
+
+class TestSecurityLegResolution:
+    """AGE-84: the security leg was skipped on 100% of symbol-only calls —
+    by construction, not by chance — and 'skipped' then vanished from the
+    verdict. Every flagship 'ok' in July was 3-of-4 factors with contract
+    screening silently off, on a public ledger. Now every call resolves to
+    exactly one of: screened / n/a (native) / unknown (counts)."""
+
+    @staticmethod
+    def _stub_with_capture(monkeypatch, overrides=None):
+        data = {
+            "orderbook_depth": GOOD_OB,
+            "funding_rates":   CALM_FUNDING,
+            "open_interest":   CALM_OI,
+            "token_security":  {"risk_level": "safe"},
+        }
+        data.update(overrides or {})
+        calls = {}
+
+        async def fake_rtr(tool_name, params):
+            calls[tool_name] = params
+            return data[tool_name]
+
+        monkeypatch.setattr(tools_runtime, "real_tool_response", fake_rtr)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_known_erc20_is_auto_screened(self, monkeypatch):
+        # LINK is exactly the case the issue names: an ERC-20 the flagship
+        # screened for a $25k long with the one rug-catching factor off.
+        calls = self._stub_with_capture(monkeypatch)
+        r = await tools_runtime._fetch_pre_trade_check(
+            {"symbol": "LINK", "size_usd": 25_000, "side": "long"})
+        assert calls["token_security"]["contract_address"] == \
+            "0x514910771af9ca656af840dff83e8264ecf986ca"
+        assert calls["token_security"]["chain"] == "ethereum"
+        assert r["factors"]["security"]["level"] == "ok"
+        assert r["verdict"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_l2_token_is_screened_on_its_home_chain(self, monkeypatch):
+        # ARB trades on Arbitrum — screening the L1 bridge copy would be
+        # screening the wrong contract.
+        calls = self._stub_with_capture(monkeypatch)
+        await tools_runtime._fetch_pre_trade_check(
+            {"symbol": "ARB", "size_usd": 25_000, "side": "long"})
+        assert calls["token_security"]["chain"] == "arbitrum"
+
+    @pytest.mark.asyncio
+    async def test_dangerous_known_token_flips_the_verdict(self, monkeypatch):
+        # The whole point of AGE-84: a honeypot alt must NOT get "ok" just
+        # because the caller sent a symbol instead of an address.
+        self._stub_with_capture(monkeypatch, {
+            "token_security": {"risk_level": "danger", "is_honeypot": 1}})
+        r = await tools_runtime._fetch_pre_trade_check(
+            {"symbol": "UNI", "size_usd": 25_000, "side": "long"})
+        assert r["factors"]["security"]["level"] == "avoid"
+        assert r["verdict"] == "avoid"
+
+    @pytest.mark.asyncio
+    async def test_native_asset_is_na_and_excluded(self, monkeypatch):
+        self._stub_with_capture(monkeypatch)
+        for sym in ("BTC", "DOGE", "ADA", "SOL"):
+            r = await tools_runtime._fetch_pre_trade_check(
+                {"symbol": sym, "size_usd": 25_000, "side": "long"})
+            assert r["factors"]["security"]["level"] == "n/a", sym
+            # n/a is excluded: a clean market still reads ok.
+            assert r["verdict"] == "ok", sym
+
+        # ...but the exclusion never resurrects "skipped"-style blindness:
+        # the factor is present and self-explanatory in the response.
+        assert "no token contract" in r["factors"]["security"]["reason"]
+
+    @pytest.mark.asyncio
+    async def test_native_stub_never_calls_goplus(self, monkeypatch):
+        calls = self._stub_with_capture(monkeypatch)
+        await tools_runtime._fetch_pre_trade_check(
+            {"symbol": "BTC", "size_usd": 25_000, "side": "long"})
+        assert "token_security" not in calls
+
+    @pytest.mark.asyncio
+    async def test_unknown_symbol_counts_toward_the_verdict(self, monkeypatch):
+        # An unrecognised token has a contract SOMEWHERE — the case screening
+        # exists for. "ok" must be unreachable while it's unscreened.
+        self._stub_with_capture(monkeypatch)
+        r = await tools_runtime._fetch_pre_trade_check(
+            {"symbol": "FARTCOIN", "size_usd": 25_000, "side": "long"})
+        assert r["factors"]["security"]["level"] == "unknown"
+        assert "token_address" in r["factors"]["security"]["reason"]
+        assert r["verdict"] == "caution"       # clean market, but unscreened
+
+    @pytest.mark.asyncio
+    async def test_explicit_address_beats_every_classification(self, monkeypatch):
+        # A caller who KNOWS the contract gets it screened even for a symbol
+        # we'd otherwise call native (e.g. a suspicious wrapped/fake "ETH").
+        calls = self._stub_with_capture(monkeypatch, {
+            "token_security": {"risk_level": "danger"}})
+        r = await tools_runtime._fetch_pre_trade_check({
+            "symbol": "ETH", "size_usd": 25_000, "side": "long",
+            "token_address": "0x" + "b" * 40, "chain": "bsc"})
+        assert calls["token_security"]["contract_address"] == "0x" + "b" * 40
+        assert calls["token_security"]["chain"] == "bsc"
+        assert r["verdict"] == "avoid"
+
+    @pytest.mark.asyncio
+    async def test_goplus_failure_on_resolved_token_is_unknown_not_ok(self, monkeypatch):
+        # Asymmetry the issue called out, preserved on purpose: a screen that
+        # RAN and errored lowers the verdict rather than vanishing.
+        self._stub_with_capture(monkeypatch, {
+            "token_security": {"error": "GoPlus timeout"}})
+        r = await tools_runtime._fetch_pre_trade_check(
+            {"symbol": "LINK", "size_usd": 25_000, "side": "long"})
+        assert r["factors"]["security"]["level"] == "unknown"
+        assert r["verdict"] == "caution"
+
+    @pytest.mark.asyncio
+    async def test_skipped_is_extinct(self, monkeypatch):
+        # Every rotation symbol the flagship screens must resolve to a real
+        # security disposition — the silent 4th state is gone.
+        self._stub_with_capture(monkeypatch)
+        for sym in ("BTC", "ETH", "SOL", "AVAX", "ARB", "OP",
+                    "LINK", "UNI", "DOGE", "ADA"):
+            r = await tools_runtime._fetch_pre_trade_check(
+                {"symbol": sym, "size_usd": 25_000, "side": "long"})
+            assert r["factors"]["security"]["level"] != "skipped", sym
