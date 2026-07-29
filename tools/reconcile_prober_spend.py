@@ -21,10 +21,23 @@ Interpretation:
   no_onchain_evidence — no matching transfer: the auth was never settled;
                         the recorded spend for this entry was conservative.
 
+Transfer history comes from the PUBLIC Base JSON-RPC via eth_getLogs — no
+API key. (Etherscan V2 was the original source, but Base/chainid-8453 is now
+paywalled on free keys: "Free API access is not supported for this chain",
+observed 2026-07-28. The gateway's own payment verification already uses
+JSON-RPC, so this matches production.) Set BASE_RPC_URL to override the
+default https://mainnet.base.org.
+
 Usage:
-    export ETHERSCAN_API_KEY=<key>            # same key the gateway uses
     python tools/reconcile_prober_spend.py                    # latest sweep
     python tools/reconcile_prober_spend.py --run 2026-07-28   # by date prefix
+    python tools/reconcile_prober_spend.py --wallet 0x…       # wallet override
+
+The wallet is normally read from the sweep's ledger entry, but the ledger's
+reasoning whitelist DROPS the `wallet` field the prober posts (verified
+2026-07-28: reasoning carries receipt/breakdown, wallet=None). Fallbacks, in
+order: --wallet flag → PROBER_WALLET env → the funded prober address below
+(stable: PROBER_BASE_KEY is a fixed key, so the address never rotates).
 """
 from __future__ import annotations
 
@@ -41,6 +54,10 @@ from agents.prober import probe  # noqa: E402
 GATEWAY = os.environ.get("AGENTPAY_GATEWAY_URL", "https://agentpay.tools")
 USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 UA = {"User-Agent": "Mozilla/5.0 (compatible; x402-client)"}
+# The funded prober wallet (PROBER_BASE_KEY's address). Last-resort fallback
+# for sweeps whose ledger entry lost the wallet field — matches the
+# "run start … | wallet 0x…" line in every prober Railway log.
+DEFAULT_PROBER_WALLET = "0xc507d39678309B2389744526A7CD86E236C6C750"
 
 
 def _get(url: str) -> dict:
@@ -63,27 +80,59 @@ def latest_sweep(run_prefix: str | None) -> dict | None:
     return sweeps[0] if sweeps else None
 
 
-def wallet_transfers(wallet: str, start: datetime, end: datetime) -> list[dict]:
-    key = os.environ.get("ETHERSCAN_API_KEY", "")
-    if not key:
-        print("FATAL: ETHERSCAN_API_KEY is required (Etherscan V2, any chain)")
+BASE_RPC = os.environ.get("BASE_RPC_URL", "https://mainnet.base.org")
+TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def _rpc(method: str, params: list):
+    req = urllib.request.Request(
+        BASE_RPC,
+        data=json.dumps({"jsonrpc": "2.0", "id": 1,
+                         "method": method, "params": params}).encode(),
+        headers={"Content-Type": "application/json", **UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.loads(r.read().decode())
+    if "error" in data:
+        print(f"FATAL: RPC error — {data['error']}")
         sys.exit(1)
-    q = urllib.parse.urlencode({
-        "chainid": "8453", "module": "account", "action": "tokentx",
-        "contractaddress": USDC_BASE, "address": wallet,
-        "sort": "desc", "apikey": key,
-    })
-    data = _get(f"https://api.etherscan.io/v2/api?{q}")
+    return data["result"]
+
+
+def _block_ts(n: int) -> int:
+    return int(_rpc("eth_getBlockByNumber", [hex(n), False])["timestamp"], 16)
+
+
+def wallet_transfers(wallet: str, start: datetime, end: datetime) -> list[dict]:
+    """Outbound USDC Transfer events from `wallet` on Base, via eth_getLogs
+    against the public RPC. Block range is estimated from Base's ~2s block
+    time with a ±300-block margin, then each log's block timestamp is checked
+    exactly. Returns rows shaped for probe.reconcile_settlements:
+    {"to", "value" (atomic str), "hash", "timeStamp"}."""
+    latest = int(_rpc("eth_blockNumber", []), 16)
+    latest_ts = _block_ts(latest)
+
+    def est(ts: float) -> int:
+        return latest - int((latest_ts - ts) // 2)
+
+    from_block = max(0, est(start.timestamp()) - 300)
+    to_block = min(latest, est(end.timestamp()) + 300)
+    logs = _rpc("eth_getLogs", [{
+        "address": USDC_BASE,
+        "fromBlock": hex(from_block), "toBlock": hex(to_block),
+        "topics": [TRANSFER_SIG, "0x" + "0" * 24 + wallet[2:].lower()],
+    }])
     out = []
-    for t in data.get("result") or []:
-        if str(t.get("from", "")).lower() != wallet.lower():
+    for log in logs:
+        ts = _block_ts(int(log["blockNumber"], 16))
+        t = datetime.fromtimestamp(ts, tz=timezone.utc)
+        if not (start <= t <= end):
             continue
-        try:
-            ts = datetime.fromtimestamp(int(t["timeStamp"]), tz=timezone.utc)
-        except (ValueError, TypeError, KeyError):
-            continue
-        if start <= ts <= end:
-            out.append(t)
+        out.append({
+            "to": "0x" + log["topics"][2][-40:],
+            "value": str(int(log["data"], 16)),
+            "hash": log["transactionHash"],
+            "timeStamp": str(ts),
+        })
     return out
 
 
@@ -91,6 +140,9 @@ def main() -> int:
     run_prefix = None
     if "--run" in sys.argv:
         run_prefix = sys.argv[sys.argv.index("--run") + 1]
+    wallet_override = None
+    if "--wallet" in sys.argv:
+        wallet_override = sys.argv[sys.argv.index("--wallet") + 1]
 
     run = latest_sweep(run_prefix)
     if not run:
@@ -103,13 +155,20 @@ def main() -> int:
     # Fall back to the top-level receipt shape used by the PROBER_SWEEP line.
     if not breakdown and isinstance(run.get("reasoning", {}).get("receipt"), dict):
         breakdown = run["reasoning"]["receipt"].get("breakdown") or []
-    wallet = (rs.get("wallet")
-              or (run.get("reasoning") or {}).get("wallet") or "")
+    # The ledger's reasoning whitelist drops `wallet`, so the ledger value is
+    # normally None — fall through to the override chain.
+    wallet = (wallet_override
+              or rs.get("wallet")
+              or os.environ.get("PROBER_WALLET", "")
+              or DEFAULT_PROBER_WALLET)
+    if not wallet_override and not rs.get("wallet"):
+        print(f"(wallet not on the ledger entry — using {wallet}; "
+              f"override with --wallet if this sweep used another key)")
     started = datetime.fromisoformat(str(run["started"]).replace("Z", "+00:00"))
     ended_raw = run.get("ended") or run.get("started")
     ended = datetime.fromisoformat(str(ended_raw).replace("Z", "+00:00"))
-    if not (breakdown and wallet):
-        print("Run found but receipt breakdown / wallet missing — cannot reconcile")
+    if not breakdown:
+        print("Run found but receipt breakdown missing — cannot reconcile")
         return 1
 
     print(f"\nSweep {run['started']} | wallet {wallet}")
