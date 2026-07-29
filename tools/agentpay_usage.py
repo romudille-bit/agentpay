@@ -244,34 +244,54 @@ def main():
     def _is_bot_wallet(r):
         return (r.get("agent_address") or "").lower() in bot_wallets
 
-    # Completed PAID sessions = the real KPI (challenge issued AND settled).
-    done_sessions = [r for r in human if r.get("tool_name") == "session_create"
-                     and r.get("state") in ("payment_done", "verified")
-                     and not _is_bot_wallet(r)]
-    bot_sessions = [r for r in human if r.get("tool_name") == "session_create"
-                    and r.get("state") in ("payment_done", "verified")
-                    and _is_bot_wallet(r)]
-    # 'abandoned' = we issued a 402 and NOTHING came back. Exclude 'superseded'
-    # (answered, settled on a tx-keyed row) and 'pending' (still in flight) —
-    # counting either as abandonment overstates the wall.
+    # Completed PAID calls = the real KPI (challenge issued AND settled). Counts
+    # ALL paid tools — session_create, pre_trade_check, verified_route — because an
+    # agent that pays for pre_trade_check/verified_route directly is a paying
+    # customer even if it never opens a session_create. (Broadened 2026-07-29: was
+    # session_create-only, which hid repeat payer 0xcD513… settling $0.01 on the
+    # trade tools ~7×/day.) Settle rows are tx-keyed and carry the wallet, so this
+    # is unambiguous; abandoned/challenge legs stay out via the state filter.
+    done_paid = [r for r in human if r.get("tool_name") in PAID_TOOLS
+                 and r.get("state") in ("payment_done", "verified")
+                 and not _is_bot_wallet(r)]
+    bot_paid = [r for r in human if r.get("tool_name") in PAID_TOOLS
+                and r.get("state") in ("payment_done", "verified")
+                and _is_bot_wallet(r)]
+    # 'abandoned' = we issued a 402 and NOTHING came back. Scoped to session_create:
+    # it's the session-funnel wall signal, and paid-tool challenge legs read
+    # 'abandoned' even when the SAME agent immediately settles on a separate
+    # tx-keyed row, so counting them across all paid tools would overstate the wall.
     abandoned_sessions = [r for r in human if r.get("tool_name") == "session_create"
                           and r.get("state") == "abandoned"]
+
+    # Roll paid calls up per wallet so a repeat payer is ONE auditable line, not N.
+    pay_by_wallet = {}
+    for r in done_paid:
+        w = r.get("agent_address") or "—"
+        e = pay_by_wallet.setdefault(w, {"n": 0, "usd": 0.0, "tools": Counter()})
+        e["n"] += 1
+        try:
+            e["usd"] += float(r.get("amount_usdc") or 0)
+        except (TypeError, ValueError):
+            pass
+        e["tools"][r.get("tool_name")] += 1
 
     agents = Counter(r.get("agent_address") for r in human if r.get("agent_address"))
     ips     = Counter(r.get("client_ip") for r in human if r.get("client_ip"))
     tools   = Counter(r.get("tool_name") for r in human if r.get("tool_name"))
     uas     = Counter(r.get("user_agent") for r in real if r.get("user_agent"))
 
+    total_usd = sum(e["usd"] for e in pay_by_wallet.values())
     print(f"\n  REAL-USAGE signals (crawlers excluded):")
-    print(f"    completed paid sessions : {len(done_sessions)}   <- the KPI: discovered + actually paid")
-    for r in done_sessions:
-        print(f"      · {(r.get('created_at') or '')[:19]}  ${r.get('amount_usdc')}  "
-              f"{r.get('agent_address')}  {r.get('network','')}")
-    if bot_sessions:
-        print(f"    (excluded: {len(bot_sessions)} paid session(s) from prober/crawler wallets — not demand)")
-        for r in bot_sessions:
-            print(f"      · {(r.get('created_at') or '')[:19]}  ${r.get('amount_usdc')}  "
-                  f"{r.get('agent_address')}  [bot cohort]")
+    print(f"    completed paid calls    : {len(done_paid)}   <- the KPI: discovered + actually paid")
+    print(f"                              (all 3 paid tools; ${total_usd:.2f} across {len(pay_by_wallet)} wallet(s))")
+    for w, e in sorted(pay_by_wallet.items(), key=lambda kv: -kv[1]["n"]):
+        breakdown = ", ".join(f"{t}×{c}" for t, c in e["tools"].most_common())
+        print(f"      · {w}  {e['n']} paid  ${e['usd']:.2f}  ({breakdown})")
+    if bot_paid:
+        print(f"    (excluded: {len(bot_paid)} paid call(s) from prober/crawler wallets — not demand)")
+        for w, c in Counter((r.get('agent_address') or '—') for r in bot_paid).most_common():
+            print(f"      · {w}  {c} paid  [bot cohort]")
     print(f"    abandoned session 402s  : {len(abandoned_sessions)}   (402 issued, NOTHING came back)")
     print(f"    unique IPs              : {len(ips)}")
     print(f"    unique agent wallets    : {len(agents)}   (note: quickstart mints a NEW wallet per run,")
