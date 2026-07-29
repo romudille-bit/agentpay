@@ -1,0 +1,18 @@
+-- payment_logs.parameters — buyer observability (2026-07-28).
+--
+-- Stores the request parameters of paid tool calls: which symbols
+-- pre_trade_check screens, which needs verified_route vets. Written on both
+-- the pre-402 pending row (demand even when abandoned) and the settled
+-- 'verified' row (what the paying buyer actually bought — this is what the
+-- buyer-health digest reads for wallet 0xcD513…).
+--
+-- PRIVATE: payment_logs has no public read policy, and every public surface
+-- (/ledger, /scores.json own_tools) selects explicit columns — this column
+-- is never included. Size-capped in code (>2KB stored as a marker).
+--
+-- The gateway degrades gracefully until this is applied (400-retry drops the
+-- column), so deploy order doesn't matter — but apply it, or the
+-- observability silently never accrues.
+--
+-- Apply in the Supabase SQL Editor:
+ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS parameters jsonb;

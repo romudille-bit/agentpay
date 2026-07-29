@@ -717,6 +717,9 @@ async def _issue_402(
             developer_address=tool.developer_address or None,
             client_ip=client_ip,
             user_agent=user_agent,
+            # Buyer-observability: what was ASKED, even when the 402 is later
+            # abandoned — the demand signal exists whether or not they pay.
+            parameters=body.parameters or None,
         )
         if row_id is None:
             raise HTTPException(
@@ -1162,6 +1165,10 @@ async def _execute_and_log(
             gateway_fee_usdc=gateway_fee,
             client_ip=client_ip,
             user_agent=user_agent_str,
+            # Buyer-observability: the settled call's request params — which
+            # symbols pre_trade_check screened, which need verified_route
+            # vetted. This is the row the buyer-health digest reads.
+            parameters=body.parameters or None,
         ))
         # …and mark the 402 that prompted it 'superseded' instead of letting the
         # sweep call it 'abandoned'. Without this every success also books a

@@ -20,6 +20,7 @@ still come from in-memory dicts. Cutover (Supabase becomes primary)
 is row 7 of the Tier 2 plan.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -566,6 +567,7 @@ async def insert_pending_payment_log(
     gateway_fee_usdc: Optional[str] = None,
     client_ip: Optional[str] = None,
     user_agent: Optional[str] = None,
+    parameters: Optional[dict] = None,
 ) -> Optional[int]:
     """INSERT a new payment_logs row.
 
@@ -610,6 +612,20 @@ async def insert_pending_payment_log(
     }.items():
         if val is not None:
             payload[key] = val
+    # Buyer-observability: the request params of the PAID call (which symbols
+    # pre_trade_check screens, which needs verified_route vets). Private table;
+    # every public read (/ledger, /scores.json own_tools) uses an explicit
+    # column select, so this column can never leak. Size-capped so a caller
+    # can't bloat rows: oversized params are recorded as a marker, not dropped
+    # silently. Migration: db/migrations/payment_logs_parameters.sql — until
+    # it is applied, the 400-retry below degrades to the old shape.
+    if parameters is not None:
+        try:
+            blob = json.dumps(parameters, default=str)
+            payload["parameters"] = (parameters if len(blob) <= 2048
+                                     else {"_truncated": True, "_bytes": len(blob)})
+        except (TypeError, ValueError):
+            payload["parameters"] = {"_unserializable": True}
 
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
@@ -620,6 +636,21 @@ async def insert_pending_payment_log(
                 headers={**sb_headers(), "Prefer": "return=representation"},
                 json=payload,
             )
+            if (resp.status_code == 400 and "parameters" in payload
+                    and "parameters" in resp.text):
+                # Migration not applied yet — a missing column must degrade to
+                # the pre-observability shape, never block a payment row (the
+                # pre-402 caller FAILS CLOSED on None, so a schema gap must
+                # not turn into refused challenges).
+                logger.warning("insert_pending_payment_log: parameters column "
+                               "missing (apply payment_logs_parameters.sql) — "
+                               "retrying without it")
+                payload.pop("parameters")
+                resp = await client.post(
+                    f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                    headers={**sb_headers(), "Prefer": "return=representation"},
+                    json=payload,
+                )
         if resp.status_code not in (200, 201):
             logger.error(
                 f"insert_pending_payment_log error: HTTP {resp.status_code} "

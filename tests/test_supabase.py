@@ -1135,3 +1135,81 @@ class TestExpectedStateTupleFilter:
         url = unquote(captured["url"])
         assert "payment_id=eq.test-uuid" in url
         assert "state=in.(pending,verified)" in url
+
+
+class TestPaymentParamsObservability:
+    """Buyer observability (2026-07-28): paid rows carry the request params
+    (which symbols pre_trade_check screens, which needs verified_route vets)
+    so the buyer-health digest can say WHAT was bought, not just how much.
+    payment_logs is private and public reads select explicit columns."""
+
+    @staticmethod
+    def _capture():
+        captured = {"bodies": []}
+
+        def handler(request):
+            import json as _json
+            captured["bodies"].append(_json.loads(request.content))
+            return httpx.Response(201, json=[{"id": 7}])
+        return captured, handler
+
+    @pytest.mark.asyncio
+    async def test_parameters_included_when_passed(self):
+        captured, handler = self._capture()
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/payment_logs").mock(side_effect=handler)
+            await insert_pending_payment_log(
+                payment_id="p1", tool_name="pre_trade_check",
+                network="eip155:8453", amount_usdc="0.01",
+                parameters={"symbol": "LINK", "size_usd": 25000, "side": "long"},
+            )
+        assert captured["bodies"][0]["parameters"] == {
+            "symbol": "LINK", "size_usd": 25000, "side": "long"}
+
+    @pytest.mark.asyncio
+    async def test_parameters_omitted_when_none(self):
+        captured, handler = self._capture()
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/payment_logs").mock(side_effect=handler)
+            await insert_pending_payment_log(
+                payment_id="p2", tool_name="token_price",
+                network="stellar-testnet", amount_usdc="0.001")
+        assert "parameters" not in captured["bodies"][0]
+
+    @pytest.mark.asyncio
+    async def test_oversized_parameters_become_a_marker(self):
+        # A caller must not be able to bloat our rows with megabyte params.
+        captured, handler = self._capture()
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/payment_logs").mock(side_effect=handler)
+            await insert_pending_payment_log(
+                payment_id="p3", tool_name="pre_trade_check",
+                network="eip155:8453", amount_usdc="0.01",
+                parameters={"blob": "x" * 5000})
+        sent = captured["bodies"][0]["parameters"]
+        assert sent["_truncated"] is True and sent["_bytes"] > 2048
+
+    @pytest.mark.asyncio
+    async def test_missing_column_degrades_and_row_still_lands(self):
+        # Pre-migration: PostgREST 400s on the unknown column. The pre-402
+        # caller FAILS CLOSED on None, so a schema gap must degrade to the
+        # old shape — never into refused challenges.
+        calls = {"n": 0}
+
+        def handler(request):
+            import json as _json
+            calls["n"] += 1
+            body = _json.loads(request.content)
+            if "parameters" in body:
+                return httpx.Response(
+                    400, json={"message": "Could not find the 'parameters' column"})
+            return httpx.Response(201, json=[{"id": 42}])
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/payment_logs").mock(side_effect=handler)
+            row_id = await insert_pending_payment_log(
+                payment_id="p4", tool_name="verified_route",
+                network="eip155:8453", amount_usdc="0.01",
+                parameters={"need": "dex pair liquidity"})
+        assert row_id == 42
+        assert calls["n"] == 2          # tried with, retried without
