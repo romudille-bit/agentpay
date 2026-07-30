@@ -647,3 +647,39 @@ def sats_from_usd(amount_usd: Decimal, btc_usd_rate: Decimal) -> int:
         rounding=ROUND_CEILING
     )
     return int(sats)
+
+
+def assert_sats_within_cap(amount_sats: int, amount_usd, btc_usd_rate=None) -> None:
+    """Refuse to sign a sats amount the USD cap doesn't bound.
+
+    The cap is enforced in USD, but amount_sats is what leaves the wallet.
+    Two guards, no I/O: a floor-rate ceiling (STACKS_MIN_BTC_USD, default $10k)
+    that holds even without a quoted rate, and a tolerance check against
+    btc_usd_rate when present (STACKS_SATS_TOLERANCE, default 2%, min 2 sats).
+    Raises ValueError otherwise.
+    """
+    import os
+    if amount_usd is None:
+        raise ValueError("no amount_usdc to bound amount_sats against")
+    usd = Decimal(str(amount_usd))
+    if usd < 0:
+        raise ValueError("amount_usd must be non-negative")
+    floor = Decimal(os.environ.get("STACKS_MIN_BTC_USD", "10000"))
+    max_sats = sats_from_usd(usd, floor)          # cheapest BTC => most sats/$
+    if amount_sats > max_sats:
+        raise ValueError(
+            f"amount_sats={amount_sats} exceeds the most sats ${usd} could buy "
+            f"at the ${floor}/BTC floor ({max_sats}) - refusing to sign"
+        )
+    if btc_usd_rate is not None:
+        rate = Decimal(str(btc_usd_rate))
+        if rate <= 0:
+            raise ValueError(f"402 quotes a non-positive BTC/USD rate ({rate})")
+        expected = sats_from_usd(usd, rate)
+        tol = Decimal(os.environ.get("STACKS_SATS_TOLERANCE", "0.02"))
+        slack = max(Decimal(expected) * tol, Decimal(2))
+        if abs(Decimal(amount_sats) - Decimal(expected)) > slack:
+            raise ValueError(
+                f"amount_sats={amount_sats} inconsistent with ${usd} at {rate} "
+                f"BTC/USD (expected ~{expected}) - refusing to sign"
+            )
