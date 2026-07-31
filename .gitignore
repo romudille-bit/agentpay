@@ -103,3 +103,33 @@ SPEC_TRUST_ORACLE.html
 strategy_spec_latest.json
 SUBMISSION_BNB.md
 SUBMISSION_BNB.docx
+
+# Held for pre-publish review — see Linear AGE-82
+examples/README.md
+
+# ── Local working files — never commit (Drive-only docs + local scratch) ──
+AGENTPAY_REVIEW_FOLLOWUP_2026-07-20.md
+BASE_BUILDER_REWARDS.md
+GRANTS_PIPELINE.md
+GRANT_MONAD.md
+GRANT_SOLANA.md
+GRANT_TEAM1_AVALANCHE.md
+GRANT_XRPL.md
+INFERENCE_PROXY_SPEC.md
+OUTREACH_OPERATORS.md
+PROBER_SPEC.md
+SESSION_VERIFICATION_SPEC.md
+
+# Secret-scan output
+gitleaks-redacted.json
+
+# Local scratch / probe scripts (kept off GitHub, like the demo tools above)
+tools/free_v2_smoke.py
+tools/probe_arbitrum_bazaar.py
+tools/probe_arbitrum_onchain.py
+tools/probe_arbitrum_x402.py
+tools/probe_stellar_x402.py
+tools/probe_x402_demand.py
+
+# Disposable local scratch dir (git-bridge locks, temp patches)
+_to_delete/
