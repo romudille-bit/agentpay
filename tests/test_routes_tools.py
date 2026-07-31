@@ -1498,3 +1498,96 @@ class TestEndpointSafetyCgnat:
         from gateway.routes.tools import _endpoint_is_safe
         ok, why = _endpoint_is_safe("https://8.8.8.8/tool")
         assert ok is True, why
+
+
+# ── Bare-body parameter folding ──────────────────────────────────────────────
+
+class TestBareBodyParamsFold:
+    """Some clients send tool arguments at the top level of the JSON body
+    ({"symbol": "SOL"}) instead of nested under "parameters". Pydantic
+    silently discarded those keys, so such calls ran on tool defaults with
+    no error and no trace. The model now folds unrecognized top-level keys
+    into `parameters` when it is empty, and the paid response echoes what
+    the tool actually ran with."""
+
+    # — model-level folding —
+
+    def test_bare_body_folds_into_parameters(self):
+        from gateway.routes.tools import ToolCallRequest
+        req = ToolCallRequest(**{"symbol": "SOL", "size_usd": 500})
+        assert req.parameters == {"symbol": "SOL", "size_usd": 500}
+
+    def test_nested_body_unchanged(self):
+        from gateway.routes.tools import ToolCallRequest
+        req = ToolCallRequest(parameters={"symbol": "SOL"}, agent_address="0xabc")
+        assert req.parameters == {"symbol": "SOL"}
+        assert req.agent_address == "0xabc"
+
+    def test_nested_nonempty_wins_over_top_level_extras(self):
+        """Canonical shape takes precedence — extras are NOT merged in."""
+        from gateway.routes.tools import ToolCallRequest
+        req = ToolCallRequest(**{"parameters": {"a": 1}, "b": 2})
+        assert req.parameters == {"a": 1}
+
+    def test_explicit_empty_parameters_still_folds(self):
+        from gateway.routes.tools import ToolCallRequest
+        req = ToolCallRequest(**{"parameters": {}, "symbol": "SOL"})
+        assert req.parameters == {"symbol": "SOL"}
+
+    def test_agent_address_never_folded(self):
+        from gateway.routes.tools import ToolCallRequest
+        req = ToolCallRequest(**{"agent_address": "GABC", "symbol": "SOL"})
+        assert req.parameters == {"symbol": "SOL"}
+        assert req.agent_address == "GABC"
+
+    def test_empty_body_stays_empty(self):
+        from gateway.routes.tools import ToolCallRequest
+        req = ToolCallRequest()
+        assert req.parameters == {}
+
+    def test_non_dict_parameters_still_rejected(self):
+        import pydantic
+        from gateway.routes.tools import ToolCallRequest
+        with pytest.raises(pydantic.ValidationError):
+            ToolCallRequest(parameters="not a dict")
+
+    # — end-to-end through the paid POST path —
+
+    def _pay(self, client, body):
+        first = client.post("/tools/token_price/call", json=body)
+        assert first.status_code == 402
+        payment_id = first.json()["payment_id"]
+        r = client.post(
+            "/tools/token_price/call",
+            json=body,
+            headers={
+                "X-Payment": f"tx_hash=mocktxhash,from=GAGENT,id={payment_id}",
+                "X-Agent-Address": "GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENT",
+            },
+        )
+        assert r.status_code == 200
+        return r.json()
+
+    def test_bare_body_reaches_the_tool(
+        self, client, patch_route_verify, patch_route_tool_response
+    ):
+        body = self._pay(client, {"symbol": "SOL"})
+        # the mocked executor echoes the params it received
+        assert body["result"]["params"] == {"symbol": "SOL"}
+        assert body["parameters_received"] == {"symbol": "SOL"}
+        assert "parameters_note" not in body
+
+    def test_nested_body_reaches_the_tool_unchanged(
+        self, client, patch_route_verify, patch_route_tool_response
+    ):
+        body = self._pay(client, {"parameters": {"symbol": "BTC"}})
+        assert body["result"]["params"] == {"symbol": "BTC"}
+        assert body["parameters_received"] == {"symbol": "BTC"}
+        assert "parameters_note" not in body
+
+    def test_empty_body_gets_defaults_note(
+        self, client, patch_route_verify, patch_route_tool_response
+    ):
+        body = self._pay(client, {})
+        assert body["parameters_received"] == {}
+        assert "defaults" in body["parameters_note"]

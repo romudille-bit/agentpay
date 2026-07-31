@@ -31,7 +31,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 import registry
 
@@ -69,8 +69,32 @@ router = APIRouter()
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class ToolCallRequest(BaseModel):
+    """Body of POST /tools/{name}/call.
+
+    Canonical shape nests tool arguments under "parameters", but some
+    clients send them at the top level ({"symbol": "SOL"} instead of
+    {"parameters": {"symbol": "SOL"}}). Pydantic used to silently discard
+    unknown keys, so those calls ran on tool defaults with no error. The
+    validator below folds unrecognized top-level keys into `parameters`
+    whenever `parameters` itself is empty, so both shapes work; nested
+    callers are byte-for-byte unaffected.
+    """
+
     parameters: dict = {}
     agent_address: Optional[str] = None  # Agent's Stellar wallet address
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_bare_body(cls, data):
+        if isinstance(data, dict) and not data.get("parameters"):
+            extras = {
+                k: v for k, v in data.items()
+                if k not in ("parameters", "agent_address")
+            }
+            if extras:
+                data = dict(data)
+                data["parameters"] = extras
+        return data
 
 
 class RegisterToolRequest(BaseModel):
@@ -1246,15 +1270,25 @@ async def _execute_and_log(
         user_agent=user_agent_str,
     )
 
+    # Echo the parameters the tool actually ran with, so a buyer whose intent
+    # was dropped (or who forgot to send any) can see it in the response
+    # instead of silently receiving a default-parameters verdict.
+    params_used = body.parameters or {}
     response = {
         "tool": tool_name,
         "result": tool_result,
+        "parameters_received": params_used,
         "payment": {
             "amount_usdc": tool.price_usdc,
             "tx_hash": auth.get("tx_hash"),
             "network": receipt_network,
         },
     }
+    if not params_used:
+        response["parameters_note"] = (
+            "no parameters received — the tool ran on its defaults; send a "
+            'JSON body with your arguments (top-level or under "parameters")'
+        )
     related = _PAID_RELATED.get(resolved)
     if related:
         response["related"] = {"hint": _RELATED_HINT, "paid_tools": related}
