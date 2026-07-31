@@ -265,9 +265,29 @@ class AgentPayClient:
                             raise RuntimeError("fresh 402 offered no Stacks option")
                         payment_id = ndata["payment_id"]
                         stacks_opt = nstacks
+                        # The re-quote is a new quote: bound it by the same cap
+                        # before signing, and record the retry leg at its amount.
+                        try:
+                            amount_usd = Decimal(str(nstacks["amount_usdc"]))
+                        except Exception:
+                            amount_usd = None
+                        if max_spend is not None:
+                            if amount_usd is None:
+                                raise PaymentFailed(
+                                    "fresh 402 has an unparseable USD amount — "
+                                    "refusing to sign"
+                                )
+                            if amount_usd > Decimal(str(max_spend)):
+                                raise BudgetExceeded(
+                                    f"fresh 402 re-quote demands {amount_usd} USD, "
+                                    f"over the cap for this call ({max_spend} USD) "
+                                    f"— refusing to sign"
+                                )
                         built = self.wallet.build_stacks_payment(
                             stacks_opt, payment_id, url
                         )
+                    except (BudgetExceeded, PaymentFailed):
+                        raise
                     except Exception as e:
                         raise PaymentFailed(
                             f"stacks re-sign after stale nonce failed: {str(e)[:160]}"

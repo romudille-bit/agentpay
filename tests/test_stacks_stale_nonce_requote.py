@@ -12,6 +12,7 @@ import httpx
 import respx
 
 from agentpay._client import AgentPayClient
+from agentpay._wallet import BudgetExceeded
 
 GATEWAY = "https://gateway-fake.example"
 TOOL_URL = f"{GATEWAY}/tools/token_price/call"
@@ -77,3 +78,27 @@ def test_stale_nonce_requests_fresh_402_then_new_payment_id():
     # Signed twice, against TWO DIFFERENT payment_ids — a fresh 402, not a reuse.
     assert wallet._seen == ["pid-A", "pid-B"]
     assert out is not None
+
+
+def test_overcap_requote_refused():
+    """A fresh 402 that re-quotes above the cap is refused before signing —
+    the cap binds the retry quote, not just the original one."""
+    import pytest
+    wallet = _stacks_wallet()
+    overcap = _402("pid-B")
+    overcap["amount_usdc"] = "0.50"
+    overcap["payment_options"]["stacks"]["amount_usdc"] = "0.50"
+    with respx.mock:
+        respx.post(TOOL_URL).mock(side_effect=[
+            httpx.Response(402, json=_402("pid-A")),
+            httpx.Response(409, json={"payment_status": "rejected",
+                                      "error_reason": "broadcast rejected: bad nonce"}),
+            httpx.Response(402, json=overcap),
+        ])
+        client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)
+        with pytest.raises(BudgetExceeded):
+            client.call_tool("token_price", {"symbol": "BTC"},
+                             max_spend="0.05", prefer_chain="stacks",
+                             chain_is_explicit=True)
+    # Only the first quote was ever signed.
+    assert wallet._seen == ["pid-A"]

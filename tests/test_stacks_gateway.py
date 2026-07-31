@@ -700,11 +700,15 @@ class TestSponsoredAndPostConditionMode:
     """A sponsored tx (can never broadcast) and allow-mode post-conditions are
     both refused before settlement."""
 
-    async def test_sponsored_tx_refused(self, monkeypatch):
-        tx = _signed_tx()
-        decoded = stacks_pay.decode_sbtc_transfer(tx)
-        monkeypatch.setattr(stacks_pay, "decode_sbtc_transfer",
-                            lambda _b: {**decoded, "sponsored": True})
+    async def test_sponsored_tx_refused(self):
+        # Real sponsored bytes: built + signed with the sponsored auth variant.
+        kp = StacksKeypair.from_secret(PAYER_KEY)
+        unsigned = build_sbtc_transfer(
+            sender=kp, recipient=GATEWAY_ADDR, amount_sats=EXPECTED_SATS,
+            payment_id=PAYMENT_ID, nonce=4, fee_microstx=500,
+            network="testnet", sponsored=True,
+        )
+        tx = sign_transaction(unsigned, kp)
         auth = await _verify(_header_for(tx))
         assert not auth["authorized"]
         assert auth["reason"] == "sponsored_not_supported"
