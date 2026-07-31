@@ -1,57 +1,17 @@
 """
-gateway/stacks.py — Stacks/sBTC settlement adapter (AGE-23).
+gateway/stacks.py — Stacks/sBTC settlement adapter.
 
-STATUS: IMPLEMENTED (2026-07-21). Wired into routes/tools.py behind
-settings.STACKS_ENABLED (default False — inert until configured).
-Design doc + wire contract: docs/stacks-adapter.md (12-point checklist).
+The gateway broadcasts: the client hands over a fully signed, unbroadcast sBTC
+transfer and this module broadcasts it — via the facilitator's /settle, or
+directly to Hiro if the facilitator is down (a convenience layer, not a hard
+dependency). verify_stacks_payment statically checks the tx and recomputes its
+txid from the bytes; settle_stacks_payment consumes that txid before broadcast
+(fail-closed replay guard) and polls Hiro by txid on an ambiguous outcome.
 
-Third settlement adapter, third settlement model:
-  - Stellar (stellar.py): agent broadcasts; gateway only verifies.
-  - Base (base.py): client signs an off-chain EIP-3009 auth; CDP broadcasts.
-  - Stacks (here): client hands us a FULLY SIGNED, UNBROADCAST tx and the
-    GATEWAY broadcasts — via the facilitator's /settle, or directly to Hiro
-    when the facilitator is down. Every failure mode between broadcast and
-    confirmation lands on us.
-
-Hard requirements (each anchored where it is enforced below):
-
-  [CHECKLIST #6] — replay consume FAILS CLOSED and happens PRE-settle.
-      Stacks txid is deterministic from the signed tx before broadcast
-      (agentpay._stacks_tx.txid_of): settle_stacks_payment consumes the txid
-      BEFORE any broadcast using the same in-memory check-and-add + AWAITED
-      Supabase insert pattern as base.py:settle_base_payment.
-
-  [CHECKLIST #5] — verify_stacks_payment decodes the Clarity contract call
-      (sbtc-token::transfer args: amount, sender, recipient, memo) and binds
-      memo → payment_id. Amount alone is meaningless when every tool costs
-      the same (AGE-64 lesson).
-
-  Post-conditions are refused, not repaired: a tx without the exact
-      sent-equal fungible post-condition is unsafe to broadcast on the
-      client's behalf — verification rejects it.
-
-  Recovery from day one (`settle_exact_node_failure` → `ok_recovered`,
-      live Base incident 2026-06-11): on ambiguous broadcast/confirm
-      failure, poll Hiro by txid; if the tx confirmed, return `ok_recovered`
-      instead of charging the agent for nothing.
-
-  Facilitator posture: convenience, not a hard dependency. The payment
-      artifact is a complete signed tx → a dead facilitator degrades to
-      direct `POST /v2/transactions` on Hiro + confirmation polling.
-
-  Header dialect #3: the payload travels in `payment-signature` (HTTP
-      headers are case-insensitive, so routing keys on the payload's CAIP-2
-      `network: "stacks:…"`, not on header casing). Never mixed with
-      X-Payment (Stellar) or the Base PAYMENT-SIGNATURE handling.
-
-Settle-response contract (docs/stacks-adapter.md §Wire contract — the SDK's
-retry logic depends on it):
-  - state "rejected"  ⇒ the node/facilitator REFUSED the tx (it is in no
-    mempool and can never settle). The SDK zeroes the leg; on a nonce
-    conflict it re-signs once. NEVER return rejected for an ambiguous
-    timeout.
-  - state "uncertain" ⇒ broadcast may have happened; the SDK keeps the
-    spend recorded.
+Settle-response contract the SDK's retry logic keys on: "rejected" = the node
+refused the tx (no mempool, can never settle) — never for an ambiguous timeout;
+"uncertain" = broadcast may have happened, spend stays recorded. Full wire
+contract: docs/stacks-adapter.md.
 """
 
 from __future__ import annotations
@@ -560,7 +520,7 @@ async def verify_stacks_payment(
     if tx["arg_recipient"] != expected_recipient:
         return _fail("wrong_recipient")
 
-    # ── [CHECKLIST #5] memo → payment_id binding ─────────────────────────────
+    # ── memo → payment_id binding ─────────────────────────────
     # The memo carries payment_id[:34] (the SIP-010 buff cap truncates UUIDs);
     # prefix rule both ways, mirroring the Stellar memo match.
     if not tx["memo"]:
@@ -747,27 +707,26 @@ async def settle_stacks_payment(
     payment_payload: Optional[dict] = None,
     requirements: Optional[dict] = None,
 ) -> dict:
-    """Broadcast + confirm. THE ORDER IS THE SECURITY MODEL:
+    """Broadcast + confirm. The order is the security model:
 
-      1. [CHECKLIST #6] atomically consume `txid` — in-memory check-and-add
-         + AWAITED Supabase insert, fail-CLOSED on infra error — BEFORE any
-         broadcast attempt. A replayed txid dies here. `txid` MUST be
-         recomputed server-side from `signed_tx` by the caller (never the
-         header's copy).
+      1. Consume `txid` (in-memory check-and-add + awaited Supabase insert,
+         fail-closed on infra error) before any broadcast — a replayed txid
+         dies here. `txid` is recomputed server-side from `signed_tx` by the
+         caller, never taken from the header.
       2. Facilitator /settle when STACKS_FACILITATOR_URL is set.
       3. Facilitator down/5xx/unreachable → direct Hiro broadcast.
-      4. Ambiguous outcome AFTER any broadcast attempt → poll_confirmation;
-         confirmed ⇒ "ok_recovered" (never charge-for-nothing; same-txid
-         re-broadcast is node-level idempotent).
-      5. DEFINITIVE node rejection ⇒ "rejected" (the consume stays — fail
-         closed; the SDK re-signs with a fresh nonce, producing a new txid).
+      4. Ambiguous outcome after any broadcast → poll_confirmation; confirmed ⇒
+         "ok_recovered" (never charge-for-nothing; same-txid re-broadcast is
+         node-idempotent).
+      5. Definitive node rejection ⇒ "rejected" (the consume stays; the SDK
+         re-signs with a fresh nonce, producing a new txid).
 
     Returns {"ok", "state": "ok"|"ok_recovered"|"rejected"|"uncertain",
              "txid", "reason"}.
     """
     label = _network_label()
 
-    # ── 1. atomic pre-broadcast consume ([CHECKLIST #6], fail closed) ────────
+    # ── consume the txid before broadcast — a replay must die here ────────
     if txid in _used_stacks_txids:
         return {"ok": False, "state": "rejected", "txid": txid,
                 "reason": "replay_attack"}

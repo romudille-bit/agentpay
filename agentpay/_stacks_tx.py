@@ -1,56 +1,19 @@
 """
-_stacks_tx.py — Minimal Python Stacks transaction signing (AGE-22).
+_stacks_tx.py — minimal Stacks transaction signing (no I/O).
 
-STATUS: IMPLEMENTED (2026-07-20). Pure/no-I/O; nothing in the SDK imports it
-until AGE-25 wires `chain="stacks"`. Design doc: docs/stacks-adapter.md
-(read the 12-point checklist first).
+No mature Python Stacks signing library exists (canonical tooling is stacks.js),
+so this implements exactly what the x402 path needs — a signed SIP-010
+sbtc-token::transfer — and nothing else. secp256k1 via eth_keys (pure-python,
+RFC6979), so output is byte-identical to stacks.js/noble for the same inputs and
+is fixture-tested against @stacks/transactions.
 
-The long pole of the Stacks adapter: no mature Python Stacks signing library
-exists (canonical tooling is stacks.js), so this is a minimal, spec-documented
-implementation of exactly what the x402 payment path needs — a signed SIP-010
-`sbtc-token::transfer` contract call — and nothing else.
-
-Specs: SIP-005 (transaction encoding), SIP-010 (fungible token trait),
-Hiro API (`POST /v2/transactions`, `GET /extended/v1/tx/{txid}`).
-Curve: secp256k1 — same as EVM; primitives come from `eth_keys`, a CORE
-dependency (its pure-python NativeECCBackend needs no coincurve; RFC6979
-deterministic signatures, so output is byte-identical to stacks.js/noble for
-the same inputs).
-
-Fixture-validated against @stacks/transactions v7 output
-(tests/fixtures/stacks_tx_fixtures.json, generator: tools/gen_stacks_fixtures.mjs):
-serialized txs match byte-for-byte, txids match. Also live-validated against a
-Stacks testnet node (2026-07-20): `POST /v2/transactions` on api.testnet.hiro.so
-fully deserialized a tx built here and rejected it only for NotEnoughFunds
-(unfunded test key), with the node's txid equal to our pre-broadcast txid_of().
-
-Non-goals (explicitly out of scope here):
-  - broadcasting (gateway/stacks.py owns that; this lib is pure/no-I/O)
-  - facilitator or relay HTTP integration
-  - any budget logic (lives in _wallet.py — checklist items 1-4, 11-12)
-
-Wire-format requirements this lib MUST satisfy (from the review checklist):
-  [CHECKLIST #5]  the transfer's optional `(buff 34)` memo arg carries
-                  payment_id — the challenge binding (Stellar-memo analog).
-                  Amount-only binding was the AGE-64 hole; never rely on it.
-  [CHECKLIST #8]  key parsing raises a CONSTANT message ("invalid Stacks
-                  private key") — never interpolate the key or the underlying
-                  exception text into errors.
-  - post-conditions are MANDATORY hygiene: every transfer asserts "exactly N
-    sats of sbtc-token leave sender" — this is what makes a signed tx safe to
-    hand to an untrusted facilitator. Wrong/absent post-conditions = unsafe.
-    `build_sbtc_transfer` appends the deny-mode post-condition itself; there
-    is deliberately no way to build a transfer without one.
-  - txid must be computable BEFORE broadcast (sha512/256 of the signed tx) —
-    the gateway's atomic replay-consume keys on it pre-settle.
-  - the sponsored-transaction auth variant must be representable (client signs
-    with sponsored flag; relay co-signs and pays the STX fee) so the aibtcdev
-    sponsor-relay path isn't precluded. Building the relay flow is NOT in
-    scope — only not breaking the wire format for it.
-
-Acceptance (AGE-22): a tx built here is accepted by a Stacks testnet node;
-serialization unit-tested against fixtures generated with stacks.js; txid
-matches the node's txid.
+Two invariants the rest of the adapter relies on: every transfer carries the
+payment_id in its memo (the challenge binding — amount alone is meaningless when
+tools are uniformly priced), and a mandatory deny-mode "exactly N sats leave
+sender" post-condition (what makes a signed tx safe to hand an untrusted
+facilitator); build_sbtc_transfer appends it and there is no way to omit it. The
+txid is computable before broadcast so the gateway can replay-consume on it.
+Specs: SIP-005, SIP-010. Design doc: docs/stacks-adapter.md.
 """
 
 from __future__ import annotations
@@ -82,7 +45,7 @@ SBTC_CONTRACT_TESTNET = "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token"
 # SIP-010 asset name of the sBTC fungible token (used in post-conditions).
 SBTC_ASSET_NAME = "sbtc-token"
 
-_INVALID_KEY_MSG = "invalid Stacks private key"  # [CHECKLIST #8] constant, never interpolate
+_INVALID_KEY_MSG = "invalid Stacks private key"  # constant; never interpolate the key
 
 # secp256k1 group order (key validity bound: 0 < d < N).
 _SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
@@ -304,9 +267,9 @@ def c32_decode(address: str) -> tuple[int, bytes]:
 class StacksKeypair:
     """secp256k1 keypair with the Stacks (c32) address derivations.
 
-    [CHECKLIST #8]: `from_secret` must catch every underlying parse error and
-    re-raise ValueError(_INVALID_KEY_MSG) — the secret never appears in any
-    exception text or log.
+    `from_secret` must catch every underlying parse error and re-raise
+    ValueError(_INVALID_KEY_MSG) — the secret never appears in any exception
+    text or log.
     """
 
     private_key: bytes  # 32 bytes
@@ -332,8 +295,8 @@ class StacksKeypair:
                 raise ValueError()
             return cls(private_key=key_bytes, compressed=compressed)
         except Exception:
-            # [CHECKLIST #8] constant message; never chain the original
-            # exception (its text can carry key material).
+            # constant message; never chain the original exception (its text
+            # can carry key material).
             raise ValueError(_INVALID_KEY_MSG) from None
 
     def public_key(self) -> bytes:
@@ -485,9 +448,8 @@ def build_sbtc_transfer(
 
     - Clarity args: (amount uint) (sender principal) (recipient principal)
       (memo (optional (buff 34))) — memo = payment_id[:34] utf-8.
-      [CHECKLIST #5]: this memo IS the challenge binding; the gateway verifies
-      it against the pending payment row. A transfer without it verifies as
-      nothing.
+      this memo is the challenge binding; the gateway verifies it against the
+      pending payment row. A transfer without it verifies as nothing.
     - Post-condition from `amount_sats` is appended automatically (deny-mode).
     - `sponsored=True` selects the sponsored auth variant (relay co-signs and
       pays the STX fee) — wire format only, no relay logic here.
@@ -500,7 +462,7 @@ def build_sbtc_transfer(
     if amount_sats <= 0:
         raise ValueError("amount_sats must be positive")
     if not payment_id:
-        # [CHECKLIST #5] the memo binding is not optional in this lib.
+        # the memo binding is not optional in this lib.
         raise ValueError("payment_id is required (challenge binding)")
     if nonce < 0 or fee_microstx < 0:
         raise ValueError("nonce and fee must be non-negative")
@@ -563,20 +525,7 @@ def _with_origin_condition(tx: bytes, condition: bytes) -> bytes:
 
 
 def sign_transaction(unsigned_tx: bytes, keypair: StacksKeypair) -> bytes:
-    """Chained presign-sighash signing (SIP-005 §single-sig).
-
-    NOTE FOR CALLERS (the SDK path, AGE-25) — budget semantics around this
-    call are checklist territory, enforced in _wallet.py, not here:
-      [CHECKLIST #1]  amount bounded by cap BEFORE this is called
-      [CHECKLIST #2]  spend recorded when the signed tx LEAVES the process,
-                      not at HTTP 200
-      [CHECKLIST #3]  once transmitted, the signed tx is live — no other-chain
-                      fallback until its fate is known
-      [CHECKLIST #7]  validity window clamped before signing
-      [CHECKLIST #11] cap math excludes the call's own hold
-                      (_cap_excluding_hold is the reference)
-      [CHECKLIST #12] absorb+release under ONE lock (_absorb_and_release)
-    """
+    """Chained presign-sighash signing (SIP-005 single-sig)."""
     if len(unsigned_tx) < _ORIGIN_CONDITION_OFFSET + _SPENDING_CONDITION_LEN:
         raise ValueError("malformed Stacks transaction")
     auth_type = unsigned_tx[5]
@@ -629,9 +578,9 @@ def sign_transaction(unsigned_tx: bytes, keypair: StacksKeypair) -> bytes:
 
 
 def txid_of(signed_tx: bytes) -> str:
-    """Deterministic txid (sha512/256 over the signed tx) — computable BEFORE
-    broadcast. gateway/stacks.py consumes this for replay protection PRE-settle
-    ([CHECKLIST #6] fail-closed), and polls Hiro by it on settle timeout."""
+    """Deterministic txid (sha512/256 over the signed tx), computable before
+    broadcast. gateway/stacks.py consumes it for replay protection pre-settle
+    (fail-closed) and polls Hiro by it on settle timeout."""
     return _sha512_256(signed_tx).hex()
 
 
