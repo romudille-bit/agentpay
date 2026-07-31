@@ -694,6 +694,12 @@ class AgentWallet:
                 f"{expected_caip2} — refusing to sign"
             )
         amount_sats = int(stacks_opt["amount_sats"])
+        # The cap is enforced in USD; bind it to the sats actually signed.
+        _stacks_tx.assert_sats_within_cap(
+            amount_sats,
+            stacks_opt.get("amount_usdc"),
+            stacks_opt.get("btc_usd_rate"),
+        )
         pay_to = stacks_opt.get("pay_to") or stacks_opt.get("payTo")
         if not pay_to:
             raise ValueError("402 stacks option has no pay_to address")

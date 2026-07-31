@@ -237,17 +237,34 @@ class AgentPayClient:
                     re.search(r"(?i)(bad|conflicting|stale)[ _-]{0,3}nonce", reason)
                 )
                 if rejected and nonce_conflict and attempt == 1:
-                    # The node refused the tx at broadcast — it is in no
-                    # mempool and can never settle. Zero the leg, re-fetch the
-                    # nonce, re-sign ONCE.
+                    # Node refused the tx (stale nonce). The payment_id was
+                    # already consumed pre-broadcast, so reusing it would be
+                    # rejected as a replay — request a fresh 402 for a new
+                    # payment_id, then re-sign.
                     entry["amount_usdc"] = "0"
                     entry["state"] = "stale_nonce_resigned"
                     self.wallet.reset_stacks_nonce()
                     logger.warning(
-                        f"  Stacks settle rejected (stale nonce) — re-signing "
-                        f"once: {reason[:80]}"
+                        f"  Stacks settle rejected (stale nonce) — re-requesting "
+                        f"a fresh 402 and re-signing once: {reason[:80]}"
                     )
                     try:
+                        fresh = client.post(
+                            url,
+                            json=payload,
+                            headers={"x-agent-address": self.wallet.stacks_address},
+                            timeout=60.0,
+                        )
+                        if fresh.status_code != 402:
+                            raise RuntimeError(
+                                f"expected a fresh 402, got {fresh.status_code}"
+                            )
+                        ndata = fresh.json()
+                        nstacks = (ndata.get("payment_options") or {}).get("stacks")
+                        if nstacks is None:
+                            raise RuntimeError("fresh 402 offered no Stacks option")
+                        payment_id = ndata["payment_id"]
+                        stacks_opt = nstacks
                         built = self.wallet.build_stacks_payment(
                             stacks_opt, payment_id, url
                         )

@@ -45,10 +45,20 @@ STACKS_KEY = FIXTURES["keys"][0]["private_key"]
 RECIPIENT = FIXTURES["keys"][1]["address_testnet"]
 
 
-def _stacks_402(amount_usdc="0.001", amount_sats=1030, **extra):
+_TEST_BTC_USD = "100000"
+
+
+def _stacks_402(amount_usdc="0.001", amount_sats=None,
+                btc_usd_rate=_TEST_BTC_USD, **extra):
+    if amount_sats is None:
+        # Keep sats consistent with the USD at the quoted rate.
+        from decimal import Decimal as _D
+        from agentpay._stacks_tx import sats_from_usd as _sats
+        amount_sats = _sats(_D(amount_usdc), _D(btc_usd_rate))
     opt = {
         "amount_sats": amount_sats,
         "amount_usdc": amount_usdc,
+        "btc_usd_rate": btc_usd_rate,
         "pay_to": RECIPIENT,
         "network": "stacks:2147483648",
         "fee_microstx": 500,
@@ -341,6 +351,8 @@ class TestNonceSerialization:
                     "payment_status": "rejected",
                     "error_reason": "broadcast rejected: BadNonce (expected 9)",
                 }),
+                # Stale-nonce recovery re-requests a fresh 402 (new payment_id).
+                httpx.Response(402, json={**_stacks_402(), "payment_id": "pay_stacks_test_0002"}),
                 httpx.Response(200, json=_ok_200()),
             ])
             result = client.call_tool(
@@ -375,7 +387,11 @@ class TestNonceSerialization:
             _mock_nonce(4)
             respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=_stacks_402()),
-                rejection, rejection,
+                rejection,
+                # Fresh 402 after the first rejection; the second rejection
+                # (post-re-sign) must surface as PaymentFailed.
+                httpx.Response(402, json={**_stacks_402(), "payment_id": "pay_stacks_test_0002"}),
+                rejection,
             ])
             with pytest.raises(PaymentFailed, match="rejected"):
                 client.call_tool(
@@ -533,3 +549,18 @@ class TestSessionChainStacks:
                 s.call("verified_route", {})
         # Hard requirement: no Stellar/Base leg was attempted, spend is zero.
         assert s.spent_usd() == 0
+
+
+class TestCapBindsSignatureWiring:
+    """build_stacks_payment must invoke the cap guard, so an inflated 402 is
+    refused before signing — pins the call site (the guard is unit-tested
+    separately in test_stacks_cap_binds_signature.py)."""
+
+    def test_inflated_option_refused_before_signing(self):
+        wallet = _make_wallet()
+        opt = _stacks_402(amount_usdc="0.01")["payment_options"]["stacks"]
+        opt = {**opt, "amount_sats": 100_000_000}  # 1 BTC quoted for $0.01
+        with pytest.raises(ValueError):
+            wallet.build_stacks_payment(
+                opt, "pay_wiring_test", "https://gw.example/tools/x/call"
+            )
