@@ -694,3 +694,26 @@ class TestSettleStacksPath:
             await self.rt._settle_stacks_path(
                 self._Tool(), "verified_route", header, payload)
         assert exc.value.status_code == 503
+
+
+class TestSponsoredAndPostConditionMode:
+    """A sponsored tx (can never broadcast) and allow-mode post-conditions are
+    both refused before settlement."""
+
+    async def test_sponsored_tx_refused(self, monkeypatch):
+        tx = _signed_tx()
+        decoded = stacks_pay.decode_sbtc_transfer(tx)
+        monkeypatch.setattr(stacks_pay, "decode_sbtc_transfer",
+                            lambda _b: {**decoded, "sponsored": True})
+        auth = await _verify(_header_for(tx))
+        assert not auth["authorized"]
+        assert auth["reason"] == "sponsored_not_supported"
+
+    async def test_allow_mode_refused(self, monkeypatch):
+        tx = _signed_tx()
+        decoded = stacks_pay.decode_sbtc_transfer(tx)
+        monkeypatch.setattr(stacks_pay, "decode_sbtc_transfer",
+                            lambda _b: {**decoded, "pc_mode": 0x01})
+        auth = await _verify(_header_for(tx))
+        assert not auth["authorized"]
+        assert auth["reason"] == "post_condition_mode_not_deny"

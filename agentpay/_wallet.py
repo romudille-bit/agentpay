@@ -768,8 +768,8 @@ class AgentWallet:
         sign-don't-broadcast settles too, not only for local broadcasts."""
         try:
             self._total_spent += Decimal(str(amount_usd))
-        except Exception:
-            pass
+        except (ArithmeticError, ValueError) as e:
+            logger.warning(f"note_stacks_settled ignored bad amount {amount_usd!r}: {e}")
 
 
 # ── Budget-Aware Session ──────────────────────────────────────────────────────

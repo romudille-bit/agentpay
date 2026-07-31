@@ -144,9 +144,10 @@ def reject_over_cap() -> None:
     w = _wallet()
     # Comfortable session budget, but token_price is capped at half its price:
     # the call is refused pre-settlement (no fallback, no sBTC moved).
+    per_tool_cap = 0.005   # below token_price's $0.01 -> refused pre-settlement
     s = Session(wallet=w, gateway_url=TESTNET_GATEWAY, max_spend="0.05",
-                prefer_chain="stacks", max_per_tool={TOOL: 0.005})
-    print(f"session cap ${s.max_spend}, per-tool cap ${s._max_per_tool[TOOL]} "
+                prefer_chain="stacks", max_per_tool={TOOL: per_tool_cap})
+    print(f"session cap ${s.max_spend}, per-tool cap ${per_tool_cap} "
           f"(< $0.01 price)   calling {TOOL} ...")
     try:
         s.call(TOOL, PARAMS)

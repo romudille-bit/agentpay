@@ -540,6 +540,11 @@ async def verify_stacks_payment(
     except ValueError as e:
         return _fail(f"malformed_stacks_tx: {e}")
 
+    # No sponsored-relay path in M1: a client-signed sponsored tx carries only a
+    # placeholder sponsor signature and can never broadcast. Refuse up front.
+    if tx["sponsored"]:
+        return _fail("sponsored_not_supported")
+
     if tx["network"] != _network():
         return _fail("wrong_network")
     if tx["contract_id"] != _sbtc_contract():
@@ -579,6 +584,11 @@ async def verify_stacks_payment(
             f"[STACKS] overpaid transfer flagged: {tx['amount']} sats vs "
             f"{expected_amount_sats} quoted (payment {payment_id[:8]}…)"
         )
+
+    # Deny-mode (0x02) only: the tx must abort on any post-condition it does
+    # not list. The SDK always builds deny-mode; allow-mode is refused.
+    if tx["pc_mode"] != 0x02:
+        return _fail("post_condition_mode_not_deny")
 
     # ── mandatory post-condition: exactly-N-sats-leave-sender ────────────────
     # This is what makes broadcasting a stranger's signed tx safe; a transfer
