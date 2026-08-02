@@ -228,7 +228,9 @@ class AgentWallet:
     Supports Stellar (primary) and Base EVM (optional) USDC payments.
 
     Args:
-        secret_key:   Stellar secret key (S...).
+        secret_key:   Stellar secret key (S...). Optional — omit for a
+                      Stacks/Base-only wallet: an ephemeral Stellar identity
+                      is generated and the Stellar pay path is disabled.
         network:      "mainnet" or "testnet" (applies to Stellar).
         base_key:     Optional Base/EVM private key (0x...) for paying
                       x402 tools that only accept Base USDC.
@@ -252,16 +254,26 @@ class AgentWallet:
     # ERC20 transfer(address,uint256) selector
     _ERC20_TRANSFER_SIG = bytes.fromhex("a9059cbb")
 
-    def __init__(self, secret_key: str, network: str = "testnet", *,
+    def __init__(self, secret_key: str = None, network: str = "testnet", *,
                  base_key: str = None, stacks_key: str = None):
         import os
-        # AGE-74: wrap key parsing so a malformed secret raises a CONSTANT
-        # message — a raw stellar_sdk error can echo fragments of the key into
-        # logs/tracebacks.
-        try:
-            self.keypair = Keypair.from_secret(secret_key)
-        except Exception:
-            raise ValueError("invalid Stellar secret key (expected S...)") from None
+        # secret_key is optional: a Stacks/Base-only payer can omit it. An
+        # ephemeral Stellar keypair is generated so the wallet keeps a working
+        # in-process identity (public_key, request signing), and the Stellar
+        # pay path is guarded with a clear error instead of failing at Horizon
+        # on an unfunded random account. Note the ephemeral identity differs
+        # per process.
+        self.stellar_ephemeral = secret_key is None
+        if secret_key is None:
+            self.keypair = Keypair.random()
+        else:
+            # AGE-74: wrap key parsing so a malformed secret raises a CONSTANT
+            # message — a raw stellar_sdk error can echo fragments of the key
+            # into logs/tracebacks.
+            try:
+                self.keypair = Keypair.from_secret(secret_key)
+            except Exception:
+                raise ValueError("invalid Stellar secret key (expected S...)") from None
         self.network = network
         self.server = Server(HORIZON_TESTNET if network == "testnet" else HORIZON_MAINNET)
         self.network_passphrase = (
@@ -389,6 +401,11 @@ class AgentWallet:
         declaring failure. If it landed, we return success with the real hash
         instead of reporting a failure the caller would retry into a double-pay.
         """
+        if getattr(self, "stellar_ephemeral", False):
+            return {"success": False,
+                    "reason": "no Stellar secret configured — this wallet was "
+                              "constructed without one (Stacks/Base-only); "
+                              "pass secret_key= to pay on Stellar"}
         tx_hash_precomputed = ""
         try:
             account = self.server.load_account(self.public_key)

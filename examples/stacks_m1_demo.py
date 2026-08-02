@@ -74,15 +74,13 @@ class _Spinner:
 
 
 def _wallet():
-    from stellar_sdk import Keypair
-
     from agentpay import AgentWallet
 
     payer = os.environ.get("STACKS_AGENT_KEY", "").strip()
     if not payer:
         sys.exit("Set STACKS_AGENT_KEY to the funded payer's Stacks private key, then re-run.")
-    # AgentWallet requires a Stellar secret; it is unused on the Stacks pay path.
-    w = AgentWallet(secret_key=Keypair.random().secret, network="testnet", stacks_key=payer)
+    # Stacks-only payer: no Stellar secret needed.
+    w = AgentWallet(network="testnet", stacks_key=payer)
     if not w.stacks_address:
         sys.exit(f"Stacks wallet failed to load: {w.stacks_disabled_reason}")
     return w

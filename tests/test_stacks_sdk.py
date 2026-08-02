@@ -564,3 +564,26 @@ class TestCapBindsSignatureWiring:
             wallet.build_stacks_payment(
                 opt, "pay_wiring_test", "https://gw.example/tools/x/call"
             )
+
+
+class TestStacksOnlyWallet:
+    """A wallet constructed without a Stellar secret still works for Stacks."""
+
+    def test_construct_without_stellar_secret(self):
+        w = AgentWallet(network="testnet", stacks_key=STACKS_KEY)
+        assert w.stacks_address and w.stacks_address.startswith("ST")
+        assert w.public_key.startswith("G")     # ephemeral identity exists
+        assert w.stellar_ephemeral is True
+
+    def test_stellar_pay_refused_with_clear_reason(self):
+        w = AgentWallet(network="testnet", stacks_key=STACKS_KEY)
+        out = w.pay("GDESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0.01")
+        assert out["success"] is False
+        assert "no Stellar secret" in out["reason"]
+
+    def test_explicit_secret_still_works(self):
+        from stellar_sdk import Keypair
+        w = AgentWallet(secret_key=Keypair.random().secret, network="testnet",
+                        stacks_key=STACKS_KEY)
+        assert w.stellar_ephemeral is False
+        assert w.stacks_address
