@@ -61,7 +61,7 @@ Every call is session-tracked, and the cap is enforced **before** any payment is
 
 ---
 
-## 19 Tools (17 Free + 2 Paid)
+## 20 Tools (17 Free + 3 Paid)
 
 Every call is session-tracked — you get a receipt showing every tool called, every cost, and every timestamp.
 
@@ -86,6 +86,7 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `dune_query` | `query_id`, `limit`, `fast_only` | rows[], columns[], row_count from Dune Analytics |
 | `session_create` | `agent_address`, `max_spend`, `label` | session_id, budget config, gateway_url, receipt — **$0.01** |
 | `pre_trade_check` | `symbol`, `size_usd`, `side`, `token_address?` | one-call trade verdict (ok/caution/avoid): slippage at YOUR size, side-aware funding carry, OI crowding, optional security — **$0.01** |
+| `verified_route` | `need`, `budget_usd?`, `chain?` | buyer-side trust oracle: sweeps the x402 marketplace, collapses sybil/factory clusters, ranks real providers by usage × delivery scores → one vetted recommendation + ready_to_pay challenge — **$0.01** |
 
 ---
 
@@ -307,14 +308,14 @@ agent (Python SDK)
     │
     │  POST /tools/{name}/call
     │  ← 200 {result: ...}              ← free tools return directly
-    │  ← 402 {payment_id, amount, ...}  ← paid tools (session_create, pre_trade_check)
+    │  ← 402 {payment_id, amount, ...}  ← paid tools (session_create, pre_trade_check, verified_route)
     │  → USDC on Stellar (~3–5s) or Base (~2s)
     │  → retry with X-Payment header
     │  ← 200 {result: ...}
     ▼
 gateway (FastAPI on Railway)
     │
-    ├── registry/registry.py   — 19-tool catalog (17 free; session_create + pre_trade_check, $0.01 each)
+    ├── registry/registry.py   — 20-tool catalog (17 free; session_create, pre_trade_check, verified_route — $0.01 each)
     ├── gateway/routes/plan.py — POST /v1/plan/estimate (free pre-flight plan pricing)
     ├── gateway/radar.py       — Arbitrum x402 Radar discovery + settlement verify (see RADAR.md)
     ├── gateway/stellar.py     — Stellar payment verification via Horizon
@@ -358,7 +359,7 @@ grant is demonstrated live on testnet:
 | [awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed |
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
 | [402index.io](https://402index.io) | ✅ domain verified, 17 tools synced |
-| Coinbase Bazaar | ✅ indexed (`session_create`, Base) |
+| Coinbase Bazaar | ✅ indexed — `session_create`, `pre_trade_check`, `verified_route` (Base) |
 | Claude Code plugin | ✅ `/plugin marketplace add romudille-bit/agentpay` |
 | [xpay.tools](https://xpay.tools) | 🔜 submission in progress |
 
