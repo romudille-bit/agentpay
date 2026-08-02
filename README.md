@@ -343,7 +343,7 @@ grant is demonstrated live on testnet:
 
 - **Developer guide:** [`docs/stacks-m1.md`](docs/stacks-m1.md) — setup, known limitations, dependencies.
 - **Runnable demo:** [`examples/stacks_m1_demo.py`](examples/stacks_m1_demo.py) — capped session → sBTC payment → receipt → over-cap rejection.
-- **Demo video:** <!-- video: paste the public URL here before merge -->
+- **Demo video:** [YouTube (~40s)](https://www.youtube.com/watch?v=rGb07rwyG1I)
 - **On-chain proof:** [`0x90e8a7c5…`](https://explorer.hiro.so/txid/0x90e8a7c56a0e5b3752f7bca449c93549b2be878409497204a8345d479cd8e86e?chain=testnet) — `sbtc-token::transfer`, payer → gateway, status `success`.
 
 ---

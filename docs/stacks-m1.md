@@ -4,8 +4,8 @@ This is the developer reference for AgentPay's Stacks/sBTC settlement adapter as
 shipped for milestone M1 of the Stacks Endowment grant. It covers how to set up a
 payer and a testnet gateway, how the payment flows, the known limitations of the
 testnet rail, and the external dependencies the rail leans on. For a runnable
-proof of the two M1 acceptance criteria, see `examples/stacks_m1_demo.py` and its
-README.
+proof of the two M1 acceptance criteria, see `examples/stacks_m1_demo.py` — or
+watch the [demo video](https://www.youtube.com/watch?v=rGb07rwyG1I) (~40s).
 
 ## What the adapter does
 
@@ -64,7 +64,7 @@ Minimal programmatic usage:
 ```python
 from agentpay import AgentWallet, Session, SettlementUncertain, PaymentFailed
 
-wallet = AgentWallet(secret_key=<stellar secret>, network="testnet",
+wallet = AgentWallet(network="testnet",
                      stacks_key=os.environ["STACKS_AGENT_KEY"])
 assert wallet.stacks_address, wallet.stacks_disabled_reason
 
@@ -85,13 +85,17 @@ except PaymentFailed as e:
     print("payment failed:", e)
 ```
 
-`AgentWallet` currently requires a Stellar secret for construction; it is unused on
-the Stacks pay path (a throwaway keypair is fine for a Stacks-only payer).
+No Stellar secret is needed for a Stacks-only payer: the wallet generates an
+ephemeral Stellar identity internally, and the Stellar pay path is disabled with a
+clear error if it is ever invoked.
 
-### 4. Configure a gateway (server side)
+### 4. Configure a gateway (server side) — optional
 
-To stand up your own testnet gateway with the Stacks rail enabled and a
-nonzero-priced tool, set:
+You do not need this section to reproduce the demo: sections 1–3 run against
+AgentPay's hosted testnet gateway. This section is for running your **own
+instance** of the gateway — the FastAPI app in this repo (`gateway/`) — on your
+own infrastructure, with payments settling to your own Stacks address. To stand
+one up with the Stacks rail enabled and a nonzero-priced tool, set:
 
 ```
 STACKS_ENABLED=true
@@ -104,6 +108,11 @@ TESTNET_PAID_TOOLS=token_price:0.01     # price a demo tool at $0.01
 (`token_price`) can be priced for the demo without a registry change. With it set,
 the gateway issues a `402` for that tool and quotes the USD price to sats at
 issuance time using a live BTC/USD rate, pinned for the life of that one payment.
+
+The wire contract between SDK and gateway is documented in
+`docs/stacks-adapter.md` — since x402 is an open protocol and the payment
+artifact is a standard signed Stacks transaction, the server side can also be
+implemented independently against that contract.
 
 ## How a payment flows
 
@@ -151,13 +160,10 @@ transaction. A young facilitator being down therefore does not fail the payment 
 or the milestone — it removes a convenience layer, not the settlement itself.
 
 **STX is required for fees.** The payer must hold testnet STX to cover the
-transaction fee, in addition to the sBTC being transferred. Where holding STX on the
-payer is undesirable, a sponsored-relay (fee-sponsorship) path can cover the fee so
-the payer needs only sBTC; see Dependencies.
-
-**Stellar secret required for wallet construction.** `AgentWallet` requires a
-Stellar secret to construct even for Stacks-only payers. It is unused on the Stacks
-pay path; a random keypair suffices.
+transaction fee, in addition to the sBTC being transferred. A sponsored-relay
+(fee-sponsorship) path that would let a payer hold only sBTC is planned for M2 —
+**in M1 the gateway explicitly rejects sponsored transactions**
+(`sponsored_not_supported`) rather than half-supporting them; see Dependencies.
 
 ## Dependencies
 
@@ -171,13 +177,15 @@ testnet faucet (`https://platform.hiro.so/faucet`, and the STX API faucet at
 `https://api.testnet.hiro.so/extended/v1/faucets/stx`). Explorer links resolve at
 `https://explorer.hiro.so`.
 
-**STX for fees, with a sponsored-relay escape hatch.** Every Stacks transaction
-needs an STX fee. The default path funds the payer with testnet STX; the
-sponsored-relay path lets a sponsor cover the fee so a payer holding only sBTC can
-still transact.
+**STX for fees, with a sponsored-relay path planned.** Every Stacks transaction
+needs an STX fee; in M1 the payer funds it directly with testnet STX. The
+sponsored-relay model — a sponsor co-signs and pays the fee so a payer holding only
+sBTC can still transact — is planned for M2: the wire format already supports the
+sponsored auth variant, but M1 verification rejects sponsored transactions outright.
 
 ## Reproduce it yourself
 
+Watch the run first if you like: [demo video](https://www.youtube.com/watch?v=rGb07rwyG1I).
 A clean-room run of the two acceptance criteria against the live testnet gateway,
 in a fresh virtualenv (spinner frames elided):
 
@@ -226,3 +234,16 @@ Confirmed budget-capped sBTC settlements on Stacks testnet — both
   — first confirmed settlement.
 - [`0x90e8a7c5…`](https://explorer.hiro.so/txid/0x90e8a7c56a0e5b3752f7bca449c93549b2be878409497204a8345d479cd8e86e?chain=testnet)
   — the reproduction run above (block 4054292).
+
+## Notes
+
+- Budget caps are enforced client-side *before* signing: a per-tool cap
+  (`max_per_tool`), an allowlist (`allowed_tools`), the session cap
+  (`max_spend`), and a rate limit are all available on `Session`.
+- The cap binds the **signed** amount, not only the quoted USD:
+  `build_stacks_payment` refuses to sign an `amount_sats` inconsistent with the
+  quoted USD at the 402's BTC/USD rate, and bounds the implied rate with a
+  configurable floor (`STACKS_MIN_BTC_USD`, default $10,000).
+- `SettlementUncertain` subclasses `PaymentFailed`, so existing error handling
+  still catches it; check `.tx_hash` to verify on-chain rather than retrying (a
+  retry would double-pay).
