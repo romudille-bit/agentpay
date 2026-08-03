@@ -270,3 +270,104 @@ def test_agentpay_own_tools_rankable_never_factory_flagged():
     assert all("factory" not in s["flags"] for s in ours)   # never misflagged
     # no self-boost: a genuinely better-used rival still wins
     assert out["recommendation"]["url"] == "https://rival.x/t"
+
+
+# ── AGE-104: Solana in the sweep — discovery only ─────────────────────────────
+# Solana listings are swept, filtered and ranked identically to Base, but the
+# Prober settles on Base only: every Solana pick carries the probe-coverage
+# flag, ready_to_pay passes the seller's accepts through as-is (the SDK cannot
+# sign SVM — that is grant M1, deliberately not built here), and the catalog
+# counts swept Solana endpoints for the grant evidence.
+
+SOLANA_CAIP2 = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+
+
+def _sol_res(name, url, pay_to, amount="10000", payers=20, calls=100):
+    """A Solana-only Bazaar listing (SPL USDC asset, base58 payTo)."""
+    return {
+        "serviceName": name,
+        "resource": {"url": url},
+        "accepts": [{
+            "scheme": "exact", "network": SOLANA_CAIP2, "amount": amount,
+            "payTo": pay_to, "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "outputSchema": {"type": "object"},
+        }],
+        "quality": {"l30DaysUniquePayers": payers, "l30DaysTotalCalls": calls},
+        "tags": [],
+    }
+
+
+def test_solana_listing_swept_ranked_and_flagged():
+    payload = {"resources": [
+        _res("Base Tool", "https://b.x/t", "0xbase000000000000000000000000000000000001",
+             payers=5, calls=20),
+        _sol_res("SolTrust", "https://sol.x/deployer", "3fPw1ntfRAsTsDtNeJoEyoiTddJePWZ59oRoaRSBShRk",
+                 payers=40, calls=300),
+    ]}
+    out = radar.verified_route_from_payloads([payload], "solana deployer trust",
+                                             Decimal("1"))
+    assert out["catalog"]["solana_swept"] == 1
+    assert out["catalog"]["networks"][radar.normalize_network(SOLANA_CAIP2)] == 1
+    sol = next(s for s in out["survivors"] if s["name"] == "SolTrust")
+    assert sol["probe_coverage"] == radar.PROBE_COVERAGE_UNVERIFIED
+    base = next(s for s in out["survivors"] if s["name"] == "Base Tool")
+    assert "probe_coverage" not in base
+    # the flag rides the recommendation too, and ready_to_pay is the seller's
+    # own accepts blob, untouched
+    assert out["recommendation"]["name"] == "SolTrust"
+    assert out["recommendation"]["probe_coverage"] == radar.PROBE_COVERAGE_UNVERIFIED
+    rtp = out["recommendation"]["ready_to_pay"]
+    assert rtp["network"] == radar.normalize_network(SOLANA_CAIP2)
+    assert rtp["accepts"]["asset"] == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+
+def test_chain_solana_filter_works_via_alias_and_caip2():
+    payload = {"resources": [
+        _res("Base Tool", "https://b.x/t", "0xbase000000000000000000000000000000000001"),
+        _sol_res("SolTrust", "https://sol.x/deployer", "3fPw1ntfRAsTsDtNeJoEyoiTddJePWZ59oRoaRSBShRk"),
+    ]}
+    for chain in ("solana", "Solana", SOLANA_CAIP2):
+        out = radar.verified_route_from_payloads([payload], "trust", Decimal("1"),
+                                                 chain=chain)
+        assert out["catalog"]["scanned"] == 1
+        assert out["recommendation"]["name"] == "SolTrust"
+    out = radar.verified_route_from_payloads([payload], "trust", Decimal("1"),
+                                             chain="base")
+    assert out["recommendation"]["name"] == "Base Tool"
+
+
+def test_dual_rail_listing_is_a_solana_option_with_repointed_accepts():
+    """A Base-first listing that ALSO accepts Solana (real Bazaar shape) must
+    surface for chain='solana' — with ready_to_pay re-pointed to the SOLANA
+    accepts entry, not the Base one."""
+    dual = _res("DualRail", "https://d.x/t", "0xdual000000000000000000000000000000000001",
+                amount="30000", payers=30, calls=200)
+    dual["accepts"].append({
+        "scheme": "exact", "network": SOLANA_CAIP2, "amount": "30000",
+        "payTo": "3fPw1ntfRAsTsDtNeJoEyoiTddJePWZ59oRoaRSBShRk",
+        "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "outputSchema": {"type": "object"},
+    })
+    payload = {"resources": [dual]}
+    out = radar.verified_route_from_payloads([payload], "data", Decimal("1"),
+                                             chain="solana")
+    assert out["catalog"]["scanned"] == 1
+    assert out["catalog"]["solana_swept"] == 1
+    rec = out["recommendation"]
+    assert rec["name"] == "DualRail"
+    assert rec["probe_coverage"] == radar.PROBE_COVERAGE_UNVERIFIED
+    rtp = rec["ready_to_pay"]
+    assert rtp["network"] == radar.normalize_network(SOLANA_CAIP2)
+    assert rtp["accepts"]["network"] == SOLANA_CAIP2
+    assert rtp["accepts"]["payTo"] == "3fPw1ntfRAsTsDtNeJoEyoiTddJePWZ59oRoaRSBShRk"
+    # ...and for chain='base' the same listing stays a Base option, unflagged
+    out_base = radar.verified_route_from_payloads([payload], "data", Decimal("1"),
+                                                  chain="base")
+    assert out_base["recommendation"]["ready_to_pay"]["network"] == "eip155:8453"
+    assert "probe_coverage" not in out_base["recommendation"]
+
+
+def test_solana_count_is_zero_when_none_swept():
+    out = radar.verified_route_from_payloads([SYNTHETIC], "data", Decimal("1"))
+    assert out["catalog"]["solana_swept"] == 0
+    assert not any(k.startswith("solana") for k in out["catalog"]["networks"])

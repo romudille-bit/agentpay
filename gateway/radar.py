@@ -55,6 +55,14 @@ CHAIN_NETWORKS: dict[str, set[str]] = {
     # The headline group: every Arbitrum-stack chain (Arbitrum One + Sepolia +
     # Robinhood Chain). This is what `GET /discovery/arbitrum` surfaces.
     "arbitrum-stack":    {"eip155:42161", "eip155:421614", "eip155:46630"},
+    # AGE-104: Solana — DISCOVERY ONLY. Listings are swept, junk-filtered and
+    # usage-ranked identically to Base, but the SDK cannot sign SVM and the
+    # Prober settles paid probes on Base only, so Solana picks carry an
+    # explicit probe-coverage flag (see _public). CAIP-2 references are the
+    # base58 genesis-hash prefix and ARE case-sensitive — normalize_network
+    # lowercases its input, so the lowercased forms alias back to canonical.
+    "solana":            {"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"},
+    "solana-devnet":     {"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"},
 }
 
 # Friendly aliases that may appear in a candidate's `network` field instead of a
@@ -69,6 +77,15 @@ _NETWORK_ALIASES: dict[str, str] = {
     "arbitrum-sepolia": "eip155:421614",
     "robinhood": "eip155:46630",
     "robinhood-testnet": "eip155:46630",
+    # AGE-104: Solana friendly names (x402 accepts.network uses "solana" /
+    # "solana-devnet") plus the LOWERCASED CAIP-2 forms — normalize_network
+    # lowercases before lookup, and base58 refs are case-sensitive, so the
+    # lowercased spelling must map back to the canonical one.
+    "solana": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana-mainnet": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana-devnet": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "solana:etwtrabzayq6imfeykouru166vu2xqa1": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 }
 
 
@@ -151,6 +168,17 @@ def parse_resources(data: dict) -> list[dict]:
             "price_usd": price,
             "network": a.get("network", ""),
             "network_caip2": normalize_network(a.get("network", "")),
+            # AGE-104: EVERY advertised rail, not just accepts[0]. A dual-rail
+            # listing (Base + Solana in one `accepts` list) is payable on both;
+            # filter_chain matches on any rail and re-points the primary to the
+            # matching entry so ready_to_pay is actually payable on the
+            # requested chain. Kept alongside network_caip2 (the primary) so
+            # single-rail behavior and existing tests are unchanged.
+            "networks_all": sorted({
+                normalize_network(x.get("network", ""))
+                for x in accepts if isinstance(x, dict) and x.get("network")
+            }),
+            "accepts_all": [x for x in accepts if isinstance(x, dict)],
             "pay_to": (a.get("payTo") or "").lower(),
             "tags": r.get("tags") or rd.get("tags") or [],
             "has_schema": bool(out_schema) and out_schema != {},
@@ -195,17 +223,49 @@ def _schema_top_keys(out_schema: object) -> list[str]:
     return [k for k in out_schema if k not in _SCHEMA_RESERVED]
 
 
+def _repoint_rail(c: dict, nets: set[str]) -> dict:
+    """Copy of candidate `c` with its primary rail switched to the accepts
+    entry matching `nets`. AGE-104: a Base-first dual-rail listing asked for
+    with chain='solana' must hand back the SOLANA accepts blob in ready_to_pay,
+    not the Base one. Falls back to `c` unchanged when no raw accepts are
+    available (e.g. crawler-injected candidates carry only network_caip2)."""
+    for a in (c.get("accepts_all") or []):
+        if normalize_network(a.get("network", "")) in nets:
+            try:
+                amount_atomic = int(a.get("amount", 0))
+                price = (Decimal(amount_atomic) / Decimal("1000000")) if amount_atomic > 0 else None
+            except (ValueError, TypeError):
+                price = None
+            return {**c,
+                    "network": a.get("network", ""),
+                    "network_caip2": normalize_network(a.get("network", "")),
+                    "pay_to": (a.get("payTo") or "").lower(),
+                    "price_usd": price,
+                    "accepts": a}
+    return c
+
+
 def filter_chain(cands: Iterable[dict], chain: Optional[str]) -> list[dict]:
-    """Keep only candidates whose network is in the requested chain group.
+    """Keep only candidates payable on the requested chain group.
 
     `chain=None` (or unknown-empty) returns everything. Matching is on the
     normalized CAIP-2 id, so "arbitrum", "arbitrum-one", and "eip155:42161"
-    all behave the same.
+    all behave the same. AGE-104: a candidate matches on ANY advertised rail
+    (`networks_all`), not just its primary — a dual-rail Base+Solana listing IS
+    a Solana option — and when only a secondary rail matches, the primary is
+    re-pointed to the matching accepts entry. Candidates without `networks_all`
+    (crawler-injected) keep the old primary-only matching.
     """
     nets = networks_for(chain)
     if nets is None:
         return list(cands)
-    return [c for c in cands if c.get("network_caip2") in nets]
+    out: list[dict] = []
+    for c in cands:
+        if c.get("network_caip2") in nets:
+            out.append(c)
+        elif any(n in nets for n in (c.get("networks_all") or [])):
+            out.append(_repoint_rail(c, nets))
+    return out
 
 
 def discover(need: str, chain: Optional[str] = None,
@@ -424,15 +484,23 @@ def rank(need: str, budget: Decimal, chain: Optional[str] = None,
                              scores=scores)
 
 
+# AGE-104: the Prober settles paid probes on Base only. A Solana listing is
+# swept, junk-filtered and usage-ranked identically to Base, but its
+# delivery-after-payment has never been verified by us — say so on every
+# Solana pick. (Honest, and the flag itself markets the paid probe tier.)
+PROBE_COVERAGE_UNVERIFIED = "Base only — on-chain delivery unverified"
+
+
 def _public(s: Optional[dict]) -> Optional[dict]:
     """Project a scored candidate down to the public discovery shape."""
     if not s:
         return None
+    net = s["network_caip2"] or s["network"]
     out = {
         "name": s["name"],
         "url": s["url"],
         "price_usd": (str(s["price_usd"]) if s["price_usd"] is not None else None),
-        "network": s["network_caip2"] or s["network"],
+        "network": net,
         "pay_to": s["pay_to"],
         "tags": s["tags"],
         "calls30d": s["calls30d"],
@@ -440,6 +508,8 @@ def _public(s: Optional[dict]) -> Optional[dict]:
         "quality": s["quality"],
         "flags": s["flags"],
     }
+    if str(net).startswith("solana"):
+        out["probe_coverage"] = PROBE_COVERAGE_UNVERIFIED
     if s.get("collapsed_siblings"):
         out["collapsed_siblings"] = s["collapsed_siblings"]
     if s.get("relevance"):
@@ -476,6 +546,7 @@ def _public(s: Optional[dict]) -> Optional[dict]:
 SWEEP_QUERIES = [
     "api", "data", "crypto", "price", "ai", "search", "weather", "stock",
     "news", "image", "trade", "defi", "token", "finance", "llm", "agent",
+    "solana",  # AGE-104: catch Solana-native listings the generic terms miss
 ]
 
 # Sybil/spam detection is USAGE-based, not endpoint-count based. A trustworthy
@@ -675,6 +746,21 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     if rec_pub:
         rec_pub["ready_to_pay"] = _ready_to_pay(rec)
 
+    # AGE-104: per-network rail counts over the scanned catalog. Counted per
+    # RAIL, not per listing (a dual-rail Base+Solana listing contributes to
+    # both), so the sum can exceed `scanned`. `solana_swept` counts LISTINGS
+    # payable on Solana — the discovery-coverage number the Solana grant's
+    # M1 evidence tracks (paid probes on Solana are the grant-funded layer,
+    # deliberately NOT built here).
+    rails: dict[str, int] = {}
+    solana_swept = 0
+    for c in cands:
+        c_rails = c.get("networks_all") or ([c["network_caip2"]] if c.get("network_caip2") else [])
+        for n in c_rails:
+            rails[n] = rails.get(n, 0) + 1
+        if any(str(n).startswith("solana") for n in c_rails):
+            solana_swept += 1
+
     return {
         "need": need,
         "chain": chain,
@@ -689,6 +775,8 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
             "unique_wallets": stats["unique_wallets"],
             "sybil_collapsed": stats["sybil_collapsed"],
             "biggest_factory": stats["biggest_factory"],
+            "networks": rails,
+            "solana_swept": solana_swept,
         },
         **({"relevance_fallback": True} if fallback else {}),
         "vetting": (

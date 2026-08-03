@@ -44,12 +44,21 @@ CHAIN_NETWORKS = {
     "robinhood":         {"eip155:46630"},
     "robinhood-testnet": {"eip155:46630"},
     "arbitrum-stack":    {"eip155:42161", "eip155:421614", "eip155:46630"},
+    # AGE-104: Solana — discovery only (no SVM signing, no paid probes). The
+    # CAIP-2 refs are base58 and case-sensitive; lowercased forms alias back.
+    "solana":            {"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"},
+    "solana-devnet":     {"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"},
 }
 _NETWORK_ALIASES = {
     "base": "eip155:8453", "base-mainnet": "eip155:8453", "base-sepolia": "eip155:84532",
     "arbitrum": "eip155:42161", "arbitrum-one": "eip155:42161",
     "arbitrum-mainnet": "eip155:42161", "arbitrum-sepolia": "eip155:421614",
     "robinhood": "eip155:46630", "robinhood-testnet": "eip155:46630",
+    "solana": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana-mainnet": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana-devnet": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "solana:etwtrabzayq6imfeykouru166vu2xqa1": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 }
 
 

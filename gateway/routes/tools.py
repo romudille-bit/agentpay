@@ -392,7 +392,7 @@ _TOOL_BAZAAR: dict[str, dict] = {
                                             },
                                             "chain": {
                                                 "type": "string",
-                                                "description": "Optional chain filter: 'base', 'arbitrum'. Empty = all chains",
+                                                "description": "Optional chain filter: 'base', 'arbitrum', 'solana'. Empty = all chains. Solana picks are discovery-only (probe coverage: Base only — on-chain delivery unverified)",
                                             },
                                         },
                                         "required": ["need"],
