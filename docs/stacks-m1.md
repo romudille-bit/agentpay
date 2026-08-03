@@ -235,6 +235,11 @@ Confirmed budget-capped sBTC settlements on Stacks testnet — both
 - [`0x90e8a7c5…`](https://explorer.hiro.so/txid/0x90e8a7c56a0e5b3752f7bca449c93549b2be878409497204a8345d479cd8e86e?chain=testnet)
   — the reproduction run above (block 4054292).
 
+> **Note:** the public Stacks testnet is periodically reset (wiped to block 0),
+> which erases historical transactions. Archived Hiro API records of the
+> settlements above are preserved in [`docs/proofs/`](proofs/); fresh
+> settlements can be produced on request at any time by re-running the demo.
+
 ## Notes
 
 - Budget caps are enforced client-side *before* signing: a per-tool cap
