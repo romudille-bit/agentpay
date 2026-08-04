@@ -29,6 +29,7 @@ from registry import reload_tools
 
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
+from gateway.services import probe_rollup
 from gateway.routes.agent import router as agent_router
 from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
@@ -575,6 +576,10 @@ async def lifespan(app: FastAPI):
         # Periodic pending → abandoned sweep on payment_logs. Distinct from
         # _cleanup_loop (different table — see _abandoned_sweep_loop docstring).
         asyncio.create_task(_abandoned_sweep_loop())
+        # Batched 402/probe telemetry flusher (disk-IO fix, 2026-08-04):
+        # bot 402s no longer write per-event rows; their counts accumulate
+        # in memory and land in payment_logs_daily_rollup once per window.
+        asyncio.create_task(probe_rollup.flush_loop())
 
         # Async on-chain refund worker, gated by REFUND_ENABLED.
         # Picks up refund_pending rows, sends USDC back to the agent
@@ -594,6 +599,13 @@ async def lifespan(app: FastAPI):
     # — the runtime cancels them on worker exit. If we ever add a
     # split_payment retry queue with at-least-once semantics, this is
     # where the drain would go.
+    #
+    # Best-effort final flush of the in-memory probe counters so a clean
+    # deploy doesn't drop up to one window of 402 telemetry.
+    try:
+        await probe_rollup.flush()
+    except Exception:
+        pass
 
 
 # ── App ───────────────────────────────────────────────────────────────────────

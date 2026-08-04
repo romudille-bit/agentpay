@@ -51,6 +51,7 @@ from gateway.services.supabase import (
     sb_enabled,
     update_payment_log_state,
 )
+from gateway.services import probe_rollup
 from gateway.services.tools_runtime import real_tool_response
 from gateway.services.transaction_log import append_transaction
 from gateway.x402 import (
@@ -710,15 +711,41 @@ async def _issue_402(
     pending→abandoned rows per paid tool — the same pollution class the
     AGE-52 conversion diagnosis spent weeks separating from real demand —
     and a Supabase blip turned crawler probes into 503s.
+
+    Disk-IO fix (2026-08-04): $0 tools skip BOTH per-event writes here —
+    no pending_challenges mirror (persist=False; the free retry lands
+    within seconds on the same single-worker process) and no pending
+    payment_logs row (a settled free call INSERTs one complete
+    'payment_done' row in _execute_and_log instead). 99.5% of
+    payment_logs was abandoned bot probes of free tools. The demand
+    signal those rows carried moves to probe_rollup — every 402 issued
+    (GET probe, free POST, paid POST) is counted per (day, tool, UA)
+    and batch-flushed, so crawler/market telemetry survives without the
+    write churn. Paid tools keep the full fail-closed lifecycle.
     """
     agent_short = (agent_address or "unknown")[:8]
     logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=402_challenge")
+
+    try:
+        is_free = Decimal(str(tool.price_usdc or "0")) == 0
+    except Exception:
+        is_free = False
 
     challenge = issue_payment_challenge(
         tool_name=tool_name,
         price_usdc=tool.price_usdc,
         developer_address=tool.developer_address,
         request_data={"parameters": body.parameters},
+        persist=(log_pending and not is_free),
+    )
+
+    # Aggregate telemetry for EVERY 402 issued — this is the durable record
+    # of probe/demand volume now that bot 402s no longer write per-event rows.
+    probe_rollup.record_402(
+        tool_name=resolved,
+        user_agent=request.headers.get("user-agent"),
+        kind=("probe_get" if not log_pending
+              else ("free_402" if is_free else "paid_402")),
     )
 
     # Pre-402 payment_logs INSERT — awaited and fail-closed: the gateway
@@ -730,7 +757,7 @@ async def _issue_402(
     # (x402-v2 doesn't carry the UUID through PAYMENT-SIGNATURE) and this one
     # gets swept to 'abandoned'; the terminal PATCH overwrites the label with
     # the chain that actually settled, so completed rows stay accurate.
-    if sb_enabled() and log_pending:
+    if sb_enabled() and log_pending and not is_free:
         client_ip  = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
         row_id = await insert_pending_payment_log(
@@ -1156,6 +1183,16 @@ async def _execute_and_log(
     user_agent_str  = request.headers.get("user-agent")
     tx_hash         = auth.get("tx_hash", "")
 
+    # Disk-IO fix (2026-08-04): free calls have NO pre-402 pending row
+    # (_issue_402 skips it for $0 tools), so the terminal write below is a
+    # single complete INSERT instead of a PATCH — one round trip carrying
+    # the whole lifecycle. Paid tools keep the pending→verified→payment_done
+    # trail untouched.
+    try:
+        is_free_call = Decimal(str(tool.price_usdc or "0")) == 0
+    except Exception:
+        is_free_call = False
+
     try:
         gateway_fee = str(
             Decimal(tool.price_usdc) * Decimal(str(settings.GATEWAY_FEE_PERCENT))
@@ -1176,7 +1213,7 @@ async def _execute_and_log(
     # then the insert landed 'verified' — and the row never advanced
     # (the "stuck in verified / phantom-abandon" class, AGE-52).
     insert_task: Optional[asyncio.Task] = None
-    if is_base and sb_enabled():
+    if is_base and sb_enabled() and not is_free_call:
         insert_task = asyncio.create_task(insert_pending_payment_log(
             payment_id=payment_id,
             tool_name=resolved,
@@ -1254,21 +1291,42 @@ async def _execute_and_log(
     agent_log = (agent_address or "unknown")[:8]
     logger.info(f"[CALL] tool={tool_name} agent={agent_log}... status=completed tx={tx_hash}")
 
-    # Terminal 'payment_done' PATCH — awaited so analytics are consistent at
+    # Terminal 'payment_done' write — awaited so analytics are consistent at
     # response time. The single Supabase write on the happy path.
     # AGE-58: barrier first — the PATCH must land on the inserted row.
     await _ensure_row_inserted()
-    await update_payment_log_state(
-        payment_id,
-        "payment_done",
-        network=receipt_network,
-        agent_address=agent_address,
-        tx_hash=tx_hash,
-        developer_address=tool.developer_address or None,
-        gateway_fee_usdc=gateway_fee,
-        client_ip=client_ip,
-        user_agent=user_agent_str,
-    )
+    if is_free_call:
+        # Free path: no pending row exists (skipped at _issue_402), so the
+        # terminal write is one complete row. Every settled call still lands
+        # in payment_logs — the analytics-lifecycle invariant holds, in a
+        # single round trip.
+        if sb_enabled():
+            await insert_pending_payment_log(
+                payment_id=payment_id,
+                tool_name=resolved,
+                network=receipt_network,
+                amount_usdc=tool.price_usdc,
+                state="payment_done",
+                agent_address=agent_address,
+                tx_hash=tx_hash,
+                developer_address=tool.developer_address or None,
+                gateway_fee_usdc=gateway_fee,
+                client_ip=client_ip,
+                user_agent=user_agent_str,
+                parameters=body.parameters or None,
+            )
+    else:
+        await update_payment_log_state(
+            payment_id,
+            "payment_done",
+            network=receipt_network,
+            agent_address=agent_address,
+            tx_hash=tx_hash,
+            developer_address=tool.developer_address or None,
+            gateway_fee_usdc=gateway_fee,
+            client_ip=client_ip,
+            user_agent=user_agent_str,
+        )
 
     # Echo the parameters the tool actually ran with, so a buyer whose intent
     # was dropped (or who forgot to send any) can see it in the response
