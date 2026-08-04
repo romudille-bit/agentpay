@@ -722,6 +722,10 @@ Response: data is in result["result"]
 ## Docs
 
 - README: {GATEWAY_URL}/
+- Agent Skills: npx skills add romudille-bit/agentpay — installs the agentpay-route
+  (vet + pay the best x402 tool under budget) and agentpay-session (spend cap +
+  receipts) skills into Claude Code, Codex, Droid, OpenCode, and other
+  skills-CLI-compatible runtimes.
 - MCP server: npx @romudille/agentpay-mcp — keyless: 17 free tools + verified_route
   preview. Wallet mode: set AGENTPAY_BASE_KEY (EVM key) + AGENTPAY_MAX_SPEND to
   settle paid tools in-place (gasless EIP-3009 on Base, hard session cap).

@@ -33,6 +33,12 @@ print(s.spending_summary())        # receipt: each call's cost + tx + chain + re
 ```
 Zero-setup variant for the free tools / trying it: `from agentpay import quickstart; s = quickstart(max_spend="0.10")`.
 
+**No-Python variant — the AgentPay MCP's built-in cap.** If the agent runs through the
+AgentPay MCP (`npx -y @romudille/agentpay-mcp`), set `AGENTPAY_BASE_KEY` (dedicated
+small-balance EVM key) + `AGENTPAY_MAX_SPEND` (default $0.10) in the server's `env`: paid
+calls settle in-place (gasless EIP-3009 on Base) and are refused BEFORE signing once the
+cap is hit — the same budget story, enforced inside the MCP.
+
 ## Principles (honor these)
 - The hard cap is **SDK/session-enforced (client-side)**; the gateway issues the session id,
   receipts, and ledger. Don't claim wallet-level or server-side enforcement.

@@ -23,33 +23,52 @@ of grabbing the first or cheapest result.
 
 ## How
 
-**Option A — MCP `route` tool (any MCP-capable agent, no setup):**
+**1. Vet the marketplace — the AgentPay MCP (any MCP-capable runtime, no Python, no repo).**
 
-If your agent runtime has the AgentPay MCP connected (`npx @romudille/agentpay-mcp`), call
-the `route` tool directly — no Python, no CLI, no repo:
+If the AgentPay MCP isn't connected yet, wire it first (Node >= 18):
+
+- Claude Code: `claude mcp add agentpay -- npx -y @romudille/agentpay-mcp`
+- Any other runtime, in its MCP config:
+
 ```json
-{ "tool": "route", "arguments": { "need": "funding rates", "budget": 0.01 } }
+{ "mcpServers": { "agentpay": { "command": "npx", "args": ["-y", "@romudille/agentpay-mcp"] } } }
 ```
-Returns a ranked candidate list + recommendation + `ready_to_pay` details (provider URL +
-x402 `accepts` entry) as JSON. Advise-only, keyless, works in any MCP runtime.
 
-**Option B — bundled CLI router (Claude Code / shell, pure stdlib, no setup):**
+Then call **`verified_route`** — the buyer-side trust oracle. It sweeps the whole x402
+catalog across many queries, collapses sybil/factory clusters (one wallet stamping many
+"distinct" tools → one entry), ranks the genuinely-used survivors, and recommends within
+budget:
+
+```json
+{ "tool": "verified_route", "arguments": { "need": "dex pair liquidity", "budget_usd": 0.01 } }
 ```
-agentpay-route "<what you need>" --budget <max USDC, e.g. 0.01>
-```
-It queries Coinbase Bazaar, drops stubs (no schema, keyword-stuffed, or factory clones —
-one wallet behind many fake names), ranks survivors by **real usage** (unique payers > raw
-calls, plus recency), enforces the budget, and prints a ranked table + a recommendation with
-the provider URL and *why*.
+
+- **Keyless (default): free preview** — the vetted pick's name, usage stats, survivor count,
+  and *why*. Proof of vetting, without the actionable payload.
+- **Wallet mode: full paid payload ($0.01)** — set `AGENTPAY_BASE_KEY` (dedicated
+  small-balance EVM key, USDC on Base) and `AGENTPAY_MAX_SPEND` (session cap, default $0.10)
+  in the server's `env`. The MCP settles the call in-place (gasless EIP-3009, refused
+  BEFORE signing once the cap is hit) and returns the provider URL + ready-to-pay x402
+  challenge.
+
+Also available: `route` (legacy single-query ranking, keyless) and `estimate_plan` (price a
+multi-tool plan before spending, free).
+
+**Bundled CLI alternative (Claude Code *plugin* installs only):** if this skill arrived via
+`/plugin install agentpay@agentpay`, the pure-stdlib router is on PATH —
+`agentpay-route "<need>" --budget 0.01` prints the same ranked table + recommendation.
+Installed via `npx skills add`? Use the MCP above instead; the CLI is not on PATH.
 
 **2. Apply taste.** The router supplies price / quality / legitimacy; the agent makes the
 final capability call — does this tool actually return the field the task needs? Pick from the
-ranked list (usually the ★ recommendation).
+ranked list (usually the recommendation). A pick flagged `probe_coverage` has never had its
+delivery verified by a paid probe on that network — weigh accordingly.
 
-**3. Pay the provider directly, capped + receipted (peer-to-peer).** Use the AgentPay SDK so
-the spend stays under a hard cap and every call produces a verifiable receipt + ledger:
+**3. Pay the provider directly, capped + receipted (peer-to-peer).** In MCP wallet mode the
+settle already happened in-place under `AGENTPAY_MAX_SPEND`. From Python, use the AgentPay
+SDK so the spend stays under a hard cap and every call produces a verifiable receipt + ledger:
 ```
-pip install agentpay-x402
+pip install "agentpay-x402[base]"
 ```
 ```python
 from agentpay import Session, AgentWallet
@@ -63,7 +82,7 @@ print(s.spending_summary())                   # receipt + running ledger
   with 25 real payers. The router encodes this — trust its ranking over raw price.
 - **Respect the budget.** If nothing real fits the cap, the router says so — don't pay for a
   stub to "use the budget."
-- **Peer-to-peer, no custody.** AgentPay advises and (via the SDK session) caps + receipts the
-  spend; the agent pays the provider directly. AgentPay never holds funds.
+- **Peer-to-peer, no custody.** AgentPay advises and (via the MCP cap or SDK session) caps +
+  receipts the spend; the agent pays the provider directly. AgentPay never holds funds.
 
 Home: https://agentpay.tools · routing is advise-by-default (you choose and pay).

@@ -186,6 +186,18 @@ with quickstart() as session:
 
 ## Use it in your agent
 
+### Agent Skills (one command, any agent)
+
+```bash
+npx skills add romudille-bit/agentpay
+```
+
+Installs the **`agentpay-route`** skill (find, judge, and pay for the best paid x402 tool
+within a budget) and **`agentpay-session`** (hard spend cap + verifiable receipts) into
+Claude Code, Codex, Droid, OpenCode, or any [skills-CLI](https://github.com/vercel-labs/skills)-compatible
+runtime. Pair with the MCP below for keyless routing out of the box; add
+`AGENTPAY_BASE_KEY` + `AGENTPAY_MAX_SPEND` for capped, in-place paid calls.
+
 ### Claude Code plugin (one command)
 
 ```
@@ -358,6 +370,7 @@ grant is demonstrated live on testnet:
 | [Glama MCP](https://glama.ai/mcp/servers/romudille-bit/agentpay) | ✅ listed |
 | [awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed |
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
+| [skills CLI](https://github.com/vercel-labs/skills) | ✅ `npx skills add romudille-bit/agentpay` |
 | [402index.io](https://402index.io) | ✅ domain verified, 17 tools synced |
 | Coinbase Bazaar | ✅ indexed — `session_create`, `pre_trade_check`, `verified_route` (Base) |
 | Claude Code plugin | ✅ `/plugin marketplace add romudille-bit/agentpay` |

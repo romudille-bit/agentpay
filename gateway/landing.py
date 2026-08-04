@@ -284,7 +284,9 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 1.25rem
 
 <section class="snippet">
   <h2>Use it in your agent</h2>
-  <p>Claude Code — one command:</p>
+  <p>Any agent — one command (Claude Code, Codex, Droid, OpenCode &amp; more, via the <a href="https://github.com/vercel-labs/skills">skills CLI</a>):</p>
+<pre><code>npx skills add romudille-bit/agentpay</code></pre>
+  <p>Claude Code plugin:</p>
 <pre><code>/plugin marketplace add romudille-bit/agentpay
 /plugin install agentpay@agentpay</code></pre>
   <p>Any MCP runtime — self-contained (pure Node, no Python, no keys to start):</p>
