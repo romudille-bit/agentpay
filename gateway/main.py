@@ -29,6 +29,7 @@ from registry import reload_tools
 
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
+from gateway.services import probe_rollup
 from gateway.routes.agent import router as agent_router
 from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
@@ -486,6 +487,12 @@ async def _hydrate_tools_from_supabase() -> None:
             if not t.triggers:              t.triggers = seed.triggers
             if not t.use_when:              t.use_when = seed.use_when
             if not t.returns:               t.returns = seed.returns
+            # endpoint too (2026-08-06, external report by the Circadian
+            # audit agent — verified): a null/empty Supabase column blanked
+            # three tools' discovery endpoint, and it's the one field a
+            # buyer can't reconstruct (session_create proves the path shape
+            # varies — /v1/session/create, not /tools/<name>/call).
+            if not t.endpoint:              t.endpoint = seed.endpoint
         # Seed tools missing from Supabase (e.g. registry.py added a new tool
         # but Supabase hasn't been migrated yet). Registry.py is always the
         # source of truth for existence; Supabase is an override layer only.
@@ -493,6 +500,21 @@ async def _hydrate_tools_from_supabase() -> None:
             if name not in sb_names and seed.active:
                 tools.append(seed)
                 logger.info(f"Tool '{name}' not in Supabase — using seed value")
+        # AGE-107: discovery-contract invariant. A partial Supabase row must
+        # never leave an active tool with a blank discovery field — the seed
+        # fallback above repairs the known ones, but if anything still slips
+        # through (a new field, future comment/implementation drift), say so
+        # loudly on every boot instead of serving it silently for weeks.
+        for t in tools:
+            if not t.active:
+                continue
+            missing = [f for f in ("endpoint", "description", "price_usdc")
+                       if not getattr(t, f, None)]
+            if missing:
+                logger.warning(
+                    f"[DISCOVERY-CONTRACT] tool '{t.name}' has empty "
+                    f"discovery field(s) {missing} after the Supabase merge "
+                    f"— agents reading /tools cannot use it as published")
         reload_tools(tools)
         logger.info(f"Loaded {len(tools)} tools ({len(sb_names)} from Supabase, {len(tools) - len(sb_names)} from seed)")
     except Exception as e:
@@ -575,6 +597,10 @@ async def lifespan(app: FastAPI):
         # Periodic pending → abandoned sweep on payment_logs. Distinct from
         # _cleanup_loop (different table — see _abandoned_sweep_loop docstring).
         asyncio.create_task(_abandoned_sweep_loop())
+        # Batched 402/probe telemetry flusher (disk-IO fix, 2026-08-04):
+        # bot 402s no longer write per-event rows; their counts accumulate
+        # in memory and land in payment_logs_daily_rollup once per window.
+        asyncio.create_task(probe_rollup.flush_loop())
 
         # Async on-chain refund worker, gated by REFUND_ENABLED.
         # Picks up refund_pending rows, sends USDC back to the agent
@@ -594,6 +620,13 @@ async def lifespan(app: FastAPI):
     # — the runtime cancels them on worker exit. If we ever add a
     # split_payment retry queue with at-least-once semantics, this is
     # where the drain would go.
+    #
+    # Best-effort final flush of the in-memory probe counters so a clean
+    # deploy doesn't drop up to one window of 402 telemetry.
+    try:
+        await probe_rollup.flush()
+    except Exception:
+        pass
 
 
 # ── App ───────────────────────────────────────────────────────────────────────

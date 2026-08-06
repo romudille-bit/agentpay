@@ -1213,3 +1213,89 @@ class TestPaymentParamsObservability:
                 parameters={"need": "dex pair liquidity"})
         assert row_id == 42
         assert calls["n"] == 2          # tried with, retried without
+
+
+# ── Hydration seed-fallback for `endpoint` (external report, 2026-08-06) ──────
+
+class TestHydrationEndpointFallback:
+    """A Supabase tools row with an empty/null `endpoint` column must not
+    blank the tool's discovery endpoint: registry.py is the source of truth
+    for discovery fields, Supabase an override layer. Live regression found
+    by the Circadian audit agent (2026-08-06, verified): gas_tracker,
+    open_interest and orderbook_depth served endpoint="" because the seed
+    fallback block repaired four fields but not `endpoint` — the one field a
+    buyer can't reconstruct (session_create's /v1/session/create proves the
+    path shape carries real information)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_and_null_endpoints_fall_back_to_seed(self, monkeypatch):
+        import gateway.main as main_module
+        import gateway.services.supabase as sb_module
+        from gateway.main import _hydrate_tools_from_supabase
+        from registry import get_tool, list_tools, reload_tools
+        from registry.registry import _TOOLS as _SEED
+
+        # The autouse fixture stubs the SB settings onto the supabase service
+        # module only; hydration reads gateway.main's settings — point it at
+        # the same stub so the fetch actually hits the respx route.
+        monkeypatch.setattr(main_module, "settings", sb_module.settings)
+
+        snapshot = list(list_tools())
+        rows = [
+            # empty-string column (the live gas_tracker shape)
+            {"name": "gas_tracker", "endpoint": "", "price_usdc": "0.001",
+             "active": True},
+            # null column (partial row)
+            {"name": "open_interest", "endpoint": None, "price_usdc": "0.002",
+             "active": True},
+            # a real override must be RESPECTED, not clobbered by the seed
+            {"name": "session_create",
+             "endpoint": "https://override.example/session",
+             "price_usdc": "0.01", "active": True},
+        ]
+        try:
+            with respx.mock:
+                route = respx.get(f"{SB}/rest/v1/tools").mock(
+                    return_value=httpx.Response(200, json=rows))
+                await _hydrate_tools_from_supabase()
+            assert route.called          # hydration really ran against the mock
+            assert get_tool("gas_tracker").endpoint == \
+                _SEED["gas_tracker"].endpoint != ""
+            assert get_tool("open_interest").endpoint == \
+                _SEED["open_interest"].endpoint != ""
+            # differs from the seed value, so this proves the override layer
+            assert (get_tool("session_create").endpoint
+                    == "https://override.example/session")
+            # seed tools absent from Supabase still appended, with endpoints
+            assert all(t.endpoint for t in list_tools() if t.active)
+        finally:
+            reload_tools(snapshot)
+
+    @pytest.mark.asyncio
+    async def test_startup_warning_names_tools_with_blank_fields(
+            self, monkeypatch, caplog):
+        """AGE-107 invariant: if a blank discovery field ever survives the
+        merge again, the boot log must say so — silence is how this shipped."""
+        import logging
+        import gateway.main as main_module
+        import gateway.services.supabase as sb_module
+        from gateway.main import _hydrate_tools_from_supabase
+        from registry import list_tools, reload_tools
+
+        monkeypatch.setattr(main_module, "settings", sb_module.settings)
+        snapshot = list(list_tools())
+        # a runtime-registered tool with no seed to repair it: blank stays
+        rows = [{"name": "runtime_orphan_tool", "endpoint": "",
+                 "description": "an orphan", "price_usdc": "0.001",
+                 "active": True}]
+        try:
+            with respx.mock:
+                respx.get(f"{SB}/rest/v1/tools").mock(
+                    return_value=httpx.Response(200, json=rows))
+                with caplog.at_level(logging.WARNING):
+                    await _hydrate_tools_from_supabase()
+            assert any("DISCOVERY-CONTRACT" in r.message
+                       and "runtime_orphan_tool" in r.message
+                       for r in caplog.records)
+        finally:
+            reload_tools(snapshot)

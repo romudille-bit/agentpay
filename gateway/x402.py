@@ -171,10 +171,19 @@ def issue_payment_challenge(
     developer_address: str,
     request_data: dict,
     ttl_seconds: int = 120,
+    persist: bool = True,
 ) -> PaymentChallenge:
     """
     Create a payment challenge for an agent to fulfill.
     Called when an agent hits a paid endpoint without payment.
+
+    persist=False (disk-IO fix, 2026-08-04): skip the Supabase
+    `pending_challenges` INSERT and keep the challenge in-memory only.
+    Used for discovery probes (GET) and $0 tools: crawlers never retry,
+    and the free-flow retry arrives within seconds on the same worker
+    (production runs a single uvicorn worker), so the in-memory dict is
+    sufficient. Paid POST challenges keep the durable mirror — a paying
+    agent may straddle a worker restart mid-payment.
     """
     payment_id = str(uuid.uuid4())
     now = time.time()
@@ -195,6 +204,8 @@ def issue_payment_challenge(
 
     # Dual-write to Supabase (fire-and-forget). In-memory dict is still
     # source of truth in this PR; Supabase becomes primary at #13 cutover.
+    if not persist:
+        return challenge
     _fire_and_forget(
         sb.store_pending_challenge(
             payment_id=payment_id,

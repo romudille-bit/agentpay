@@ -607,23 +607,67 @@ def supabase_lifecycle_capture(monkeypatch):
 class TestLifecycleStateMachine:
 
     def test_402_response_creates_pending_row(self, client, supabase_lifecycle_capture):
-        """Pre-402 INSERT fires with state='pending' before the 402 returns.
-        Closes the analytics gap from §5.1 of the design doc — every
-        challenge is captured, not just paid ones."""
+        """Pre-402 INSERT fires with state='pending' before the 402 returns —
+        for PAID tools. (Disk-IO fix 2026-08-04: $0 tools no longer write a
+        pending row; their 402 volume is counted in probe_rollup instead —
+        see test_free_402_writes_no_pending_row.)"""
         r = client.post(
-            "/tools/token_price/call",
-            json={"parameters": {"symbol": "ETH"}},
+            "/tools/pre_trade_check/call",
+            json={"parameters": {"symbol": "ETH", "size_usd": 1000}},
         )
         assert r.status_code == 402
 
         # Exactly one INSERT, keyed on the 402 challenge's payment_id
         assert len(supabase_lifecycle_capture["insert"]) == 1
         row = supabase_lifecycle_capture["insert"][0]
-        assert row["tool_name"] == "token_price"
+        assert row["tool_name"] == "pre_trade_check"
         assert row["network"] == "stellar-testnet"
-        assert row["amount_usdc"] == "0.000"
+        assert row["amount_usdc"] == "0.01"
         # payment_id matches what we returned in the body
         assert row["payment_id"] == r.json()["payment_id"]
+
+    def test_free_402_writes_no_pending_row_but_is_counted(
+        self, client, supabase_lifecycle_capture, monkeypatch,
+    ):
+        """Disk-IO fix (2026-08-04): a 402 on a $0 tool writes NOTHING
+        per-event — no payment_logs pending row (99.5% of the table was
+        abandoned bot probes) — but the issuance IS counted in the
+        probe_rollup aggregate so the market signal survives."""
+        from gateway.services import probe_rollup
+        probe_rollup._counts.clear()
+
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+        )
+        assert r.status_code == 402
+        assert r.json()["payment_id"]          # challenge still fully issued
+        assert supabase_lifecycle_capture["insert"] == []
+
+        # Counted once, under kind='free_402', keyed by tool
+        assert sum(
+            n for (day, tool, ua, kind), n in probe_rollup._counts.items()
+            if tool == "token_price" and kind == "free_402"
+        ) == 1
+
+    def test_get_probe_persists_nothing(self, client, supabase_lifecycle_capture):
+        """GET discovery probes (crawlers) issue a valid 402 with zero DB
+        writes: no payment_logs row (F6) and — disk-IO fix — no
+        pending_challenges mirror either."""
+        import gateway.x402 as x402_mod
+        calls = {"n": 0}
+        real = x402_mod.sb.store_pending_challenge
+
+        async def counting_store(**kw):
+            calls["n"] += 1
+        x402_mod.sb.store_pending_challenge = counting_store
+        try:
+            r = client.get("/tools/pre_trade_check/call")
+            assert r.status_code == 402
+            assert supabase_lifecycle_capture["insert"] == []
+            assert calls["n"] == 0
+        finally:
+            x402_mod.sb.store_pending_challenge = real
 
     def test_supabase_insert_failure_returns_503(self, client, monkeypatch):
         """Fail-closed: when sb_enabled is True but the INSERT returns None
@@ -644,11 +688,34 @@ class TestLifecycleStateMachine:
         )
 
         r = client.post(
-            "/tools/token_price/call",
-            json={"parameters": {"symbol": "ETH"}},
+            "/tools/pre_trade_check/call",
+            json={"parameters": {"symbol": "ETH", "size_usd": 1000}},
         )
         assert r.status_code == 503
         assert "challenge issuance refused" in r.json()["detail"].lower()
+
+    def test_free_402_survives_supabase_outage(self, client, monkeypatch):
+        """Disk-IO fix companion to fail-closed: a $0 tool's 402 does not
+        depend on Supabase at all, so an outage (which 503s paid
+        challenges) must NOT break the free funnel or crawler probes."""
+        import gateway.routes.tools as routes_tools_mod
+        import gateway.services.supabase as sb_mod
+
+        enabled = lambda: True
+        monkeypatch.setattr(sb_mod, "sb_enabled", enabled)
+        monkeypatch.setattr(routes_tools_mod, "sb_enabled", enabled)
+
+        async def fake_insert_fails(*args, **kw):
+            return None
+        monkeypatch.setattr(
+            routes_tools_mod, "insert_pending_payment_log", fake_insert_fails
+        )
+
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+        )
+        assert r.status_code == 402
 
     def test_replay_attempt_marks_rejected(
         self, client, supabase_lifecycle_capture, patch_route_verify
@@ -658,13 +725,14 @@ class TestLifecycleStateMachine:
         attacks from abandoned challenges."""
         patch_route_verify("replay")
 
-        # Issue the 402 first to plant the pending row
-        first = client.post("/tools/token_price/call", json={"parameters": {}})
+        # Issue the 402 first to plant the pending row (paid tool — free
+        # tools no longer have a pending row to mark)
+        first = client.post("/tools/pre_trade_check/call", json={"parameters": {}})
         payment_id = first.json()["payment_id"]
 
         # Now retry with a (mocked) replay
         r = client.post(
-            "/tools/token_price/call",
+            "/tools/pre_trade_check/call",
             json={"parameters": {}},
             headers={
                 "X-Payment": f"tx_hash=replayhash,from=GAGENT,id={payment_id}",
@@ -687,12 +755,13 @@ class TestLifecycleStateMachine:
         """The full success trail: pending (insert) → verified (PATCH) →
         payment_done (PATCH). split_done is fired from inside split_payment
         which is mocked at the routes layer; covered by test_x402 for the
-        x402.py side. verified is fire-and-forget per the Q3 decision."""
-        first = client.post("/tools/token_price/call", json={"parameters": {"symbol": "ETH"}})
+        x402.py side. verified is fire-and-forget per the Q3 decision.
+        Paid tool — the free happy path is single-INSERT, tested below."""
+        first = client.post("/tools/pre_trade_check/call", json={"parameters": {"symbol": "ETH"}})
         payment_id = first.json()["payment_id"]
 
         r = client.post(
-            "/tools/token_price/call",
+            "/tools/pre_trade_check/call",
             json={"parameters": {"symbol": "ETH"}},
             headers={
                 "X-Payment": f"tx_hash=happyhash,from=GAGENT,id={payment_id}",
@@ -722,6 +791,46 @@ class TestLifecycleStateMachine:
         )
         assert payment_done.get("network") == "stellar-testnet"
         assert payment_done.get("gateway_fee_usdc") is not None
+
+    def test_free_happy_path_writes_one_complete_row(
+        self, client, supabase_lifecycle_capture,
+        patch_route_verify, patch_route_tool_response,
+    ):
+        """Disk-IO fix (2026-08-04): a settled FREE call produces exactly ONE
+        payment_logs write — a complete INSERT with state='payment_done' —
+        instead of the old pending-INSERT + verified-PATCH + done-PATCH
+        trail. Every settled call still lands in payment_logs (the
+        analytics-lifecycle invariant), in a single round trip."""
+        first = client.post("/tools/token_price/call", json={"parameters": {"symbol": "ETH"}})
+        payment_id = first.json()["payment_id"]
+
+        r = client.post(
+            "/tools/token_price/call",
+            json={"parameters": {"symbol": "ETH"}},
+            headers={
+                "X-Payment": f"tx_hash=free:{payment_id},from=GAGENT,id={payment_id}",
+                "X-Agent-Address": "GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENT",
+            },
+        )
+        assert r.status_code == 200
+
+        # No pending insert at 402 time; ONE complete insert at settle time
+        assert len(supabase_lifecycle_capture["insert"]) == 1
+        row = supabase_lifecycle_capture["insert"][0]
+        assert row["state"] == "payment_done"
+        assert row["tool_name"] == "token_price"
+        assert row["amount_usdc"] == "0.000"
+        assert row["tx_hash"] == f"free:{payment_id}"
+        assert row["agent_address"].startswith("GAGENT")
+        assert row["parameters"] == {"symbol": "ETH"}
+
+        # No terminal PATCH for the free path (the fire-and-forget
+        # 'verified' PATCH may appear; 'payment_done' must not be a PATCH)
+        done_patches = [
+            u for u in supabase_lifecycle_capture["update"]
+            if u["state"] == "payment_done"
+        ]
+        assert done_patches == []
 
     def test_tool_failure_post_verify_marks_refund_pending(
         self, client, supabase_lifecycle_capture, monkeypatch, patch_route_verify,
@@ -1469,8 +1578,10 @@ class TestGetProbeBooksNoPendingRow:
     def test_post_challenge_still_books_pending_row(
         self, client, supabase_lifecycle_capture
     ):
-        """Real callers POST — the fail-closed INSERT must be unchanged."""
-        r = client.post("/tools/token_price/call", json={"parameters": {}})
+        """Real callers POST — the fail-closed INSERT must be unchanged for
+        PAID tools. (Disk-IO fix 2026-08-04: $0 tools skip it — their 402
+        volume lives in probe_rollup instead.)"""
+        r = client.post("/tools/pre_trade_check/call", json={"parameters": {}})
         assert r.status_code == 402
         assert len(supabase_lifecycle_capture["insert"]) == 1
 
