@@ -484,11 +484,32 @@ def rank(need: str, budget: Decimal, chain: Optional[str] = None,
                              scores=scores)
 
 
-# AGE-104: the Prober settles paid probes on Base only. A Solana listing is
-# swept, junk-filtered and usage-ranked identically to Base, but its
-# delivery-after-payment has never been verified by us — say so on every
-# Solana pick. (Honest, and the flag itself markets the paid probe tier.)
+# AGE-104: the Prober settles paid probes on Base only. A listing on any other
+# rail is swept, junk-filtered and usage-ranked identically, but its
+# delivery-after-payment has never been verified by us — say so on every such
+# pick. (Honest, and the flag itself markets the paid probe tier.)
 PROBE_COVERAGE_UNVERIFIED = "Base only — on-chain delivery unverified"
+
+# Where the Prober's wallet can actually settle today. Extend this set — do NOT
+# special-case a chain at the call site — when SVM/other signing lands, so the
+# caveat disappears from every surface at once. Verified against live data
+# 2026-08-06: every service with paid_probes > 0 is on Base; no non-Base
+# endpoint has ever been successfully probed, so flagging them all is accurate
+# rather than merely cautious.
+PROBE_COVERAGE_NETWORKS = {"eip155:8453"}
+
+
+def probe_coverage_note(network: Optional[str]) -> Optional[str]:
+    """The honest coverage caveat for a network, or None when we can verify it.
+
+    Pure. Accepts a raw or CAIP-2 network string (normalized internally), so
+    legacy rows storing a lowercased base58 Solana id resolve the same as a
+    canonical one.
+    """
+    if not network:
+        return None
+    return (None if normalize_network(network) in PROBE_COVERAGE_NETWORKS
+            else PROBE_COVERAGE_UNVERIFIED)
 
 
 def _public(s: Optional[dict]) -> Optional[dict]:
@@ -508,8 +529,9 @@ def _public(s: Optional[dict]) -> Optional[dict]:
         "quality": s["quality"],
         "flags": s["flags"],
     }
-    if str(net).startswith("solana"):
-        out["probe_coverage"] = PROBE_COVERAGE_UNVERIFIED
+    coverage = probe_coverage_note(net)
+    if coverage:
+        out["probe_coverage"] = coverage
     if s.get("collapsed_siblings"):
         out["collapsed_siblings"] = s["collapsed_siblings"]
     if s.get("relevance"):

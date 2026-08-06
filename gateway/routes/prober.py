@@ -66,6 +66,8 @@ async def scores_json():
     from decimal import Decimal
 
     from gateway.radar import _delivery_why
+    from gateway.radar import normalize_network as _norm_net
+    from gateway.radar import probe_coverage_note
     from gateway.services.supabase import (fetch_own_tool_receipts,
                                            fetch_service_scores)
     from registry.registry import get_tool, list_tools
@@ -86,7 +88,17 @@ async def scores_json():
             "page": f"/s/{service_slug(url)}",
             "name": row.get("name") or url.split("//")[-1].split("/")[0],
             "need": row.get("need"),
-            "network": row.get("network"),
+            # AGE-104 follow-up: normalize on read. Rows written before the
+            # Solana aliases existed stored a LOWERCASED base58 CAIP-2
+            # ("solana:5eykt4usfv8p8…"), which is not a valid identifier —
+            # base58 is case-sensitive. Normalizing here fixes the published
+            # value for legacy rows without a data migration.
+            "network": _norm_net(row.get("network")),
+            # AGE-104 follow-up: the honesty flag shipped on verified_route but
+            # not here, so three Solana services sat on the public delivery
+            # leaderboard with nothing saying we have never verified them and
+            # currently cannot. Same note, same rule, every surface.
+            "probe_coverage": probe_coverage_note(row.get("network")),
             "window_days": row.get("window_days", 30),
             "paid_probes": row.get("paid_probes"),
             "delivery_rate": row.get("delivery_rate"),
@@ -267,6 +279,7 @@ _PROBES_HTML = """<!doctype html>
           : Math.round(s.delivery_rate * 100) + '%';
         const extras = [
           chain(s.network) ? `<span class="rail">${esc(chain(s.network))}</span>` : '',
+          s.probe_coverage ? `<span class="flag">${esc(s.probe_coverage)}</span>` : '',
           s.mpp_option ? '<span class="rail">MPP/Tempo</span>' : '',
           s.usdg_option ? '<span class="rail">USDG</span>' : '',
           ...(s.flags || []).map(f => `<span class="flag">${esc(f)}</span>`),
@@ -377,6 +390,8 @@ async def service_page(slug: str):
     a search engine needs — title, description, canonical, the delivery
     evidence itself — is in the HTML we return here."""
     from gateway.radar import _delivery_why
+    from gateway.radar import normalize_network as _norm_net
+    from gateway.radar import probe_coverage_note
     from gateway.services.supabase import fetch_service_scores
 
     scores = await fetch_service_scores()
@@ -405,7 +420,14 @@ async def service_page(slug: str):
     if row.get("need"):
         chips.append(f'<span class="chip">{e(str(row["need"]))}</span>')
     if row.get("network"):
-        chips.append(f'<span class="chip rail">{e(str(row["network"]))}</span>')
+        chips.append(
+            f'<span class="chip rail">{e(str(_norm_net(row["network"])))}</span>')
+    # AGE-104 follow-up: never render a non-Base service on the delivery board
+    # without saying we cannot verify its delivery. Same rule as scores.json
+    # and verified_route — one helper, three surfaces.
+    _cov = probe_coverage_note(row.get("network"))
+    if _cov:
+        chips.append(f'<span class="chip flag">probe coverage: {e(_cov)}</span>')
     if row.get("mpp_option"):
         chips.append('<span class="chip rail">also payable via MPP/Tempo</span>')
     if row.get("usdg_option"):

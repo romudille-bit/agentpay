@@ -328,3 +328,87 @@ def test_sitemap_includes_service_pages(monkeypatch):
     _patch_scores(monkeypatch)
     r = _client().get("/sitemap.xml")
     assert "/s/" + prober.service_slug(_ROW["resource_url"]) in r.text
+
+
+# ── AGE-104 follow-up: probe-coverage honesty on the Prober's own surfaces ────
+# The "Base only — on-chain delivery unverified" caveat shipped on
+# verified_route but NOT on scores.json or the /probes leaderboard, so three
+# Solana services sat on our public delivery board with no indication we have
+# never verified them and currently cannot settle their rail at all.
+
+class TestProbeCoverageNote:
+    def test_base_is_covered_and_carries_no_caveat(self):
+        from gateway.radar import probe_coverage_note
+        assert probe_coverage_note("eip155:8453") is None
+        assert probe_coverage_note("base") is None          # alias
+        assert probe_coverage_note("") is None              # nothing to say
+        assert probe_coverage_note(None) is None
+
+    def test_non_base_rails_are_flagged_unverified(self):
+        from gateway.radar import PROBE_COVERAGE_UNVERIFIED, probe_coverage_note
+        for net in ("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                    "solana", "eip155:42161", "eip155:137", "stellar:pubnet"):
+            assert probe_coverage_note(net) == PROBE_COVERAGE_UNVERIFIED, net
+
+    def test_legacy_lowercased_solana_id_is_recognized_and_normalized(self):
+        """Rows written before the Solana aliases stored a LOWERCASED base58
+        CAIP-2, which is not a valid identifier (base58 is case-sensitive).
+        Both the caveat and the published network string must still be right."""
+        from gateway.radar import (PROBE_COVERAGE_UNVERIFIED, normalize_network,
+                                   probe_coverage_note)
+        legacy = "solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp"
+        assert probe_coverage_note(legacy) == PROBE_COVERAGE_UNVERIFIED
+        assert normalize_network(legacy) == "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+
+    def test_verified_route_public_projection_uses_the_same_rule(self):
+        """One helper, every surface — an Arbitrum listing gets the same caveat
+        a Solana one does, so a new chain never needs a second code change."""
+        from decimal import Decimal
+
+        from gateway.radar import PROBE_COVERAGE_UNVERIFIED, _public
+        def pub(net):
+            return _public({"name": "x", "url": "u", "price_usd": Decimal("0.01"),
+                            "network": net, "network_caip2": net, "pay_to": "",
+                            "tags": [], "calls30d": 0, "payers30d": 0,
+                            "quality": 0, "flags": []})
+        assert pub("eip155:42161")["probe_coverage"] == PROBE_COVERAGE_UNVERIFIED
+        assert "probe_coverage" not in pub("eip155:8453")
+
+
+def test_scores_json_carries_coverage_caveat_and_normalized_network(monkeypatch):
+    """End-to-end: a legacy Solana row (lowercased base58 id, never probed)
+    must reach /scores.json with the honesty caveat AND a valid CAIP-2, while
+    a Base row stays clean. This is the actual regression — the helper was
+    right, but nothing wired it into the Prober's own published surface."""
+    from gateway.radar import PROBE_COVERAGE_UNVERIFIED
+
+    async def _fake_scores():
+        return {
+            "https://sol.x/t": {
+                "resource_url": "https://sol.x/t", "window_days": 30,
+                "network": "solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp",
+                "paid_probes": 0, "delivery_rate": None, "delivery_factor": 1.0,
+                "latency_p50_ms": None, "flags": [], "price_usdc": "0.01",
+            },
+            "https://base.x/t": {
+                "resource_url": "https://base.x/t", "window_days": 30,
+                "network": "eip155:8453",
+                "paid_probes": 3, "delivery_rate": 1.0, "delivery_factor": 1.15,
+                "latency_p50_ms": 900, "flags": [], "price_usdc": "0.01",
+            },
+        }
+    from gateway.services import supabase
+    monkeypatch.setattr(prober, "fetch_service_scores", _fake_scores, raising=False)
+    monkeypatch.setattr(supabase, "fetch_service_scores", _fake_scores)
+
+    body = _client().get("/scores.json").json()
+    rows = {s["resource_url"]: s for s in body["services"]}
+
+    sol = rows["https://sol.x/t"]
+    assert sol["probe_coverage"] == PROBE_COVERAGE_UNVERIFIED
+    # the invalid lowercased id must not be republished
+    assert sol["network"] == "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+
+    base = rows["https://base.x/t"]
+    assert base["probe_coverage"] is None
+    assert base["network"] == "eip155:8453"
