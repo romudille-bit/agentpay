@@ -115,6 +115,7 @@ GRANT_MONAD.md
 GRANT_SOLANA.md
 GRANT_TEAM1_AVALANCHE.md
 GRANT_XRPL.md
+GRANT_BNB.md
 INFERENCE_PROXY_SPEC.md
 OUTREACH_OPERATORS.md
 PROBER_SPEC.md
@@ -130,6 +131,12 @@ tools/probe_arbitrum_onchain.py
 tools/probe_arbitrum_x402.py
 tools/probe_stellar_x402.py
 tools/probe_x402_demand.py
+
+# Internal weekly reviews + digests (market reviews, analyst learnings) — Drive-only, never commit
+reviews/
+
+# Daily social-post drafts (CMO drafting agent output) — never commit
+socials/
 
 # Disposable local scratch dir (git-bridge locks, temp patches)
 _to_delete/
