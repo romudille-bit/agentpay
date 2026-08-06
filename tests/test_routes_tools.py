@@ -1061,7 +1061,10 @@ class TestPreTradeCheckBazaar:
         header = r.headers.get("PAYMENT-REQUIRED")
         assert header, "PAYMENT-REQUIRED header missing"
         payload = json.loads(base64.b64decode(header + "=" * (-len(header) % 4)))
-        assert payload["resource"]["serviceName"] == "AgentPay"
+        # AGE-36 readout: head terms are won by keyword-in-name, so the
+        # Bazaar serviceName must carry what the tool DOES, not just the brand
+        # (which 8 rival "AgentPay" products share). Pinned per-tool.
+        assert payload["resource"]["serviceName"] == "AgentPay Pre-Trade Risk Check"
         assert "pre-trade-check" in payload["resource"]["tags"]
         assert "bazaar" in payload.get("extensions", {})
         assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["verdict"]
@@ -1079,7 +1082,7 @@ class TestPreTradeCheckBazaar:
         header = r.headers.get("PAYMENT-REQUIRED")
         assert header, "PAYMENT-REQUIRED header missing"
         payload = json.loads(base64.b64decode(header + "=" * (-len(header) % 4)))
-        assert payload["resource"]["serviceName"] == "AgentPay"
+        assert payload["resource"]["serviceName"] == "AgentPay x402 Trust Oracle"
         assert "trust-oracle" in payload["resource"]["tags"]
         assert "bazaar" in payload.get("extensions", {})
         assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["recommendation"]
@@ -1108,7 +1111,7 @@ class TestCallToolGet:
         assert r.status_code == 402
         h = r.headers["PAYMENT-REQUIRED"]
         payload = json.loads(base64.b64decode(h + "=" * (-len(h) % 4)))
-        assert payload["resource"]["serviceName"] == "AgentPay"
+        assert payload["resource"]["serviceName"] == "AgentPay Pre-Trade Risk Check"
         assert "bazaar" in payload.get("extensions", {})
 
     def test_get_unknown_tool_404(self, client):

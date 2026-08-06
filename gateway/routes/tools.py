@@ -187,7 +187,7 @@ _TOOL_BAZAAR: dict[str, dict] = {
             # by keyword-in-name, which is the keyword-stuffed-stub pattern the
             # competitor scan rejected — owning rare precise compounds
             # (spend-control, trust-oracle, sybil-detection) may be the better game.
-            "serviceName": "AgentPay",
+            "serviceName": "AgentPay Pre-Trade Risk Check",
             "description": (
                 "Pre-trade risk check for AI agents trading crypto: live orderbook "
                 "slippage at YOUR size, side-aware funding carry, open-interest "
@@ -305,7 +305,18 @@ _TOOL_BAZAAR: dict[str, dict] = {
     },
     "verified_route": {
         "resource": {
-            "serviceName": "AgentPay",
+            # AGE-36 READOUT (measured 2026-08-06): the experiment below ran and
+            # the model is CONFIRMED. pre_trade_check's trading/risk terms now
+            # rank (slippage, pre-trade check, trade safety all return us) while
+            # verified_route's tag-only routing/discovery stayed absent — as did
+            # trust, route, vetting, verify delivery, delivery score, and even
+            # "verified route" itself. 0 of 9 head terms; the ONLY query that
+            # returns this tool is the brand name, which 8 rival "AgentPay"
+            # products also own. Head terms are won by keyword-in-NAME.
+            # Naming it what it is ("Trust Oracle") is accurate description, NOT
+            # the keyword-stuffed-stub pattern we downrank: a stub claims
+            # capabilities it lacks, this one is measurably a trust oracle.
+            "serviceName": "AgentPay x402 Trust Oracle",
             "description": (
                 "Buyer-side trust oracle for the x402 marketplace: 'I need X, "
                 "budget $Y — which tool is real?' Sweeps the WHOLE catalog across "
