@@ -68,6 +68,8 @@ try:
 except ModuleNotFoundError:
     import probe  # type: ignore
 
+from agents.prober.self_audit import audit as audit_self
+from agents.prober.self_audit import summarize as summarize_self_audit
 from gateway import radar
 
 
@@ -389,6 +391,17 @@ def main() -> int:
     log(f"run start {run_at} | wallet {wallet.base_address} | cap ${max_spend} | "
         f"max paid probes {max_paid} | needs {len(needs)}")
 
+    # 0. SELF-AUDIT (AGE-108) — our own surface, before anyone else's. Free,
+    # read-only, never enters service_scores. Runs first so a broken contract
+    # of ours is reported even if the sweep later fails.
+    self_audit = audit_self(GATEWAY)
+    if self_audit["ok"]:
+        log(summarize_self_audit(self_audit))
+    else:
+        log("SELF-AUDIT FAILED — our own discovery contract is broken:")
+        for f in self_audit["failures"]:
+            log(f"  ! {f}")
+
     # 1. SELECT
     ranked = rank_needs(needs, Decimal(str(max_spend)))
     recent = recent_recommendations()
@@ -501,6 +514,9 @@ def main() -> int:
                  f"scores pending on-chain reconciliation")
     if unreachable:
         note += f"; {unreachable} unreachable pre-payment (never scored)"
+    if not self_audit["ok"]:
+        note += (f"; SELF-AUDIT FAILED ({len(self_audit['failures'])} issue(s) "
+                 f"on our own discovery surface)")
     if contested:
         note += ("; head-to-head delivery on " +
                  ", ".join(f"{n} ({len(r)} providers)" for n, r in contested.items()))
@@ -540,6 +556,8 @@ def main() -> int:
                    "over_price_ceiling": len(sel["too_expensive"]),
                    "price_ceiling_usd": str(max_probe)},
             "need_leaderboard": board,
+            # AGE-108: monitoring only — never enters service_scores.
+            "self_audit": self_audit,
         }},
         "receipt": receipt, "note": note,
     })
