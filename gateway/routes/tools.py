@@ -593,7 +593,7 @@ def _base_402_option(tool, resource_url: str):
             "input":  tool.parameters or {},
             "output": tool.response_example,
         }
-    bz = _TOOL_BAZAAR.get(tool.name, {})
+    bz = _bazaar_for(tool.name)
     payment_required_header = base_pay.build_payment_required_header(
         requirements=base_req,
         resource_url=resource_url,
@@ -608,6 +608,18 @@ def _base_402_option(tool, resource_url: str):
         description=tool.description,
     )
     return base_option, payment_required_header, accepts_entry
+
+
+def _bazaar_for(tool_name: str) -> dict:
+    """Bazaar resource/extension for a tool. session_create is ALSO payable at
+    /v1/session/create; both paths must declare that one canonical resource
+    (AGE-112) or a settle here indexes a second, unnamed entry."""
+    if tool_name == "session_create":
+        from gateway.routes.session import (_SESSION_BAZAAR_EXTENSION,
+                                            _SESSION_BAZAAR_RESOURCE)
+        return {"resource": _SESSION_BAZAAR_RESOURCE,
+                "extension": _SESSION_BAZAAR_EXTENSION}
+    return _TOOL_BAZAAR.get(tool_name, {})
 
 
 async def _refund_and_502(tool_name: str, payment_id: str, exc: Exception) -> JSONResponse:
@@ -916,7 +928,7 @@ async def _settle_base_path(
         network=settings.BASE_NETWORK,
     )
     logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
-    bz = _TOOL_BAZAAR.get(tool.name, {})
+    bz = _bazaar_for(tool.name)
     result = await base_pay.settle_base_payment(
         payment_signature, base_req, rpc_url=settings.BASE_RPC_URL,
         bazaar_resource=(

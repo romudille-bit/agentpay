@@ -243,6 +243,10 @@ def build_payment_required_header(
             resource_block["tags"] = bazaar_resource["tags"]
         if bazaar_resource.get("description"):
             resource_block["description"] = bazaar_resource["description"]
+        # AGE-112: a tool payable on more than one path declares ONE canonical
+        # resource, so every settle refreshes the same Bazaar record.
+        if bazaar_resource.get("url"):
+            resource_block["url"] = bazaar_resource["url"]
 
     payload = {
         "x402Version": 2,

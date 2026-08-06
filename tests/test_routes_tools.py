@@ -1050,6 +1050,28 @@ class TestPreTradeCheckBazaar:
     """Bazaar's validation crawl reads extensions.bazaar + serviceName/tags
     from the LIVE 402 — without them the listing never leaves 'processing'."""
 
+    def test_session_create_tool_path_declares_canonical_resource(
+            self, client, monkeypatch):
+        """AGE-112: session_create is payable at /tools/session_create/call AND
+        /v1/session/create. The tool path used to publish no serviceName and its
+        own resource url, so paying it settled a second, unnamed resource and
+        never refreshed the real listing. Both paths must declare the same one."""
+        import base64, json
+        import gateway.routes.tools as rt
+        from gateway.routes.session import SESSION_RESOURCE_URL
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.post("/tools/session_create/call",
+                        json={"parameters": {"max_spend": "0.10"}})
+        assert r.status_code == 402
+        h = r.headers["PAYMENT-REQUIRED"]
+        payload = json.loads(base64.b64decode(h + "=" * (-len(h) % 4)))
+        res = payload["resource"]
+        assert res["serviceName"] == "AgentPay Spend Cap & Receipts"
+        assert res["url"] == SESSION_RESOURCE_URL
+        assert "session" in res["tags"]
+        assert "bazaar" in payload.get("extensions", {})
+
     def test_402_carries_bazaar_extension(self, client, monkeypatch):
         import base64, json
         import gateway.routes.tools as rt
