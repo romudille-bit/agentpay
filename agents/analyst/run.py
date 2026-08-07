@@ -578,6 +578,7 @@ def main() -> int:
     # Paid verdicts (only on pre_trade goals) — stop the moment the cap says stop
     verdicts: dict[str, dict] = {}
     skipped: dict[str, str] = {}
+    log(f"paid phase: {len(paid_symbols)} symbol(s) — {', '.join(paid_symbols)}")
     for sym in paid_symbols:
         if s.would_exceed(s.tool_cost_usd("pre_trade_check") or Decimal("0.01")):
             skipped[sym] = "budget cap reached"
@@ -590,6 +591,10 @@ def main() -> int:
         except (PaymentFailed, RefundPending) as e:
             log(f"paid verdict {sym} failed: {e}")
             skipped[sym] = "payment failed"
+        except Exception as e:
+            # 2026-08-07: one unexpected paid-call error killed the whole run.
+            log(f"paid verdict {sym} error: {type(e).__name__}: {e}")
+            skipped[sym] = f"error: {type(e).__name__}"
 
     # 4. PUBLISH — note + structured findings + receipt
     regime = regime_line(_last("fear_greed_index"), _last("funding_rates"))
@@ -676,6 +681,8 @@ def run_vetting(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, obj
                 f"rec {rec.get('name')} ({rec.get('payers30d')} payers) | tx {getattr(vr, 'tx', None)}")
         except (PaymentFailed, RefundPending) as e:
             log(f"verified_route failed: {e}")
+        except Exception as e:
+            log(f"verified_route error: {type(e).__name__}: {e}")
     else:
         log("verified_route skipped — cap reached")
 
@@ -741,6 +748,8 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
                 f"rec {rec.get('name')} ({rec.get('payers30d')} payers) | tx {getattr(vr, 'tx', None)}")
         except (PaymentFailed, RefundPending) as e:
             log(f"verified_route failed: {e}")
+        except Exception as e:
+            log(f"verified_route error: {type(e).__name__}: {e}")
 
     # ── Consume CMC DEX data — the ONE paid leg with no free equivalent ──
     # dex_search returns token + price + liquidity in a single response, so a

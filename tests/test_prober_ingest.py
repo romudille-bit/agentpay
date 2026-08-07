@@ -5,6 +5,8 @@ convention as test_ledger.py's ingest tests). Verifies the gate, the payload
 contract, the store-then-rescore-over-window flow, and the best-effort 202.
 """
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from gateway.config import settings
@@ -14,9 +16,16 @@ from gateway.routes import prober
 SECRET_HDR = {"X-Flagship-Secret": "s3cr3t"}
 
 
+def _ago(days: float) -> str:
+    """score() drops rows older than the 30d window against the real clock, so
+    fixtures must be relative — fixed dates pass until they age out and then
+    fail for a reason that has nothing to do with the code under test."""
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
 def _paid_probe(url="https://api.example.com/tools/x", **kw):
     row = {
-        "probed_at": "2026-07-10T12:00:00+00:00",
+        "probed_at": _ago(2),
         "resource_url": url,
         "pay_to": "0xabc", "network": "eip155:8453", "price_usdc": "0.01",
         "probe_type": "paid",
@@ -86,14 +95,14 @@ def test_stores_probes_and_rescoreds_window(monkeypatch):
     # Window returns history: same service probed before, once failed.
     history = [
         _paid_probe(),
-        _paid_probe(probed_at="2026-07-08T12:00:00+00:00",
+        _paid_probe(probed_at=_ago(4),
                     settle_ok=True, http_ok=False, response_nonempty=False),
     ]
     calls = _patch_store(monkeypatch, window=history)
 
     r = _client().post("/v1/prober/run",
                        json={"probes": [_paid_probe()],
-                             "run": {"run_at_iso": "2026-07-10T12:01:00+00:00"}},
+                             "run": {"run_at_iso": _ago(0)}},
                        headers=SECRET_HDR)
     assert r.status_code == 200
     body = r.json()

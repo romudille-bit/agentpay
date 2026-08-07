@@ -130,17 +130,23 @@ class TestProberScoreIgnoresUnsupported:
     delivery_rate (the seller is unreachable by us, not a bad deliverer)."""
 
     def test_unsupported_chain_row_is_unscoreable(self):
+        from datetime import datetime, timedelta, timezone
+
         from agents.prober import probe
         rows = [{
             "resource_url": "https://avax.example/x",
             "probe_type": "paid",
             "skipped": True,
             "unsupported_chain": ["eip155:43114"],
-            "probed_at": "2026-07-23T12:00:00+00:00",
+            "probed_at": (datetime.now(timezone.utc)
+                          - timedelta(days=2)).isoformat(),
         }]
         scores = probe.score(rows)
         # Grouped but unscoreable: no paid probe counted, rate stays None,
         # factor stays neutral (never the 0.25 delivery-failure penalty).
+        # The length assert matters: aged out of the window, scores == [] and
+        # every `all()` below passes vacuously.
+        assert len(scores) == 1
         assert all(s["paid_probes"] == 0 for s in scores)
         assert all(s["delivery_rate"] is None for s in scores)
         assert all(s["delivery_factor"] == 1.0 for s in scores)
