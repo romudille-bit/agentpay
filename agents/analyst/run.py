@@ -21,6 +21,8 @@ Identity & config (env):
   FLAGSHIP_MAX_SPEND       — hard cap per run in USDC (default "0.25")
   FLAGSHIP_SYMBOLS         — comma list for paid verdicts (default "BTC,ETH")
   AGENTPAY_GATEWAY_URL     — override gateway (default https://agentpay.tools)
+  LISTING_KEEPALIVE        — "off" disables the AGE-113 Bazaar listing keepalive
+                             (default on; free check, $0.01 only on a real miss)
 
 Exit codes: 0 = note published; 1 = run failed (Railway cron surfaces it).
 """
@@ -47,14 +49,21 @@ except ModuleNotFoundError:
 # strategy.py is a sibling module. Works both as a script (its dir is on path)
 # and as a package import (tests do `from agents.analyst import strategy`).
 try:
-    from agents.analyst import strategy, backtest
+    from agents.analyst import strategy, backtest, listing_keepalive
 except ModuleNotFoundError:
     import strategy  # type: ignore
     import backtest  # type: ignore
+    import listing_keepalive  # type: ignore
 
 
 def log(msg: str) -> None:
     print(f"[analyst] {msg}", flush=True)
+
+
+def _keepalive_enabled() -> bool:
+    """AGE-113 keepalive is on unless explicitly switched off."""
+    return os.environ.get("LISTING_KEEPALIVE", "on").strip().lower() not in (
+        "0", "off", "false", "no")
 
 
 # CoinGecko ids for the tokens we backtest (free historical OHLCV source).
@@ -564,6 +573,15 @@ def main() -> int:
 
     def _last(tool):
         return next((c["data"] for c in reversed(intel_calls) if c["tool"] == tool), None)
+
+    # AGE-113: keep our own Bazaar listing alive. The check is free; a $0.01
+    # session_create settles ONLY if the listing has actually dropped out of
+    # the index. Placed before the goal branches (which return) so it runs on
+    # every goal kind, and wrapped so it can never cost us the run.
+    try:
+        listing_keepalive.keepalive(s, log, enabled=_keepalive_enabled())
+    except Exception as e:
+        log(f"keepalive: unexpected error ({type(e).__name__}: {e})")
 
     # Flagship v2 (hackathon): strategy goal has its own paid path —
     # verified_route vetting + CMC consume → backtestable strategy spec.

@@ -13,6 +13,18 @@ Baseline 2026-08-06, before the rename (commit 8efe500): 7/22.
   MISS : trust, route, routing, discovery, vetting, verify delivery,
          trust oracle, delivery score, "verified route"  <- 0/9 head terms
 
+After the rename + forced reindex, 2026-08-06: 8/22 (head terms 1/9 —
+"trust oracle" started returning verified_route).
+
+RE-MEASURED 2026-08-09: 5/22. THE NUMBER DECAYS — read it as a freshness
+gauge, not a score. budget cap / spend control / session all went to zero
+because session_create fell OUT of the index within three days: nothing pays
+for it, and Bazaar only refreshes a record at settle time. pre_trade_check and
+verified_route held only because a real customer buys them every 1-3h. If you
+see a drop here, check the BRAND query first — if the brand term doesn't return
+a listing, it is de-indexed rather than out-ranked, which is a different
+problem with a different fix (AGE-113: agents/analyst/listing_keepalive.py).
+
 Bazaar re-indexes from the live 402 at settle time, so re-run this only AFTER
 at least one paid call per tool has settled post-deploy — otherwise you are
 measuring the old record. Free, read-only, nothing settles here.

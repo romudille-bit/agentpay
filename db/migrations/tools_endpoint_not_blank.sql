@@ -62,3 +62,26 @@ WHERE conname = 'tools_endpoint_not_blank';
 -- They were never blank in practice, an over-tight constraint would reject
 -- legitimate partial registrations, and the boot-time [DISCOVERY-CONTRACT]
 -- warning already names any tool serving them empty.
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STATUS: APPLIED to production 2026-08-09. Verified from outside the SQL
+-- editor via PostgREST + the service key, non-destructively — POST a row whose
+-- `name` duplicates an existing one, since Postgres evaluates CHECK/NOT NULL
+-- before the unique index, so the constraint error fires if it exists and a 409
+-- if it does not, and nothing is written either way:
+--
+--   endpoint = ''    -> 400 23514  violates check constraint
+--                       "tools_endpoint_not_blank"
+--   endpoint = null  -> 400 23502  null value in column "endpoint"
+--                       violates not-null constraint
+--   14 rows before, 14 rows after, 0 blank endpoints.
+--
+-- FOLLOW-UP (AGE-114): the column still carries `DEFAULT ''` from the original
+-- CREATE TABLE, which the CHECK now makes unusable — any INSERT omitting
+-- `endpoint` hard-fails. Fail-loud is the behaviour we want, but a default the
+-- table always rejects is a schema contradicting itself. Drop it:
+--
+--   ALTER TABLE tools ALTER COLUMN endpoint DROP DEFAULT;
+--
+-- db/migrate.py's CREATE TABLE has been updated to match production, so a fresh
+-- environment gets NOT NULL + the check and no default from the start.

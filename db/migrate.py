@@ -22,12 +22,28 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"]  # required from env; never hardcode (
 
 # ── DDL ───────────────────────────────────────────────────────────────────────
 
+# `tools` is an OVERRIDE LAYER, not a mirror of the live surface (AGE-114).
+# registry.py is the source of truth for which tools EXIST; a Supabase row only
+# overrides fields for a tool that already exists there, and gateway/main.py
+# appends any seed tool missing from this table. As of 2026-08-09 that means 14
+# rows for 20 live tools — url_reader, web_search, market_snapshot and all three
+# PAID tools (session_create, verified_route, pre_trade_check) have no row here
+# and are served entirely from the seed. Consequence worth remembering: an audit
+# that reads only this table sees two thirds of the surface, which is exactly
+# the blind spot that let AGE-107 ship. Audit /tools, not `tools`.
+#
+# `endpoint` is NOT NULL + non-blank and carries NO default, deliberately: a
+# blank endpoint makes a tool unaddressable (session_create is served at
+# /v1/session/create, not /tools/<name>/call, so a client cannot guess the path
+# — see db/migrations/tools_endpoint_not_blank.sql). A row that omits it must
+# fail loudly rather than default to '' and disappear into discovery.
 TOOLS_DDL = """
 CREATE TABLE IF NOT EXISTS tools (
     id              SERIAL PRIMARY KEY,
     name            TEXT UNIQUE NOT NULL,
     description     TEXT        DEFAULT '',
-    endpoint        TEXT        DEFAULT '',
+    endpoint        TEXT        NOT NULL
+                    CONSTRAINT tools_endpoint_not_blank CHECK (endpoint <> ''),
     price_usdc      TEXT        DEFAULT '0',
     developer_address TEXT      DEFAULT '',
     parameters      JSONB       DEFAULT '{}'::jsonb,
