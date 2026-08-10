@@ -236,7 +236,7 @@ Confirm the payment independently on the Hiro API — no repo access required:
 $ curl -s https://api.testnet.hiro.so/extended/v1/tx/0x<txid> | \
     python3 -c "import sys,json; d=json.load(sys.stdin); \
     print(d['tx_status'], d['contract_call']['contract_id'], d['contract_call']['function_name'])"
-success ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token transfer
+success SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token transfer
 ```
 
 ## Verified on-chain
@@ -250,7 +250,10 @@ Confirmed budget-capped sBTC settlements on Stacks testnet — both
   — the reproduction run above (block 4054292).
 
 > **Note:** the public Stacks testnet is periodically reset (wiped to block 0),
-> which erases historical transactions. Archived Hiro API records of the
+> which erases historical transactions. The August 2026 reset moved the chain to
+> PoX-5 with a new official sBTC deployment (`SN3VMHXEN…F4J8F1.sbtc-token`,
+> reflected above); while Hiro's DNS migration is in flight the PoX-5 API is
+> reachable at `api.testnet-pox5.hiro.so`. Archived Hiro API records of the
 > settlements above are preserved in [`docs/proofs/`](proofs/); fresh
 > settlements can be produced on request at any time by re-running the demo.
 
