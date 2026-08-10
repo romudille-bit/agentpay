@@ -28,10 +28,11 @@ cap costs nothing and moves no value.
 ### 1. Install
 
 ```bash
-pip install agentpay
+pip install agentpay-x402
 ```
 
-The public entry point is `agentpay.Session`, wrapping an `AgentWallet`.
+The PyPI package is **`agentpay-x402`**; the import name is `agentpay`. The
+public entry point is `agentpay.Session`, wrapping an `AgentWallet`.
 
 ### 2. Fund a testnet payer
 
@@ -58,6 +59,10 @@ The payer's Stacks private key stays in your environment and is never committed:
 export STACKS_AGENT_KEY=<funded payer Stacks private key>
 python examples/stacks_m1_demo.py
 ```
+
+The raw-key-in-env pattern is scoped to a disposable **testnet** payer. Mainnet
+key handling (M2) will not read a raw private key from the environment; never
+reuse a testnet key on mainnet.
 
 Minimal programmatic usage:
 
@@ -158,6 +163,15 @@ gateway can route through it; if the facilitator has an outage or is not configu
 settlement **degrades gracefully to direct Hiro broadcast** of the same signed
 transaction. A young facilitator being down therefore does not fail the payment path
 or the milestone — it removes a convenience layer, not the settlement itself.
+
+**The enforced bound is on signed sats, not gateway-asserted USD.** Budget
+checks compare against the USD amount the gateway asserts in the `402`. What the
+client enforces regardless of gateway honesty is a bound on the transaction it
+signs: `signed_sats ≤ cap_usd` converted at a BTC/USD floor rate of $10,000
+(`STACKS_MIN_BTC_USD`), plus a small tolerance. A gateway lying about the
+exchange rate can therefore overcharge at most `cap_usd / 10,000` in BTC — at
+the demo's $0.05 cap, ~500 sats worst case (roughly 12x at current BTC prices),
+bounded and known before signing. No quoted rate can extract more than that.
 
 **STX is required for fees.** The payer must hold testnet STX to cover the
 transaction fee, in addition to the sBTC being transferred. A sponsored-relay

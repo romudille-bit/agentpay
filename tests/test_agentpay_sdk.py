@@ -1067,8 +1067,8 @@ class TestPerToolCapWouldExceed:
 
 
 class TestBudgetPromptCtrlC:
-    """AGE-74 #3: Ctrl-C at the attended budget prompt must NOT silently
-    authorize the default cap — it re-raises."""
+    """AGE-74 #3 / AGE-120: Ctrl-C or EOF at the attended budget prompt must
+    NOT silently authorize the default cap — both re-raise."""
 
     def test_keyboardinterrupt_reraises(self, monkeypatch):
         import sys as _sys
@@ -1079,6 +1079,17 @@ class TestBudgetPromptCtrlC:
             raise KeyboardInterrupt()
         monkeypatch.setattr(builtins, "input", _boom)
         with pytest.raises(KeyboardInterrupt):
+            budget_policy(interactive=True, usdc_balance=1.00)
+
+    def test_eof_reraises(self, monkeypatch):
+        import sys as _sys
+        import builtins
+        from agentpay.budget_policy import budget_policy
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        def _eof(*a, **k):
+            raise EOFError()
+        monkeypatch.setattr(builtins, "input", _eof)
+        with pytest.raises(EOFError):
             budget_policy(interactive=True, usdc_balance=1.00)
 
 

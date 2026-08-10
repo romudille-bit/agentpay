@@ -602,9 +602,10 @@ def assert_sats_within_cap(amount_sats: int, amount_usd, btc_usd_rate=None) -> N
     """Refuse to sign a sats amount the USD cap doesn't bound.
 
     The cap is enforced in USD, but amount_sats is what leaves the wallet.
-    Two guards, no I/O: a floor-rate ceiling (STACKS_MIN_BTC_USD, default $10k)
-    that holds even without a quoted rate, and a tolerance check against
-    btc_usd_rate when present (STACKS_SATS_TOLERANCE, default 2%, min 2 sats).
+    Two guards, no I/O: a floor-rate ceiling (STACKS_MIN_BTC_USD ≥ $10k; env
+    can only raise it) that holds even without a quoted rate, and a tolerance
+    check against btc_usd_rate when present (STACKS_SATS_TOLERANCE ≤ 2%, min
+    2 sats; env can only shrink it).
     Raises ValueError otherwise.
     """
     import os
@@ -613,7 +614,8 @@ def assert_sats_within_cap(amount_sats: int, amount_usd, btc_usd_rate=None) -> N
     usd = Decimal(str(amount_usd))
     if usd < 0:
         raise ValueError("amount_usd must be non-negative")
-    floor = Decimal(os.environ.get("STACKS_MIN_BTC_USD", "10000"))
+    # Tighten-only: env may raise the floor, never lower it (AGE-119).
+    floor = max(Decimal(os.environ.get("STACKS_MIN_BTC_USD", "10000")), Decimal("10000"))
     max_sats = sats_from_usd(usd, floor)          # cheapest BTC => most sats/$
     if amount_sats > max_sats:
         raise ValueError(
@@ -625,7 +627,8 @@ def assert_sats_within_cap(amount_sats: int, amount_usd, btc_usd_rate=None) -> N
         if rate <= 0:
             raise ValueError(f"402 quotes a non-positive BTC/USD rate ({rate})")
         expected = sats_from_usd(usd, rate)
-        tol = Decimal(os.environ.get("STACKS_SATS_TOLERANCE", "0.02"))
+        # Tighten-only: env may shrink the tolerance, never widen it (AGE-119).
+        tol = min(Decimal(os.environ.get("STACKS_SATS_TOLERANCE", "0.02")), Decimal("0.02"))
         slack = max(Decimal(expected) * tol, Decimal(2))
         if abs(Decimal(amount_sats) - Decimal(expected)) > slack:
             raise ValueError(

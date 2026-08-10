@@ -49,3 +49,18 @@ def test_env_floor_override(monkeypatch):
     assert_sats_within_cap(20, "0.01", None)
     with pytest.raises(ValueError):
         assert_sats_within_cap(21, "0.01", None)
+
+
+def test_env_cannot_soften_floor(monkeypatch):
+    # AGE-119: a low env floor must not widen the ceiling past the $10k default.
+    monkeypatch.setenv("STACKS_MIN_BTC_USD", "100")
+    with pytest.raises(ValueError):
+        assert_sats_within_cap(101, "0.01", None)  # $10k floor still binds
+
+
+def test_env_cannot_widen_tolerance(monkeypatch):
+    # AGE-119: a huge env tolerance must not let inconsistent sats through.
+    monkeypatch.setenv("STACKS_SATS_TOLERANCE", "10")
+    expected = _consistent("0.01")
+    with pytest.raises(ValueError):
+        assert_sats_within_cap(expected * 3, "0.01", RATE)

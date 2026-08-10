@@ -166,9 +166,10 @@ def budget_policy(
             try:
                 entry = input(f"  {prompt} [${suggested}]: ").strip().lstrip("$")
             except EOFError:
-                # No input stream (piped/closed) — accept the suggested default.
-                entry = ""
-                break
+                # AGE-120: a closed stdin is "stop", not "authorize the default
+                # cap" — same contract as Ctrl-C below.
+                print()
+                raise
             except KeyboardInterrupt:
                 # AGE-74: Ctrl-C is an explicit "stop", NOT "authorize the
                 # default cap". Re-raise so the agent doesn't silently proceed
