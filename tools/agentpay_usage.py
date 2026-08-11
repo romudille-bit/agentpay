@@ -200,11 +200,48 @@ def main():
     rest    = real if keep_scanner else [r for r in real if not _is_scanner(r.get("user_agent"))]
     crawler = [r for r in rest if _is_crawler(r.get("user_agent"))]
     non_crawl = [r for r in rest if not _is_crawler(r.get("user_agent"))]
+
+    # Wallets that ever truly settled a paid tool are proven customers, and a bare
+    # `node`/httpx User-Agent must not demote them. Compute the paying-wallet set
+    # up front and promote ALL their rows out of the generic bucket into "likely
+    # real" — the mirror image of the bot-wallet rule below (a wallet that pays is
+    # real on every row, incl. its generic-/NULL-UA legs). Without this a genuine
+    # buyer on a default runtime UA is filed under "generic → 0% convert" and never
+    # counted as revenue: 0xFe21a68f (Aug 8, 3× $0.01) and 0x72F6d77a (Aug 10,
+    # 2× $0.01) both settled real paid calls on a bare `node` UA and were silently
+    # lost this way. The wallet + an on-chain settle is the reliable signal; the
+    # UA is not. Bot/scanner wallets are resolved FIRST so a prober paying $0.01 to
+    # verify us is never promoted as demand.
+    bot_wallets = {
+        (r.get("agent_address") or "").lower()
+        for r in real
+        if r.get("agent_address")
+        and (_is_crawler(r.get("user_agent")) or _is_scanner(r.get("user_agent")))
+    }
+    bot_wallets.discard("")
+    paying_wallets = {
+        (r.get("agent_address") or "").lower()
+        for r in non_crawl
+        if r.get("agent_address")
+        and r.get("tool_name") in PAID_TOOLS
+        and r.get("state") in ("payment_done", "verified")
+        and (r.get("agent_address") or "").lower() not in bot_wallets
+    }
+    paying_wallets.discard("")
+
+    def _is_paying_wallet(r):
+        return (r.get("agent_address") or "").lower() in paying_wallets
+
     # Bare runtimes (node/deno/httpx/…) are unattributed, not confirmed buyers —
-    # keep them out of "likely real". --with-generic folds them back in.
+    # keep them out of "likely real" UNLESS the wallet has actually paid.
+    # --with-generic folds the rest back in.
     keep_generic = "--with-generic" in sys.argv
-    generic = [] if keep_generic else [r for r in non_crawl if _is_generic_runtime(r.get("user_agent"))]
-    human   = non_crawl if keep_generic else [r for r in non_crawl if not _is_generic_runtime(r.get("user_agent"))]
+    generic = [] if keep_generic else [r for r in non_crawl
+                                       if _is_generic_runtime(r.get("user_agent"))
+                                       and not _is_paying_wallet(r)]
+    human   = non_crawl if keep_generic else [r for r in non_crawl
+                                              if not _is_generic_runtime(r.get("user_agent"))
+                                              or _is_paying_wallet(r)]
 
     print(f"\n  AgentPay usage — last {days} day(s)  (since {since_iso})")
     print(f"  {'(including our own test traffic)' if include_self else '(real traffic only — self wallets excluded)'}")
@@ -233,14 +270,8 @@ def main():
     # booked as a "paying customer" on a NULL-UA session_create while its
     # pre_trade_check row read 'TrustprobeBot/1.0 (deep-probe)' — a peer trust
     # prober paying $0.01 to verify we deliver, not a buyer. Classify the WALLET.
-    bot_wallets = {
-        (r.get("agent_address") or "").lower()
-        for r in real
-        if r.get("agent_address")
-        and (_is_crawler(r.get("user_agent")) or _is_scanner(r.get("user_agent")))
-    }
-    bot_wallets.discard("")
-
+    # (`bot_wallets` is computed above, before the generic-bucket promotion, so
+    # both rules see the same wallet-level classification.)
     def _is_bot_wallet(r):
         return (r.get("agent_address") or "").lower() in bot_wallets
 
