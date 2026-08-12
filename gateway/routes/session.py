@@ -242,9 +242,18 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
     content = {
         "error":       "Payment required",
         "x402Version": 2,
+        # AGE-123: resource-info block mirrored into the BODY (trust validators
+        # parse the body, not the base64 header — header-only scored
+        # `envelope:missing-resource-info` on 793/793 fuchss probes). Shared
+        # builder with the header; present even when Base isn't configured.
+        "resource":    base_pay.build_resource_block(
+            resource_url, _SESSION_DESCRIPTION, _SESSION_BAZAAR_RESOURCE,
+        ),
         # Standard x402 accepts[] in the BODY (not just the PAYMENT-REQUIRED
         # header) so generic payers find the Base path — GitHub issue #1.
         "accepts":     [accepts_entry] if accepts_entry else [],
+        # AGE-123: extensions.bazaar mirrored for body/header parity (additive).
+        "extensions":  {"bazaar": _SESSION_BAZAAR_EXTENSION},
     }
 
     if base_option:

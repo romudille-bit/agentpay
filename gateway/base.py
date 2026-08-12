@@ -199,6 +199,45 @@ def build_accepts_entry(
     return entry
 
 
+def build_resource_block(
+    resource_url: str,
+    tool_description: str = "",
+    bazaar_resource: dict | None = None,
+) -> dict:
+    """
+    Build the x402 `resource` info block: {url, description, mimeType} plus
+    serviceName/tags (and the canonical-URL override) from `bazaar_resource`.
+
+    AGE-123: this is the ONE shared builder for the resource block. It feeds
+    BOTH the base64 PAYMENT-REQUIRED header (build_payment_required_header)
+    AND the 402 JSON body at every challenge emission point. Trust validators
+    (x402.fuchss.app) parse the BODY — for 30 days every probe was flagged
+    `envelope:missing-resource-info` (0/793 envelope-valid → specCompliance 30
+    → grade C "avoid") because the block lived only inside the header. Third
+    bug in the header/body dialect-drift family (AGE-48, AGE-112): body and
+    header MUST come from this one function so they can't drift again.
+    """
+    resource_block = {
+        "url":         resource_url,
+        "description": tool_description,
+        "mimeType":    "application/json",
+    }
+    if bazaar_resource:
+        # serviceName + tags inline on the resource (Bazaar reads these on the
+        # live 402); keep our richer description if the bazaar copy has one.
+        if bazaar_resource.get("serviceName"):
+            resource_block["serviceName"] = bazaar_resource["serviceName"]
+        if bazaar_resource.get("tags"):
+            resource_block["tags"] = bazaar_resource["tags"]
+        if bazaar_resource.get("description"):
+            resource_block["description"] = bazaar_resource["description"]
+        # AGE-112: a tool payable on more than one path declares ONE canonical
+        # resource, so every settle refreshes the same Bazaar record.
+        if bazaar_resource.get("url"):
+            resource_block["url"] = bazaar_resource["url"]
+    return resource_block
+
+
 def build_payment_required_header(
     requirements: dict,
     resource_url: str,
@@ -229,24 +268,9 @@ def build_payment_required_header(
     if output_schema is not None:
         accepts_entry["outputSchema"] = output_schema
 
-    resource_block = {
-        "url":         resource_url,
-        "description": tool_description,
-        "mimeType":    "application/json",
-    }
-    if bazaar_resource:
-        # serviceName + tags inline on the resource (Bazaar reads these on the
-        # live 402); keep our richer description if the bazaar copy has one.
-        if bazaar_resource.get("serviceName"):
-            resource_block["serviceName"] = bazaar_resource["serviceName"]
-        if bazaar_resource.get("tags"):
-            resource_block["tags"] = bazaar_resource["tags"]
-        if bazaar_resource.get("description"):
-            resource_block["description"] = bazaar_resource["description"]
-        # AGE-112: a tool payable on more than one path declares ONE canonical
-        # resource, so every settle refreshes the same Bazaar record.
-        if bazaar_resource.get("url"):
-            resource_block["url"] = bazaar_resource["url"]
+    resource_block = build_resource_block(
+        resource_url, tool_description, bazaar_resource,
+    )
 
     payload = {
         "x402Version": 2,

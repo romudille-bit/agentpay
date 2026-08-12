@@ -818,9 +818,21 @@ async def _issue_402(
     if payment_required_header:
         headers["PAYMENT-REQUIRED"] = payment_required_header
 
+    # AGE-123: mirror the resource-info block into the 402 JSON BODY. Trust
+    # validators (x402.fuchss.app) parse the body, not the base64 header —
+    # header-only left every probe flagged `envelope:missing-resource-info`
+    # (specCompliance 30 → grade C "avoid"). Shared builder = can't drift from
+    # the header; built independently of Base config so Stellar-only 402s are
+    # envelope-compliant too.
+    bz = _bazaar_for(tool.name)
+    resource_block = base_pay.build_resource_block(
+        resource_url, tool.description, bz.get("resource"),
+    )
+
     body_content = {
         "error":       "Payment required",
         "x402Version": 2,
+        "resource":    resource_block,
         # Standard x402 accepts[] in the BODY (not just the PAYMENT-REQUIRED
         # header) so generic payers find the Base path — GitHub issue #1.
         "accepts":     [accepts_entry] if accepts_entry else [],
@@ -855,6 +867,10 @@ async def _issue_402(
             **({"stacks": stacks_option} if stacks_option else {}),
         },
     }
+    # AGE-123: mirror extensions.bazaar into the body too (header parity) —
+    # additive; validators/indexers that read the body see the same envelope.
+    if bz.get("extension"):
+        body_content["extensions"] = {"bazaar": bz["extension"]}
 
     return JSONResponse(status_code=402, content=body_content, headers=headers)
 
