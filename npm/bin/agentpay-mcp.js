@@ -51,7 +51,7 @@ import { privateKeyToAddress, buildPaymentSignature } from './eip3009.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.4.1';
+const VERSION = '2.4.3';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.romudille-bit/agentpay",
+  "description": "Economic intelligence for AI agents: budget-capped x402 tool calls with verifiable receipts, 17 free crypto/data tools, and verified_route buyer-side trust routing across the x402 marketplace.",
+  "repository": {
+    "url": "https://github.com/romudille-bit/agentpay",
+    "source": "github"
+  },
+  "websiteUrl": "https://agentpay.tools",
+  "version": "2.4.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@romudille/agentpay-mcp",
+      "version": "2.4.3",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AGENTPAY_BASE_KEY",
+          "description": "Optional EVM private key for wallet mode: settle paid tools in-place (gasless EIP-3009 on Base). Keyless free-tools mode works without it.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "AGENTPAY_MAX_SPEND",
+          "description": "Hard per-session spend cap in USD when wallet mode is enabled (default 0.10).",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
