@@ -216,6 +216,108 @@ class TestPendingChallenges:
         # request_data is jsonb — passed as a dict, not a string
         assert captured["body"]["request_data"] == {"symbol": "ETH"}
 
+    # ── AGE-122: the mirror write retries once and reports honestly ────────
+
+    @staticmethod
+    def _challenge_kwargs(**over):
+        kw = dict(
+            payment_id="retry-uuid",
+            tool_name="verified_route",
+            amount_usdc="0.01",
+            gateway_address="GTEST",
+            developer_address="",
+            expires_at=time.time() + 120,
+            request_data={},
+        )
+        kw.update(over)
+        return kw
+
+    @pytest.mark.asyncio
+    async def test_store_challenge_retries_once_after_timeout(self, monkeypatch, caplog):
+        """AGE-122 shape: first attempt times out (the observed prod failure
+        mode), the retry lands. No ERROR/WARNING, one INFO noting the retry."""
+        import gateway.services.supabase as sb_module
+        monkeypatch.setattr(sb_module, "_CHALLENGE_RETRY_DELAY", 0)
+        calls = {"n": 0}
+
+        def flaky(request):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ReadTimeout("timed out")
+            return httpx.Response(201)
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/pending_challenges").mock(side_effect=flaky)
+            with caplog.at_level("INFO"):
+                await store_pending_challenge(**self._challenge_kwargs())
+
+        assert calls["n"] == 2
+        assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")]
+        assert any("succeeded on retry" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_store_challenge_both_attempts_fail_warns_with_blast_radius(self, monkeypatch, caplog):
+        """Final failure is a WARNING (not ERROR) and states what is actually
+        lost — the durable mirror — so log readers don't treat it as an
+        incident (AGE-122's original confusion)."""
+        import gateway.services.supabase as sb_module
+        monkeypatch.setattr(sb_module, "_CHALLENGE_RETRY_DELAY", 0)
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/pending_challenges").mock(
+                side_effect=httpx.ConnectError("boom")
+            )
+            with caplog.at_level("INFO"):
+                await store_pending_challenge(**self._challenge_kwargs())
+
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "after 2 attempts" in warnings[0].message
+        assert "settleable in-memory" in warnings[0].message
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    @pytest.mark.asyncio
+    async def test_store_challenge_409_duplicate_is_success(self, monkeypatch, caplog):
+        """A 409 means the first attempt landed and only the response was
+        lost — the mirror EXISTS. Must not retry-loop or log a failure."""
+        import gateway.services.supabase as sb_module
+        monkeypatch.setattr(sb_module, "_CHALLENGE_RETRY_DELAY", 0)
+        route_calls = {"n": 0}
+
+        def dup(request):
+            route_calls["n"] += 1
+            return httpx.Response(409, json={"code": "23505"})
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/pending_challenges").mock(side_effect=dup)
+            with caplog.at_level("INFO"):
+                await store_pending_challenge(**self._challenge_kwargs())
+
+        assert route_calls["n"] == 1
+        assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")]
+
+    @pytest.mark.asyncio
+    async def test_store_challenge_http_500_retries_then_warns(self, monkeypatch, caplog):
+        """Non-2xx/409 statuses go through the same retry-then-warn path as
+        exceptions (the old code ERROR-logged 5xx without retrying)."""
+        import gateway.services.supabase as sb_module
+        monkeypatch.setattr(sb_module, "_CHALLENGE_RETRY_DELAY", 0)
+        calls = {"n": 0}
+
+        def failing(request):
+            calls["n"] += 1
+            return httpx.Response(500, text="upstream sad")
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/pending_challenges").mock(side_effect=failing)
+            with caplog.at_level("INFO"):
+                await store_pending_challenge(**self._challenge_kwargs())
+
+        assert calls["n"] == 2
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "HTTP 500" in warnings[0].message
+
     @pytest.mark.asyncio
     async def test_get_pending_challenge_filters_expired_server_side(self):
         # The function must include `expires_at=gt.<now>` as a query param

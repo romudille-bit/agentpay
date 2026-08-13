@@ -20,6 +20,7 @@ still come from in-memory dicts. Cutover (Supabase becomes primary)
 is row 7 of the Tier 2 plan.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -37,6 +38,9 @@ logger = logging.getLogger(__name__)
 # we want to give Supabase a fair shot).
 _READ_TIMEOUT  = 3.0
 _WRITE_TIMEOUT = 5.0
+# AGE-122: single retry for the pending-challenge mirror write; short enough
+# that the fire-and-forget task stays well inside the 120s challenge TTL.
+_CHALLENGE_RETRY_DELAY = 0.5
 
 
 def sb_headers() -> dict:
@@ -320,35 +324,62 @@ async def store_pending_challenge(
     expires_at: float,
     request_data: dict,
 ) -> None:
-    """INSERT into pending_challenges. Fire-and-forget."""
+    """INSERT into pending_challenges. Fire-and-forget, with one retry.
+
+    AGE-122: prod showed ~9 single-attempt failures/day (~4-5% of paid
+    challenges), all on the exception path (timeouts), each losing the
+    durable mirror for that challenge. The in-memory dict in gateway/x402.py
+    stays primary, so a lost mirror only matters if the worker restarts
+    inside the challenge TTL — but the fix is one cheap retry, and the
+    final-failure log is now a WARNING that states the actual blast radius
+    instead of an ERROR that reads like an incident.
+    """
     if not sb_enabled():
         return
-    try:
-        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
-            resp = await client.post(
-                f"{settings.SUPABASE_URL}/rest/v1/pending_challenges",
-                headers=sb_headers(),
-                json={
-                    "payment_id":        payment_id,
-                    "tool_name":         tool_name,
-                    "amount_usdc":       amount_usdc,
-                    "gateway_address":   gateway_address,
-                    # Pass NULL (not empty string) so the column is genuinely
-                    # null in the DB for AgentPay-owned tools.
-                    "developer_address": developer_address or None,
-                    "request_data":      request_data,
-                    "expires_at":        _unix_to_iso(expires_at),
-                },
+    body = {
+        "payment_id":        payment_id,
+        "tool_name":         tool_name,
+        "amount_usdc":       amount_usdc,
+        "gateway_address":   gateway_address,
+        # Pass NULL (not empty string) so the column is genuinely
+        # null in the DB for AgentPay-owned tools.
+        "developer_address": developer_address or None,
+        "request_data":      request_data,
+        "expires_at":        _unix_to_iso(expires_at),
+    }
+    last_err = ""
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{settings.SUPABASE_URL}/rest/v1/pending_challenges",
+                    headers=sb_headers(),
+                    json=body,
+                )
+            if resp.status_code in (200, 201):
+                if attempt > 1:
+                    logger.info(
+                        f"store_pending_challenge succeeded on retry "
+                        f"(payment_id={payment_id})"
+                    )
+                return
+            if resp.status_code == 409:
+                # Duplicate key: the first attempt actually landed and only
+                # its response was lost. The mirror exists — success.
+                return
+            last_err = (
+                f"HTTP {resp.status_code} body={resp.text[:200]}"
             )
-        if resp.status_code not in (200, 201):
-            logger.error(
-                f"store_pending_challenge Supabase error: HTTP {resp.status_code} "
-                f"body={resp.text[:200]} (payment_id={payment_id})"
-            )
-    except Exception as e:
-        logger.error(
-            f"store_pending_challenge failure (payment_id={payment_id}): {e}"
-        )
+        except Exception as e:
+            last_err = repr(e)
+        if attempt == 1:
+            await asyncio.sleep(_CHALLENGE_RETRY_DELAY)
+    logger.warning(
+        f"store_pending_challenge failed after 2 attempts "
+        f"(payment_id={payment_id}): {last_err} — challenge remains "
+        f"settleable in-memory on this worker; durable mirror lost "
+        f"(matters only across a worker restart within the challenge TTL)"
+    )
 
 
 async def get_pending_challenge(payment_id: str) -> Optional[dict]:
