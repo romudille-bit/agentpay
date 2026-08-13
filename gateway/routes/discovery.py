@@ -25,6 +25,7 @@ import registry
 from gateway._limiter import limiter
 from gateway import radar
 from gateway.config import GATEWAY_URL, settings, stellar_caip2
+from gateway.guides import GUIDES, render_guide, render_guides_index
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -765,6 +766,7 @@ async def sitemap():
         (f"{GATEWAY_URL}/ledger", None),
         (f"{GATEWAY_URL}/radar", None),
         (f"{GATEWAY_URL}/privacy", None),
+        (f"{GATEWAY_URL}/guides", None),
         (f"{GATEWAY_URL}/.well-known/agentpay.json", None),
         (f"{GATEWAY_URL}/.well-known/agent.json", None),
         (f"{GATEWAY_URL}/.well-known/x402", None),
@@ -774,7 +776,9 @@ async def sitemap():
          if settings.STELLAR_NETWORK != "mainnet" else []) \
       + [(f"{GATEWAY_URL}/tools/{t.name}", None) for t in tools] \
       + [(f"{GATEWAY_URL}/s/{service_slug(u)}", _lastmod(scores[u]))
-         for u in sorted(scores)]
+         for u in sorted(scores)] \
+      + [(f"{GATEWAY_URL}/guides/{s}", g["published"])
+         for s, g in sorted(GUIDES.items())]
 
     loc_tags = "\n".join(
         f"  <url><loc>{u}</loc>" + (f"<lastmod>{lm}</lastmod>" if lm else "") + "</url>"
@@ -785,6 +789,21 @@ async def sitemap():
 {loc_tags}
 </urlset>"""
     return Response(content=xml, media_type="application/xml")
+
+
+# ── Guides — long-form technical content, server-rendered for search + answer
+# engines. Authority accrues to the domain that serves the words, so these live
+# on the gateway rather than a third-party blog. See gateway/guides.py.
+@router.get("/guides", response_class=Response)
+async def guides_index():
+    return Response(content=render_guides_index(GATEWAY_URL), media_type="text/html")
+
+
+@router.get("/guides/{slug}", response_class=Response)
+async def guide_page(slug: str):
+    if slug not in GUIDES:
+        raise HTTPException(status_code=404, detail="Guide not found")
+    return Response(content=render_guide(slug, GATEWAY_URL), media_type="text/html")
 
 
 # ── Privacy policy — required for the Anthropic Connectors Directory + plugin

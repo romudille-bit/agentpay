@@ -52,6 +52,8 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
     "https://github.com/romudille-bit/agentpay",
     "https://www.npmjs.com/package/@romudille/agentpay-mcp",
     "https://glama.ai/mcp/servers/romudille-bit/agentpay",
+    "https://pypi.org/project/agentpay-x402/",
+    "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.romudille-bit/agentpay",
     "https://x.com/romudille",
     "https://www.youtube.com/@romudille"
   ]
@@ -254,6 +256,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 1.25rem
     <li><a href="#tools">Tools</a></li>
     <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>
     <li><a href="GATEWAY_URL_PLACEHOLDER/ledger">Ledger</a></li>
+    <li><a href="GATEWAY_URL_PLACEHOLDER/guides">Guides</a></li>
     <li><a href="https://github.com/romudille-bit/agentpay">GitHub</a></li>
   </ul>
 </nav>
@@ -379,6 +382,7 @@ TOOLS_ROWS_PLACEHOLDER
   <ul>
     <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>
     <li><a href="GATEWAY_URL_PLACEHOLDER/ledger">Ledger</a></li>
+    <li><a href="GATEWAY_URL_PLACEHOLDER/guides">Guides</a></li>
     <li><a href="https://github.com/romudille-bit/agentpay">GitHub</a></li>
     <li><a href="https://x.com/romudille">X</a></li>
     <li><a href="https://www.youtube.com/@romudille">YouTube</a></li>
