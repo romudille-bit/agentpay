@@ -184,6 +184,151 @@ results are public, with receipts:</p>
 <p><a class="cta" href="GATEWAY_URL_PLACEHOLDER/probes">See the delivery scores →</a></p>
 """
 
+_BAZAAR_BODY = """
+<p class="lead">If you have listed an x402 endpoint on Coinbase Bazaar and it has sat at
+<code>processing</code> for hours or days, the cause is almost certainly not your settle
+call. Bazaar validates a resource by <strong>GETting the resource URL and reading the live
+402 response</strong> — so anything you send only in the settle payload is invisible to it.</p>
+
+<p>We spent a day stuck there. Below are the three preconditions in the order they bite, and
+then the part nobody warns you about: indexed listings decay.</p>
+
+<h2>How validation actually works</h2>
+
+<p>The mental model most people start with is "I settle a payment, the facilitator tells
+Bazaar, my listing appears." That is half of it. The listing record is created from settle,
+but promotion from <code>processing</code> to indexed comes from a <strong>crawl of your live
+endpoint</strong>. Bazaar fetches your resource URL, reads the 402 it gets back, and looks
+for the metadata describing what you sell.</p>
+
+<p>If that metadata exists only in your settle payload, every settle returns
+<code>{"bazaar": {"status": "processing"}}</code> — forever — and nothing in the response
+tells you why.</p>
+
+<h2>Three preconditions</h2>
+
+<p><strong>1. GET must return a 402.</strong> Indexers probe with GET. If your paid route is
+POST-only, a crawler gets <code>405 Method Not Allowed</code> and there is nothing to
+validate. This bites hardest on session-style endpoints where POST is the only "real" verb —
+serve the same challenge on GET without persisting anything.</p>
+
+<p><strong>2. Settlement has to go through the facilitator.</strong> If you settle directly
+against the chain over JSON-RPC, nothing tells Bazaar the payment happened.
+Facilitator-mediated settlement is what creates and refreshes the listing.</p>
+
+<p><strong>3. The live 402 must carry the Bazaar metadata.</strong> This is the one that cost
+us the day: <code>extensions.bazaar</code>, plus <code>serviceName</code> and
+<code>tags</code> on the resource block, have to be present in the 402 your endpoint actually
+serves. Every indexed listing we inspected exposes them there.</p>
+
+<pre>{
+  "x402Version": 2,
+  "accepts": [ ... ],
+  "resource": {
+    "url":         "https://your-endpoint.example/your/tool",
+    "serviceName": "What you sell",
+    "tags":        ["your", "tags"],
+    "description": "One clear sentence"
+  },
+  "extensions": {
+    "bazaar": { "info": ..., "schema": ... }
+  }
+}</pre>
+
+<p>The first two are necessary and not sufficient — we fixed both and stayed stuck. Indexing
+fired within minutes of the first settle after the third landed.</p>
+
+<h2>Two things that are not the problem</h2>
+
+<p><strong>A custom domain is not required.</strong> Plenty of indexed listings run on
+platform subdomains and proxy hosts. If you are about to buy a domain to fix an indexing
+problem, don't.</p>
+
+<p><strong>Multi-chain support is not required either</strong> — but know how it is read.
+Bazaar looks at the x402 <code>accepts</code> array. Payment options you expose elsewhere in
+the JSON body are invisible to it, so a listing can be entirely correct and still show as
+single-chain.</p>
+
+<h2>The part nobody warns you about: listings decay</h2>
+
+<p>Being indexed is not a permanent state. Bazaar re-reads your live 402 at <strong>settle
+time</strong>, so a listing without recurring paid traffic goes stale and drops out of search
+results.</p>
+
+<p>We measured it across 22 buyer queries against our own listings:</p>
+
+<table>
+<thead><tr><th>date</th><th>terms matched</th><th>what happened</th></tr></thead>
+<tbody>
+<tr><td>Aug 6</td><td>8 / 22</td><td>after a one-off manual re-index</td></tr>
+<tr><td>Aug 9</td><td>5 / 22</td><td>decayed — one endpoint gone entirely</td></tr>
+<tr><td>Aug 10</td><td>—</td><td>a single $0.01 settle</td></tr>
+<tr><td>Aug 11</td><td>7 long-tail terms</td><td>recovered, wider than before</td></tr>
+</tbody>
+</table>
+
+<p>The pattern across our three listings: one settle followed by silence meant gone within
+about three days, while endpoints taking one to three settles a day never decayed at all. If
+your listing has organic paid traffic you will never notice this. If it does not, you are
+indexed for a few days after each manual re-index and invisible in between — and nothing in
+the UI tells you which state you are in.</p>
+
+<h2>A keepalive that costs nothing in steady state</h2>
+
+<p>The naive fix is a scheduled settle. Don't — you would be paying for a re-index you
+usually don't need, on a cadence you cannot validate. <strong>Check first, pay only if
+absent:</strong></p>
+
+<pre>search Bazaar for your brand term        (free)
+  ├─ your resource URL present?  → done, spend $0.00
+  └─ absent?                     → settle one real call, re-index</pre>
+
+<p>Ours runs once a day inside a job that already existed. Steady state costs nothing, and
+the fire rate becomes a free ongoing measurement of the decay rate itself.</p>
+
+<p>Three rules worth copying, each learned by nearly getting it wrong:</p>
+<ul>
+<li><strong>Fail closed.</strong> A search error must mean "no spend", never "assume missing and pay".</li>
+<li><strong>Treat an empty result as implausible, not as absent.</strong> A brand-term query
+returning zero rows is far more likely to be an API blip than genuine de-indexing.</li>
+<li><strong>Query your brand term, not head terms.</strong> Head terms miss for ranking
+reasons that have nothing to do with whether you are indexed — you would be paying to fix a
+problem you don't have.</li>
+</ul>
+
+<h2>Ranking is a different problem from indexing</h2>
+
+<p>Once indexed, the instinct is to widen <code>serviceName</code> and tags to catch broad
+queries. We ran that experiment across 22 queries and it does not work: broad head terms went
+from 0/9 to 1/9 after renaming all three listings, while precise compound terms matched
+reliably. Keyword-stuffed names are also the exact pattern trust scorers penalise. Own the
+narrow terms that describe what you actually do.</p>
+
+<p class="note">Measurement footgun, if you build a checker: when a tool is payable on more
+than one path, the listed URL may not be the canonical one you would guess. Match with path
+tolerance. An exact-match checker will report that you have been de-indexed while you are
+sitting in the results — it cost us an afternoon of false alarm.</p>
+
+<h2>The short version</h2>
+<ul>
+<li>Serve a 402 on GET, settle through the facilitator, and put <code>extensions.bazaar</code>,
+<code>serviceName</code> and <code>tags</code> in the <em>live</em> 402.</li>
+<li>Assume your listing decays without recurring settles. Check presence on a schedule; pay
+only when you are actually missing.</li>
+<li>Don't buy a domain, don't stuff your tags, and don't trust an exact-URL match to tell you
+whether you are listed.</li>
+</ul>
+
+<p>Related: <a href="GATEWAY_URL_PLACEHOLDER/guides/x402-trust-scores">the envelope bug that
+quietly tanks your trust score</a> — the same class of problem, where the copy of your
+metadata that machines read is not the one you were watching.</p>
+
+<p>We publish delivery scores for x402 endpoints — settle-and-verify runs, with receipts:</p>
+
+<p><a class="cta" href="GATEWAY_URL_PLACEHOLDER/probes">See the delivery scores →</a></p>
+"""
+
+
 GUIDES: dict[str, dict] = {
     "x402-trust-scores": {
         "title": "The x402 envelope bug that quietly tanks your trust score",
@@ -200,6 +345,22 @@ GUIDES: dict[str, dict] = {
         "keywords": "x402 trust score, x402 envelope compliance, 402 payment required, "
                     "x402 endpoint validation, agent payments",
         "body": _X402_TRUST_BODY,
+    },
+    "bazaar-listing-processing": {
+        "title": "Why your x402 listing is stuck in 'processing'",
+        "description": (
+            "Coinbase Bazaar validates by GETting your resource URL and reading the live 402 "
+            "— not your settle payload. Plus why indexed listings quietly decay."
+        ),
+        "blurb": (
+            "The validation crawl reads your live 402, not your settle call. The three "
+            "preconditions in the order they bite, measured decay data, and a keepalive that "
+            "costs $0.00 in steady state."
+        ),
+        "published": "2026-08-13",
+        "keywords": "coinbase bazaar indexing, x402 listing processing, bazaar discovery, "
+                    "x402 seller, agent marketplace listing",
+        "body": _BAZAAR_BODY,
     },
 }
 
