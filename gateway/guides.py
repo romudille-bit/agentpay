@@ -268,10 +268,38 @@ results.</p>
 </table>
 
 <p>The pattern across our three listings: one settle followed by silence meant gone within
-about three days, while endpoints taking one to three settles a day never decayed at all. If
+about three days, while endpoints taking one to three settles a day never decayed at all.
+That difference is what makes decay the explanation rather than a platform-side change in the
+same window — in those three days the two endpoints with organic settles stayed indexed while
+the one without dropped. The drop tracked settle cadence, not the calendar. If
 your listing has organic paid traffic you will never notice this. If it does not, you are
 indexed for a few days after each manual re-index and invisible in between — and nothing in
 the UI tells you which state you are in.</p>
+
+<h2>Before you conclude you decayed, check the filter</h2>
+
+<p>Since early August 2026 there is a second reason a listing can vanish from search, and it
+has nothing to do with decay. Bazaar's index has a curated subset, and a <code>curatedOnly</code>
+parameter decides whether a query returns everything or only that subset. A provider can be
+fully indexed and still return zero results on a client that defaults to curated-only —
+indistinguishable, from the outside, from being de-indexed.</p>
+
+<p>Two requests, seconds apart, tell the two apart:</p>
+
+<pre>GET .../discovery/search?query=&lt;your brand&gt;
+GET .../discovery/search?query=&lt;your brand&gt;&amp;curatedOnly=true</pre>
+
+<p>Present in the first and absent from the second means you are indexed but not curated. No
+amount of settling will change that — it is not a decay problem, and paying to "refresh" would
+be money spent on something payment cannot fix. (We are in exactly that position, and the
+criteria for curation are an open question in
+<a href="https://github.com/x402-foundation/x402/issues/3136">x402-foundation/x402#3136</a>.)</p>
+
+<p>This matters for the keepalive below too: <strong>the surface your presence check queries
+has to be the surface your buyers query.</strong> Ours reads the REST endpoint, which still
+defaults to unfiltered — so it reported us indexed and healthy throughout, while a buyer on a
+curated-by-default client would have seen nothing at all. Measure what your customer sees, not
+what is convenient to query.</p>
 
 <h2>A keepalive that costs nothing in steady state</h2>
 

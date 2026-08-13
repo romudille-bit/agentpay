@@ -372,9 +372,13 @@ grant is demonstrated live on testnet:
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
 | [skills CLI](https://github.com/vercel-labs/skills) | ✅ `npx skills add romudille-bit/agentpay` |
 | [402index.io](https://402index.io) | ✅ domain verified, 17 tools synced |
-| Coinbase Bazaar | ✅ indexed — `session_create`, `pre_trade_check`, `verified_route` (Base) |
+| Coinbase Bazaar | ✅ indexed via REST — `session_create`, `pre_trade_check`, `verified_route` (Base). ⚠️ NOT in the curated set: invisible on the MCP `search_resources` default (AGE-125) |
 | Claude Code plugin | ✅ `/plugin marketplace add romudille-bit/agentpay` |
-| [xpay.tools](https://xpay.tools) | 🔜 submission in progress |
+| [MCP Registry](https://registry.modelcontextprotocol.io) | ✅ `io.github.romudille-bit/agentpay` v2.4.3 (official) |
+| [402audit](https://402audit.com) | ✅ audited — score 100, verdict "proprietary" |
+| [signal402](https://signal402.com) | ✅ auto-indexed from Bazaar (6h refresh) |
+| [x402.fuchss.app](https://x402.fuchss.app/provider/agentpay.tools) | ✅ listed — grade recovering post-AGE-123 |
+| ~~xpay.tools~~ | dropped — redundant with Bazaar (SPA mirror) |
 
 **Agent-readable endpoints:**
 
