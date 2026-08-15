@@ -244,10 +244,11 @@ success SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token transfer
 Confirmed budget-capped sBTC settlements on Stacks testnet — both
 `sbtc-token::transfer`, payer → gateway, status `success`:
 
-- [`0x63e9e9b8…`](https://explorer.hiro.so/txid/0x63e9e9b8e14b742173e87a235b0e2f4657094a5520a8f928d0d01d7c1e7d7287?chain=testnet)
-  — first confirmed settlement.
-- [`0x90e8a7c5…`](https://explorer.hiro.so/txid/0x90e8a7c56a0e5b3752f7bca449c93549b2be878409497204a8345d479cd8e86e?chain=testnet)
-  — the reproduction run above (block 4054292).
+- [`0xa5351bad…`](https://explorer.hiro.so/txid/0xa5351bad31ed6bbcb57c0f9fcbcd997cc203b7011d62666176452edaed2d8c87?chain=testnet)
+  — current PoX-5 chain, block 82215 (15 Aug 2026) — resolves live.
+- `0x63e9e9b8…` — first confirmed settlement (26 Jul 2026, pre-reset chain;
+  archived record in [`proofs/`](proofs/)).
+- `0x90e8a7c5…` — reproduction run (29 Jul 2026, pre-reset chain; archived).
 
 > **Note:** the public Stacks testnet is periodically reset (wiped to block 0),
 > which erases historical transactions. The August 2026 reset moved the chain to
