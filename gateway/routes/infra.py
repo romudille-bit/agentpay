@@ -6,6 +6,7 @@ routes/infra.py — Basic gateway-status endpoints.
   GET /stats         — pending payments + recent transaction tail
 """
 
+import os
 import base64
 from pathlib import Path
 
@@ -162,6 +163,8 @@ async def health():
         "network": settings.STELLAR_NETWORK,
         "gateway_address": settings.GATEWAY_PUBLIC_KEY or "NOT_CONFIGURED",
         "pending_payments": get_pending_count(),
+        # Railway injects the built commit; local runs report "dev".
+        "commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "dev")[:12],
     }
 
 
