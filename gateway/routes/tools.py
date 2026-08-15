@@ -850,13 +850,24 @@ async def _issue_402(
         ),
         # Structured options for multi-chain clients
         "payment_options": {
+            # AGE-128: scheme named + noted honestly — classic Stellar payment
+            # with a text memo verified via Horizon, NOT the standard
+            # @x402/stellar Soroban scheme. Standard @x402/stellar clients
+            # cannot pay this option; the AgentPay SDK and manual payments can.
             "stellar": {
+                "scheme":      "agentpay-classic-memo",
                 "payment_id":  challenge.payment_id,
                 "amount_usdc": challenge.amount_usdc,
                 "pay_to":      challenge.gateway_address,
                 "network":     settings.STELLAR_NETWORK,
                 "asset":       "USDC",
                 "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
+                "note": (
+                    "Classic Stellar payment + text memo (payment_id), "
+                    "verified via Horizon — not the standard @x402/stellar "
+                    "Soroban scheme. Pay with the AgentPay SDK (pip install "
+                    "agentpay-x402) or manually per instructions."
+                ),
             },
             **({"base": base_option} if base_option else {}),
             # Stacks/sBTC (AGE-23/24): present only when the gateway is

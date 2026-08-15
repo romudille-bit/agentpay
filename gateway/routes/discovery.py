@@ -348,7 +348,7 @@ async def well_known_agentpay():
         "name": "AgentPay",
         "version": "1.0",
         "tagline": "The economic-intelligence layer for AI agents — spend control, not just a wallet.",
-        "description": "The economic-intelligence layer for AI agents — hard budget caps at the payment layer, cost-aware routing before every call, and a verifiable receipt after. 17 tools free to start. USDC on Base or Stellar, no keys.",
+        "description": "The economic-intelligence layer for AI agents — hard budget caps at the payment layer, cost-aware routing before every call, and a verifiable receipt after. 17 tools free to start. USDC on Base (standard x402) or Stellar (via the AgentPay SDK), no keys.",
         "url": GATEWAY_URL,
         "payment_protocol": "x402",
         "payment_network": stellar_caip2(),
@@ -384,7 +384,7 @@ async def well_known_agent():
     paid_tools  = [t for t in tools if float(t.price_usdc) > 0]
     return {
         "name":        "AgentPay",
-        "description": "The economic-intelligence layer for AI agents — agents price a plan before spending, route to the cheapest tool that works, and stay under a hard budget cap, with a verifiable receipt after. 17 tools free to start. USDC on Base or Stellar, no keys.",
+        "description": "The economic-intelligence layer for AI agents — agents price a plan before spending, route to the cheapest tool that works, and stay under a hard budget cap, with a verifiable receipt after. 17 tools free to start. USDC on Base (standard x402) or Stellar (via the AgentPay SDK), no keys.",
         "url":         GATEWAY_URL,
         "version":     "1.0",
 
@@ -399,7 +399,7 @@ async def well_known_agent():
         "onboarding": {
             "register":         f"{GATEWAY_URL}/v1/agent/register",
             "register_cost":    "0",
-            "register_network": "stellar (free-tier identity; pay with your own funded wallet on Stellar or Base)",
+            "register_network": "stellar (free-tier identity; pay with your own funded wallet on Base — standard x402 — or Stellar via the AgentPay SDK)",
             "discover_tools":   f"{GATEWAY_URL}/tools",
             "call_tool":        f"{GATEWAY_URL}/tools/{{name}}/call",
             "paid_session":     f"{GATEWAY_URL}/v1/session/create",
@@ -455,7 +455,7 @@ async def well_known_l402_services():
     return {
         "version": "0.2.0",
         "name": "AgentPay",
-        "description": "The economic-intelligence layer for AI agents — budget-capped tool calls with a verifiable receipt on every call. 17 tools free to start. USDC on Base or Stellar, no keys.",
+        "description": "The economic-intelligence layer for AI agents — budget-capped tool calls with a verifiable receipt on every call. 17 tools free to start. USDC on Base (standard x402) or Stellar (via the AgentPay SDK), no keys.",
         "homepage": GATEWAY_URL,
         "protocol": "x402",
         "protocols": ["x402"],
@@ -493,23 +493,38 @@ async def well_known_x402():
         "x402Version": 1,
         "gateway": GATEWAY_URL,
         "name": "AgentPay",
-        "description": "The economic-intelligence layer for AI agents — budget-capped x402 spending with verifiable receipts. 17 tools free to start. USDC on Base or Stellar.",
+        "description": "The economic-intelligence layer for AI agents — budget-capped x402 spending with verifiable receipts. 17 tools free to start. USDC on Base (standard x402) or Stellar (via the AgentPay SDK).",
         "accepts": [
-            {
-                "scheme": "exact",
-                "network": stellar_caip2(),
-                "asset": "USDC",
-                "assetIssuer": settings.USDC_ISSUER_MAINNET,
-                "minAmount": str(min(prices)),
-                "maxAmount": str(max(prices)),
-                "facilitator": settings.STELLAR_FACILITATOR_URL,
-            },
+            # Base IS the standard x402 `exact` scheme (EIP-3009 via the CDP
+            # facilitator) — any standard x402 client can pay here. Lead with it.
             {
                 "scheme": "exact",
                 "network": "eip155:8453",
                 "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC on Base mainnet
                 "minAmount": str(min(prices)),
                 "maxAmount": str(max(prices)),
+            },
+            # AGE-128: this entry previously claimed scheme "exact" on
+            # stellar CAIP-2 + the OZ facilitator. That was FALSE advertising:
+            # our Stellar rail is a classic payment + text memo verified via
+            # Horizon — NOT the standard @x402/stellar Soroban scheme (null-
+            # account template, signed auth entries, facilitator settlement).
+            # A standard client that trusted the old entry built a Soroban tx
+            # we could never verify. Name the scheme honestly and say how to
+            # actually pay.
+            {
+                "scheme": "agentpay-classic-memo",
+                "network": stellar_caip2(),
+                "asset": "USDC",
+                "assetIssuer": settings.USDC_ISSUER_MAINNET,
+                "minAmount": str(min(prices)),
+                "maxAmount": str(max(prices)),
+                "note": (
+                    "Classic Stellar payment + text memo (payment_id), verified "
+                    "via Horizon — not the standard @x402/stellar Soroban "
+                    "scheme. Pay with the AgentPay SDK (pip install "
+                    "agentpay-x402) or manually per the 402 instructions."
+                ),
             },
         ],
         "endpoints": [
@@ -691,7 +706,7 @@ def build_llms_txt() -> str:
 
 > The economic intelligence layer for agent spend. An agent reasons about cost — prices a plan before spending and routes to the cheapest tool that works — under a hard budget cap enforced before a dollar moves. 17 free tools to start: no API keys, no USDC, no wallet setup. Every call is session-tracked with a full receipt.
 
-AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well. An agent can onboard with zero humans and zero funding in three calls: register, discover, call. Free tools cost $0 and need no funded wallet, yet every call still produces a receipt. Paid tools (and metered inference, coming) use x402: a 402 challenge, USDC settlement, retry with proof, verified on-chain. Chain-agnostic — USDC on Stellar or Base (CCTP-bridged 1:1).
+AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well. An agent can onboard with zero humans and zero funding in three calls: register, discover, call. Free tools cost $0 and need no funded wallet, yet every call still produces a receipt. Paid tools (and metered inference, coming) use x402: a 402 challenge, USDC settlement, retry with proof, verified on-chain. USDC on Base (standard x402 `exact` scheme — any standard client can pay) or Stellar (classic payment + memo via the AgentPay SDK — not the standard @x402/stellar Soroban scheme); Circle CCTP bridges 1:1 between them.
 
 ## Onboarding (zero human, zero funding)
 
@@ -705,7 +720,7 @@ Price any multi-tool plan BEFORE spending: POST /v1/plan/estimate (free, no wall
 ## Gateway
 
 - Production: {GATEWAY_URL}
-- Chains: USDC on Stellar or Base (Base is the canonical paid chain; Stellar is supported and CCTP-bridged)
+- Chains: USDC on Base (canonical paid chain; standard x402 `exact` scheme) or Stellar (classic payment + memo via the AgentPay SDK — not the standard @x402/stellar Soroban scheme; CCTP-bridged 1:1)
 - Tools: {len(tools)} ({len([t for t in tools if float(t.price_usdc) == 0])} free)
 - Protocol: x402-v2 (HTTP 402 → pay → retry)
 - SDK: pip install agentpay-x402 — one-liner: `from agentpay import quickstart; s = quickstart(); print(s.call('token_price', {{'symbol':'ETH'}}).data['price_usd'])`  (Base support: `pip install "agentpay-x402[base]"`)
@@ -717,7 +732,7 @@ Price any multi-tool plan BEFORE spending: POST /v1/plan/estimate (free, no wall
 ## Integration
 
 POST /tools/{{name}}/call with {{parameters, agent_address}}
-On 402: free tools ($0.000) authorize without an on-chain tx; paid tools settle USDC on Stellar or Base, retry with X-Payment header.
+On 402: free tools ($0.000) authorize without an on-chain tx; paid tools settle USDC on Base (standard x402, PAYMENT-SIGNATURE header) or Stellar (AgentPay SDK / manual classic payment + memo, X-Payment header).
 Response: data is in result["result"]
 
 ## Docs

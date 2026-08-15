@@ -286,7 +286,7 @@ remain free.
 Price any plan before spending a cent (free, no wallet): `POST /v1/plan/estimate`,
 or `session.estimate_plan([...])` from the SDK.
 
-When metered inference ships, it works through the same Session interface — your agent checks cost, decides if it's worth it, and pays in USDC on Stellar or Base.
+When metered inference ships, it works through the same Session interface — your agent checks cost, decides if it's worth it, and pays in USDC on Base or Stellar (via the SDK).
 
 ```python
 # Future — inference as a Session tool
@@ -315,13 +315,27 @@ customer is the house.
 
 AgentPay is an x402 payment gateway and economic intelligence layer — agents call tools within a hard budget cap, pay USDC on-chain when tools cost money, and accumulate a full session receipt as they work. Free tools skip the payment step entirely; the session tracking and cost awareness are always on.
 
+### Chain support & x402 interop
+
+**Base** settles via the standard x402 `exact` scheme (gasless EIP-3009 through the
+CDP facilitator) — **any standard x402 client can pay AgentPay on Base**, no AgentPay
+SDK required.
+
+**Stellar** settles as a **classic payment + text memo** verified directly on Horizon.
+It is supported by the AgentPay SDK (`pip install agentpay-x402`) and by manual
+payment per the 402 instructions — but it is **not** the standard `@x402/stellar`
+scheme (which uses Soroban null-account templates, signed auth entries, and
+facilitator settlement). A standard `@x402/stellar` client cannot pay AgentPay's
+Stellar rail today; migrating to the standard Soroban scheme is on the v2 roadmap.
+Standard clients should pay on Base — Circle CCTP bridges USDC 1:1 between the two.
+
 ```
 agent (Python SDK)
     │
     │  POST /tools/{name}/call
     │  ← 200 {result: ...}              ← free tools return directly
     │  ← 402 {payment_id, amount, ...}  ← paid tools (session_create, pre_trade_check, verified_route)
-    │  → USDC on Stellar (~3–5s) or Base (~2s)
+    │  → USDC on Base (~2s, standard x402) or Stellar (~3–5s, SDK classic+memo)
     │  → retry with X-Payment header
     │  ← 200 {result: ...}
     ▼

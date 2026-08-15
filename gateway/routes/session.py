@@ -2,7 +2,9 @@
 routes/session.py — Session creation endpoint.
 
   POST /v1/session/create — Register a budget-capped agent session.
-                            Priced at $0.01 USDC via x402 (Base or Stellar).
+                            Priced at $0.01 USDC via x402 (Base = standard
+                            x402 `exact`; Stellar = classic payment + memo
+                            via the AgentPay SDK — see AGE-128).
                             Returns session_id + budget config.
                             Indexed on Base Bazaar via CDP Facilitator.
 
@@ -54,7 +56,8 @@ _SESSION_DESCRIPTION = (
     "enforces a hard USDC budget cap across every tool call, with a "
     "verifiable receipt and running ledger for each payment — not a "
     "one-shot budget check, but persistent spend governance with a full "
-    "audit trail. USDC settles on Base or Stellar. Costs $0.01 USDC once; "
+    "audit trail. USDC settles on Base (standard x402) or Stellar (via the "
+    "AgentPay SDK). Costs $0.01 USDC once; "
     "returns a session_id and budget config. Enforce the cap client-side "
     "with the AgentPay SDK (from agentpay import Session)."
 )
@@ -91,7 +94,7 @@ _SESSION_OUTPUT_SCHEMA = {
 # serviceName <= 32 chars; tags <= 5 entries, each <= 32 chars.
 _SESSION_BAZAAR_RESOURCE = {
     "url":         SESSION_RESOURCE_URL,
-    "description": "A stateful, multi-chain spending session for AI agents. One session enforces a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger for each payment — not a one-shot budget check, but persistent spend governance with a full audit trail. USDC on Base or Stellar.",
+    "description": "A stateful, multi-chain spending session for AI agents. One session enforces a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger for each payment — not a one-shot budget check, but persistent spend governance with a full audit trail. USDC on Base (standard x402) or Stellar (via the AgentPay SDK).",
     "mimeType":    "application/json",
     "serviceName": "AgentPay Spend Cap & Receipts",
     # ≤5 tags, ≤32 chars each — own the governance category, not the data-API
@@ -103,7 +106,7 @@ _SESSION_BAZAAR_RESOURCE = {
 _SESSION_BAZAAR_EXTENSION = {
     # Top-level description mirrors indexed resources (their bazaar block is
     # {description, info, schema}); also carried on resource.description.
-    "description": "A stateful, multi-chain spending session for AI agents: a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger per payment. Not a one-shot budget check — persistent spend governance with a full audit trail. USDC on Base or Stellar.",
+    "description": "A stateful, multi-chain spending session for AI agents: a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger per payment. Not a one-shot budget check — persistent spend governance with a full audit trail. USDC on Base (standard x402) or Stellar (via the AgentPay SDK).",
     "info": {
         "input": {
             "type":     "http",
@@ -225,13 +228,25 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
         headers["PAYMENT-REQUIRED"] = payment_required_header
 
     # Stellar option (always available as a fallback / secondary chain).
+    # AGE-128: named + noted honestly — this is a classic Stellar payment
+    # with a text memo verified via Horizon, NOT the standard @x402/stellar
+    # Soroban scheme (null-account template + signed auth entries +
+    # facilitator settlement). A standard @x402/stellar client cannot pay
+    # this option; the AgentPay SDK and manual payments can.
     stellar_option = {
+        "scheme":      "agentpay-classic-memo",
         "payment_id":  challenge.payment_id,
         "amount_usdc": challenge.amount_usdc,
         "pay_to":      challenge.gateway_address,
         "network":     settings.STELLAR_NETWORK,
         "asset":       "USDC",
         "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
+        "note": (
+            "Classic Stellar payment + text memo (payment_id), verified via "
+            "Horizon — not the standard @x402/stellar Soroban scheme. Pay "
+            "with the AgentPay SDK (pip install agentpay-x402) or manually "
+            "per instructions."
+        ),
     }
     stellar_instructions = (
         f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "

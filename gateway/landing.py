@@ -45,7 +45,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
   "url": "GATEWAY_URL_PLACEHOLDER",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Web",
-  "description": "The economic intelligence layer for MCP servers and AI agents: x402 payment gateway with hard budget caps, pre-flight plan pricing, on-chain receipts, and public delivery scores for the x402 marketplace. USDC on Base and Stellar.",
+  "description": "The economic intelligence layer for MCP servers and AI agents: x402 payment gateway with hard budget caps, pre-flight plan pricing, on-chain receipts, and public delivery scores for the x402 marketplace. USDC on Base (standard x402) and Stellar (via the AgentPay SDK).",
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD",
              "description": "17 free tools; paid tools from $0.01 USDC per call"},
   "sameAs": [
@@ -333,7 +333,7 @@ TOOLS_ROWS_PLACEHOLDER
     <div class="how-step">
       <span class="num">03</span>
       <h3>Paid tools use x402</h3>
-      <p>Gateway returns HTTP 402 with payment instructions. Agent pays USDC on-chain, retries with <code>X-Payment</code> header. Payment verified on Stellar or Base.</p>
+      <p>Gateway returns HTTP 402 with payment instructions. Agent pays USDC on-chain and retries with proof. Base settles via the standard x402 <code>exact</code> scheme; Stellar settles as a classic payment + memo via the AgentPay SDK.</p>
     </div>
   </div>
 </section>
@@ -365,7 +365,7 @@ TOOLS_ROWS_PLACEHOLDER
     </div>
     <div class="network-card">
       <h3>Stellar mainnet</h3>
-      <p>Native USDC, sub-cent fees (~$0.000001 per tx), Horizon-verified. Fully supported as an alternative settlement rail — pick it per call or per session. Circle's CCTP is live on Stellar, so funds bridge 1:1 to and from Base.</p>
+      <p>Native USDC, sub-cent fees (~$0.000001 per tx), Horizon-verified classic payments — supported via the AgentPay SDK or a manual payment + memo. Not yet the standard <code>@x402/stellar</code> Soroban scheme (that migration is on the v2 roadmap), so standard x402 clients should pay on Base. Circle's CCTP is live on Stellar, so funds bridge 1:1 to and from Base.</p>
     </div>
   </div>
 </section>
@@ -377,7 +377,7 @@ TOOLS_ROWS_PLACEHOLDER
     AgentPay is the economic intelligence layer for MCP servers and AI agents — x402-v2 payment protocol,
     CDP Facilitator settlement on Base with
     <a href="https://www.coinbase.com/en-gb/developer-platform/discover/launches/introducing-bazaar">Bazaar</a> auto-indexing,
-    and Horizon-verified Stellar settlement.
+    and Horizon-verified classic Stellar settlement via the AgentPay SDK.
   </div>
   <ul>
     <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>
