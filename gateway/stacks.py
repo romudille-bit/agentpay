@@ -619,13 +619,21 @@ async def _broadcast_direct(signed_tx: bytes, txid: str) -> dict:
     Returns {"outcome": "accepted" | "rejected" | "uncertain", "reason": str}.
     A same-txid re-broadcast is node-level idempotent: "already in mempool"
     counts as accepted.
+
+    Body is JSON hex rather than application/octet-stream. As of 2026-08-15 the
+    Hiro testnet API corrupts binary bodies: bytes >= 0x80 arrive as U+FFFD
+    (ef bf bd), so the node reads 0xbd where the auth flags belong and rejects
+    with "unrecognized auth flags 189". It rejects Hiro's own previously-mined
+    faucet transaction identically, so this is not specific to transactions we
+    build. JSON carries the same bytes as ASCII hex, survives the transcoding,
+    and is equally supported by the node.
     """
     url = f"{_hiro_api()}/v2/transactions"
     try:
         async with httpx.AsyncClient(timeout=settings.STACKS_SETTLE_TIMEOUT_S) as client:
             resp = await client.post(
-                url, content=signed_tx,
-                headers={"Content-Type": "application/octet-stream"},
+                url, json={"tx": signed_tx.hex()},
+                headers={"Content-Type": "application/json"},
             )
     except Exception as e:
         return {"outcome": "uncertain", "reason": f"broadcast_error: {str(e)[:120]}"}
