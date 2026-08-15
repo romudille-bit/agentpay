@@ -40,7 +40,7 @@ STACKS_TESTNET_CAIP2 = "stacks:2147483648"
 
 # SIP-010 sBTC token contracts (principal.contract-name).
 SBTC_CONTRACT_MAINNET = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token"
-SBTC_CONTRACT_TESTNET = "ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token"
+SBTC_CONTRACT_TESTNET = "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token"  # PoX-5 official deployment (Aug 2026 reset)
 
 # SIP-010 asset name of the sBTC fungible token (used in post-conditions).
 SBTC_ASSET_NAME = "sbtc-token"
@@ -443,6 +443,7 @@ def build_sbtc_transfer(
     fee_microstx: int,
     network: str = "testnet",
     sponsored: bool = False,
+    contract: str | None = None,
 ) -> bytes:
     """Serialize an UNSIGNED SIP-010 `sbtc-token::transfer` contract call.
 
@@ -468,7 +469,10 @@ def build_sbtc_transfer(
         raise ValueError("nonce and fee must be non-negative")
 
     memo_bytes = payment_id.encode("utf-8")[:_MEMO_MAX_BYTES]
-    contract_id = SBTC_CONTRACT_MAINNET if network == "mainnet" else SBTC_CONTRACT_TESTNET
+    # Explicit contract pins byte-exact vectors and gateway-specified deployments.
+    contract_id = contract or (
+        SBTC_CONTRACT_MAINNET if network == "mainnet" else SBTC_CONTRACT_TESTNET
+    )
     contract_addr, contract_name = _split_contract_id(contract_id)
     sender_address = sender.address(network)
 

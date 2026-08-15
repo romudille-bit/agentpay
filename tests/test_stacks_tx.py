@@ -64,6 +64,9 @@ def _build(t: dict) -> bytes:
         fee_microstx=int(t["fee"]),
         network=t["network"],
         sponsored=t["sponsored"],
+        # Vectors are byte-exact against the contract they were generated with;
+        # pin it so the live default can move with testnet redeployments.
+        contract=t["contract"],
     )
 
 
@@ -183,6 +186,7 @@ class TestBuildSbtcTransfer:
             nonce=int(p["nonce"]),
             fee_microstx=int(p["fee"]),
             network="testnet",
+            contract=p["contract"],
         )
         assert unsigned.hex() == p["unsigned_serialized_hex"]
 
@@ -250,13 +254,22 @@ class TestBuildSbtcTransfer:
     def test_network_selects_sbtc_contract(self):
         t_test = FIXTURES["transactions"][0]  # testnet
         t_main = FIXTURES["transactions"][1]  # mainnet
-        assert SBTC_CONTRACT_TESTNET.split(".")[0].encode("ascii") not in _build(t_main)
+
+        def _build_default(t):  # no contract pin: exercise network resolution
+            return build_sbtc_transfer(
+                sender=_keypair_for(t), recipient=t["recipient"],
+                amount_sats=int(t["amount_sats"]), payment_id=t["payment_id"],
+                nonce=int(t["nonce"]), fee_microstx=int(t["fee"]),
+                network=t["network"], sponsored=t["sponsored"],
+            )
+
+        assert SBTC_CONTRACT_TESTNET.split(".")[0].encode("ascii") not in _build_default(t_main)
         # contract address is serialized as version+hash160, so check via decode
         _, test_h160 = c32_decode(SBTC_CONTRACT_TESTNET.split(".")[0])
         _, main_h160 = c32_decode(SBTC_CONTRACT_MAINNET.split(".")[0])
-        assert test_h160 in _build(t_test)
-        assert main_h160 in _build(t_main)
-        assert main_h160 not in _build(t_test)
+        assert test_h160 in _build_default(t_test)
+        assert main_h160 in _build_default(t_main)
+        assert main_h160 not in _build_default(t_test)
 
 
 # ---------------------------------------------------------------- sign + txid
