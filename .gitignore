@@ -152,3 +152,7 @@ socials/
 
 # Disposable local scratch dir (git-bridge locks, temp patches)
 _to_delete/
+
+# Curation working doc (Drive-only, never commit)
+CURATION_REQUEST_DISCORD.md
+fuchss_history_*.json
