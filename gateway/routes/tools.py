@@ -486,6 +486,16 @@ _TOOL_BAZAAR: dict[str, dict] = {
     },
 }
 
+# AGE-129: documented error responses are part of CDP's agent-ready curation
+# bar ("complete input schema … per-call pricing … documented error
+# responses"). One shared catalogue (gateway.base.build_error_responses)
+# injected into every listed resource's extensions.bazaar info block, so the
+# live 402 AND the settle payload both carry it.
+for _bz_cfg in _TOOL_BAZAAR.values():
+    _bz_cfg["extension"].setdefault("info", {}).setdefault(
+        "errors", base_pay.build_error_responses())
+del _bz_cfg
+
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 

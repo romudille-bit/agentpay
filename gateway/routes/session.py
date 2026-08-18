@@ -160,6 +160,11 @@ _SESSION_BAZAAR_EXTENSION = {
     },
 }
 
+# AGE-129: documented error responses (agent-ready curation requirement) —
+# same shared catalogue as the tools map (gateway.base.build_error_responses),
+# carried on the live 402's extensions.bazaar AND the settle payload.
+_SESSION_BAZAAR_EXTENSION["info"]["errors"] = base_pay.build_error_responses()
+
 
 # ── Request model ─────────────────────────────────────────────────────────────
 

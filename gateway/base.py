@@ -238,6 +238,58 @@ def build_resource_block(
     return resource_block
 
 
+def build_error_responses() -> list[dict]:
+    """Documented error responses for paid AgentPay resources (AGE-129).
+
+    CDP's Bazaar curation bar lists "documented error responses" as part of
+    the agent-ready metadata requirement, alongside input schema and per-call
+    pricing. This is the ONE shared catalogue; it is embedded in the
+    PAYMENT-REQUIRED header's outputSchema (build_payment_required_header)
+    and in each curated resource's extensions.bazaar info block, so an agent
+    can branch on failures without trial calls.
+
+    Kept deliberately compact — the list rides inside the base64
+    PAYMENT-REQUIRED header on every 402, so verbosity here is header bytes
+    on every challenge.
+
+    Returns a fresh list per call so callers can't mutate shared state.
+    """
+    return [
+        {"status": 402,
+         "when": ("No payment attached (this challenge), or the attached "
+                  "payment failed verification: wrong amount/recipient, "
+                  "memo mismatch, expired, or already used (replay)"),
+         "body": {"error": "<summary>", "reason": "<machine-readable reason>"},
+         "retry": "Re-request the challenge and pay again"},
+        {"status": 422,
+         "when": ("Request body present but malformed (invalid JSON or wrong "
+                  "field types) WITH a payment header attached — checked "
+                  "BEFORE settlement, so the payment is never consumed. "
+                  "An unpaid malformed request gets the 402, not a 422"),
+         "body": {"detail": [{"type": "<error type>", "loc": ["body"],
+                              "msg": "<what is wrong>"}]},
+         "retry": "Fix the body and retry with a fresh payment"},
+        {"status": 404,
+         "when": "Unknown tool name",
+         "body": {"detail": "Tool '<name>' not found"}},
+        {"status": 429,
+         "when": "Rate limited (per-IP and per-wallet limits)",
+         "body": {"error": "Rate limit exceeded"},
+         "retry": "Back off and retry after a minute"},
+        {"status": 502,
+         "when": ("Payment settled on-chain but tool execution failed — the "
+                  "payment is marked refund_pending automatically; you are "
+                  "not charged for a failed call"),
+         "body": {"error": "Tool execution failed", "tool": "<name>",
+                  "payment_status": "refund_pending"}},
+        {"status": 503,
+         "when": ("Tool temporarily unavailable, or the gateway cannot "
+                  "persist the challenge (fail-closed)"),
+         "body": {"detail": "<what is unavailable>"},
+         "retry": "Retry shortly"},
+    ]
+
+
 def build_payment_required_header(
     requirements: dict,
     resource_url: str,
@@ -266,6 +318,10 @@ def build_payment_required_header(
     """
     accepts_entry = dict(requirements)  # shallow copy — don't mutate caller's dict
     if output_schema is not None:
+        # AGE-129: every advertised outputSchema carries the documented error
+        # responses (agent-ready curation requirement). Copy, don't mutate.
+        if "errors" not in output_schema:
+            output_schema = {**output_schema, "errors": build_error_responses()}
         accepts_entry["outputSchema"] = output_schema
 
     resource_block = build_resource_block(
