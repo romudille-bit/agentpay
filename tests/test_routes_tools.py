@@ -128,8 +128,12 @@ class TestGetTool:
         assert r.json()["name"] == "token_market_data"
 
     def test_head_preflight_returns_pricing_headers(self, client):
+        # AGE-134: HEAD answers 402 (mirroring the GET probe) so external
+        # probers never score a healthy resource as "not returning 402".
+        # The pre-flight pricing headers are preserved; only the status
+        # changed (200 → 402).
         r = client.head("/tools/token_price/call")
-        assert r.status_code == 200
+        assert r.status_code == 402
         assert r.headers.get("x-price-usdc") == "0.000"
         assert r.headers.get("x-asset") == "USDC"
         assert "x-network" in r.headers

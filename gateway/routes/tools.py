@@ -19,6 +19,7 @@ four stages, each its own function:
 """
 
 import asyncio
+import json
 import time
 import hmac
 import ipaddress
@@ -30,8 +31,9 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ValidationError, model_validator
 
 import registry
 
@@ -96,6 +98,61 @@ class ToolCallRequest(BaseModel):
                 data = dict(data)
                 data["parameters"] = extras
         return data
+
+
+async def parse_body_after_payment_gate(
+    request: Request, model_cls, *, strict: bool,
+):
+    """Parse the request body into `model_cls` AFTER the payment-gate decision.
+
+    AGE-134: FastAPI's declarative body binding validated the body BEFORE the
+    handler ran, so an unpaid bare POST / empty body / non-JSON content-type
+    got a 422 (or a HEAD a 405) instead of the 402 challenge. Third-party
+    probers that send bodyless POSTs then score a healthy gateway as "not
+    returning 402" — the exact failure mode CDP's curation bar removes
+    listings for. The invariant this helper restores:
+
+        an unpaid request to a paid resource returns 402, ALWAYS;
+        body validation happens only on the paid path, before settlement.
+
+    Returns (model_instance, None) or (None, JSONResponse-422).
+
+    strict=False (unpaid → 402 path): any body — absent, empty, non-JSON,
+    non-dict, or model-invalid — folds to model defaults. The challenge must
+    be issued regardless of body shape.
+
+    strict=True (payment header present): a malformed body returns a
+    FastAPI-shaped 422 BEFORE any on-chain settlement, so a payer never burns
+    a real payment on a call the gateway cannot execute. An absent/empty body
+    is accepted as model defaults (every field on both models has one — the
+    caller is asking for the tool's default behaviour, which is a legitimate
+    paid call).
+    """
+    raw = await request.body()
+    if not raw:
+        return model_cls(), None
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        if strict:
+            return None, JSONResponse(
+                status_code=422,
+                content={"detail": [{
+                    "type": "json_invalid",
+                    "loc":  ["body"],
+                    "msg":  "Request body is not valid JSON",
+                }]},
+            )
+        return model_cls(), None
+    try:
+        return model_cls.model_validate(data), None
+    except ValidationError as e:
+        if strict:
+            return None, JSONResponse(
+                status_code=422,
+                content={"detail": jsonable_encoder(e.errors(include_url=False))},
+            )
+        return model_cls(), None
 
 
 class RegisterToolRequest(BaseModel):
@@ -516,17 +573,38 @@ async def get_tool(tool_name: str, request: Request):
 
 
 @router.head("/tools/{tool_name}/call")
-async def head_tool(tool_name: str):
+async def head_tool(tool_name: str, request: Request):
     """
-    HEAD pre-flight for x402 discovery.
-    Returns pricing headers with no body so callers can check cost before committing.
-    Also advertises the Base/EVM payment option when BASE_GATEWAY_ADDRESS is set.
+    HEAD pre-flight for x402 discovery — answers 402, mirroring the GET probe.
+
+    AGE-134: this used to answer 200 with pricing headers only. Any prober
+    scoring "does the resource return 402?" recorded a HEAD as a failure —
+    a free way to be marked unavailable against CDP's curation bar. Now it
+    returns the same 402 challenge as GET /tools/{name}/call (status +
+    PAYMENT-REQUIRED header incl. extensions.bazaar, no pending row) with an
+    empty body per HEAD semantics. The X-Price-USDC/X-Pay-To pre-flight
+    headers are preserved for existing cost-check callers — only the status
+    changed (200 → 402), which is strictly more informative for x402 clients.
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
     tool = _apply_demo_pricing(registry.get_tool(resolved))
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    if not tool.active:
+        raise HTTPException(status_code=503, detail=f"Tool '{tool_name}' is currently unavailable")
+
+    challenge_resp = await _issue_402(
+        tool, resolved, tool_name, ToolCallRequest(), request,
+        None, f"{GATEWAY_URL}/tools/{tool_name}/call",
+        log_pending=False,
+    )
+    # Empty-body 402: keep the challenge headers, drop the entity headers the
+    # JSONResponse computed for its (discarded) body.
     headers = {
+        k: v for k, v in challenge_resp.headers.items()
+        if k.lower() not in ("content-length", "content-type")
+    }
+    headers.update({
         "X-Price-USDC":        tool.price_usdc,
         "X-Asset":             "USDC",
         "X-Network":           f"stellar-{settings.STELLAR_NETWORK}",
@@ -534,11 +612,11 @@ async def head_tool(tool_name: str):
         "X-Payment-Required":  "true",
         "X-Tool-Name":         tool_name,
         "X-Tool-Category":     tool.category,
-    }
+    })
     if settings.BASE_GATEWAY_ADDRESS:
         headers["X-Base-Network"] = settings.BASE_NETWORK
         headers["X-Base-Pay-To"]  = settings.BASE_GATEWAY_ADDRESS
-    return Response(status_code=200, headers=headers)
+    return Response(status_code=402, headers=headers)
 
 
 # ── Payment-flow stages (orchestrated by call_tool) ──────────────────────────
@@ -1428,12 +1506,20 @@ async def call_tool_get(tool_name: str, request: Request):
     )
 
 
-@router.post("/tools/{tool_name}/call")
+@router.post(
+    "/tools/{tool_name}/call",
+    # Body is read manually inside the handler (AGE-134) — keep the schema
+    # visible in OpenAPI/docs since FastAPI can no longer infer it.
+    openapi_extra={"requestBody": {
+        "required": False,
+        "content": {"application/json": {
+            "schema": ToolCallRequest.model_json_schema()}},
+    }},
+)
 @limiter.limit("100/minute")                                        # per-IP
 @limiter.limit(settings.WALLET_RATE_LIMIT, key_func=wallet_or_ip)  # per-wallet
 async def call_tool(
     tool_name: str,
-    body: ToolCallRequest,
     request: Request,
     x_payment: Optional[str] = Header(None),
     x_agent_address: Optional[str] = Header(None),
@@ -1447,10 +1533,14 @@ async def call_tool(
       Base    — PAYMENT-SIGNATURE: <base64(PaymentPayload JSON)>
 
     Flow:
-      1. Neither header → _issue_402 (advertise both options)
+      1. Neither header → _issue_402 (advertise both options) — the body is
+         parsed LENIENTLY first (AGE-134): a bare/malformed POST still gets
+         the 402, never a 422.
       2. X-Payment → _settle_stellar, then _execute_and_log
       3. PAYMENT-SIGNATURE + $0 tool → _settle_free_v2 (no on-chain settle)
       4. PAYMENT-SIGNATURE → _settle_base_path, then _execute_and_log
+      (2–4 validate the body strictly BEFORE settling, so a malformed paid
+      call 422s without burning the payment.)
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
     tool = _apply_demo_pricing(registry.get_tool(resolved))
@@ -1459,12 +1549,20 @@ async def call_tool(
     if not tool.active:
         raise HTTPException(status_code=503, detail=f"Tool '{tool_name}' is currently unavailable")
 
-    agent_address = x_agent_address or body.agent_address
-    resource_url  = f"{GATEWAY_URL}/tools/{tool_name}/call"
+    resource_url = f"{GATEWAY_URL}/tools/{tool_name}/call"
 
     x_payment, payment_signature = normalize_payment_headers(x_payment, payment_signature)
+    unpaid = not x_payment and not payment_signature
 
-    if not x_payment and not payment_signature:
+    body, body_err = await parse_body_after_payment_gate(
+        request, ToolCallRequest, strict=not unpaid,
+    )
+    if body_err is not None:
+        return body_err
+
+    agent_address = x_agent_address or body.agent_address
+
+    if unpaid:
         return await _issue_402(
             tool, resolved, tool_name, body, request, agent_address, resource_url,
         )

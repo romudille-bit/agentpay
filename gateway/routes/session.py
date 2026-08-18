@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -314,7 +314,7 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
 # crawler GET hit 405 and the listing could never be validated → stuck in
 # 'processing'. This handler advertises the same challenge for discovery without
 # persisting a pending payment row.
-@router.get("/v1/session/create")
+@router.api_route("/v1/session/create", methods=["GET", "HEAD"])
 @limiter.limit("60/minute")
 async def session_create_probe(request: Request):
     challenge = issue_payment_challenge(
@@ -324,15 +324,29 @@ async def session_create_probe(request: Request):
         request_data={"max_spend": "0.10"},
     )
     content, headers = _session_402_payload(challenge)
+    # AGE-134: FastAPI does NOT auto-answer HEAD for GET routes, so HEAD was a
+    # 405 — a free "does not return 402" mark for any external prober. HEAD now
+    # mirrors the GET probe: same 402 status + headers (incl. PAYMENT-REQUIRED
+    # with the bazaar extension), empty body per HEAD semantics.
+    if request.method == "HEAD":
+        return Response(status_code=402, headers=headers)
     return JSONResponse(status_code=402, content=content, headers=headers)
 
 
 # ── Route ─────────────────────────────────────────────────────────────────────
 
-@router.post("/v1/session/create")
+@router.post(
+    "/v1/session/create",
+    # Body is read manually inside the handler (AGE-134) — keep the schema
+    # visible in OpenAPI/docs since FastAPI can no longer infer it.
+    openapi_extra={"requestBody": {
+        "required": False,
+        "content": {"application/json": {
+            "schema": SessionCreateRequest.model_json_schema()}},
+    }},
+)
 @limiter.limit("30/minute")
 async def create_session(
-    body: SessionCreateRequest,
     request: Request,
     x_payment: Optional[str] = Header(None),
     x_agent_address: Optional[str] = Header(None),
@@ -354,17 +368,29 @@ async def create_session(
       created_at       — ISO 8601 timestamp
       receipt          — tx_hash + network + amount
     """
-    agent_address = x_agent_address or body.agent_address
     resource_url  = SESSION_RESOURCE_URL
 
     # Standards-pure x402 clients (Coinbase for Agents, x402 SDKs) send the
     # v2 payload in X-PAYMENT alone; route it to the Base path instead of
     # the legacy Stellar parser.
-    from gateway.routes.tools import normalize_payment_headers
+    from gateway.routes.tools import (normalize_payment_headers,
+                                      parse_body_after_payment_gate)
     x_payment, payment_signature = normalize_payment_headers(x_payment, payment_signature)
 
+    # AGE-134: parse the body AFTER the payment-gate decision. Unpaid →
+    # lenient (any body shape still gets the 402 below); paid → strict 422
+    # BEFORE settlement so a malformed paid call never burns the payment.
+    unpaid = not x_payment and not payment_signature
+    body, body_err = await parse_body_after_payment_gate(
+        request, SessionCreateRequest, strict=not unpaid,
+    )
+    if body_err is not None:
+        return body_err
+
+    agent_address = x_agent_address or body.agent_address
+
     # ── Step 1: No payment → 402 ──────────────────────────────────────────────
-    if not x_payment and not payment_signature:
+    if unpaid:
         agent_short = (agent_address or "unknown")[:8]
         logger.info(f"[SESSION] agent={agent_short}... status=402_challenge")
 
