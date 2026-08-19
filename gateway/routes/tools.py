@@ -898,9 +898,22 @@ async def _issue_402(
     # AGE-24: compute the Stacks option (live USD→sats quote) before building
     # the body — the quote fetch is async, and passing the payment_id records
     # the quote so settle reads it back instead of re-quoting.
-    stacks_option = await stacks_pay.build_stacks_402_option(
-        tool.price_usdc, resource_url, payment_id=challenge.payment_id,
-    )
+    # AGE-135: hard-bound the quote leg. The stacks option is an OPTIONAL
+    # payment rail on the challenge — a slow quote must degrade to "option
+    # omitted", never to a slow/failed 402 (external probers score exactly
+    # that as unavailability; pre_trade_check read 97.94% trailing-30d while
+    # session_create, whose 402 has no stacks leg, read 99.36%).
+    try:
+        stacks_option = await asyncio.wait_for(
+            stacks_pay.build_stacks_402_option(
+                tool.price_usdc, resource_url, payment_id=challenge.payment_id,
+            ),
+            timeout=4.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"[CALL] tool={tool_name} stacks quote timed out — "
+                       "402 issued without the stacks option")
+        stacks_option = None
 
     headers = build_402_headers(challenge)
     if payment_required_header:

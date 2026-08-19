@@ -161,15 +161,24 @@ _QUOTE_STORE_MAX = 5000
 _QUOTE_STORE_TTL_S = 3600
 
 
-async def _btc_usd_rate() -> Optional[Decimal]:
-    """Live BTC/USD, cached ~STACKS_RATE_CACHE_S. Falls back to
-    STACKS_FIXED_BTC_USD, then to a stale cached value, then None."""
-    now = time.monotonic()
-    cached = _rate_cache["rate"]
-    if cached is not None and (now - _rate_cache["at"]) < settings.STACKS_RATE_CACHE_S:
-        return cached
+# AGE-135: single-flight guard for the background rate refresh. The 402 path
+# must never block on CoinGecko when ANY cached rate exists — see _btc_usd_rate.
+_rate_refresh_task: Optional[asyncio.Task] = None
+
+# Bounded fetch: the old 10s timeout sat INSIDE the 402 challenge path and,
+# with probes arriving less often than the 60s cache TTL, every external
+# prober hit a cold cache → paid-tool 402s carried a live CoinGecko
+# round-trip. fuchss's 90d histories read pre_trade_check at 97.94%
+# trailing-30d availability (timeout-class failures), vs 99.36% for
+# session_create whose 402 has no stacks leg. 3s is generous for CoinGecko's
+# p99 and keeps the worst-case cold-boot 402 well under prober timeouts.
+_RATE_FETCH_TIMEOUT_S = 3.0
+
+
+async def _fetch_btc_usd_live() -> Optional[Decimal]:
+    """One bounded live CoinGecko fetch; updates the cache on success."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=_RATE_FETCH_TIMEOUT_S) as client:
             resp = await client.get(
                 f"{settings.COINGECKO_API_URL}/simple/price",
                 params={"ids": "bitcoin", "vs_currencies": "usd"},
@@ -180,19 +189,44 @@ async def _btc_usd_rate() -> Optional[Decimal]:
             if rate <= 0:
                 raise ValueError("non-positive rate")
             _rate_cache["rate"] = rate
-            _rate_cache["at"] = now
+            _rate_cache["at"] = time.monotonic()
             return rate
     except Exception as e:
-        logger.warning(f"[STACKS] live BTC/USD fetch failed ({e}) — using fallback")
-        if settings.STACKS_FIXED_BTC_USD:
-            try:
-                return Decimal(str(settings.STACKS_FIXED_BTC_USD))
-            except Exception:
-                pass
-        if cached is not None:
-            logger.warning("[STACKS] no fixed fallback — serving stale cached rate")
-            return cached
+        logger.warning(f"[STACKS] live BTC/USD fetch failed ({e})")
         return None
+
+
+async def _btc_usd_rate() -> Optional[Decimal]:
+    """BTC/USD for quoting, without ever blocking a 402 on CoinGecko (AGE-135).
+
+    Fresh cache (< STACKS_RATE_CACHE_S) → serve it.
+    Stale cache → serve the stale value IMMEDIATELY and refresh in the
+      background (single-flight). Staleness is safe: the quote binds at
+      402-issuance and settle verifies against the stored quote
+      (_stacks_quotes), so a stale rate only drifts the sats price slightly —
+      it can never fail a settle.
+    Empty cache (cold boot) → one bounded (3s) blocking fetch, then
+      STACKS_FIXED_BTC_USD, then None (the 402 omits the stacks option).
+    """
+    global _rate_refresh_task
+    now = time.monotonic()
+    cached = _rate_cache["rate"]
+    if cached is not None and (now - _rate_cache["at"]) < settings.STACKS_RATE_CACHE_S:
+        return cached
+    if cached is not None:
+        # Stale-while-revalidate: never make a caller wait on the network.
+        if _rate_refresh_task is None or _rate_refresh_task.done():
+            _rate_refresh_task = asyncio.create_task(_fetch_btc_usd_live())
+        return cached
+    live = await _fetch_btc_usd_live()
+    if live is not None:
+        return live
+    if settings.STACKS_FIXED_BTC_USD:
+        try:
+            return Decimal(str(settings.STACKS_FIXED_BTC_USD))
+        except Exception:
+            pass
+    return None
 
 
 async def stacks_quote(price_usdc) -> Optional[tuple[int, Decimal]]:

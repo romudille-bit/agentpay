@@ -73,11 +73,19 @@ def stacks_settings(monkeypatch):
     stacks_pay._rate_cache["rate"] = None
     stacks_pay._rate_cache["at"] = 0.0
     stacks_pay._stacks_quotes.clear()
+    # AGE-135: cancel any in-flight background rate refresh so it can't write
+    # into another test's cache.
+    if stacks_pay._rate_refresh_task is not None:
+        stacks_pay._rate_refresh_task.cancel()
+        stacks_pay._rate_refresh_task = None
     yield
     stacks_pay._used_stacks_txids.clear()
     stacks_pay._rate_cache["rate"] = None
     stacks_pay._rate_cache["at"] = 0.0
     stacks_pay._stacks_quotes.clear()
+    if stacks_pay._rate_refresh_task is not None:
+        stacks_pay._rate_refresh_task.cancel()
+        stacks_pay._rate_refresh_task = None
 
 
 COINGECKO = r"https://api\.coingecko\.com/api/v3/simple/price.*"
@@ -495,13 +503,38 @@ class TestLiveRate:
         assert r1 == r2 == Decimal("100000")
         assert cg.call_count == 1   # second call served from cache
 
-    async def test_cache_expires(self, monkeypatch):
+    async def test_cache_expires_stale_while_revalidate(self, monkeypatch):
+        # AGE-135: an EXPIRED cache no longer blocks the caller on CoinGecko —
+        # the stale value is served immediately and a single-flight background
+        # task refreshes the cache.
         monkeypatch.setattr(settings, "STACKS_RATE_CACHE_S", 0.0)  # never fresh
         with respx.mock:
             cg = _mock_coingecko(100000)
-            await stacks_pay._btc_usd_rate()
-            await stacks_pay._btc_usd_rate()
+            r1 = await stacks_pay._btc_usd_rate()      # cold boot: blocking fetch
+            r2 = await stacks_pay._btc_usd_rate()      # stale: served immediately
+            assert r1 == r2 == Decimal("100000")
+            assert cg.call_count == 1                  # no inline second fetch
+            assert stacks_pay._rate_refresh_task is not None
+            await stacks_pay._rate_refresh_task        # background refresh ran
         assert cg.call_count == 2
+
+    async def test_stale_refresh_is_single_flight(self, monkeypatch):
+        monkeypatch.setattr(settings, "STACKS_RATE_CACHE_S", 0.0)
+        with respx.mock:
+            cg = _mock_coingecko(100000)
+            await stacks_pay._btc_usd_rate()           # prime (1 fetch)
+            await stacks_pay._btc_usd_rate()           # spawns refresh task
+            task = stacks_pay._rate_refresh_task
+            await stacks_pay._btc_usd_rate()           # must NOT spawn a second
+            assert stacks_pay._rate_refresh_task is task
+            await task
+        assert cg.call_count == 2
+
+    async def test_cold_boot_fetch_failure_falls_back_to_fixed(self, monkeypatch):
+        monkeypatch.setattr(settings, "STACKS_FIXED_BTC_USD", "50000")
+        with respx.mock:  # no route mocked → fetch raises
+            r = await stacks_pay._btc_usd_rate()
+        assert r == Decimal("50000")
 
     async def test_live_preferred_over_fixed(self, monkeypatch):
         monkeypatch.setattr(settings, "STACKS_FIXED_BTC_USD", "1")  # absurd floor
