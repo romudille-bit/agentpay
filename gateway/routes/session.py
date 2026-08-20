@@ -28,7 +28,8 @@ from pydantic import BaseModel
 
 from gateway import base as base_pay
 from gateway._limiter import limiter
-from gateway.config import GATEWAY_URL, offered_pending_network, settings
+from gateway.config import GATEWAY_URL, settings
+from gateway.services import probe_rollup
 from gateway.services.supabase import (
     correlate_pending_challenge,
     insert_pending_payment_log,
@@ -328,6 +329,13 @@ async def session_create_probe(request: Request):
         developer_address=settings.GATEWAY_PUBLIC_KEY,
         request_data={"max_spend": "0.10"},
     )
+    # Disk-IO fix #2: count the probe in the rollup (parity with the tools
+    # route — session_create 402 volume was previously invisible there).
+    probe_rollup.record_402(
+        tool_name=SESSION_TOOL_NAME,
+        user_agent=request.headers.get("user-agent"),
+        kind="probe_get",
+    )
     content, headers = _session_402_payload(challenge)
     # AGE-134: FastAPI does NOT auto-answer HEAD for GET routes, so HEAD was a
     # 405 — a free "does not return 402" mark for any external prober. HEAD now
@@ -406,32 +414,19 @@ async def create_session(
             request_data={"max_spend": body.max_spend},
         )
 
-        # Persist pending row in Supabase (fail-closed same as tools route).
-        # Record the chain we actually LEAD the 402 with (Base when configured,
-        # else Stellar) rather than hardcoding Stellar — otherwise every
-        # abandoned-at-402 row is mislabelled stellar-mainnet and analytics
-        # can't tell Base-intent from Stellar-intent abandoners. The terminal
-        # payment_done PATCH still overwrites this with the chain that actually
-        # settled, so completed rows stay accurate. Shared helper emits a clean,
-        # correctly-normalizing label (base-mainnet, not base-base).
-        offered_network = offered_pending_network()
-        if sb_enabled():
-            client_ip  = request.client.host if request.client else None
-            user_agent = request.headers.get("user-agent")
-            row_id = await insert_pending_payment_log(
-                payment_id=challenge.payment_id,
-                tool_name=SESSION_TOOL_NAME,
-                network=offered_network,
-                amount_usdc=SESSION_PRICE_USDC,
-                developer_address=settings.GATEWAY_PUBLIC_KEY,
-                client_ip=client_ip,
-                user_agent=user_agent,
-            )
-            if row_id is None:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Supabase write failure — challenge issuance refused. Retry shortly.",
-                )
+        # Disk-IO fix #2 (2026-08-20): NO pre-402 payment_logs INSERT — same
+        # as the tools route. The row is created at settle time instead
+        # (state='verified' below, or 'rejected' via _record_rejected_attempt),
+        # so payment_logs only contains real payment attempts; unpaid 402
+        # volume (monitors/scanners) is counted in the probe rollup. This
+        # also removes the awaited Supabase write and the 503-on-blip from
+        # the 402 path — the exact latency/availability external probers
+        # score session_create on.
+        probe_rollup.record_402(
+            tool_name=SESSION_TOOL_NAME,
+            user_agent=request.headers.get("user-agent"),
+            kind="paid_402",
+        )
 
         # Build the 402 challenge body + headers (Base option + PAYMENT-REQUIRED
         # included for Bazaar CDP Facilitator indexing).
@@ -454,11 +449,17 @@ async def create_session(
             parsed = parse_payment_header(x_payment) or {}
             rejected_pid = parsed.get("id")
             if rejected_pid:
-                # F3 (2026-07-20): header-supplied pid — guard against
-                # clobbering a terminal row (see routes/tools.py).
-                await update_payment_log_state(
-                    rejected_pid, "rejected", error_reason=auth["reason"],
-                    expected_state=("pending", "verified"),
+                # Disk-IO fix #2: no pending row to PATCH — the shared helper
+                # updates a legacy row when one exists (F3 guard intact) and
+                # otherwise INSERTs a complete 'rejected' row, skipping
+                # scanner noise (unknown payment_id / unparseable header).
+                from gateway.routes.tools import _record_rejected_attempt
+                await _record_rejected_attempt(
+                    rejected_pid, auth["reason"],
+                    tool_name=SESSION_TOOL_NAME,
+                    network=f"stellar-{settings.STELLAR_NETWORK}",
+                    amount_usdc=SESSION_PRICE_USDC,
+                    agent_address=agent_address,
                 )
             return JSONResponse(
                 status_code=402,
@@ -466,15 +467,9 @@ async def create_session(
             )
         logger.info(f"[SESSION] agent={agent_short}... stellar OK tx={auth.get('tx_hash','')[:16]}")
 
-        # Fire-and-forget 'verified' intermediate state
-        verified_pid = (parse_payment_header(x_payment) or {}).get("id")
-        if verified_pid:
-            asyncio.create_task(update_payment_log_state(
-                verified_pid, "verified",
-                expected_state="pending",
-                agent_address=agent_address,
-                tx_hash=auth.get("tx_hash"),
-            ))
+        # Disk-IO fix #2: the fire-and-forget 'verified' PATCH is gone — no
+        # pending row exists; the state='verified' row is INSERTed below
+        # (Step 3) for every settle, Stellar included.
 
     # ── Step 2b: Base/EVM payment ─────────────────────────────────────────────
     elif payment_signature:
@@ -542,8 +537,11 @@ async def create_session(
     # Fire-and-forget raced the PATCH: the PATCH could run first, no-op on
     # the missing row, then the insert landed 'verified' and never advanced —
     # stranding session_create rows (the KPI) in 'verified'.
+    # Disk-IO fix #2: the Stellar path inserts here too (its pre-402 pending
+    # row no longer exists) — payment_id is the challenge UUID on Stellar,
+    # the tx_hash on Base. Same transition note as routes/tools.py.
     insert_task = None
-    if is_base and sb_enabled():
+    if sb_enabled():
         settle_ip = request.client.host if request.client else None
         settle_ua = request.headers.get("user-agent")
         insert_task = asyncio.create_task(insert_pending_payment_log(

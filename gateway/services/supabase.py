@@ -599,6 +599,7 @@ async def insert_pending_payment_log(
     client_ip: Optional[str] = None,
     user_agent: Optional[str] = None,
     parameters: Optional[dict] = None,
+    error_reason: Optional[str] = None,
 ) -> Optional[int]:
     """INSERT a new payment_logs row.
 
@@ -640,6 +641,9 @@ async def insert_pending_payment_log(
         "gateway_fee_usdc":  gateway_fee_usdc,
         "client_ip":         client_ip,
         "user_agent":        user_agent,
+        # Disk-IO fix #2: rejected real attempts are INSERTed complete
+        # (no pending row exists to PATCH), so the reason rides the insert.
+        "error_reason":      error_reason,
     }.items():
         if val is not None:
             payload[key] = val
@@ -709,7 +713,7 @@ async def update_payment_log_state(
     expected_state: Optional[str | tuple[str, ...] | list[str]] = None,
     clear_fields: Optional[list[str]] = None,
     **fields,
-) -> None:
+) -> Optional[int]:
     """UPDATE payment_logs SET state = $1, [**fields] WHERE payment_id = $2.
 
     The set_updated_at_payment_logs trigger handles updated_at automatically.
@@ -741,9 +745,16 @@ async def update_payment_log_state(
     writes JSON null for it. `fields` wins if a name appears in both.
 
     Idempotent — calling with the same (payment_id, state) twice is safe.
+
+    Returns the number of rows the PATCH matched (disk-IO fix #2,
+    2026-08-20: unpaid 402s no longer pre-insert a pending row, so a
+    rejection PATCH can legitimately match nothing — the caller then
+    INSERTs a complete 'rejected' row instead). None = Supabase disabled
+    or the write errored (unknown outcome — callers should NOT insert on
+    None, or a transient blip could produce duplicate rows).
     """
     if not sb_enabled():
-        return
+        return None
     payload = {"state": state}
     for key in (clear_fields or []):
         payload[key] = None            # explicit JSON null → SQL NULL
@@ -764,7 +775,9 @@ async def update_payment_log_state(
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
             resp = await client.patch(
                 f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
-                headers=sb_headers(),
+                # return=representation so we can report how many rows the
+                # PATCH matched (0 is a meaningful answer — see docstring).
+                headers={**sb_headers(), "Prefer": "return=representation"},
                 params=params,
                 json=payload,
             )
@@ -773,11 +786,19 @@ async def update_payment_log_state(
                 f"update_payment_log_state error: HTTP {resp.status_code} "
                 f"body={resp.text[:200]} (payment_id={payment_id}, state={state})"
             )
+            return None
+        if resp.status_code == 204:
+            return None  # representation not honored — matched count unknown
+        try:
+            return len(resp.json())
+        except Exception:
+            return None
     except Exception as e:
         logger.error(
             f"update_payment_log_state failure "
             f"(payment_id={payment_id}, state={state}): {e}"
         )
+        return None
 
 
 async def mark_split_failed(payment_id: str, reason: str) -> None:

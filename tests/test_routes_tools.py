@@ -594,6 +594,10 @@ def supabase_lifecycle_capture(monkeypatch):
 
     async def fake_update(payment_id, state, **fields):
         captured["update"].append({"payment_id": payment_id, "state": state, **fields})
+        # Disk-IO fix #2: report "0 rows matched" — the realistic post-fix
+        # answer (no pre-402 pending rows exist), which drives
+        # _record_rejected_attempt down its INSERT branch.
+        return 0
 
     import gateway.routes.tools as routes_tools_mod
     import gateway.services.supabase as sb_mod
@@ -610,25 +614,31 @@ def supabase_lifecycle_capture(monkeypatch):
 
 class TestLifecycleStateMachine:
 
-    def test_402_response_creates_pending_row(self, client, supabase_lifecycle_capture):
-        """Pre-402 INSERT fires with state='pending' before the 402 returns —
-        for PAID tools. (Disk-IO fix 2026-08-04: $0 tools no longer write a
-        pending row; their 402 volume is counted in probe_rollup instead —
-        see test_free_402_writes_no_pending_row.)"""
+    def test_paid_402_writes_no_pending_row_but_is_counted(
+        self, client, supabase_lifecycle_capture,
+    ):
+        """Disk-IO fix #2 (2026-08-20): an unpaid POST 402 on a PAID tool
+        writes NO payment_logs row either — external monitors
+        (CarbonMonitor, mako-pulse) POST the paid tools around the clock
+        and never pay; each such 402 was an INSERT + a later
+        abandoned-sweep PATCH. The issuance is counted in probe_rollup
+        (kind='paid_402') and the payment_logs row is created at settle
+        time instead."""
+        from gateway.services import probe_rollup
+        probe_rollup._counts.clear()
+
         r = client.post(
             "/tools/pre_trade_check/call",
             json={"parameters": {"symbol": "ETH", "size_usd": 1000}},
         )
         assert r.status_code == 402
+        assert r.json()["payment_id"]          # challenge still fully issued
+        assert supabase_lifecycle_capture["insert"] == []
 
-        # Exactly one INSERT, keyed on the 402 challenge's payment_id
-        assert len(supabase_lifecycle_capture["insert"]) == 1
-        row = supabase_lifecycle_capture["insert"][0]
-        assert row["tool_name"] == "pre_trade_check"
-        assert row["network"] == "stellar-testnet"
-        assert row["amount_usdc"] == "0.01"
-        # payment_id matches what we returned in the body
-        assert row["payment_id"] == r.json()["payment_id"]
+        assert sum(
+            n for (day, tool, ua, kind), n in probe_rollup._counts.items()
+            if tool == "pre_trade_check" and kind == "paid_402"
+        ) == 1
 
     def test_free_402_writes_no_pending_row_but_is_counted(
         self, client, supabase_lifecycle_capture, monkeypatch,
@@ -673,10 +683,12 @@ class TestLifecycleStateMachine:
         finally:
             x402_mod.sb.store_pending_challenge = real
 
-    def test_supabase_insert_failure_returns_503(self, client, monkeypatch):
-        """Fail-closed: when sb_enabled is True but the INSERT returns None
-        (Supabase write failed), refuse to issue the challenge with 503.
-        The gateway never advertises a payment it can't track."""
+    def test_paid_402_survives_supabase_outage(self, client, monkeypatch):
+        """Disk-IO fix #2: the 402 path performs NO Supabase write at all,
+        so a Supabase outage must never 503 a challenge — for paid tools
+        too. (The old fail-closed 503 lived here; the financial guarantee
+        now sits at settle time, in the replay-store consume.) External
+        availability probers score exactly this failure mode."""
         import gateway.routes.tools as routes_tools_mod
         import gateway.services.supabase as sb_mod
 
@@ -695,8 +707,8 @@ class TestLifecycleStateMachine:
             "/tools/pre_trade_check/call",
             json={"parameters": {"symbol": "ETH", "size_usd": 1000}},
         )
-        assert r.status_code == 503
-        assert "challenge issuance refused" in r.json()["detail"].lower()
+        assert r.status_code == 402
+        assert r.json()["payment_id"]
 
     def test_free_402_survives_supabase_outage(self, client, monkeypatch):
         """Disk-IO fix companion to fail-closed: a $0 tool's 402 does not
@@ -746,11 +758,39 @@ class TestLifecycleStateMachine:
         assert r.status_code == 402
         assert "replay" in r.json()["reason"].lower()
 
-        # Lifecycle: one INSERT (pending) at challenge issue + one PATCH (rejected)
+        # Disk-IO fix #2 trail: the legacy-row PATCH attempt fires first
+        # (F3 guard intact); it matches 0 rows in the new world, so a
+        # complete 'rejected' row is INSERTed — a real attempt never
+        # vanishes from payment_logs.
         rejected = [u for u in supabase_lifecycle_capture["update"] if u["state"] == "rejected"]
         assert len(rejected) == 1
         assert rejected[0]["payment_id"] == payment_id
         assert "replay" in rejected[0].get("error_reason", "").lower()
+        rejected_inserts = [
+            i for i in supabase_lifecycle_capture["insert"]
+            if i.get("state") == "rejected"
+        ]
+        assert len(rejected_inserts) == 1
+        assert rejected_inserts[0]["payment_id"] == payment_id
+        assert "replay" in rejected_inserts[0].get("error_reason", "").lower()
+
+    def test_unknown_payment_id_rejection_writes_nothing(
+        self, client, supabase_lifecycle_capture,
+    ):
+        """Scanner noise guard: a rejection whose payment_id matches no
+        known challenge ('Payment ID not found or expired') must not INSERT
+        a rejected row — otherwise garbage X-Payment headers become a new
+        per-event write channel (the exact churn disk-IO fix #2 removed)."""
+        r = client.post(
+            "/tools/pre_trade_check/call",
+            json={"parameters": {}},
+            headers={
+                "X-Payment": "tx_hash=garbagehash,from=GAGENT,id=no-such-id",
+                "X-Agent-Address": "GAGENT",
+            },
+        )
+        assert r.status_code == 402
+        assert supabase_lifecycle_capture["insert"] == []
 
     def test_happy_path_transitions_pending_to_payment_done(
         self, client, supabase_lifecycle_capture,
@@ -759,10 +799,15 @@ class TestLifecycleStateMachine:
         """The full success trail: pending (insert) → verified (PATCH) →
         payment_done (PATCH). split_done is fired from inside split_payment
         which is mocked at the routes layer; covered by test_x402 for the
-        x402.py side. verified is fire-and-forget per the Q3 decision.
+        x402.py side. Disk-IO fix #2 trail: NO insert at 402 time; at settle
+        an INSERT with state='verified' (AGE-58 barrier), then the terminal
+        payment_done PATCH lands on it.
         Paid tool — the free happy path is single-INSERT, tested below."""
         first = client.post("/tools/pre_trade_check/call", json={"parameters": {"symbol": "ETH"}})
         payment_id = first.json()["payment_id"]
+
+        # Disk-IO fix #2: the 402 wrote nothing
+        assert supabase_lifecycle_capture["insert"] == []
 
         r = client.post(
             "/tools/pre_trade_check/call",
@@ -774,19 +819,20 @@ class TestLifecycleStateMachine:
         )
         assert r.status_code == 200
 
-        # Insert at challenge issue
+        # ONE insert, at settle time, state='verified', keyed on the UUID
         assert len(supabase_lifecycle_capture["insert"]) == 1
-        assert supabase_lifecycle_capture["insert"][0]["payment_id"] == payment_id
+        row = supabase_lifecycle_capture["insert"][0]
+        assert row["payment_id"] == payment_id
+        assert row["state"] == "verified"
+        assert row["tx_hash"] == "happyhash"
+        assert row["agent_address"].startswith("GAGENT")
 
-        # State machine PATCHes
+        # Terminal PATCH advances the inserted row
         states_for_pid = [
             u["state"] for u in supabase_lifecycle_capture["update"]
             if u["payment_id"] == payment_id
         ]
-        assert "verified" in states_for_pid
         assert "payment_done" in states_for_pid
-        # payment_done must come AFTER verified
-        assert states_for_pid.index("payment_done") > states_for_pid.index("verified")
 
         # The payment_done PATCH carries the analytics columns
         payment_done = next(
@@ -1604,15 +1650,28 @@ class TestGetProbeBooksNoPendingRow:
         assert r.json()["payment_id"]                      # challenge intact
         assert supabase_lifecycle_capture["insert"] == []  # no phantom row
 
-    def test_post_challenge_still_books_pending_row(
+    def test_post_challenge_books_no_pending_row_either(
         self, client, supabase_lifecycle_capture
     ):
-        """Real callers POST — the fail-closed INSERT must be unchanged for
-        PAID tools. (Disk-IO fix 2026-08-04: $0 tools skip it — their 402
-        volume lives in probe_rollup instead.)"""
-        r = client.post("/tools/pre_trade_check/call", json={"parameters": {}})
-        assert r.status_code == 402
-        assert len(supabase_lifecycle_capture["insert"]) == 1
+        """Disk-IO fix #2 (2026-08-20): unpaid POSTs on paid tools no longer
+        book a pending row either — monitors POST paid tools around the
+        clock and never pay. The paid-tool pending_challenges mirror is
+        KEPT (persist=True) so a real payer can straddle a restart; the
+        payment_logs row is created at settle time."""
+        import gateway.x402 as x402_mod
+        calls = {"n": 0}
+        real = x402_mod.sb.store_pending_challenge
+
+        async def counting_store(**kw):
+            calls["n"] += 1
+        x402_mod.sb.store_pending_challenge = counting_store
+        try:
+            r = client.post("/tools/pre_trade_check/call", json={"parameters": {}})
+            assert r.status_code == 402
+            assert supabase_lifecycle_capture["insert"] == []
+            assert calls["n"] == 1     # durable challenge mirror survives
+        finally:
+            x402_mod.sb.store_pending_challenge = real
 
 
 class TestEndpointSafetyCgnat:

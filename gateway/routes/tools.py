@@ -43,7 +43,7 @@ from decimal import Decimal
 from gateway import base as base_pay
 from gateway import stacks as stacks_pay
 from gateway._limiter import limiter, wallet_or_ip
-from gateway.config import GATEWAY_URL, offered_pending_network, settings
+from gateway.config import GATEWAY_URL, settings
 from gateway.services.supabase import (
     correlate_pending_challenge,
     insert_pending_payment_log,
@@ -832,7 +832,24 @@ async def _issue_402(
     signal those rows carried moves to probe_rollup — every 402 issued
     (GET probe, free POST, paid POST) is counted per (day, tool, UA)
     and batch-flushed, so crawler/market telemetry survives without the
-    write churn. Paid tools keep the full fail-closed lifecycle.
+    write churn.
+
+    Disk-IO fix #2 (2026-08-20): unpaid POST 402s on PAID tools no longer
+    write a pending payment_logs row either. New external monitors
+    (CarbonMonitor, mako-pulse) POST the paid tools around the clock and
+    never pay — each such 402 was an INSERT plus a later abandoned-sweep
+    PATCH, re-depleting the Supabase Disk IO budget within two weeks of
+    fix #1. The payment_logs row is now created at SETTLE time (a real
+    payment header arrived): _execute_and_log INSERTs state='verified'
+    for every paid settle (both rails), and rejected real attempts get a
+    complete 'rejected' row via _record_rejected_attempt. Net effect:
+    payment_logs contains only real payment attempts; 402 volume lives in
+    probe_rollup. The pending_challenges mirror (persist=True) is KEPT
+    for paid POSTs — it is what lets a paying agent straddle a worker
+    restart mid-payment, it's a single small fire-and-forget INSERT, and
+    the table self-cleans. Bonus: issuing a 402 no longer awaits a
+    Supabase write round-trip and can no longer 503 on a Supabase blip —
+    the two failure modes external availability probers actually score.
     """
     agent_short = (agent_address or "unknown")[:8]
     logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=402_challenge")
@@ -859,39 +876,15 @@ async def _issue_402(
               else ("free_402" if is_free else "paid_402")),
     )
 
-    # Pre-402 payment_logs INSERT — awaited and fail-closed: the gateway
-    # refuses to issue challenges it cannot track. Network is the chain the
-    # 402 LEADS with (offered_pending_network: Base when configured, else
-    # Stellar) — NOT hardcoded Stellar, which mislabelled every abandoned-at-402
-    # row as stellar-mainnet and produced the "it's all Stellar" analytics
-    # artifact. A Base settlement later produces a second row keyed on tx_hash
-    # (x402-v2 doesn't carry the UUID through PAYMENT-SIGNATURE) and this one
-    # gets swept to 'abandoned'; the terminal PATCH overwrites the label with
-    # the chain that actually settled, so completed rows stay accurate.
-    if sb_enabled() and log_pending and not is_free:
-        client_ip  = request.client.host if request.client else None
-        user_agent = request.headers.get("user-agent")
-        row_id = await insert_pending_payment_log(
-            payment_id=challenge.payment_id,
-            tool_name=resolved,
-            network=offered_pending_network(),
-            amount_usdc=tool.price_usdc,
-            developer_address=tool.developer_address or None,
-            client_ip=client_ip,
-            user_agent=user_agent,
-            # Buyer-observability: what was ASKED, even when the 402 is later
-            # abandoned — the demand signal exists whether or not they pay.
-            parameters=body.parameters or None,
-        )
-        if row_id is None:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Supabase write failure — challenge issuance refused. "
-                    "The gateway will not issue 402 challenges it cannot persist. "
-                    "Retry shortly."
-                ),
-            )
+    # Disk-IO fix #2 (2026-08-20): NO pre-402 payment_logs INSERT — for any
+    # tool. The row is created at settle time instead (state='verified' in
+    # _execute_and_log, or 'rejected' via _record_rejected_attempt), so
+    # payment_logs only ever contains real payment attempts. Unpaid 402
+    # volume — overwhelmingly monitors/scanners that never pay — is counted
+    # in probe_rollup above. This also removes the awaited Supabase write
+    # (latency) and the fail-closed 503 (availability) from the 402 path;
+    # the financial fail-closed guarantee lives where the money is: the
+    # replay-store consume in verify_and_fulfill (AGE-60).
 
     base_option, payment_required_header, accepts_entry = _base_402_option(tool, resource_url)
 
@@ -987,6 +980,60 @@ async def _issue_402(
     return JSONResponse(status_code=402, content=body_content, headers=headers)
 
 
+# Rejection reasons that carry no analytics value: the payment_id doesn't
+# correspond to any known challenge (scanner garbage / long-expired probe) or
+# the header never parsed. Recording these per-event would just recreate the
+# bot write churn disk-IO fix #2 removed.
+_REJECTION_NOISE_MARKERS = (
+    "not found or expired",
+    "invalid x-payment header",
+)
+
+
+async def _record_rejected_attempt(
+    payment_id: str,
+    reason: str,
+    *,
+    tool_name: str,
+    network: str,
+    amount_usdc: str,
+    agent_address: Optional[str] = None,
+) -> None:
+    """Durably record a REJECTED real payment attempt (disk-IO fix #2).
+
+    With no pre-402 pending row to PATCH anymore, a rejected attempt would
+    otherwise vanish from payment_logs. Transition-safe two-step:
+      1. PATCH pending/verified → 'rejected' — covers rows from challenges
+         issued by a pre-fix deploy (and keeps the F3 expected_state guard:
+         a header-supplied pid can never clobber a terminal row).
+      2. If the PATCH confirmed 0 matches, INSERT a complete 'rejected'
+         row — unless the reason marks it as noise (unknown payment_id /
+         unparseable header), which is scanner traffic, not an attempt.
+    On an unknown PATCH outcome (None) we insert nothing: a transient blip
+    must not mint duplicate rows.
+    """
+    if not sb_enabled():
+        return
+    matched = await update_payment_log_state(
+        payment_id, "rejected", error_reason=reason,
+        expected_state=("pending", "verified"),
+    )
+    if matched != 0:
+        return
+    low = (reason or "").lower()
+    if any(m in low for m in _REJECTION_NOISE_MARKERS):
+        return
+    await insert_pending_payment_log(
+        payment_id=payment_id,
+        tool_name=tool_name,
+        network=network,
+        amount_usdc=amount_usdc,
+        state="rejected",
+        agent_address=agent_address,
+        error_reason=reason,
+    )
+
+
 async def _settle_stellar(
     tool_name: str, x_payment: str, agent_address: Optional[str],
 ) -> Union[dict, JSONResponse]:
@@ -1006,17 +1053,19 @@ async def _settle_stellar(
 
         # Terminal states are AWAITED so analytics are consistent at response
         # time. (A create_task here loses the race: there's no downstream
-        # await before the return.) If the header was malformed there's no
-        # UUID to PATCH; the pending row becomes 'abandoned' via the sweep.
+        # await before the return.) Disk-IO fix #2: there is no pending row
+        # anymore — _record_rejected_attempt PATCHes a legacy row if one
+        # exists (F3 expected_state guard intact) and otherwise INSERTs a
+        # complete 'rejected' row, unless the reason marks scanner noise.
         rejected_pid = (parse_payment_header(x_payment) or {}).get("id")
         if rejected_pid:
-            # F3 (2026-07-20): rejected_pid comes from the CALLER'S header —
-            # without the expected_state guard, replaying a known pid with a
-            # garbage tx_hash flips a terminal payment_done row to rejected
-            # (attacker-chosen error_reason), corrupting conversion KPIs.
-            await update_payment_log_state(
-                rejected_pid, "rejected", error_reason=auth["reason"],
-                expected_state=("pending", "verified"),
+            _t = registry.get_tool(tool_name)
+            await _record_rejected_attempt(
+                rejected_pid, auth["reason"],
+                tool_name=tool_name,
+                network=f"stellar-{settings.STELLAR_NETWORK}",
+                amount_usdc=str(getattr(_t, "price_usdc", "0") or "0"),
+                agent_address=agent_address,
             )
 
         return JSONResponse(
@@ -1025,17 +1074,10 @@ async def _settle_stellar(
         )
     logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=OK tx={auth.get('tx_hash','')[:16]}")
 
-    # Intermediate 'verified' PATCH — fire-and-forget. expected_state='pending'
-    # guards against this landing AFTER the awaited terminal payment_done
-    # PATCH (without it, rows stuck at 'verified' in production).
-    verified_pid = (parse_payment_header(x_payment) or {}).get("id")
-    if verified_pid:
-        asyncio.create_task(update_payment_log_state(
-            verified_pid, "verified",
-            expected_state="pending",
-            agent_address=agent_address,
-            tx_hash=auth.get("tx_hash"),
-        ))
+    # Disk-IO fix #2: the old fire-and-forget intermediate 'verified' PATCH
+    # is gone — there is no pending row to advance. _execute_and_log now
+    # INSERTs the state='verified' row for every paid settle (both rails)
+    # and the terminal PATCH lands on it (AGE-58 barrier unchanged).
     return auth
 
 
@@ -1148,9 +1190,14 @@ async def _settle_stacks_path(
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=FAILED "
                     f"reason={auth['reason']}")
         stacks_pay.forget_stacks_quote(payment_id)
-        await update_payment_log_state(
-            payment_id, "rejected", error_reason=auth["reason"],
-            expected_state=("pending", "verified"),
+        # Disk-IO fix #2: no pending row — record the rejected attempt
+        # (payment_id is bound to a KNOWN challenge here, so this is a real
+        # attempt, never scanner noise).
+        await _record_rejected_attempt(
+            payment_id, auth["reason"],
+            tool_name=tool.name,
+            network=f"stacks-{settings.STACKS_NETWORK}",
+            amount_usdc=str(tool.price_usdc or "0"),
         )
         return _reject(auth["reason"])
 
@@ -1187,9 +1234,11 @@ async def _settle_stacks_path(
                     f"state={settle['state']} reason={settle['reason']}")
         if settle["state"] == "rejected":
             stacks_pay.forget_stacks_quote(payment_id)
-            await update_payment_log_state(
-                payment_id, "rejected", error_reason=settle["reason"],
-                expected_state=("pending", "verified"),
+            await _record_rejected_attempt(
+                payment_id, settle["reason"],
+                tool_name=tool.name,
+                network=f"stacks-{settings.STACKS_NETWORK}",
+                amount_usdc=str(tool.price_usdc or "0"),
             )
             return _reject(settle["reason"])
         # uncertain → 502; the SDK keeps the spend recorded, support resolves.
@@ -1354,8 +1403,15 @@ async def _execute_and_log(
     # Resolved name so legacy aliases credit the canonical tool.
     registry.increment_call_count(resolved)
 
-    # Base success strands the UUID-keyed pending row; INSERT a tx_hash-keyed
-    # 'verified' row so the terminal PATCH has somewhere to land.
+    # Disk-IO fix #2 (2026-08-20): NO settle path has a pre-402 pending row
+    # anymore (Base never did — x402-v2 doesn't echo the UUID back; Stellar
+    # lost it when unpaid 402s stopped writing per-event rows). EVERY paid
+    # settle therefore INSERTs its own 'verified' row here — payment_id is
+    # the challenge UUID on Stellar and the tx_hash on Base/Stacks — and the
+    # terminal PATCH lands on it. Transition note: a Stellar challenge issued
+    # by a pre-fix deploy still has a legacy pending row; for ≤120s after
+    # deploy the terminal PATCH may then update two rows (no unique
+    # constraint on payment_id) — cosmetic, bounded by the challenge TTL.
     #
     # AGE-58: the insert runs CONCURRENTLY with tool execution (create_task —
     # no latency added to the hot path), but the task handle is kept and
@@ -1364,7 +1420,7 @@ async def _execute_and_log(
     # then the insert landed 'verified' — and the row never advanced
     # (the "stuck in verified / phantom-abandon" class, AGE-52).
     insert_task: Optional[asyncio.Task] = None
-    if is_base and sb_enabled() and not is_free_call:
+    if sb_enabled() and not is_free_call:
         insert_task = asyncio.create_task(insert_pending_payment_log(
             payment_id=payment_id,
             tool_name=resolved,
@@ -1389,6 +1445,10 @@ async def _execute_and_log(
         # Fire-and-forget on purpose: the payment already settled on-chain, so
         # analytics must never add latency or a failure mode to it. If this
         # misses, the row falls through to the sweep = today's behaviour.
+        # Disk-IO fix #2 note: new deploys write no pending 402 rows, so this
+        # only matches LEGACY rows (pre-fix deploys / pre-cutover backlog);
+        # once those age out it's a cheap no-op PATCH per real payment and can
+        # be removed together with the abandoned sweep.
         asyncio.create_task(correlate_pending_challenge(
             tool_name=resolved,
             client_ip=client_ip,
