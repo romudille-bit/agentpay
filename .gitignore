@@ -156,3 +156,6 @@ _to_delete/
 # Curation working doc (Drive-only, never commit)
 CURATION_REQUEST_DISCORD.md
 fuchss_history_*.json
+FUCHSS_PROBER_REPORT.md
+fuchss_trust_*.json
+fuchss_reports.json
