@@ -188,3 +188,167 @@ def summarize(result: dict) -> str:
                 f"paths canonical")
     fails = result.get("failures", [])
     return f"SELF-AUDIT FAILED ({len(fails)}): " + "; ".join(fails[:3])
+
+
+# ── AGE-108 phase 2: timed method-matrix (the AGE-135 instrument) ────────────
+# fuchss's EU vantage reads our paid tools' 402s at ~1.5s median with a
+# 5s–130s failure tail, while session_create reads 333ms — and a one-off US
+# vantage could not reproduce the gap. Nobody on our side was measuring our
+# own challenge latency per METHOD and per RESOURCE from outside; this is
+# that instrument. Monitoring only — results never enter service_scores.
+#
+# Every cell is an UNPAID request that must return 402 (AGE-134 pinned that
+# for every shape). Failures = wrong status / network error. Warnings =
+# latency anomalies (slow samples, or a tools-vs-session differential — the
+# AGE-135-class signature) — warnings never fail the audit, they surface in
+# the sweep note so a drift is seen the week it starts, not when an external
+# scorer prices it in.
+
+import statistics
+import time
+
+MATRIX_PATHS = (
+    "/v1/session/create",
+    "/tools/pre_trade_check/call",
+    "/tools/verified_route/call",
+)
+# The bazaar-declared example bodies — probe what we advertise agents send.
+MATRIX_BODIES = {
+    "/v1/session/create": {"max_spend": "0.10"},
+    "/tools/pre_trade_check/call":
+        {"parameters": {"symbol": "ETH", "size_usd": 50000, "side": "long"}},
+    "/tools/verified_route/call":
+        {"parameters": {"need": "dex pair liquidity", "budget_usd": 1}},
+}
+MATRIX_METHODS = ("GET", "HEAD", "POST-bare", "POST-json")
+SLOW_SAMPLE_S = 5.0          # any single sample slower than this is a warning
+DIFFERENTIAL_RATIO = 2.5     # tools median > ratio × session median → warning
+_SESSION_PATH = "/v1/session/create"
+
+
+def _timed_request(url: str, method: str, body: dict | None, timeout: int = 20):
+    """One unpaid request, timed to full body read. Returns (status, seconds).
+
+    status is None on a network-level error (DNS, reset, timeout) — exactly
+    the shape an external prober records as a hard availability failure.
+    """
+    if method == "GET":
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+    elif method == "HEAD":
+        req = urllib.request.Request(url, method="HEAD",
+                                     headers={"User-Agent": UA})
+    elif method == "POST-bare":
+        req = urllib.request.Request(url, method="POST",
+                                     headers={"User-Agent": UA})
+    else:  # POST-json — the bazaar example body
+        req = urllib.request.Request(
+            url, data=json.dumps(body or {}).encode(),
+            headers={"User-Agent": UA, "Content-Type": "application/json"})
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+            r.read()
+            return r.status, time.monotonic() - t0
+    except urllib.error.HTTPError as e:
+        e.read()
+        return e.code, time.monotonic() - t0
+    except Exception:
+        return None, time.monotonic() - t0
+
+
+def latency_matrix(gateway: str, samples: int = 3,
+                   request=_timed_request) -> dict:
+    """Probe MATRIX_PATHS × MATRIX_METHODS × samples, timed. Never raises.
+
+    Returns {ok, failures, warnings, cells}. cells[path][method] =
+    {n, ok_402, p50_s, max_s, statuses}. `ok` reflects FAILURES only
+    (non-402 / network error); latency anomalies are warnings.
+    """
+    failures: list[str] = []
+    warnings: list[str] = []
+    cells: dict = {}
+
+    for path in MATRIX_PATHS:
+        url = f"{gateway}{path}"
+        cells[path] = {}
+        for method in MATRIX_METHODS:
+            times: list[float] = []
+            statuses: list = []
+            ok_402 = 0
+            for _ in range(samples):
+                status, secs = request(url, method, MATRIX_BODIES.get(path))
+                statuses.append(status)
+                times.append(secs)
+                if status == 402:
+                    ok_402 += 1
+                else:
+                    failures.append(
+                        f"latency_matrix: {method} {path} → "
+                        f"{status if status is not None else 'network-error'} "
+                        f"(expected 402) in {secs:.2f}s")
+                if secs > SLOW_SAMPLE_S:
+                    warnings.append(
+                        f"latency_matrix: {method} {path} sample took "
+                        f"{secs:.2f}s (> {SLOW_SAMPLE_S:.0f}s) — external "
+                        f"probers score this band as a failure")
+            cells[path][method] = {
+                "n": samples, "ok_402": ok_402,
+                "p50_s": round(statistics.median(times), 3),
+                "max_s": round(max(times), 3),
+                "statuses": statuses,
+            }
+
+    # The AGE-135-class signature: a paid tool's challenge consistently slower
+    # than session_create's for the same method. Same vantage, same moment —
+    # a ratio here is a real differential, not an RTT artifact.
+    for method in MATRIX_METHODS:
+        base = cells.get(_SESSION_PATH, {}).get(method, {}).get("p50_s")
+        if not base or base <= 0:
+            continue
+        for path in MATRIX_PATHS:
+            if path == _SESSION_PATH:
+                continue
+            p50 = cells.get(path, {}).get(method, {}).get("p50_s")
+            if p50 and p50 > base * DIFFERENTIAL_RATIO and p50 - base > 0.5:
+                warnings.append(
+                    f"latency_matrix: {method} {path} p50 {p50:.2f}s vs "
+                    f"session_create {base:.2f}s ({p50 / base:.1f}x) — "
+                    f"AGE-135-class differential, investigate before an "
+                    f"external scorer prices it in")
+
+    return {"ok": not failures, "failures": failures,
+            "warnings": warnings, "cells": cells, "samples": samples}
+
+
+def summarize_matrix(result: dict) -> str:
+    """One line for the log / ledger note."""
+    cells = result.get("cells", {})
+    total = sum(c["n"] for m in cells.values() for c in m.values())
+    ok = sum(c["ok_402"] for m in cells.values() for c in m.values())
+    worst = max((c["max_s"] for m in cells.values() for c in m.values()),
+                default=0.0)
+    bits = [f"latency matrix {ok}/{total} 402s, worst sample {worst:.2f}s"]
+    if result.get("warnings"):
+        bits.append(f"{len(result['warnings'])} latency warning(s)")
+    if not result.get("ok"):
+        bits.append(f"{len(result.get('failures', []))} FAILURE(S)")
+    return " — ".join(bits)
+
+
+if __name__ == "__main__":  # instant on-demand health read
+    import sys as _sys
+    _gw = _sys.argv[1] if len(_sys.argv) > 1 else "https://agentpay.tools"
+    _r = audit(_gw)
+    print(summarize(_r))
+    for _f in _r["failures"]:
+        print(" !", _f)
+    _m = latency_matrix(_gw)
+    print(summarize_matrix(_m))
+    for _f in _m["failures"]:
+        print(" !", _f)
+    for _w in _m["warnings"]:
+        print(" ~", _w)
+    for _p, _methods in _m["cells"].items():
+        for _meth, _c in _methods.items():
+            print(f"   {_p:34s} {_meth:9s} p50={_c['p50_s']}s "
+                  f"max={_c['max_s']}s ok={_c['ok_402']}/{_c['n']}")

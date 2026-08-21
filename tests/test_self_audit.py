@@ -118,3 +118,85 @@ def test_free_tools_are_not_402_probed():
     r = self_audit.audit("https://g.test", get=get, post=post)
     assert r["ok"], r["failures"]
     assert r["checks"]["canonical_402"] == []
+
+
+# ── AGE-108 phase 2: latency matrix (the AGE-135 instrument) ─────────────────
+
+def _matrix_requester(status=402, secs=0.4, per_path_secs=None,
+                      per_call=None):
+    """Fake request fn. per_path_secs maps a path substring -> seconds;
+    per_call, if given, is a list popped per invocation of (status, secs)."""
+    calls = list(per_call or [])
+
+    def request(url, method, body, timeout=20):
+        if calls:
+            return calls.pop(0)
+        if per_path_secs:
+            for frag, s in per_path_secs.items():
+                if frag in url:
+                    return status, s
+        return status, secs
+    return request
+
+
+class TestLatencyMatrix:
+
+    def test_all_402_fast_is_clean(self):
+        r = self_audit.latency_matrix("https://g.test", samples=2,
+                                      request=_matrix_requester())
+        assert r["ok"] and not r["warnings"], (r["failures"], r["warnings"])
+        # 3 paths × 4 methods
+        assert len(r["cells"]) == 3
+        for methods in r["cells"].values():
+            assert set(methods) == set(self_audit.MATRIX_METHODS)
+            for c in methods.values():
+                assert c["ok_402"] == c["n"] == 2
+
+    def test_non_402_is_a_failure(self):
+        req = _matrix_requester(per_call=[(503, 0.2)])
+        r = self_audit.latency_matrix("https://g.test", samples=1, request=req)
+        assert not r["ok"]
+        assert any("503" in f for f in r["failures"])
+
+    def test_network_error_is_a_failure(self):
+        req = _matrix_requester(per_call=[(None, 20.0)])
+        r = self_audit.latency_matrix("https://g.test", samples=1, request=req)
+        assert not r["ok"]
+        assert any("network-error" in f for f in r["failures"])
+
+    def test_slow_sample_warns_but_does_not_fail(self):
+        req = _matrix_requester(per_call=[(402, 7.5)])
+        r = self_audit.latency_matrix("https://g.test", samples=1, request=req)
+        assert r["ok"]
+        assert any("7.50s" in w for w in r["warnings"])
+
+    def test_tools_vs_session_differential_warns(self):
+        """The AGE-135-class signature: paid-tool 402s consistently slower
+        than session_create's for the same method, same vantage."""
+        req = _matrix_requester(per_path_secs={
+            "/v1/session/create": 0.3,
+            "/tools/pre_trade_check/call": 1.5,
+            "/tools/verified_route/call": 1.5,
+        })
+        r = self_audit.latency_matrix("https://g.test", samples=3, request=req)
+        assert r["ok"]  # differential is a warning, never a failure
+        assert any("AGE-135-class differential" in w for w in r["warnings"])
+
+    def test_small_absolute_gap_does_not_warn(self):
+        """3x ratio but only 0.3s absolute — below the 0.5s floor, no noise."""
+        req = _matrix_requester(per_path_secs={
+            "/v1/session/create": 0.15,
+            "/tools/pre_trade_check/call": 0.45,
+            "/tools/verified_route/call": 0.45,
+        })
+        r = self_audit.latency_matrix("https://g.test", samples=3, request=req)
+        assert r["ok"] and not r["warnings"], r["warnings"]
+
+    def test_summarize_matrix_mentions_failures_and_warnings(self):
+        req = _matrix_requester(per_call=[(503, 0.2), (402, 9.0)])
+        r = self_audit.latency_matrix("https://g.test", samples=1, request=req)
+        s = self_audit.summarize_matrix(r)
+        assert "FAILURE" in s and "warning" in s
+        clean = self_audit.latency_matrix("https://g.test", samples=1,
+                                          request=_matrix_requester())
+        assert "12/12 402s" in self_audit.summarize_matrix(clean)

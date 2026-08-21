@@ -69,7 +69,9 @@ except ModuleNotFoundError:
     import probe  # type: ignore
 
 from agents.prober.self_audit import audit as audit_self
+from agents.prober.self_audit import latency_matrix as self_latency_matrix
 from agents.prober.self_audit import summarize as summarize_self_audit
+from agents.prober.self_audit import summarize_matrix as summarize_self_matrix
 from gateway import radar
 
 
@@ -401,6 +403,16 @@ def main() -> int:
         log("SELF-AUDIT FAILED — our own discovery contract is broken:")
         for f in self_audit["failures"]:
             log(f"  ! {f}")
+    # AGE-108 phase 2 / AGE-135 instrument: timed method-matrix from THIS
+    # external vantage. Failures (non-402) are contract breaks; warnings are
+    # latency anomalies (slow samples, tools-vs-session differential) — the
+    # drift an external scorer would price in weeks later. Monitoring only.
+    self_matrix = self_latency_matrix(GATEWAY)
+    log(summarize_self_matrix(self_matrix))
+    for f in self_matrix["failures"]:
+        log(f"  ! {f}")
+    for w in self_matrix["warnings"]:
+        log(f"  ~ {w}")
 
     # 1. SELECT
     ranked = rank_needs(needs, Decimal(str(max_spend)))
@@ -517,6 +529,12 @@ def main() -> int:
     if not self_audit["ok"]:
         note += (f"; SELF-AUDIT FAILED ({len(self_audit['failures'])} issue(s) "
                  f"on our own discovery surface)")
+    if not self_matrix["ok"]:
+        note += (f"; SELF-MATRIX FAILED ({len(self_matrix['failures'])} non-402 "
+                 f"response(s) on our own challenge surface)")
+    elif self_matrix["warnings"]:
+        note += (f"; self-matrix: {len(self_matrix['warnings'])} latency "
+                 f"warning(s) on our own 402s")
     if contested:
         note += ("; head-to-head delivery on " +
                  ", ".join(f"{n} ({len(r)} providers)" for n, r in contested.items()))
@@ -558,6 +576,8 @@ def main() -> int:
             "need_leaderboard": board,
             # AGE-108: monitoring only — never enters service_scores.
             "self_audit": self_audit,
+            # AGE-108 phase 2: timed method-matrix (the AGE-135 instrument).
+            "self_matrix": self_matrix,
         }},
         "receipt": receipt, "note": note,
     })
