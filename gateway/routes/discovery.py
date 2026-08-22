@@ -759,7 +759,7 @@ async def llms_txt():
 
 @router.get("/sitemap.xml", response_class=Response)
 async def sitemap():
-    from gateway.routes.prober import service_slug
+    from gateway.routes.prober import service_has_probe_data, service_slug
     from gateway.services.supabase import fetch_service_scores
 
     tools = registry.list_tools()
@@ -791,7 +791,11 @@ async def sitemap():
          if settings.STELLAR_NETWORK != "mainnet" else []) \
       + [(f"{GATEWAY_URL}/tools/{t.name}", None) for t in tools] \
       + [(f"{GATEWAY_URL}/s/{service_slug(u)}", _lastmod(scores[u]))
-         for u in sorted(scores)] \
+         # Only /s/ pages with real probe evidence enter the sitemap; the
+         # unprobed majority are near-identical shells that would dilute the
+         # domain (2026-08-22 — see service_has_probe_data). A page joins the
+         # sitemap automatically on its first probe result, lastmod stamped.
+         for u in sorted(scores) if service_has_probe_data(scores[u])] \
       + [(f"{GATEWAY_URL}/guides/{s}", g["published"])
          for s, g in sorted(GUIDES.items())]
 

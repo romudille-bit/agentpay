@@ -54,6 +54,27 @@ def service_slug(url: str) -> str:
     return f"{base}-{tail}"
 
 
+def service_has_probe_data(row: dict) -> bool:
+    """True when a service_scores row carries actual probe evidence — the
+    /s/ page for it says something unique (a delivery rate, real paid-probe
+    history) rather than the near-identical "unprobed" boilerplate.
+
+    Gate for search indexing (2026-08-22): the catalog grows faster than the
+    Prober probes it, so most /s/ pages are empty templates (~113 of 135 at
+    the time of this change). A sitemap where five of six URLs are duplicate
+    shells is a domain-level quality signal against the pages that DO carry
+    data — so unprobed pages serve with a robots noindex meta and stay out
+    of the sitemap until their first probe result lands (they remain live
+    for agents and humans; nothing 404s). One helper feeds both the sitemap
+    builder and the /s/ renderer so the two surfaces can never disagree."""
+    if row.get("delivery_rate") is not None:
+        return True
+    try:
+        return int(row.get("paid_probes") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 @router.get("/scores.json")
 async def scores_json():
     """Public delivery scores — the Prober's findings (AGE-20 stage 1).
@@ -457,7 +478,7 @@ async def service_page(slug: str):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{e(name)} — x402 delivery score | AgentPay Prober</title>
 <meta name="description" content="{e(desc)}">
-<link rel="canonical" href="https://agentpay.tools/s/{e(slug)}">
+{'<meta name="robots" content="noindex">' if not service_has_probe_data(row) else ''}<link rel="canonical" href="https://agentpay.tools/s/{e(slug)}">
 <meta property="og:title" content="{e(name)} — x402 delivery score">
 <meta property="og:description" content="{e(desc)}">
 <meta property="og:type" content="website">

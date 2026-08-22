@@ -187,3 +187,66 @@ class TestCrawlerDynamicServing:
                        headers={"User-Agent": BINGBOT_UA, "Accept": "*/*"})
         vary = r.headers.get("vary", "")
         assert "Accept" in vary and "User-Agent" in vary
+
+
+class TestUnprobedServiceGate:
+    """2026-08-22: unprobed /s/ pages are near-identical shells (~113 of 135
+    at gate time) that dilute the domain. They stay LIVE (agents still read
+    them) but carry a robots noindex meta and are excluded from the sitemap
+    until their first probe result lands. One helper —
+    service_has_probe_data — feeds both surfaces so they can't disagree."""
+
+    PROBED = {
+        "resource_url": "https://good.x/t", "name": "GoodTool",
+        "window_days": 30, "paid_probes": 2, "delivery_rate": 1.0,
+        "delivery_factor": 1.15, "latency_p50_ms": 1667, "flags": [],
+        "mpp_option": False, "usdg_option": False, "price_usdc": "0.02",
+        "updated_at": "2026-08-20T12:00:00+00:00",
+        "last_ok_at": "2026-08-20T12:00:00+00:00", "last_fail_at": None,
+    }
+    UNPROBED = {
+        "resource_url": "https://new.x/t", "name": "NewTool",
+        "window_days": 30, "paid_probes": 0, "delivery_rate": None,
+        "delivery_factor": 1.0, "latency_p50_ms": None, "flags": [],
+        "mpp_option": False, "usdg_option": False, "price_usdc": "0.01",
+        "last_ok_at": None, "last_fail_at": None,
+    }
+
+    def _patch_scores(self, monkeypatch):
+        async def _fake_scores():
+            return {"https://good.x/t": dict(self.PROBED),
+                    "https://new.x/t": dict(self.UNPROBED)}
+        from gateway.services import supabase
+        monkeypatch.setattr(supabase, "fetch_service_scores", _fake_scores)
+
+    def test_helper_contract(self):
+        from gateway.routes.prober import service_has_probe_data
+        assert service_has_probe_data(self.PROBED)
+        assert not service_has_probe_data(self.UNPROBED)
+        # rate present but probes 0 (rollup edge) still counts as evidence
+        assert service_has_probe_data({"delivery_rate": 0.0, "paid_probes": 0})
+        # junk-typed paid_probes fails closed (unindexed), not with a crash
+        assert not service_has_probe_data({"paid_probes": "n/a"})
+
+    def test_sitemap_lists_only_probed_service_pages(self, client, monkeypatch):
+        self._patch_scores(monkeypatch)
+        from gateway.routes.prober import service_slug
+        xml = client.get("/sitemap.xml").text
+        assert f"/s/{service_slug('https://good.x/t')}</loc>" in xml
+        assert service_slug("https://new.x/t") not in xml
+
+    def test_unprobed_page_serves_with_noindex(self, client, monkeypatch):
+        self._patch_scores(monkeypatch)
+        from gateway.routes.prober import service_slug
+        r = client.get(f"/s/{service_slug('https://new.x/t')}")
+        assert r.status_code == 200                      # page stays live
+        assert '<meta name="robots" content="noindex">' in r.text
+        assert "unprobed" in r.text
+
+    def test_probed_page_has_no_noindex(self, client, monkeypatch):
+        self._patch_scores(monkeypatch)
+        from gateway.routes.prober import service_slug
+        r = client.get(f"/s/{service_slug('https://good.x/t')}")
+        assert r.status_code == 200
+        assert 'content="noindex"' not in r.text
+        assert "100%" in r.text
