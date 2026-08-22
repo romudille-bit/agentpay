@@ -604,7 +604,7 @@ class TestNoFallbackAfterPayment:
     def test_pre_payment_failure_still_falls_back(self):
         """A 503 on the un-paid probe is pre-payment — fallback stays."""
         w = _session_wallet()
-        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00", fallback="auto")
         fallback_url = f"{GATEWAY}/tools/gas_tracker/call"
         with respx.mock:
             respx.get(f"{GATEWAY}/tools/token_price").mock(
@@ -779,7 +779,7 @@ class TestFallbackRespectsPolicies:
     def test_fallback_outside_allowlist_is_not_paid(self):
         w = _session_wallet()
         s = Session(w, gateway_url=GATEWAY, max_spend="1.00",
-                    allowed_tools=["token_price"])
+                    allowed_tools=["token_price"], fallback="auto")
         with respx.mock:
             respx.get(f"{GATEWAY}/tools/token_price").mock(
                 return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
@@ -797,7 +797,7 @@ class TestFallbackRespectsPolicies:
     def test_fallback_at_per_tool_cap_is_not_paid(self):
         w = _session_wallet()
         s = Session(w, gateway_url=GATEWAY, max_spend="1.00",
-                    max_per_tool={"gas_tracker": 0.001})
+                    max_per_tool={"gas_tracker": 0.001}, fallback="auto")
         s._call_log.append({"tool": "gas_tracker", "amount_usdc": "0.001"})
         with respx.mock:
             respx.get(f"{GATEWAY}/tools/token_price").mock(
@@ -853,7 +853,7 @@ class TestBudgetReservationLock:
         budget be overspent by a leg price. After the raise, _reserved must be
         back to exactly 0, never negative."""
         w = _session_wallet()
-        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00", fallback="auto")
 
         real_reserve = s._reserve
         calls = {"n": 0}
@@ -1185,7 +1185,7 @@ class TestCapExcludesOwnHold:
         """F1 sibling: the fallback fit check ran while the original hold
         was still reserved, so exact-fit fallbacks were falsely rejected."""
         w = _session_wallet()
-        s = Session(w, gateway_url=GATEWAY, max_spend="0.001")
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.001", fallback="auto")
         fallback_url = f"{GATEWAY}/tools/gas_tracker/call"
         with respx.mock:
             respx.get(f"{GATEWAY}/tools/token_price").mock(
@@ -1234,7 +1234,7 @@ class TestAbsorbAndReleaseAtomic:
         """Low from the follow-up review: if the fallback re-reserve raised,
         the finally re-absorbed the failed $0 leg → duplicate receipt rows."""
         w = _session_wallet()
-        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00", fallback="auto")
         fallback_url = f"{GATEWAY}/tools/gas_tracker/call"
         real_reserve = s._reserve
         calls = {"n": 0}
@@ -1283,3 +1283,83 @@ class TestVersionMatchesPyproject:
         assert agentpay.__version__ == m.group(1), (
             f"agentpay.__version__ ({agentpay.__version__}) != pyproject "
             f"({m.group(1)}) — bump both before publishing (F7)")
+
+
+class TestFallbackOptIn:
+    """AGE-118: tool substitution is opt-in; a typo is not a budget problem.
+
+    - Unknown tool → typed ToolNotFound, NEVER substituted (even with
+      fallback="auto" — the old code silently billed the cheapest
+      category="data" tool for a typo).
+    - Budget-breach rerouting only happens with Session(fallback="auto");
+      the default ("off") raises BudgetExceeded with no substitution.
+    - The kwarg is validated at construction.
+    """
+
+    def test_unknown_tool_raises_toolnotfound_default(self):
+        from agentpay import ToolNotFound          # public export
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_pricee").mock(
+                return_value=httpx.Response(404, json={"error": "not found"}))
+            with pytest.raises(ToolNotFound, match="token_pricee"):
+                s.call("token_pricee", {"symbol": "ETH"})
+        assert w.pay.call_count == 0
+        assert s.spent_usd() == Decimal("0")
+        assert not isinstance(ToolNotFound("x"), BudgetExceeded)
+
+    def test_unknown_tool_not_substituted_even_with_auto(self):
+        """fallback="auto" restores budget/pre-payment rerouting, but a typo'd
+        name still raises — there is no category to substitute within."""
+        from agentpay._wallet import ToolNotFound
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00", fallback="auto")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_pricee").mock(
+                return_value=httpx.Response(404, json={"error": "not found"}))
+            tools_route = respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            with pytest.raises(ToolNotFound):
+                s.call("token_pricee", {"symbol": "ETH"})
+        assert w.pay.call_count == 0
+        assert not tools_route.called      # no fallback lookup for a typo
+        assert s.spent_usd() == Decimal("0")
+
+    def test_budget_breach_default_raises_no_substitution(self):
+        """Default fallback="off": over-budget call raises BudgetExceeded and
+        the catalog is never consulted for a cheaper substitute."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="0.0005")   # < $0.001
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            tools_route = respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            with pytest.raises(BudgetExceeded):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 0
+        assert not tools_route.called
+        assert s.spent_usd() == Decimal("0")
+
+    def test_pre_payment_failure_default_does_not_reroute(self):
+        """Default fallback="off": a 503 before payment surfaces instead of
+        silently billing a sibling tool (AGE-55 path, now gated)."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
+            respx.post(TOOL_URL).mock(return_value=httpx.Response(503, text="down"))
+            tools_route = respx.get(f"{GATEWAY}/tools").mock(
+                return_value=httpx.Response(200, json=TOOLS_LIST))
+            with pytest.raises(PrePaymentError):
+                s.call("token_price", {"symbol": "ETH"})
+        assert w.pay.call_count == 0
+        assert not tools_route.called
+        assert s.spent_usd() == Decimal("0")
+
+    def test_fallback_kwarg_validated(self):
+        w = _session_wallet()
+        with pytest.raises(ValueError, match="fallback"):
+            Session(w, gateway_url=GATEWAY, max_spend="1.00", fallback="on")

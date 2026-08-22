@@ -35,6 +35,7 @@ from agentpay.client import (
     Session,
     ToolResult,
     BudgetExceeded,
+    ToolNotFound,
     PaymentFailed,
     UnsupportedChainPayment,
     PrePaymentError,
@@ -51,12 +52,13 @@ from agentpay.budget_policy import budget_policy, BudgetDecision
 # tests/test_agentpay_sdk.py::test_version_matches_pyproject (F7, 2026-07-20:
 # the 0.3.0 wheel shipped self-reporting 0.2.7 because only pyproject was
 # bumped). Bump BOTH, or the pre-publish test fails.
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 __all__ = [
     "AgentWallet",
     "Session",
     "ToolResult",
     "BudgetExceeded",
+    "ToolNotFound",
     "PaymentFailed",
     "UnsupportedChainPayment",
     "PrePaymentError",

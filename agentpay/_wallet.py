@@ -45,6 +45,16 @@ class BudgetExceeded(Exception):
     pass
 
 
+class ToolNotFound(Exception):
+    """Raised when the requested tool name does not exist on the gateway.
+
+    A typo'd or unknown tool is an input error, not a budget problem — it is
+    never substituted with another tool and never raises BudgetExceeded
+    (AGE-118). Check the name against GET {gateway_url}/tools.
+    """
+    pass
+
+
 class PaymentFailed(Exception):
     """
     Raised when the on-chain payment itself fails (insufficient funds,
@@ -1005,9 +1015,18 @@ class Session:
     """
     Budget-aware session for multi-tool agent tasks.
 
-    Enforces a hard spend cap across all tool calls, with automatic fallback
-    to the next-cheapest tool in the same category when budget is tight or a
-    tool is unavailable.
+    Enforces a hard spend cap across all tool calls. Tool substitution is
+    OPT-IN (AGE-118): by default (fallback="off") a call either runs the tool
+    you named or raises a typed exception — ToolNotFound for an unknown name,
+    BudgetExceeded when it doesn't fit. Pass fallback="auto" to restore
+    automatic rerouting to the next-cheapest tool in the same category when
+    the budget is tight or the named tool fails before any payment moved.
+
+    Cap semantics under substitution (fallback="auto"): allowed_tools and
+    max_per_tool are enforced against the tool ACTUALLY called (the resolved
+    target). A max_per_tool cap keyed to the requested name does NOT transfer
+    to a substitute — if you cap a tool, cap its plausible substitutes by
+    name too, or leave fallback off.
 
     Usage:
         with Session(wallet, gateway_url, max_spend="0.10") as s:
@@ -1027,6 +1046,7 @@ class Session:
         max_per_tool: dict[str, float] | None = None,
         rate_limit: int | None = None,
         prefer_chain: str | None = None,
+        fallback: str = "off",
     ):
         self.wallet = wallet
         self.gateway_url = gateway_url.rstrip("/")
@@ -1058,6 +1078,12 @@ class Session:
         }
         self._rate_limit: int | None = rate_limit   # max calls per minute
         self._rate_window: list[float] = []          # timestamps of recent calls
+        # AGE-118: tool substitution is OPT-IN. "off" (default) = the tool you
+        # named or a typed exception; "auto" = legacy behaviour (reroute to the
+        # cheapest same-category tool on budget breach or pre-payment failure).
+        if fallback not in ("auto", "off"):
+            raise ValueError(f'fallback must be "auto" or "off", got {fallback!r}')
+        self._fallback = fallback
 
     # ── Context manager ───────────────────────────────────────────────────────
 
@@ -1739,11 +1765,15 @@ class Session:
         spend on a specific URL, use max_per_tool={"https://…": cap}.
 
         - Pre-checks the price against remaining budget.
-        - If budget would be exceeded, looks for the next-cheapest tool in the
-          same category that fits, and uses it as a fallback.
-        - If the tool fails BEFORE any payment moved, also falls back; failures
-          after funds moved (or after a signed authorization was transmitted)
-          are never retried with a second payment.
+        - Raises ToolNotFound for an unknown registry tool name (never
+          substituted — a typo is an input error, not a budget problem;
+          AGE-118).
+        - With Session(fallback="auto") only: if budget would be exceeded, or
+          the tool fails BEFORE any payment moved, reroutes to the
+          next-cheapest tool in the same category that fits. Failures after
+          funds moved (or after a signed authorization was transmitted) are
+          never retried with a second payment. With the default
+          fallback="off", no substitution ever happens.
         - Raises BudgetExceeded if no affordable option exists, or if the 402
           demands more than the quoted price allows.
         - Records actual spend from the x402 payment receipt — including
@@ -1769,22 +1799,29 @@ class Session:
         _prefer_chain = (chain or self._prefer_chain or DEFAULT_PAID_CHAIN).lower()
 
         # ── Resolve which tool to actually call ───────────────────────────────
+        # AGE-118: an unknown tool name is an input error, full stop. It is
+        # never substituted (even with fallback="auto" — there is no category
+        # to substitute within; the old behaviour silently billed an unrelated
+        # category="data" tool for a typo) and it is not a budget problem, so
+        # it raises the typed ToolNotFound rather than BudgetExceeded.
         tool_info = self._fetch_tool_info(tool_name)
         if tool_info is None:
-            fallback = self._find_fallback(category="data", exclude=tool_name)
-            if fallback and not self.would_exceed(fallback["price_usdc"]):
-                logger.warning(f"'{tool_name}' not found — falling back to '{fallback['name']}'")
-                tool_info = fallback
-                tool_name = fallback["name"]
-            else:
-                raise BudgetExceeded(f"Tool '{tool_name}' not found on gateway")
+            raise ToolNotFound(
+                f"Tool '{tool_name}' not found on gateway {self.gateway_url} — "
+                f"check the name against GET {self.gateway_url}/tools"
+            )
 
         price = tool_info["price_usdc"]
         target = tool_name
 
         if self.would_exceed(price):
-            category = tool_info.get("category", "data")
-            fallback = self._find_fallback(category=category, exclude=target)
+            # AGE-118: budget-breach rerouting is opt-in (fallback="auto").
+            # Default "off" keeps budget semantics predictable: the tool you
+            # named either fits or the call raises BudgetExceeded.
+            fallback = None
+            if self._fallback == "auto":
+                category = tool_info.get("category", "data")
+                fallback = self._find_fallback(category=category, exclude=target)
             if fallback and not self.would_exceed(fallback["price_usdc"]):
                 logger.info(
                     f"  [budget] '{target}' costs {_fmt(price)}, "
@@ -1860,6 +1897,10 @@ class Session:
                 # paid retry) is treated as potentially-paid and re-raised —
                 # a fallback there would be a second payment.
                 if target != tool_name:
+                    raise
+                # AGE-118: pre-payment-failure rerouting is the same class of
+                # silent substitution — gated on the same opt-in switch.
+                if self._fallback != "auto":
                     raise
                 category = tool_info.get("category", "data")
                 fallback = self._find_fallback(category=category, exclude=target)

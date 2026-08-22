@@ -6,6 +6,41 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-22
+
+### Added
+- **Stacks sBTC settlement (testnet)** — the SDK can now pay x402 challenges
+  in sBTC over the Stacks rail. Opt-in only: `chain="stacks"` per call or
+  `Session(prefer_chain="stacks")`; it is never a silent default. The client
+  **signs and never broadcasts** — the gateway broadcasts the client-signed
+  transaction, so a hostile gateway can settle at most the signed amount
+  (nonce serialization + definitive-rejection reset included). `AgentWallet`
+  accepts `stacks_key=`, and Stacks-only wallets are supported (the Stellar
+  secret is optional). USD→sats pricing is quoted at 402-issuance with an
+  overpay tolerance, and the client-side safety floors
+  (`STACKS_MIN_BTC_USD`, `STACKS_SATS_TOLERANCE`) are clamped tighten-only.
+  Proven live on Stacks testnet (PoX-5):
+  `sbtc-token::transfer` in tx
+  `0xa5351bad31ed6bbcb57c0f9fcbcd997cc203b7011d62666176452edaed2d8c87`
+  (block 82215) — settled from a $0.05-capped `Session`, with the matching
+  over-cap call rejected before signing and zero value moved.
+
+### Changed
+- **BREAKING — tool substitution is now opt-in** (`Session(fallback=)`,
+  default `"off"`). Previously the Session silently rerouted to the cheapest
+  same-category tool when the named tool was over budget or failed before
+  payment — and an unknown (typo'd) tool name silently billed an unrelated
+  `category="data"` tool. Now: an unknown tool raises the new typed
+  `ToolNotFound` (never `BudgetExceeded`, never a substitute — even with
+  `fallback="auto"`); an over-budget call raises `BudgetExceeded`; a
+  pre-payment failure surfaces instead of rerouting. Pass
+  `fallback="auto"` to restore the old rerouting for budget-breach and
+  pre-payment-failure cases (post-payment behaviour is unchanged: a leg is
+  never retried with a second payment). Note on cap semantics under
+  `fallback="auto"`: `max_per_tool` binds the tool actually called — a cap
+  keyed to the requested name does not transfer to its substitute, so cap
+  plausible substitutes by name too.
+
 ### Fixed
 - **`accepted` now echoes the seller's accepts entry verbatim** (AGE-90,
   HIGH — unblocks ~half the paid x402 marketplace). The X-PAYMENT envelope's
