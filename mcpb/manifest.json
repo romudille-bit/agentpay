@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "agentpay",
   "display_name": "AgentPay",
-  "version": "2.3.0",
+  "version": "2.4.3",
   "description": "Priced, budget-capped, receipted access to live crypto & market-data tools over x402. 17 tools free (no API keys, no wallet), plus session_create (hard spend cap) and verified_route (buyer-side x402 trust oracle).",
   "long_description": "AgentPay gives an AI agent priced, budget-capped, and receipted access to live crypto and market-data tools over the x402 protocol — market snapshots, token prices, DeFi TVL and yields, derivatives (funding rates, open interest, order-book depth/slippage), contract-security screens, on-chain whale flows, gas, news, and more. 17 tools are free out of the box (no API keys, no wallet, no USDC), and every call returns a verifiable receipt. session_create opens a budget-capped session that enforces a hard spend cap across all calls; estimate_plan prices a multi-tool plan before you spend a cent; and verified_route is a keyless buyer-side trust preview that vets the x402 marketplace (sweeps listings, collapses sybil/factory clusters, ranks by real usage) and names the real, used provider for a need. Free tools run with an ephemeral identity; no private keys ever leave the user's machine.",
   "author": {
