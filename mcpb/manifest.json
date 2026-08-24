@@ -8,53 +8,134 @@
   "author": {
     "name": "romudille",
     "email": "romudille@gmail.com",
-    "url": "https://agentpay.tools"
+    "url": "https://github.com/romudille-bit"
   },
   "homepage": "https://agentpay.tools",
   "documentation": "https://github.com/romudille-bit/agentpay",
   "support": "https://github.com/romudille-bit/agentpay/issues",
   "license": "MIT",
-  "keywords": ["x402", "crypto", "ai-agents", "agent-payments", "coinmarketcap", "defi", "trust-oracle"],
+  "keywords": [
+    "x402",
+    "crypto",
+    "ai-agents",
+    "agent-payments",
+    "coinmarketcap",
+    "defi",
+    "trust-oracle"
+  ],
   "server": {
     "type": "node",
     "entry_point": "server/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/index.js"],
+      "args": [
+        "${__dirname}/server/index.js"
+      ],
       "env": {
         "AGENTPAY_GATEWAY_URL": "https://agentpay.tools"
       }
     }
   },
   "tools": [
-    { "name": "market_snapshot", "description": "Macro + crypto in one call: rates, inflation proxy, S&P 500, BTC, ETH, gas." },
-    { "name": "token_price", "description": "Live token price (CoinGecko)." },
-    { "name": "token_market_data", "description": "Market cap, 24h volume, ATH, and price change for a token." },
-    { "name": "gas_tracker", "description": "Ethereum gas prices (Etherscan)." },
-    { "name": "fear_greed_index", "description": "Crypto Fear & Greed index." },
-    { "name": "funding_rates", "description": "Perp funding rates across Binance, Bybit, OKX." },
-    { "name": "open_interest", "description": "Perp open interest (Binance, Bybit)." },
-    { "name": "orderbook_depth", "description": "Order-book depth and slippage at your size (Binance, Bybit)." },
-    { "name": "defi_tvl", "description": "DeFi TVL by protocol/chain (DeFiLlama)." },
-    { "name": "yield_scanner", "description": "DeFi yield opportunities across 18k+ pools (DeFiLlama)." },
-    { "name": "token_security", "description": "ERC-20 contract security screen (GoPlus)." },
-    { "name": "whale_activity", "description": "Large on-chain token transfers (Etherscan)." },
-    { "name": "wallet_balance", "description": "Wallet balance on Stellar or EVM." },
-    { "name": "crypto_news", "description": "Crypto headlines (Reddit r/CryptoCurrency)." },
-    { "name": "dune_query", "description": "Run a Dune Analytics query by id." },
-    { "name": "url_reader", "description": "Read any URL as clean text (Jina Reader)." },
-    { "name": "web_search", "description": "Web search (Jina)." },
-    { "name": "estimate_plan", "description": "Price a multi-tool plan BEFORE spending (per-step cost, total, fits-budget verdict)." },
-    { "name": "verified_route", "description": "Buyer-side x402 trust oracle (keyless preview): vets the marketplace, collapses sybils, names the real, used provider for a need." },
-    { "name": "route", "description": "Legacy alias of verified_route — buyer-side x402 marketplace routing." },
-    { "name": "session_create", "description": "Open a budget-capped spending session ($0.01) — a hard max-spend cap across calls. Settled via the agentpay-x402 SDK." },
-    { "name": "pre_trade_check", "description": "One-call pre-trade safety verdict ($0.01): slippage at size, funding carry, OI crowding, security. Settled via the agentpay-x402 SDK." }
+    {
+      "name": "market_snapshot",
+      "description": "Macro + crypto in one call: rates, inflation proxy, S&P 500, BTC, ETH, gas."
+    },
+    {
+      "name": "token_price",
+      "description": "Live token price (CoinGecko)."
+    },
+    {
+      "name": "token_market_data",
+      "description": "Market cap, 24h volume, ATH, and price change for a token."
+    },
+    {
+      "name": "gas_tracker",
+      "description": "Ethereum gas prices (Etherscan)."
+    },
+    {
+      "name": "fear_greed_index",
+      "description": "Crypto Fear & Greed index."
+    },
+    {
+      "name": "funding_rates",
+      "description": "Perp funding rates across Binance, Bybit, OKX."
+    },
+    {
+      "name": "open_interest",
+      "description": "Perp open interest (Binance, Bybit)."
+    },
+    {
+      "name": "orderbook_depth",
+      "description": "Order-book depth and slippage at your size (Binance, Bybit)."
+    },
+    {
+      "name": "defi_tvl",
+      "description": "DeFi TVL by protocol/chain (DeFiLlama)."
+    },
+    {
+      "name": "yield_scanner",
+      "description": "DeFi yield opportunities across 18k+ pools (DeFiLlama)."
+    },
+    {
+      "name": "token_security",
+      "description": "ERC-20 contract security screen (GoPlus)."
+    },
+    {
+      "name": "whale_activity",
+      "description": "Large on-chain token transfers (Etherscan)."
+    },
+    {
+      "name": "wallet_balance",
+      "description": "Wallet balance on Stellar or EVM."
+    },
+    {
+      "name": "crypto_news",
+      "description": "Crypto headlines (Reddit r/CryptoCurrency)."
+    },
+    {
+      "name": "dune_query",
+      "description": "Run a Dune Analytics query by id."
+    },
+    {
+      "name": "url_reader",
+      "description": "Read any URL as clean text (Jina Reader)."
+    },
+    {
+      "name": "web_search",
+      "description": "Web search (Jina)."
+    },
+    {
+      "name": "estimate_plan",
+      "description": "Price a multi-tool plan BEFORE spending (per-step cost, total, fits-budget verdict)."
+    },
+    {
+      "name": "verified_route",
+      "description": "Buyer-side x402 trust oracle (keyless preview): vets the marketplace, collapses sybils, names the real, used provider for a need."
+    },
+    {
+      "name": "route",
+      "description": "Legacy alias of verified_route — buyer-side x402 marketplace routing."
+    },
+    {
+      "name": "session_create",
+      "description": "Open a budget-capped spending session ($0.01) — a hard max-spend cap across calls. Settled via the agentpay-x402 SDK."
+    },
+    {
+      "name": "pre_trade_check",
+      "description": "One-call pre-trade safety verdict ($0.01): slippage at size, funding carry, OI crowding, security. Settled via the agentpay-x402 SDK."
+    }
   ],
   "tools_generated": true,
-  "privacy_policies": ["https://agentpay.tools/privacy"],
+  "privacy_policies": [
+    "https://agentpay.tools/privacy"
+  ],
   "compatibility": {
     "claude_desktop": ">=0.10.0",
-    "platforms": ["darwin", "win32"],
+    "platforms": [
+      "darwin",
+      "win32"
+    ],
     "runtimes": {
       "node": ">=18.0.0"
     }
