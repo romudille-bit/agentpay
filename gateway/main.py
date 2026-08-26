@@ -29,7 +29,7 @@ from registry import reload_tools
 
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
-from gateway.services import probe_rollup
+from gateway.services import leg_verifier, probe_rollup
 from gateway.routes.agent import router as agent_router
 from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
@@ -601,6 +601,12 @@ async def lifespan(app: FastAPI):
         # bot 402s no longer write per-event rows; their counts accumulate
         # in memory and land in payment_logs_daily_rollup once per window.
         asyncio.create_task(probe_rollup.flush_loop())
+        # AGE-142: chain-verify off-gateway receipt legs for /ledger (batch,
+        # every 6h, first pass ~90s after boot). Reads flagship_runs, pulls
+        # the run wallet's USDC transfers from Base RPC, caches matches in
+        # ledger_leg_verifications. Never runs at request time.
+        if settings.LEDGER_ENABLED and not getattr(settings, "LEG_VERIFIER_DISABLED", False):
+            asyncio.create_task(leg_verifier.verify_loop())
 
         # Async on-chain refund worker, gated by REFUND_ENABLED.
         # Picks up refund_pending rows, sends USDC back to the agent

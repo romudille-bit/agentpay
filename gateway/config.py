@@ -185,6 +185,11 @@ class Settings(BaseSettings):
     LEDGER_ENABLED: bool = True
     LEDGER_FLAGSHIP_ADDRESSES: str = ""
     LEDGER_RUN_CAP_USDC: str = "0.25"   # hard per-run cap the flagship runs under
+    # AGE-142: background chain-verification of off-gateway receipt legs
+    # (gateway/services/leg_verifier.py). Set true to skip scheduling the loop
+    # (tests, or an RPC outage) — the ledger then shows those legs as
+    # agent_attested, exactly as before.
+    LEG_VERIFIER_DISABLED: bool = False
 
     # Shared secret that gates POST /v1/flagship/run — the flagship agent posts
     # its run summary (plan, regime, verdicts, receipt, note) so /ledger can show

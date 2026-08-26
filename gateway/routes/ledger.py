@@ -41,8 +41,10 @@ from fastapi.responses import JSONResponse, Response
 
 from gateway._limiter import limiter
 from gateway.config import settings
+from gateway.services.leg_verifier import run_key as _run_key
 from gateway.services.supabase import (
     fetch_flagship_runs,
+    fetch_leg_verifications,
     insert_flagship_run,
     sb_enabled,
     sb_headers,
@@ -368,6 +370,7 @@ def attach_reasoning(runs: list[dict], metas: list[dict]) -> int:
             if mt and lo <= mt.timestamp() <= hi:
                 obj = m.get("objective") or {}
                 run["reasoning"] = {
+                    "run_at":     m.get("run_at"),
                     "objective":  obj,
                     "kind":       obj.get("kind") or "pre_trade",
                     "goal_text":  obj.get("goal_text") or "",
@@ -390,6 +393,7 @@ def attach_reasoning(runs: list[dict], metas: list[dict]) -> int:
 def _run_view_from_breakdown(
     breakdown: list[dict], cap: Decimal,
     verified_legs: "Counter | None" = None,
+    chain_legs: "dict[int, dict] | None" = None,
 ) -> dict:
     """Walk an SDK receipt breakdown into the ledger's run-view fields
     (timeline, paid_calls, counts, spend). Shared by reconcile_from_receipt
@@ -406,20 +410,29 @@ def _run_view_from_breakdown(
                            (a holder of the ingest secret can't reuse a single
                            real hash across many fabricated legs to inflate
                            "verified" spend).
-        "agent_attested" — no matching unconsumed on-chain leg. Either a
-                           legitimate off-gateway leg (direct agent→seller x402,
-                           which never touches our books) or a fabricated entry
+        "onchain_chain"  — AGE-142: not settled through the gateway, but the
+                           leg-verifier found a matching USDC transfer FROM the
+                           run's wallet on Base in the run window (see
+                           gateway/services/leg_verifier.py; `chain_legs` is
+                           {leg_index: cached row} for THIS run). We observed
+                           the settlement rather than performing it — hence the
+                           distinct label; `verification_method` says how it
+                           matched (chain:hash / chain:amount+payto / chain:amount).
+        "agent_attested" — no matching unconsumed on-chain leg and no chain
+                           evidence. Either a legitimate off-gateway leg whose
+                           transfer we could not locate, or a fabricated entry
                            — indistinguishable from here, so NOT presented as
                            on-chain-verified.
     NOTE: not pure — consumes from the passed Counter, which is shared across
     all runs in one ledger render so matches can't be double-spent between
     reconcile and synthesize. `verified_legs=None` → all paid legs attested."""
     vlegs = verified_legs if verified_legs is not None else Counter()
+    clegs = chain_legs or {}
     steps: list[dict] = []
     paid_calls: list[dict] = []
     spent = Decimal("0")
-    verified_spent = attested_spent = Decimal("0")
-    free_count = paid_count = attested_count = 0
+    verified_spent = attested_spent = chain_spent = Decimal("0")
+    free_count = paid_count = attested_count = chain_count = 0
 
     for i, e in enumerate(breakdown, start=1):
         raw_tool = e.get("tool")
@@ -444,23 +457,38 @@ def _run_view_from_breakdown(
             verified = bool(key and vlegs.get(key, 0) > 0)
             if verified:
                 vlegs[key] -= 1
-            verification = "onchain" if verified else "agent_attested"
+            method: str | None = "gateway" if verified else None
+            if verified:
+                verification = "onchain"
+                verified_spent += amt
+            elif i in clegs and _money_to_dec(clegs[i].get("amount_usdc")) == amt:
+                # AGE-142: chain evidence for this leg (cached by the verifier).
+                # The cached amount must equal the receipt's — a mismatch means
+                # the receipt changed under the cache; treat as unverified.
+                row = clegs[i]
+                verification = "onchain_chain"
+                tx = tx or row.get("tx_hash") or None
+                method = f"chain:{row.get('method') or 'amount'}"
+                chain_spent += amt
+                chain_count += 1
+                verified_spent += amt
+            else:
+                verification = "agent_attested"
+                attested_spent += amt
+                attested_count += 1
             # Only surface an explorer link for legs we could actually verify —
             # a link on an unverified hash reads as "we checked this" when we
             # didn't.
-            explorer = _explorer_url(net, tx) if verified else None
-            if verified:
-                verified_spent += amt
-            else:
-                attested_spent += amt
-                attested_count += 1
+            explorer = _explorer_url(net, tx) if verification != "agent_attested" else None
             step.update({"kind": "paid", "network": net,
                          "tx_hash": tx, "explorer_url": explorer,
-                         "verification": verification})
+                         "verification": verification,
+                         "verification_method": method})
             paid_calls.append({
                 "tool": name, "amount_usdc": f"{amt:.2f}", "network": net,
                 "tx_hash": tx, "explorer_url": explorer,
                 "verification": verification,
+                "verification_method": method,
                 "spent_after_usdc": f"{spent:.2f}",
                 "remaining_after_usdc": f"{(cap - spent):.2f}",
             })
@@ -477,16 +505,32 @@ def _run_view_from_breakdown(
         "remaining_usdc": f"{(cap - spent):.2f}",
         "under_cap": spent <= cap,
         # AGE-63: verification breakdown for this receipt-derived view.
+        # verified = gateway-settled + chain-verified (AGE-142); the chain
+        # share is broken out so a reader can tell observed from performed.
         "verified_spent_usdc": f"{verified_spent:.2f}",
+        "chain_verified_spent_usdc": f"{chain_spent:.2f}",
+        "chain_verified_paid_count": chain_count,
         "attested_spent_usdc": f"{attested_spent:.2f}",
         "attested_paid_count": attested_count,
         "has_attested_spend": attested_count > 0,
+        "has_chain_verified_spend": chain_count > 0,
     }
+
+
+def _chain_legs_for(chain_index: "dict[tuple[str, int], dict] | None",
+                    run_at) -> dict[int, dict]:
+    """Slice the global verification cache down to one run: {leg_index: row}."""
+    if not chain_index or not run_at:
+        return {}
+    k = _run_key(run_at)
+    return {idx: row for (rk, idx), row in chain_index.items()
+            if rk == k and idx >= 0}
 
 
 def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
                                run_cap: str = "0.25",
-                               verified_legs: "Counter | None" = None) -> int:
+                               verified_legs: "Counter | None" = None,
+                               chain_index: "dict[tuple[str, int], dict] | None" = None) -> int:
     """Surface runs that never touched payment_logs at all. PURE — mutates
     `runs` in place (keeps newest-first order); returns the count added.
 
@@ -518,7 +562,8 @@ def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
         if not isinstance(breakdown, list):
             breakdown = []
         cap = _dec(obj.get("cap_usdc") or m.get("max_spend") or run_cap)
-        view = _run_view_from_breakdown(breakdown, cap, verified_legs)
+        view = _run_view_from_breakdown(breakdown, cap, verified_legs,
+                                        _chain_legs_for(chain_index, m.get("run_at")))
         runs.append({
             "started": m.get("run_at"),
             "ended": m.get("run_at"),
@@ -601,7 +646,8 @@ def preconsume_rendered_legs(runs: list[dict],
 
 
 def reconcile_from_receipt(runs: list[dict],
-                           verified_legs: "Counter | None" = None) -> int:
+                           verified_legs: "Counter | None" = None,
+                           chain_index: "dict[tuple[str, int], dict] | None" = None) -> int:
     """Rebuild a strategy run's timeline from its SDK receipt breakdown.
 
     PURE — mutates `runs` in place; returns the count reconciled. The
@@ -624,7 +670,9 @@ def reconcile_from_receipt(runs: list[dict],
         breakdown = ((run.get("reasoning") or {}).get("receipt") or {}).get("breakdown")
 
         cap = _dec(run.get("cap_usdc"))
-        run.update(_run_view_from_breakdown(breakdown, cap, verified_legs))
+        run_at = (run.get("reasoning") or {}).get("run_at") or run.get("started")
+        run.update(_run_view_from_breakdown(breakdown, cap, verified_legs,
+                                            _chain_legs_for(chain_index, run_at)))
         run["reconciled_from_receipt"] = True
         reconciled += 1
     return reconciled
@@ -645,14 +693,26 @@ def _recompute_totals(data: dict) -> None:
          if r.get("attested_spent_usdc") is not None),
         Decimal("0"),
     )
+    chain = sum(
+        (_dec(r.get("chain_verified_spent_usdc")) for r in runs
+         if r.get("chain_verified_spent_usdc") is not None),
+        Decimal("0"),
+    )
+    verified = spent - attested
     data["totals"] = {
         **data.get("totals", {}),
         "runs": len(runs),
         "paid_calls": sum(int(r.get("paid_count") or 0) for r in runs),
         "free_calls": sum(int(r.get("free_count") or 0) for r in runs),
         "spent_usdc": f"{spent:.2f}",
-        "verified_spent_usdc": f"{(spent - attested):.2f}",
+        # AGE-142: verified = performed (gateway) + observed (chain); both
+        # broken out so nobody reads "verified" as "all settled by us".
+        "verified_spent_usdc": f"{verified:.2f}",
+        "gateway_verified_spent_usdc": f"{(verified - chain):.2f}",
+        "chain_verified_spent_usdc": f"{chain:.2f}",
         "attested_spent_usdc": f"{attested:.2f}",
+        "attested_paid_calls": sum(int(r.get("attested_paid_count") or 0) for r in runs),
+        "verified_share": (f"{(verified / spent):.3f}" if spent > 0 else None),
     }
 
 
@@ -748,10 +808,15 @@ async def ledger_json(request: Request):
     # never touched payment_logs at all (the prober's probe_sweeps pay sellers
     # directly), then refresh headline totals. Same Counter flows through both
     # so a match consumed by one can't be re-counted by the other.
-    data["runs_reconciled"] = reconcile_from_receipt(data["runs"], verified_legs)
+    # AGE-142: chain-verification cache for receipt-derived legs (batch-
+    # written by gateway/services/leg_verifier.py; {} until the migration and
+    # first cycle land — then those legs simply stay agent_attested).
+    chain_index = await fetch_leg_verifications()
+    data["runs_reconciled"] = reconcile_from_receipt(data["runs"], verified_legs,
+                                                     chain_index)
     data["runs_synthesized"] = synthesize_offgateway_runs(
         data["runs"], metas, run_cap=settings.LEDGER_RUN_CAP_USDC,
-        verified_legs=verified_legs)
+        verified_legs=verified_legs, chain_index=chain_index)
     if data["runs_reconciled"] or data["runs_synthesized"]:
         _recompute_totals(data)
     addrs = _flagship_addresses()
@@ -915,6 +980,7 @@ _LEDGER_HTML = r"""<!doctype html>
   .tbud{flex:none;color:var(--mut);font-size:11.5px;min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
   .tlink{flex:none;font-size:11px}
   .tatt{flex:none;font-size:9.5px;border-radius:5px;padding:1px 6px;background:#241f14;color:#d8a24a;border:1px solid #3a3020;letter-spacing:.02em;cursor:help}
+  .tchain{flex:none;font-size:9.5px;border-radius:5px;padding:1px 6px;background:#12241a;color:#5fc48a;border:1px solid #1f3a2a;letter-spacing:.02em;cursor:help}
   .attnote{font-size:11px;color:var(--mut);margin:2px 0 8px;line-height:1.5}
   .attnote .tatt{cursor:default}
   .verds{margin:2px 0}
@@ -1026,7 +1092,11 @@ function execStep(run){
     let mark = "";
     if(s.kind==="paid"){
       if(s.verification==="agent_attested"){
-        mark = `<span class="tatt" title="Reported by the agent's signed receipt; not settled through AgentPay's gateway, so not independently verified here">agent-attested</span>`;
+        mark = `<span class="tatt" title="Reported by the agent's signed receipt; not settled through AgentPay's gateway and no matching USDC transfer from the agent's wallet was found on Base, so not independently verified">agent-attested</span>`;
+      } else if(s.verification==="onchain_chain"){
+        const how = (s.verification_method||"chain").replace("chain:","");
+        mark = `<span class="tchain" title="Not settled through AgentPay's gateway; AgentPay located the USDC transfer from the agent's wallet on Base for this leg (match: ${esc(how)})">chain-verified</span>`
+             + (s.explorer_url? ` <a class="tlink" href="${esc(s.explorer_url)}" target="_blank" rel="noopener">tx ↗</a>` : "");
       } else if(s.explorer_url){
         mark = `<a class="tlink" href="${esc(s.explorer_url)}" target="_blank" rel="noopener">tx ↗</a>`;
       }
@@ -1039,8 +1109,8 @@ function execStep(run){
       ${mark}</li>`;
   }).join("");
   if(!items) return "";
-  const note = run.has_attested_spend
-    ? `<div class="attnote">Some legs in this run settled directly between the agent and the seller (off-gateway), so AgentPay can't independently verify them — they're marked <span class="tatt">agent-attested</span>. On-chain legs link to a block explorer.</div>`
+  const note = (run.has_attested_spend || run.has_chain_verified_spend)
+    ? `<div class="attnote">Legs that settled directly between the agent and the seller (off-gateway) are <span class="tchain">chain-verified</span> when AgentPay located the matching USDC transfer from the agent's wallet on Base, and <span class="tatt">agent-attested</span> when it could not. Gateway-settled legs link straight to the explorer.</div>`
     : "";
   return `<div class="dstep"><div class="dhead"><span class="dnum">2</span> Spend under the cap — step by step</div>
     ${note}<ul class="tl">${items}</ul></div>`;
@@ -1208,7 +1278,8 @@ async function run(){
       <div class="kpi"><div class="n">${t.runs||0}</div><div class="l">runs</div></div>
       <div class="kpi"><div class="n">${t.paid_calls||0}</div><div class="l">paid data calls</div></div>
       <div class="kpi"><div class="n">${t.free_calls||0}</div><div class="l">free data calls</div></div>
-      <div class="kpi"><div class="n ac">${money(t.spent_usdc)}</div><div class="l">total intel spent</div></div>`;
+      <div class="kpi"><div class="n ac">${money(t.spent_usdc)}</div><div class="l">total intel spent</div></div>
+      <div class="kpi" title="gateway-settled ${money(t.gateway_verified_spent_usdc||t.verified_spent_usdc)} + chain-verified ${money(t.chain_verified_spent_usdc||'0')}; agent-attested ${money(t.attested_spent_usdc||'0')}"><div class="n">${t.verified_share!=null? Math.round(parseFloat(t.verified_share)*100)+'%' : '—'}</div><div class="l">on-chain verified</div></div>`;
 
     if(!(d.runs&&d.runs.length)){ runs.innerHTML='<div class="msg">No completed runs recorded yet.</div>'; return; }
     runs.innerHTML = d.runs.map(run=>{

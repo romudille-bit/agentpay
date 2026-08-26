@@ -40,6 +40,55 @@ USDC_ISSUER_MAINNET = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
+
+def _settlement_from_headers(headers) -> dict | None:
+    """Parse the x402 settlement header a seller returns on a paid 200.
+
+    v2: `PAYMENT-RESPONSE`, v1: `X-PAYMENT-RESPONSE` — base64 (standard or
+    urlsafe, padding optional) JSON like
+    {"success": true, "transaction": "0x…", "network": "eip155:8453",
+     "payer": "0x…"}. Some servers spell the hash txHash / tx_hash /
+    transactionHash. Returns {"tx_hash", "network", "payer", "success"} or
+    None when absent/undecodable. Never raises — a bad header must not turn
+    a successful paid call into a failure (the spend is already booked)."""
+    if not headers:
+        return None
+    raw = None
+    for name in ("PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"):
+        try:
+            raw = headers.get(name)
+        except Exception:
+            raw = None
+        if raw:
+            break
+    if not raw:
+        return None
+    try:
+        text = str(raw).strip()
+        data = None
+        if text.startswith("{"):
+            data = json.loads(text)
+        else:
+            padded = text + "=" * (-len(text) % 4)
+            for dec in (base64.b64decode, base64.urlsafe_b64decode):
+                try:
+                    data = json.loads(dec(padded).decode("utf-8"))
+                    break
+                except Exception:
+                    continue
+        if not isinstance(data, dict):
+            return None
+        tx = (data.get("transaction") or data.get("txHash") or data.get("tx_hash")
+              or data.get("transactionHash") or "")
+        return {
+            "tx_hash": str(tx) if tx else "",
+            "network": str(data.get("network") or "") or None,
+            "payer": str(data.get("payer") or "") or None,
+            "success": data.get("success"),
+        }
+    except Exception:
+        return None
+
 class BudgetExceeded(Exception):
     """Raised when a tool call would exceed the session budget."""
     pass
@@ -1681,7 +1730,20 @@ class Session:
                 result = retry.json()
                 if isinstance(result, dict):
                     tx_hash = ((result.get("payment") or {}).get("tx_hash")) or ""
-                    entry["tx_hash"] = tx_hash
+                # AGE-142: third-party sellers don't wrap the settlement in our
+                # JSON envelope — the x402 standard puts it in the
+                # PAYMENT-RESPONSE (v2) / X-PAYMENT-RESPONSE (v1) header as
+                # base64 JSON {success, transaction, network, payer}. Without
+                # this every off-gateway leg carried tx_hash="" and could never
+                # be verified on /ledger (0 of 106 settled prober legs had one).
+                if not tx_hash:
+                    settled = _settlement_from_headers(retry.headers)
+                    if settled:
+                        tx_hash = settled.get("tx_hash") or ""
+                        if settled.get("network"):
+                            entry["network"] = settled["network"]
+                        entry["settlement_source"] = "header"
+                entry["tx_hash"] = tx_hash
             else:
                 # Stellar: broadcast the payment, then prove it with the tx_hash.
                 # AGE-74: bind the memo to this call (resource + fresh nonce)

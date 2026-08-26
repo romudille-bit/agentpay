@@ -1460,6 +1460,94 @@ async def fetch_flagship_runs(limit: int = 200) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Ledger chain verification — ledger_leg_verifications (AGE-142)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LEG_VERIFICATION_COLUMNS = (
+    "run_at", "leg_index", "tx_hash", "to_addr", "amount_usdc",
+    "wallet", "network", "method", "verified_at",
+)
+
+
+async def fetch_leg_verifications(limit: int = 5000) -> dict[tuple[str, int], dict]:
+    """All cached chain-verification rows, keyed on (run_key(run_at),
+    leg_index) — the key the verifier and the ledger view both use. {} when
+    disabled / table missing / error (the ledger then renders the legs as
+    agent_attested, exactly as before AGE-142)."""
+    if not sb_enabled():
+        return {}
+    from gateway.services.leg_verifier import run_key
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/ledger_leg_verifications",
+                headers={**sb_headers(), "Accept": "application/json"},
+                params={"select": ",".join(_LEG_VERIFICATION_COLUMNS),
+                        "order": "run_at.desc", "limit": str(limit)},
+            )
+        if resp.status_code != 200:
+            if resp.status_code != 404:      # 404 = migration not applied yet
+                logger.error(f"fetch_leg_verifications error: HTTP {resp.status_code}")
+            return {}
+        return {(run_key(r.get("run_at")), int(r.get("leg_index"))): r
+                for r in resp.json()}
+    except Exception as e:
+        logger.error(f"fetch_leg_verifications failure: {e}")
+        return {}
+
+
+async def upsert_leg_verifications(rows: list[dict]) -> bool:
+    """UPSERT verification rows on (run_at, leg_index). True on success."""
+    if not sb_enabled() or not rows:
+        return False
+    payload = [{k: r.get(k) for k in _LEG_VERIFICATION_COLUMNS} for r in rows]
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/ledger_leg_verifications",
+                headers={**sb_headers(),
+                         "Prefer": "resolution=merge-duplicates,return=minimal"},
+                params={"on_conflict": "run_at,leg_index"},
+                json=payload,
+            )
+        if resp.status_code not in (200, 201, 204):
+            logger.error(f"upsert_leg_verifications error: HTTP {resp.status_code} "
+                         f"body={resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"upsert_leg_verifications failure: {e}")
+        return False
+
+
+async def fetch_payto_hints(limit: int = 5000) -> dict[str, str]:
+    """{resource_url_lower: pay_to_lower} from the newest service_probes rows
+    that carry a payTo — lets the verifier match a receipt leg (tool = URL)
+    to the seller's address, not just the amount."""
+    if not sb_enabled():
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/service_probes",
+                headers={**sb_headers(), "Accept": "application/json"},
+                params={"select": "resource_url,pay_to", "pay_to": "not.is.null",
+                        "order": "probed_at.desc", "limit": str(limit)},
+            )
+        if resp.status_code != 200:
+            return {}
+        hints: dict[str, str] = {}
+        for r in resp.json():
+            u, p = str(r.get("resource_url") or "").lower(), str(r.get("pay_to") or "").lower()
+            if u and p and u not in hints:       # newest wins (rows are desc)
+                hints[u] = p
+        return hints
+    except Exception as e:
+        logger.error(f"fetch_payto_hints failure: {e}")
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Active Prober — service_probes / service_scores (AGE-6)
 # ─────────────────────────────────────────────────────────────────────────────
 #
