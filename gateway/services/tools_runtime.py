@@ -1640,8 +1640,19 @@ async def _fetch_verified_route(client: httpx.AsyncClient, params: dict) -> dict
 
     # Delivery scores from the Prober (AGE-6/7): unprobed = neutral factor 1.0;
     # a service flagged took_payment_no_delivery is listed but never recommended.
-    from gateway.services.supabase import fetch_service_scores
+    from gateway.services.supabase import fetch_provider_depth, fetch_service_scores
     scores = await fetch_service_scores()
+    # AGE-138: on-chain payer depth per payTo (cached; {} = unweighted).
+    depth = await fetch_provider_depth()
 
-    return radar.verified_route_from_payloads(payloads, need=need, budget=budget,
-                                              chain=chain, scores=scores)
+    result = radar.verified_route_from_payloads(payloads, need=need, budget=budget,
+                                                chain=chain, scores=scores, depth=depth)
+    # AGE-138: keep what the sweep resolved (payTo → host/URLs/need) for the
+    # map — held in memory, written by the rollup flush, never from here.
+    try:
+        from gateway.services import provider_map
+        cands = radar.filter_chain(radar.parse_resources(radar.merge_resources(payloads)), chain)
+        provider_map.remember(radar.providers_from_candidates(cands, need=need, source="sweep"))
+    except Exception as e:  # pragma: no cover — never fail a paid call over telemetry
+        logger.debug(f"[verified_route] provider_map remember skipped: {e}")
+    return result

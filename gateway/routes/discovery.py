@@ -126,10 +126,11 @@ async def discovery_arbitrum(
     try:
         # Prober delivery scores (AGE-7): best-effort — {} = every service
         # unprobed = neutral factor, so a Supabase blip never breaks discovery.
-        from gateway.services.supabase import fetch_service_scores
+        from gateway.services.supabase import fetch_provider_depth, fetch_service_scores
         scores = await fetch_service_scores()
+        depth = await fetch_provider_depth()     # AGE-138: cached, {} on blip
         result = radar.rank_from_payload(data, need, budget_dec, chain=chain,
-                                         scores=scores)
+                                         scores=scores, depth=depth)
     except Exception as e:
         logger.exception("Radar: ranking failed: %s", e)
         raise HTTPException(status_code=500, detail="discovery ranking failed")

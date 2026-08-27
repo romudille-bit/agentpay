@@ -1559,6 +1559,165 @@ async def fetch_payto_hints(limit: int = 5000) -> dict[str, str]:
 # Behaviour: best-effort. A missing table or Supabase blip logs + returns
 # False/[] so a prober ingest never hard-fails over storage.
 
+# ── AGE-138: provider_map (entity) + provider_depth (on-chain payer shape) ───
+# Both are BATCH tables (db/migrations/provider_map.sql). provider_depth is
+# written by tools/payer_depth.py (weekly, from a laptop; keyless x402scan
+# source) and only READ here — cached in-process because it changes weekly
+# and verified_route/discovery would otherwise hit PostgREST per request.
+# provider_map is upserted by the prober ingest (once per sweep) and by the
+# rollup flush (verified_route discoveries held in memory) — merged in Python
+# first, because PostgREST's merge-duplicates overwrites jsonb/array columns.
+
+_DEPTH_TTL_SECONDS = 600
+_depth_cache: dict = {"at": 0.0, "rows": None}
+
+_DEPTH_COLUMNS = ("pay_to", "network", "window_days", "payers", "legs", "usd",
+                  "returning_payers", "retention", "effective_payers",
+                  "payer_quality", "prober_share", "first_leg_at", "last_leg_at",
+                  "source", "updated_at")
+# Present only when the x402scan-source addenda have been applied.
+_DEPTH_COLUMNS_OPTIONAL = ("sampled", "total_legs_30d", "total_payers_30d")
+
+_MAP_COLUMNS = ("pay_to", "network", "host", "display_name", "resource_urls",
+                "categories", "sources", "first_seen", "last_seen", "listings",
+                "evidence", "claimed_by", "claim_proof")
+
+
+def _depth_cache_clear() -> None:
+    _depth_cache["at"], _depth_cache["rows"] = 0.0, None
+
+
+async def fetch_provider_depth(force: bool = False) -> dict[str, dict]:
+    """{pay_to: provider_depth row} for Base (eip155:8453), cached 10 min.
+    {} when disabled / table missing / error → decide() falls back to the
+    unweighted formula for every listing (never punish absence of data)."""
+    if not sb_enabled():
+        return {}
+    import time as _time
+    now = _time.monotonic()
+    if not force and _depth_cache["rows"] is not None and now - _depth_cache["at"] < _DEPTH_TTL_SECONDS:
+        return _depth_cache["rows"]
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            async def _get(cols):
+                return await client.get(
+                    f"{settings.SUPABASE_URL}/rest/v1/provider_depth",
+                    headers={**sb_headers(), "Accept": "application/json"},
+                    params={"select": ",".join(cols), "network": "eq.eip155:8453",
+                            "limit": "5000"},
+                )
+            resp = await _get(_DEPTH_COLUMNS + _DEPTH_COLUMNS_OPTIONAL)
+            if resp.status_code == 400 and any(c in resp.text for c in _DEPTH_COLUMNS_OPTIONAL):
+                resp = await _get(_DEPTH_COLUMNS)
+        if resp.status_code != 200:
+            if resp.status_code != 404:      # 404 = migration not applied yet
+                logger.error(f"fetch_provider_depth error: HTTP {resp.status_code}")
+            return _depth_cache["rows"] or {}
+        rows = {str(r.get("pay_to") or "").lower(): r for r in resp.json() if r.get("pay_to")}
+        _depth_cache["at"], _depth_cache["rows"] = now, rows
+        return rows
+    except Exception as e:
+        logger.error(f"fetch_provider_depth failure: {e}")
+        return _depth_cache["rows"] or {}
+
+
+async def fetch_provider_map(limit: int = 5000) -> dict[tuple[str, str], dict]:
+    """{(pay_to, network): provider_map row}. {} on error/missing."""
+    if not sb_enabled():
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/provider_map",
+                headers={**sb_headers(), "Accept": "application/json"},
+                params={"select": ",".join(_MAP_COLUMNS), "limit": str(limit)},
+            )
+        if resp.status_code != 200:
+            if resp.status_code != 404:
+                logger.error(f"fetch_provider_map error: HTTP {resp.status_code}")
+            return {}
+        return {(str(r.get("pay_to") or "").lower(), str(r.get("network") or "")): r
+                for r in resp.json() if r.get("pay_to")}
+    except Exception as e:
+        logger.error(f"fetch_provider_map failure: {e}")
+        return {}
+
+
+def merge_provider_rows(existing: Optional[dict], new: dict, now_iso: str) -> dict:
+    """Pure merge of a new sweep-derived row into the stored one: URLs and
+    sources union, categories counts ADD, first_seen preserved, last_seen =
+    now, evidence = newest values with flags union, claim columns untouched."""
+    if not existing:
+        return {**new, "first_seen": now_iso, "last_seen": now_iso,
+                "resource_urls": list(new.get("resource_urls") or []),
+                "categories": dict(new.get("categories") or {}),
+                "sources": list(new.get("sources") or []),
+                "evidence": dict(new.get("evidence") or {})}
+    urls = list(existing.get("resource_urls") or [])
+    for u in new.get("resource_urls") or []:
+        if u not in urls and len(urls) < 40:
+            urls.append(u)
+    cats = dict(existing.get("categories") or {})
+    for k, v in (new.get("categories") or {}).items():
+        cats[k] = int(cats.get(k, 0)) + int(v or 0)
+    sources = list(existing.get("sources") or [])
+    for src in new.get("sources") or []:
+        if src not in sources:
+            sources.append(src)
+    ev = dict(existing.get("evidence") or {})
+    nev = new.get("evidence") or {}
+    flags = list(ev.get("flags") or [])
+    for f in nev.get("flags") or []:
+        if f not in flags:
+            flags.append(f)
+    ev.update({k: v for k, v in nev.items() if k != "flags" and v is not None})
+    ev["flags"] = flags
+    return {
+        "pay_to": existing["pay_to"], "network": existing["network"],
+        "host": new.get("host") or existing.get("host"),
+        "display_name": existing.get("display_name") or new.get("display_name"),
+        "resource_urls": urls, "categories": cats, "sources": sources,
+        "first_seen": existing.get("first_seen") or now_iso, "last_seen": now_iso,
+        "listings": len(urls), "evidence": ev,
+        "claimed_by": existing.get("claimed_by"), "claim_proof": existing.get("claim_proof"),
+    }
+
+
+async def upsert_provider_map(rows: list[dict]) -> int:
+    """Merge sweep-derived provider rows into provider_map: read the stored
+    rows for these keys, merge in Python (see merge_provider_rows), ONE upsert.
+    Returns rows written (0 on failure/disabled). Batch-only by design."""
+    rows = [r for r in (rows or []) if isinstance(r, dict) and r.get("pay_to") and r.get("network")]
+    if not rows or not sb_enabled():
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    existing = await fetch_provider_map()
+    payload = []
+    for r in rows:
+        key = (str(r["pay_to"]).lower(), str(r["network"]))
+        payload.append(merge_provider_rows(existing.get(key), {**r, "pay_to": key[0]}, now))
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            resp = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/provider_map",
+                headers={**sb_headers(),
+                         "Prefer": "resolution=merge-duplicates,return=minimal"},
+                params={"on_conflict": "pay_to,network"},
+                json=payload,
+            )
+        if resp.status_code not in (200, 201, 204):
+            if resp.status_code != 404:
+                logger.error(f"upsert_provider_map error: HTTP {resp.status_code} "
+                             f"body={resp.text[:200]}")
+            else:
+                logger.warning("upsert_provider_map: provider_map.sql not applied yet")
+            return 0
+        return len(payload)
+    except Exception as e:
+        logger.error(f"upsert_provider_map failure: {e}")
+        return 0
+
+
 # Columns forwarded to service_probes — anything else in a posted row is
 # dropped (the runner also carries name/skipped fields the table doesn't).
 # AGE-86/87 probe-row additions, deployable ahead of the hand-applied SQL

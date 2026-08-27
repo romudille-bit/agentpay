@@ -34,6 +34,7 @@ from gateway.services.supabase import (
     fetch_service_probes,
     insert_flagship_run,
     insert_service_probes,
+    upsert_provider_map,
     upsert_service_scores,
 )
 
@@ -550,12 +551,22 @@ async def prober_ingest(request: Request,
     if isinstance(run, dict) and run:
         run_stored = await insert_flagship_run(run)
 
+    # AGE-138: the sweep's payTo → provider resolution, once per sweep. The
+    # runner posts what radar.rank() saw per need (providers_from_results);
+    # the gateway merges it into provider_map. Best-effort like the rest.
+    providers = payload.get("providers")
+    providers_stored = 0
+    if isinstance(providers, list) and providers:
+        providers_stored = await upsert_provider_map(
+            [p for p in providers if isinstance(p, dict)])
+
     fully = probes_stored and scores_stored and (run_stored or not run)
     return JSONResponse(
         {
             "probes_stored": probes_stored,
             "scores_stored": scores_stored,
             "run_stored": run_stored,
+            "providers_stored": providers_stored,
             "window_rows": len(window),
             "scores": scores,
         },

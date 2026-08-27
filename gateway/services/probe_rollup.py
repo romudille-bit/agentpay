@@ -109,3 +109,10 @@ async def flush_loop() -> None:
                 logger.info(f"[ROLLUP] flushed {n} probe-count rows")
         except Exception as e:  # pragma: no cover
             logger.error(f"probe rollup loop error: {e}")
+        # AGE-138: provider rows discovered by verified_route since the last
+        # window — same batch vehicle, same one-write-per-window rule.
+        try:
+            from gateway.services import provider_map
+            await provider_map.flush()
+        except Exception as e:  # pragma: no cover
+            logger.error(f"provider_map flush error: {e}")

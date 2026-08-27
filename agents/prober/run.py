@@ -316,7 +316,8 @@ def _probe_row(cand: dict, probe_type: str, **fields) -> dict:
 
 # ── PUBLISH ────────────────────────────────────────────────────────────────────
 
-def publish_run(probes: list[dict], run: dict) -> dict | None:
+def publish_run(probes: list[dict], run: dict,
+                providers: list[dict] | None = None) -> dict | None:
     """POST the sweep to the gateway's prober ingest: raw rows land in
     service_probes, the gateway rebuilds service_scores over the FULL 30d
     window (it holds the history; this runner only has today's rows), and
@@ -331,7 +332,11 @@ def publish_run(probes: list[dict], run: dict) -> dict | None:
     try:
         req = urllib.request.Request(
             f"{GATEWAY}/v1/prober/run",
-            data=json.dumps({"probes": probes, "run": run}, default=str).encode(),
+            data=json.dumps({"probes": probes, "run": run,
+                             # AGE-138: payTo → provider rows from this
+                             # sweep's rank() results, merged into
+                             # provider_map by the gateway (batch).
+                             "providers": providers or []}, default=str).encode(),
             headers={"Content-Type": "application/json",
                      "X-Flagship-Secret": secret,
                      # Cloudflare 403s python-urllib's default UA (live
@@ -551,7 +556,7 @@ def main() -> int:
     # of reconstructed from the receipt. score() excludes skipped rows from
     # every metric, and the gateway falls back to dropping them entirely if
     # the migration hasn't been applied (see insert_service_probes).
-    ingest = publish_run(probes, {
+    ingest = publish_run(probes, providers=radar.providers_from_results(ranked), run={
         "run_at": run_at, "run_at_iso": run_at_iso, "wallet": wallet.base_address,
         "max_spend": str(max_spend),
         "objective": {"kind": "probe_sweep", "goal_text":

@@ -275,11 +275,20 @@ def discover(need: str, chain: Optional[str] = None,
 
 
 # ── DECIDE ─────────────────────────────────────────────────────────────────────
+_ISO_FRACTION = re.compile(r"(\d{2}:\d{2}:\d{2})\.(\d+)")
+
+
 def _recency_days(iso: Optional[str]) -> Optional[int]:
     if not iso:
         return None
     try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        s = str(iso).replace("Z", "+00:00")
+        # py<3.11 fromisoformat only takes 0/3/6 fractional digits; PostgREST
+        # and Bazaar emit any length — normalise to 6 (AGE-142 lesson).
+        s = _ISO_FRACTION.sub(lambda m: f"{m.group(1)}.{m.group(2)[:6].ljust(6, '0')}", s, count=1)
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - dt).days
     except Exception:
         return None
@@ -315,6 +324,88 @@ def _usage_q(payers: int, calls: int, rec_days: Optional[int]) -> int:
     return q
 
 
+# ── AGE-138 phase 0: on-chain payer depth (provider_depth, per payTo) ────────
+# Bazaar's payers30d is per LISTING and self-reported by the facilitator; a
+# provider's `payer_quality` (Σ payer_weight ÷ payers, from tools/payer_depth.py
+# via x402scan) is per PAYTO and says how many of those payers were more than a
+# one-shot prober. Applied as a RATIO on the payer term. Calibration 2026-08-27
+# (Otto ×0.83, ApiToll ×0.87, us ×0.95, four sellers < 0.5) — mild, targeted.
+# The spec'd retention multiplier (q × (0.5 + 0.5·retention)) was DROPPED after
+# the same calibration: closed single-operator fleets score 100% retention and
+# organic sellers 55–70%, so it inverted the intent. Retention is reported, not
+# ranked on. Depth rows older than DEPTH_MAX_AGE_DAYS are ignored (never
+# penalise a provider for our cache being stale).
+DEPTH_MAX_AGE_DAYS = 7
+# legs/payer in 30d at which a provider is "fleet-shaped": organic sellers run
+# 12–44, closed fleets 455–18,000, Cluster 174. Informational flag in `why`
+# only — heavy legitimate users exist; the funding graph (AGE-133) decides.
+FLEET_LEGS_PER_PAYER = 100
+FLAG_FLEET_SHAPED = "fleet_shaped"
+
+
+def _depth_age_days(row: dict) -> Optional[int]:
+    return _recency_days(str(row.get("updated_at") or "")) if row.get("updated_at") else None
+
+
+def fresh_depth(depth: Optional[dict], pay_to: str) -> Optional[dict]:
+    """The provider_depth row for `pay_to` if present and ≤ DEPTH_MAX_AGE_DAYS
+    old, else None (→ today's formula, unchanged). Pure."""
+    if not depth or not pay_to:
+        return None
+    row = depth.get(pay_to.lower())
+    if not row:
+        return None
+    age = _depth_age_days(row)
+    if age is None or age > DEPTH_MAX_AGE_DAYS:
+        return None
+    return row
+
+
+def _f(x, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def depth_legs_per_payer(row: dict) -> float:
+    """Settled calls per payer over the window, from TRUE 30d totals when the
+    source has them (a sampled fleet under-reads otherwise)."""
+    legs = _f(row.get("total_legs_30d")) or _f(row.get("legs"))
+    payers = _f(row.get("total_payers_30d")) or _f(row.get("payers"))
+    return legs / payers if payers > 0 else 0.0
+
+
+def depth_view(row: dict) -> dict:
+    """Public projection of a depth row (aggregates only)."""
+    return {
+        "payers": int(_f(row.get("total_payers_30d")) or _f(row.get("payers"))),
+        "effective_payers": round(_f(row.get("effective_payers")), 1),
+        "payer_quality": round(_f(row.get("payer_quality")), 3),
+        "retention": round(_f(row.get("retention")), 3),
+        "prober_share": round(_f(row.get("prober_share")), 3),
+        "legs_per_payer": round(depth_legs_per_payer(row), 1),
+        "fleet_shaped": depth_legs_per_payer(row) >= FLEET_LEGS_PER_PAYER,
+        "window_days": int(_f(row.get("window_days"), 30)),
+        "updated_at": row.get("updated_at"),
+        "source": row.get("source"),
+    }
+
+
+def _depth_why(row: dict, listing_payers: int, eff_payers: int) -> str:
+    """One human line from a depth row: what the payer count is made of."""
+    v = depth_view(row)
+    parts = [f"{v['payers']} on-chain payers"]
+    if listing_payers and eff_payers != listing_payers:
+        parts[0] += f" — this listing's {listing_payers} weighted to {eff_payers} after the one-payment discount"
+    parts.append(f"{v['retention'] * 100:.0f}% came back")
+    lpp = v["legs_per_payer"]
+    parts.append(f"{lpp:,.0f} settled calls per payer in {v['window_days']}d")
+    if v["fleet_shaped"]:
+        parts.append("fleet-shaped: could be one operator's agents")
+    return " · ".join(parts)
+
+
 def _delivery_why(row: dict) -> str:
     """One human line from a service_scores row (the Prober's public output).
     [MR-3]: the MPP/Tempo label rides along — known from free T0 probes, so it
@@ -346,7 +437,8 @@ def _delivery_why(row: dict) -> str:
 
 def decide(cands: list[dict], remaining: Decimal,
            usage_aware: bool = False,
-           scores: Optional[dict] = None) -> tuple[list[dict], Optional[dict]]:
+           scores: Optional[dict] = None,
+           depth: Optional[dict] = None) -> tuple[list[dict], Optional[dict]]:
     """Filter + rank. Returns (scored_with_verdicts, recommendation). Pure.
 
     Stages: junk-filter (no schema = stub; factory fingerprint) → budget gate →
@@ -365,7 +457,11 @@ def decide(cands: list[dict], remaining: Decimal,
     services get factor 1.0 (never punish absence of data); a row carrying
     took_payment_no_delivery is HARD-DROPPED from the recommendation while
     staying listed + flagged. The function stays pure — callers fetch the
-    dict (gateway: services.supabase.fetch_service_scores)."""
+    dict (gateway: services.supabase.fetch_service_scores).
+
+    `depth` (AGE-138): {pay_to: provider_depth row}. A fresh row scales the
+    listing's payer term by the provider's payer_quality and adds the
+    fleet_shaped flag + a why line; missing/stale rows change nothing."""
     scores = scores or {}
     names_per_payto: dict[str, set] = {}
     listings_per_payto: dict[str, list] = {}
@@ -402,9 +498,16 @@ def decide(cands: list[dict], remaining: Decimal,
                 f"{c['price_usd']} > budget {remaining}"
                 if c["price_usd"] is not None else "no usable price")
 
-        # Stage 3 — usage quality ([MR-2] payers dominant)
+        # Stage 3 — usage quality ([MR-2] payers dominant; AGE-138 payer_quality)
         rec_days = _recency_days(c["last_called"])
-        q = _usage_q(c["payers30d"], c["calls30d"], rec_days)
+        drow = fresh_depth(depth, pt)
+        eff_payers = c["payers30d"]
+        if drow is not None:
+            pq = min(max(_f(drow.get("payer_quality"), 1.0), 0.0), 1.0)
+            eff_payers = int(round(c["payers30d"] * pq))
+            if depth_legs_per_payer(drow) >= FLEET_LEGS_PER_PAYER:
+                flags.append(FLAG_FLEET_SHAPED)
+        q = _usage_q(eff_payers, c["calls30d"], rec_days)
         if is_factory:
             q = q // 4
         if c["payers30d"] == 0 and c["calls30d"] == 0:
@@ -424,9 +527,14 @@ def decide(cands: list[dict], remaining: Decimal,
             if f in _NO_DELIVERY_FLAGS:
                 flags.append(f)
         delivery_why = _delivery_why(score_row) if score_row else ""
+        why = " · ".join(w for w in (delivery_why,
+                                     _depth_why(drow, c["payers30d"], eff_payers) if drow else "")
+                         if w)
 
         scored.append({**c, "flags": flags, "dropped": dropped,
                        "drop_reason": reason, "quality": q, "rec_days": rec_days,
+                       "effective_payers": eff_payers,
+                       "depth": depth_view(drow) if drow else None,
                        "delivery": ({
                            "factor": factor,
                            "rate": score_row.get("delivery_rate"),
@@ -435,7 +543,7 @@ def decide(cands: list[dict], remaining: Decimal,
                        } if score_row else None),
                        "mpp_option": bool(score_row.get("mpp_option")),
                        "usdg_option": bool(score_row.get("usdg_option")),
-                       "why": delivery_why})
+                       "why": why})
 
     survivors = [s for s in scored if not s["dropped"]]
     survivors.sort(key=lambda s: (-s["quality"], s["price_usd"]))
@@ -449,7 +557,8 @@ def decide(cands: list[dict], remaining: Decimal,
 def rank_from_payload(data: dict, need: str, budget: Decimal,
                       chain: Optional[str] = None,
                       extra: Optional[Iterable[dict]] = None,
-                      scores: Optional[dict] = None) -> dict:
+                      scores: Optional[dict] = None,
+                      depth: Optional[dict] = None) -> dict:
     """Assemble a JSON-able Radar result from an already-fetched Bazaar payload.
 
     Pure (no I/O) so the async gateway can fetch with httpx and hand the payload
@@ -460,7 +569,7 @@ def rank_from_payload(data: dict, need: str, budget: Decimal,
     cands = filter_chain(parse_resources(data), chain)
     if extra:
         cands = cands + filter_chain(list(extra), chain)
-    scored, rec = decide(cands, budget, scores=scores)
+    scored, rec = decide(cands, budget, scores=scores, depth=depth)
     survivors = [s for s in scored if not s["dropped"]]
     survivors.sort(key=lambda s: (-s["quality"], s["price_usd"]))
     return {
@@ -541,6 +650,10 @@ def _public(s: Optional[dict]) -> Optional[dict]:
         out["why"] = s["why"]
     if s.get("delivery"):
         out["delivery"] = s["delivery"]
+    if s.get("depth"):
+        # AGE-138: the on-chain payer shape behind payers30d (per payTo).
+        out["depth"] = s["depth"]
+        out["effective_payers"] = s.get("effective_payers")
     if s.get("mpp_option"):
         out["mpp_option"] = True   # [MR-3] label only — never settled by us
     if s.get("usdg_option"):
@@ -730,7 +843,8 @@ def _ready_to_pay(s: Optional[dict]) -> Optional[dict]:
 def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decimal,
                                  chain: Optional[str] = None,
                                  extra: Optional[Iterable[dict]] = None,
-                                 scores: Optional[dict] = None) -> dict:
+                                 scores: Optional[dict] = None,
+                                 depth: Optional[dict] = None) -> dict:
     """Assemble the paid verified_route result from swept Bazaar payloads. Pure.
 
     DISCOVER (merge+dedup many queries) → FILTER (chain) → DECIDE (junk/factory/
@@ -746,7 +860,7 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     if extra:
         cands = cands + filter_chain(list(extra), chain)
 
-    scored, _ = decide(cands, budget, usage_aware=True, scores=scores)
+    scored, _ = decide(cands, budget, usage_aware=True, scores=scores, depth=depth)
     survivors = [s for s in scored if not s["dropped"]]
     kept, stats = collapse_sybils(survivors)
 
@@ -810,3 +924,101 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
                 if fallback else ""))
         ),
     }
+
+
+# ── AGE-138: provider_map rows from a sweep ──────────────────────────────────
+# Every sweep resolves payTo → provider (names, hosts, URLs, needs) and used to
+# keep only the pick. These pure helpers turn candidates / public results into
+# provider_map rows; the gateway upserts them in BATCH (prober ingest, rollup
+# flush) — never from a customer request.
+
+PROVIDER_MAX_URLS = 40
+
+
+def _host(url: str) -> str:
+    try:
+        return url.split("//", 1)[1].split("/", 1)[0].lower()
+    except IndexError:
+        return ""
+
+
+def providers_from_candidates(cands: Iterable[dict], need: str = "",
+                              source: str = "sweep") -> list[dict]:
+    """Aggregate candidate dicts (parse_resources output OR _public output)
+    by (pay_to, network) into provider_map rows. Pure."""
+    by_key: dict[tuple[str, str], dict] = {}
+    for c in cands:
+        pt = (c.get("pay_to") or "").lower()
+        net = c.get("network_caip2") or normalize_network(c.get("network") or "")
+        if not pt or not net:
+            continue
+        row = by_key.setdefault((pt, net), {
+            "pay_to": pt, "network": net, "hosts": {}, "names": {}, "urls": [],
+            "categories": {}, "sources": [source],
+            "evidence": {"payers30d": 0, "calls30d": 0, "flags": []},
+        })
+        url = c.get("url") or ""
+        if url and url not in row["urls"] and len(row["urls"]) < PROVIDER_MAX_URLS:
+            row["urls"].append(url)
+        h = _host(url)
+        if h:
+            row["hosts"][h] = row["hosts"].get(h, 0) + 1
+        nm = c.get("name") or ""
+        if nm:
+            row["names"][nm] = row["names"].get(nm, 0) + 1
+        n = need or c.get("need") or ""
+        if n:
+            row["categories"][n] = row["categories"].get(n, 0) + 1
+        ev = row["evidence"]
+        ev["payers30d"] = max(ev["payers30d"], int(c.get("payers30d") or 0))
+        ev["calls30d"] += int(c.get("calls30d") or 0)
+        for f in (c.get("flags") or []):
+            if f not in ev["flags"]:
+                ev["flags"].append(f)
+        d = c.get("delivery")
+        if isinstance(d, dict) and d.get("rate") is not None:
+            ev["delivery_rate"] = d.get("rate")
+            ev["paid_probes"] = d.get("paid_probes")
+    out = []
+    for row in by_key.values():
+        hosts = sorted(row["hosts"].items(), key=lambda kv: -kv[1])
+        names = sorted(row["names"].items(), key=lambda kv: -kv[1])
+        out.append({
+            "pay_to": row["pay_to"], "network": row["network"],
+            "host": hosts[0][0] if hosts else None,
+            "display_name": (names[0][0] if names else (hosts[0][0] if hosts else None)),
+            "resource_urls": row["urls"],
+            "categories": row["categories"],
+            "sources": row["sources"],
+            "listings": len(row["urls"]),
+            "evidence": row["evidence"],
+        })
+    return out
+
+
+def providers_from_results(ranked: dict[str, list[dict]], source: str = "prober") -> list[dict]:
+    """{need: [public result dicts]} (the prober's rank_needs output) → merged
+    provider_map rows across needs. Pure."""
+    merged: dict[tuple[str, str], dict] = {}
+    for need, results in (ranked or {}).items():
+        for row in providers_from_candidates(results, need=need, source=source):
+            key = (row["pay_to"], row["network"])
+            cur = merged.get(key)
+            if cur is None:
+                merged[key] = row
+                continue
+            for u in row["resource_urls"]:
+                if u not in cur["resource_urls"] and len(cur["resource_urls"]) < PROVIDER_MAX_URLS:
+                    cur["resource_urls"].append(u)
+            for k, v in row["categories"].items():
+                cur["categories"][k] = cur["categories"].get(k, 0) + v
+            cur["listings"] = len(cur["resource_urls"])
+            ce, re_ = cur["evidence"], row["evidence"]
+            ce["payers30d"] = max(ce.get("payers30d", 0), re_.get("payers30d", 0))
+            ce["calls30d"] = ce.get("calls30d", 0) + re_.get("calls30d", 0)
+            for f in re_.get("flags", []):
+                if f not in ce.setdefault("flags", []):
+                    ce["flags"].append(f)
+            cur["host"] = cur["host"] or row["host"]
+            cur["display_name"] = cur["display_name"] or row["display_name"]
+    return list(merged.values())

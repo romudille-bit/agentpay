@@ -421,3 +421,42 @@ def test_scores_json_carries_coverage_caveat_and_normalized_network(monkeypatch)
     base = rows["https://base.x/t"]
     assert base["probe_coverage"] is None
     assert base["network"] == "eip155:8453"
+
+
+# ── AGE-138: providers in the ingest payload ─────────────────────────────────
+
+def test_ingest_upserts_providers_once_per_sweep(monkeypatch):
+    monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")
+    _patch_store(monkeypatch, window=[])
+    seen: list[list[dict]] = []
+
+    async def _upsert_providers(rows):
+        seen.append(rows)
+        return len(rows)
+    monkeypatch.setattr(prober, "upsert_provider_map", _upsert_providers)
+
+    providers = [{"pay_to": "0x" + "a" * 40, "network": "eip155:8453", "host": "o.example",
+                  "display_name": "Otto", "resource_urls": ["https://o.example/a"],
+                  "categories": {"weather": 1}, "sources": ["prober"], "listings": 1,
+                  "evidence": {"payers30d": 3}},
+                 "not-a-dict"]
+    r = _client().post("/v1/prober/run",
+                       json={"probes": [_paid_probe()], "providers": providers},
+                       headers=SECRET_HDR)
+    assert r.status_code in (200, 202)
+    assert r.json()["providers_stored"] == 1
+    assert len(seen) == 1 and seen[0][0]["pay_to"] == "0x" + "a" * 40
+
+
+def test_ingest_without_providers_is_unchanged(monkeypatch):
+    monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")
+    _patch_store(monkeypatch, window=[])
+    called = []
+
+    async def _upsert_providers(rows):
+        called.append(rows)
+        return len(rows)
+    monkeypatch.setattr(prober, "upsert_provider_map", _upsert_providers)
+    r = _client().post("/v1/prober/run", json={"probes": [_paid_probe()]}, headers=SECRET_HDR)
+    assert r.status_code in (200, 202)
+    assert r.json()["providers_stored"] == 0 and called == []
