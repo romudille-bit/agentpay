@@ -26,6 +26,27 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
+def _load_dotenv() -> None:
+    """gateway.config reads `../.env` RELATIVE TO CWD, so from the repo root it
+    misses the file. Load repo-root .env into os.environ first (setdefault —
+    a real env var still wins), exactly like tools/agentpay_usage.py."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(os.path.dirname(here), ".env"), os.path.join(here, ".env")):
+        try:
+            with open(path) as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        except FileNotFoundError:
+            continue
+
+
+_load_dotenv()
+
 import httpx  # noqa: E402
 
 from gateway.services import leg_verifier as lv  # noqa: E402
