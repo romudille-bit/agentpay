@@ -152,6 +152,22 @@ def test_view_ignores_chain_row_with_mismatched_amount():
     assert view["paid_calls"][1]["tx_hash"] is None
 
 
+def test_view_checked_run_marks_unmatched_leg_no_settlement_found():
+    """AGE-142: once the verifier has checked a run (marker row -1 present),
+    an unmatched paid leg is 'no_settlement_found' — booked fail-closed, never
+    settled — not 'agent_attested' (which now means 'not checked yet')."""
+    chain = {-1: {"method": "checked"},
+             2: {"tx_hash": "0xchain", "amount_usdc": "0.01", "method": "amount"}}
+    view = ledger._run_view_from_breakdown(_breakdown(), Decimal("0.25"), Counter(), chain)
+    labels = [p["verification"] for p in view["paid_calls"]]
+    assert labels == ["no_settlement_found", "onchain_chain", "no_settlement_found"]
+    assert view["unsettled_spent_usdc"] == "0.02"
+    assert view["unsettled_paid_count"] == 2
+    assert view["attested_spent_usdc"] == "0.00"
+    assert view["has_unsettled_spend"] is True
+    assert view["paid_calls"][0]["explorer_url"] is None
+
+
 def test_synthesize_uses_chain_index_for_its_run():
     meta = {"run_at": "2026-08-20T06:00:00.5+00:00",
             "objective": {"kind": "probe_sweep", "cap_usdc": "0.50"},
@@ -164,22 +180,29 @@ def test_synthesize_uses_chain_index_for_its_run():
     ledger.synthesize_offgateway_runs(runs, [meta], chain_index=chain_index)
     calls = runs[0]["paid_calls"]
     assert calls[0]["verification"] == "onchain_chain"
-    assert calls[1]["verification"] == "agent_attested"      # other run's row not applied
+    # This run WAS checked (marker present) → unmatched leg = no settlement
+    # found; the other run's row is not applied to it.
+    assert calls[1]["verification"] == "no_settlement_found"
 
 
-def test_totals_split_gateway_chain_attested():
+def test_totals_split_gateway_chain_attested_unsettled():
     data = {"runs": [
-        {"spent_usdc": "0.03", "attested_spent_usdc": "0.01",
+        {"spent_usdc": "0.04", "attested_spent_usdc": "0.01",
          "chain_verified_spent_usdc": "0.01", "attested_paid_count": 1,
-         "paid_count": 3, "free_count": 0},
+         "unsettled_spent_usdc": "0.01", "unsettled_paid_count": 1,
+         "paid_count": 4, "free_count": 0},
         {"spent_usdc": "0.02", "paid_count": 2, "free_count": 4},   # pure payment_logs run
     ]}
     ledger._recompute_totals(data)
     t = data["totals"]
-    assert t["spent_usdc"] == "0.05"
-    assert t["verified_spent_usdc"] == "0.04"
+    assert t["spent_usdc"] == "0.06"
+    assert t["unsettled_spent_usdc"] == "0.01"
+    assert t["settled_spent_usdc"] == "0.05"
+    assert t["verified_spent_usdc"] == "0.04"          # spent − attested − unsettled
     assert t["chain_verified_spent_usdc"] == "0.01"
     assert t["gateway_verified_spent_usdc"] == "0.03"
     assert t["attested_spent_usdc"] == "0.01"
     assert t["attested_paid_calls"] == 1
-    assert t["verified_share"] == "0.800"
+    assert t["unsettled_paid_calls"] == 1
+    assert t["verified_share"] == "0.667"
+    assert t["verified_share_of_settled"] == "0.800"

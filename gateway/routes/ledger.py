@@ -418,21 +418,30 @@ def _run_view_from_breakdown(
                            the settlement rather than performing it — hence the
                            distinct label; `verification_method` says how it
                            matched (chain:hash / chain:amount+payto / chain:amount).
-        "agent_attested" — no matching unconsumed on-chain leg and no chain
-                           evidence. Either a legitimate off-gateway leg whose
-                           transfer we could not locate, or a fabricated entry
-                           — indistinguishable from here, so NOT presented as
-                           on-chain-verified.
+        "no_settlement_found" — AGE-142: the verifier DID check this run
+                           (marker row present) and found no USDC transfer for
+                           this leg. The SDK books spend fail-closed the moment
+                           a signed authorization is transmitted (AGE-56), so a
+                           seller that rejected the call after that still shows
+                           as spend in the receipt — this label says the money
+                           never actually left the wallet. Not verified, not
+                           attested: booked-but-unsettled.
+        "agent_attested" — no matching on-chain leg and the run has NOT been
+                           chain-checked yet (or has no Base wallet to check).
+                           Either a legitimate off-gateway leg we haven't
+                           looked for, or a fabricated entry — indistinguishable
+                           from here, so NOT presented as on-chain-verified.
     NOTE: not pure — consumes from the passed Counter, which is shared across
     all runs in one ledger render so matches can't be double-spent between
     reconcile and synthesize. `verified_legs=None` → all paid legs attested."""
     vlegs = verified_legs if verified_legs is not None else Counter()
     clegs = chain_legs or {}
+    run_checked = _CHAIN_MARKER in clegs
     steps: list[dict] = []
     paid_calls: list[dict] = []
     spent = Decimal("0")
-    verified_spent = attested_spent = chain_spent = Decimal("0")
-    free_count = paid_count = attested_count = chain_count = 0
+    verified_spent = attested_spent = chain_spent = unsettled_spent = Decimal("0")
+    free_count = paid_count = attested_count = chain_count = unsettled_count = 0
 
     for i, e in enumerate(breakdown, start=1):
         raw_tool = e.get("tool")
@@ -472,6 +481,10 @@ def _run_view_from_breakdown(
                 chain_spent += amt
                 chain_count += 1
                 verified_spent += amt
+            elif run_checked:
+                verification = "no_settlement_found"
+                unsettled_spent += amt
+                unsettled_count += 1
             else:
                 verification = "agent_attested"
                 attested_spent += amt
@@ -479,7 +492,8 @@ def _run_view_from_breakdown(
             # Only surface an explorer link for legs we could actually verify —
             # a link on an unverified hash reads as "we checked this" when we
             # didn't.
-            explorer = _explorer_url(net, tx) if verification != "agent_attested" else None
+            explorer = (_explorer_url(net, tx)
+                        if verification in ("onchain", "onchain_chain") else None)
             step.update({"kind": "paid", "network": net,
                          "tx_hash": tx, "explorer_url": explorer,
                          "verification": verification,
@@ -512,19 +526,26 @@ def _run_view_from_breakdown(
         "chain_verified_paid_count": chain_count,
         "attested_spent_usdc": f"{attested_spent:.2f}",
         "attested_paid_count": attested_count,
+        "unsettled_spent_usdc": f"{unsettled_spent:.2f}",
+        "unsettled_paid_count": unsettled_count,
         "has_attested_spend": attested_count > 0,
         "has_chain_verified_spend": chain_count > 0,
+        "has_unsettled_spend": unsettled_count > 0,
     }
+
+
+_CHAIN_MARKER = -1   # leg_index of the verifier's "run checked" marker row
 
 
 def _chain_legs_for(chain_index: "dict[tuple[str, int], dict] | None",
                     run_at) -> dict[int, dict]:
-    """Slice the global verification cache down to one run: {leg_index: row}."""
+    """Slice the global verification cache down to one run: {leg_index: row}.
+    The marker row (leg_index -1) is kept so the view can tell "checked, no
+    transfer found" from "never checked"."""
     if not chain_index or not run_at:
         return {}
     k = _run_key(run_at)
-    return {idx: row for (rk, idx), row in chain_index.items()
-            if rk == k and idx >= 0}
+    return {idx: row for (rk, idx), row in chain_index.items() if rk == k}
 
 
 def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
@@ -698,7 +719,13 @@ def _recompute_totals(data: dict) -> None:
          if r.get("chain_verified_spent_usdc") is not None),
         Decimal("0"),
     )
-    verified = spent - attested
+    unsettled = sum(
+        (_dec(r.get("unsettled_spent_usdc")) for r in runs
+         if r.get("unsettled_spent_usdc") is not None),
+        Decimal("0"),
+    )
+    verified = spent - attested - unsettled
+    settled = spent - unsettled
     data["totals"] = {
         **data.get("totals", {}),
         "runs": len(runs),
@@ -712,7 +739,13 @@ def _recompute_totals(data: dict) -> None:
         "chain_verified_spent_usdc": f"{chain:.2f}",
         "attested_spent_usdc": f"{attested:.2f}",
         "attested_paid_calls": sum(int(r.get("attested_paid_count") or 0) for r in runs),
+        # AGE-142: booked fail-closed but no transfer ever left the wallet
+        # (checked on Base). Not spend; the receipt over-counts by this sum.
+        "unsettled_spent_usdc": f"{unsettled:.2f}",
+        "unsettled_paid_calls": sum(int(r.get("unsettled_paid_count") or 0) for r in runs),
+        "settled_spent_usdc": f"{settled:.2f}",
         "verified_share": (f"{(verified / spent):.3f}" if spent > 0 else None),
+        "verified_share_of_settled": (f"{(verified / settled):.3f}" if settled > 0 else None),
     }
 
 
@@ -981,6 +1014,7 @@ _LEDGER_HTML = r"""<!doctype html>
   .tlink{flex:none;font-size:11px}
   .tatt{flex:none;font-size:9.5px;border-radius:5px;padding:1px 6px;background:#241f14;color:#d8a24a;border:1px solid #3a3020;letter-spacing:.02em;cursor:help}
   .tchain{flex:none;font-size:9.5px;border-radius:5px;padding:1px 6px;background:#12241a;color:#5fc48a;border:1px solid #1f3a2a;letter-spacing:.02em;cursor:help}
+  .tunset{flex:none;font-size:9.5px;border-radius:5px;padding:1px 6px;background:#1c1f24;color:#8a94a3;border:1px solid #2a2f38;letter-spacing:.02em;cursor:help}
   .attnote{font-size:11px;color:var(--mut);margin:2px 0 8px;line-height:1.5}
   .attnote .tatt{cursor:default}
   .verds{margin:2px 0}
@@ -1093,6 +1127,8 @@ function execStep(run){
     if(s.kind==="paid"){
       if(s.verification==="agent_attested"){
         mark = `<span class="tatt" title="Reported by the agent's signed receipt; not settled through AgentPay's gateway and no matching USDC transfer from the agent's wallet was found on Base, so not independently verified">agent-attested</span>`;
+      } else if(s.verification==="no_settlement_found"){
+        mark = `<span class="tunset" title="The agent's receipt booked this spend fail-closed (a signed authorization was transmitted), but AgentPay checked the agent's wallet on Base for the run window and found no USDC transfer for this leg — the seller never settled it. Money did not leave the wallet.">no settlement found</span>`;
       } else if(s.verification==="onchain_chain"){
         const how = (s.verification_method||"chain").replace("chain:","");
         mark = `<span class="tchain" title="Not settled through AgentPay's gateway; AgentPay located the USDC transfer from the agent's wallet on Base for this leg (match: ${esc(how)})">chain-verified</span>`
@@ -1109,8 +1145,8 @@ function execStep(run){
       ${mark}</li>`;
   }).join("");
   if(!items) return "";
-  const note = (run.has_attested_spend || run.has_chain_verified_spend)
-    ? `<div class="attnote">Legs that settled directly between the agent and the seller (off-gateway) are <span class="tchain">chain-verified</span> when AgentPay located the matching USDC transfer from the agent's wallet on Base, and <span class="tatt">agent-attested</span> when it could not. Gateway-settled legs link straight to the explorer.</div>`
+  const note = (run.has_attested_spend || run.has_chain_verified_spend || run.has_unsettled_spend)
+    ? `<div class="attnote">Legs that settled directly between the agent and the seller (off-gateway) are <span class="tchain">chain-verified</span> when AgentPay located the matching USDC transfer from the agent's wallet on Base; <span class="tunset">no settlement found</span> when the wallet was checked and no transfer exists (the receipt booked the spend fail-closed, the seller never settled — money stayed in the wallet); <span class="tatt">agent-attested</span> when the run hasn't been chain-checked yet. Gateway-settled legs link straight to the explorer.</div>`
     : "";
   return `<div class="dstep"><div class="dhead"><span class="dnum">2</span> Spend under the cap — step by step</div>
     ${note}<ul class="tl">${items}</ul></div>`;
@@ -1279,7 +1315,7 @@ async function run(){
       <div class="kpi"><div class="n">${t.paid_calls||0}</div><div class="l">paid data calls</div></div>
       <div class="kpi"><div class="n">${t.free_calls||0}</div><div class="l">free data calls</div></div>
       <div class="kpi"><div class="n ac">${money(t.spent_usdc)}</div><div class="l">total intel spent</div></div>
-      <div class="kpi" title="gateway-settled ${money(t.gateway_verified_spent_usdc||t.verified_spent_usdc)} + chain-verified ${money(t.chain_verified_spent_usdc||'0')}; agent-attested ${money(t.attested_spent_usdc||'0')}"><div class="n">${t.verified_share!=null? Math.round(parseFloat(t.verified_share)*100)+'%' : '—'}</div><div class="l">on-chain verified</div></div>`;
+      <div class="kpi" title="of settled spend ${money(t.settled_spent_usdc||t.spent_usdc)}: gateway-settled ${money(t.gateway_verified_spent_usdc||t.verified_spent_usdc)} + chain-verified ${money(t.chain_verified_spent_usdc||'0')}; agent-attested (not yet checked) ${money(t.attested_spent_usdc||'0')}. Booked but never settled: ${money(t.unsettled_spent_usdc||'0')}"><div class="n">${(t.verified_share_of_settled||t.verified_share)!=null? Math.round(parseFloat(t.verified_share_of_settled||t.verified_share)*100)+'%' : '—'}</div><div class="l">of settled spend verified</div></div>`;
 
     if(!(d.runs&&d.runs.length)){ runs.innerHTML='<div class="msg">No completed runs recorded yet.</div>'; return; }
     runs.innerHTML = d.runs.map(run=>{
