@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS provider_depth (
 
 CREATE INDEX IF NOT EXISTS idx_provider_depth_updated ON provider_depth (updated_at DESC);
 
+-- Provenance for the x402scan source (idempotent addenda): a fleet with
+-- millions of legs is SAMPLED on its most recent legs; say so, and keep the
+-- true 30d totals next to the sample.
+ALTER TABLE provider_depth ADD COLUMN IF NOT EXISTS sampled          boolean DEFAULT false;
+ALTER TABLE provider_depth ADD COLUMN IF NOT EXISTS total_legs_30d   integer;
+ALTER TABLE provider_depth ADD COLUMN IF NOT EXISTS total_payers_30d integer;
+
 ALTER TABLE provider_map   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE provider_depth ENABLE ROW LEVEL SECURITY;
 
