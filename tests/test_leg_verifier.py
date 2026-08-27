@@ -112,6 +112,18 @@ def test_run_key_normalises_fractional_digits():
     assert lv.run_key("2026-08-20T06:00:00.12345+00:00") == lv.run_key("2026-08-20T06:00:00.123450+00:00")
 
 
+def test_parse_ts_accepts_any_fraction_length_on_all_pythons():
+    # PostgREST emits 1–6 fractional digits; py3.10 fromisoformat only takes 3/6.
+    for s in ("2026-08-20T06:00:00.5+00:00", "2026-08-20T06:00:00.12345+00:00",
+              "2026-08-20T06:00:00.1234567+00:00", "2026-08-20T06:00:00Z",
+              "2026-08-20T06:00:00.25Z", "2026-08-20T06:00:00"):
+        d = lv._parse_ts(s)
+        assert d is not None and d.tzinfo is not None, s
+    assert lv._parse_ts("2026-08-20T06:00:00.5+00:00").microsecond == 500_000
+    assert lv._parse_ts("2026-08-20T06:00:00.1234567+00:00").microsecond == 123_456
+    assert lv._parse_ts("not a date") is None
+
+
 def test_run_wallet_prefers_meta_then_fallback():
     assert lv.run_wallet({"wallet": WALLET}, ["0x" + "f" * 40]) == WALLET
     assert lv.run_wallet({"wallet": "GABC"}, ["GABC", "0x" + "f" * 40]) == "0x" + "f" * 40

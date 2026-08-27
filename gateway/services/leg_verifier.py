@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, Optional
@@ -224,11 +225,18 @@ async def wallet_transfers(wallet: str, start: datetime, end: datetime,
 
 # ── orchestration ───────────────────────────────────────────────────────────
 
+_FRACTION = re.compile(r"(\d{2}:\d{2}:\d{2})\.(\d+)")
+
+
 def _parse_ts(value) -> Optional[datetime]:
+    """Parse a PostgREST timestamptz. Python < 3.11's fromisoformat only
+    accepts 0, 3 or 6 fractional digits; PostgREST emits any number
+    (`.5`, `.12345`), so normalise to exactly 6 first."""
     if not value:
         return None
     try:
         s = str(value).replace("Z", "+00:00")
+        s = _FRACTION.sub(lambda m: f"{m.group(1)}.{m.group(2)[:6].ljust(6, '0')}", s, count=1)
         d = datetime.fromisoformat(s)
         return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
     except ValueError:
