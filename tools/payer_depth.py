@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -116,6 +117,7 @@ X402SCAN_UA = "agentpay-radar/payer_depth (+https://agentpay.tools)"
 _THROTTLE_S = 0.35            # be a polite guest on a free public API
 _PAGE = 500
 _MAX_LEGS = 5000              # per payTo; a 7.5M-leg fleet is SAMPLED (most recent), and says so
+_EVM = re.compile(r"^0x[0-9a-f]{40}$")   # x402scan rejects the whole batch on one non-EVM/Solana address
 
 
 def x402scan(proc: str, inp: dict, retries: int = 3) -> dict:
@@ -132,7 +134,12 @@ def x402scan(proc: str, inp: dict, retries: int = 3) -> dict:
             if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
                 time.sleep(2 * (attempt + 1))
                 continue
-            raise
+            body = ""
+            try:
+                body = e.read().decode()[:600]
+            except Exception:
+                pass
+            raise RuntimeError(f"x402scan {proc} → HTTP {e.code}: {body}") from None
         except (urllib.error.URLError, TimeoutError):
             if attempt < retries - 1:
                 time.sleep(2 * (attempt + 1))
@@ -251,7 +258,11 @@ def depth_from_x402scan(paytos: list[str], chain: str = "base", max_legs: int = 
                         log=print) -> list[dict]:
     """Build Dune-shaped rows (recipient, payers, legs, …) for `paytos` from
     x402scan. Returns [] entries for payTos with no 30d transfers omitted."""
-    paytos = list(dict.fromkeys(_lower(p) for p in paytos if p))
+    wanted = list(dict.fromkeys(_lower(p) for p in paytos if p))
+    paytos = [p for p in wanted if _EVM.match(p)]
+    if len(paytos) < len(wanted):
+        log(f"  skipped {len(wanted) - len(paytos)} non-EVM payTo(s) (Stellar/Solana rows from "
+            "service_probes — x402scan Base only)", file=sys.stderr)
     totals = x402scan_seller_totals(paytos, chain)
     rows: list[dict] = []
     all_senders: set[str] = set()
