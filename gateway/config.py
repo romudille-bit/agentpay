@@ -190,6 +190,11 @@ class Settings(BaseSettings):
     # (tests, or an RPC outage) — the ledger then shows those legs as
     # agent_attested, exactly as before.
     LEG_VERIFIER_DISABLED: bool = False
+    # AGE-138: weekly self-refresh of provider_depth from the keyless x402scan
+    # API (gateway/services/depth_refresh.py). Set true to skip scheduling the
+    # loop (tests, or if x402scan misbehaves) — ranking then falls back to the
+    # unweighted formula once the rows age past 7 days. Nothing breaks.
+    DEPTH_REFRESH_DISABLED: bool = False
 
     # Shared secret that gates POST /v1/flagship/run — the flagship agent posts
     # its run summary (plan, regime, verdicts, receipt, note) so /ledger can show

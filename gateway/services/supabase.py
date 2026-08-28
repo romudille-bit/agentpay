@@ -1621,6 +1621,41 @@ async def fetch_provider_depth(force: bool = False) -> dict[str, dict]:
         return _depth_cache["rows"] or {}
 
 
+async def upsert_provider_depth(rows: list[dict]) -> int:
+    """UPSERT depth rows on (pay_to, network) — the gateway's own weekly
+    refresh (services/depth_refresh.py) writes here; tools/payer_depth.py
+    writes the same shape from a laptop. Falls back to the pre-addenda column
+    set if the provenance migration block isn't applied. Returns rows written."""
+    rows = [r for r in (rows or []) if r.get("pay_to")]
+    if not rows or not sb_enabled():
+        return 0
+
+    def _payload(drop: tuple = ()) -> list[dict]:
+        return [{k: v for k, v in r.items() if k not in drop} for r in rows]
+
+    try:
+        async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
+            async def _post(drop=()):
+                return await client.post(
+                    f"{settings.SUPABASE_URL}/rest/v1/provider_depth",
+                    headers={**sb_headers(),
+                             "Prefer": "resolution=merge-duplicates,return=minimal"},
+                    params={"on_conflict": "pay_to,network"},
+                    json=_payload(drop),
+                )
+            resp = await _post()
+            if resp.status_code == 400 and any(c in resp.text for c in _DEPTH_COLUMNS_OPTIONAL):
+                resp = await _post(drop=_DEPTH_COLUMNS_OPTIONAL)
+        if resp.status_code not in (200, 201, 204):
+            logger.error(f"upsert_provider_depth error: HTTP {resp.status_code} "
+                         f"body={resp.text[:200]}")
+            return 0
+        return len(rows)
+    except Exception as e:
+        logger.error(f"upsert_provider_depth failure: {e}")
+        return 0
+
+
 async def fetch_provider_map(limit: int = 5000) -> dict[tuple[str, str], dict]:
     """{(pay_to, network): provider_map row}. {} on error/missing."""
     if not sb_enabled():

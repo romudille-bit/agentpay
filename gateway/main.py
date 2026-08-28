@@ -607,6 +607,13 @@ async def lifespan(app: FastAPI):
         # ledger_leg_verifications. Never runs at request time.
         if settings.LEDGER_ENABLED and not getattr(settings, "LEG_VERIFIER_DISABLED", False):
             asyncio.create_task(leg_verifier.verify_loop())
+        # AGE-138: provider_depth refreshes itself weekly from the keyless
+        # x402scan API (daily age check, refresh when the newest row is >5d
+        # old, ~10 min of throttled background pulls). A manual
+        # tools/payer_depth.py --write run resets the clock.
+        if not getattr(settings, "DEPTH_REFRESH_DISABLED", False):
+            from gateway.services import depth_refresh
+            asyncio.create_task(depth_refresh.refresh_loop())
 
         # Async on-chain refund worker, gated by REFUND_ENABLED.
         # Picks up refund_pending rows, sends USDC back to the agent
