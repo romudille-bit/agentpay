@@ -1,6 +1,6 @@
 # AgentPay MCP Server
 
-**The economic intelligence layer for AI agents.** 20 tools (17 free, 3 paid at $0.01: session_create, pre_trade_check, verified_route). No API keys, no wallet, no setup. The Node MCP also exposes a keyless `verified_route` trust preview + `estimate_plan`.
+**The economic intelligence layer for AI agents.** 20 tools (17 free, 3 paid at $0.01: session_create, pre_trade_check, verified_route). No API keys, no wallet, no setup. The Node MCP mints a per-install wallet identity on first run (spending OFF unless `AGENTPAY_ENABLE_PAID=1`) and exposes a free `verified_route` trust preview + `estimate_plan`.
 
 Agents call tools within a hard budget cap, pay USDC on-chain only when tools cost money, and get a full session receipt — every call, every cost, every decision.
 

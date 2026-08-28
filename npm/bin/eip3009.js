@@ -124,6 +124,12 @@ export function toChecksumAddress(addr) {
   return out;
 }
 
+/** Generate a fresh, valid secp256k1 private key (0x-prefixed hex). */
+export function generatePrivateKey() {
+  const priv = secp256k1.utils.randomPrivateKey();   // CSPRNG, valid scalar
+  return '0x' + Array.from(priv, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /** Derive the EIP-55 address from a secp256k1 private key (hex, 0x optional). */
 export function privateKeyToAddress(privKeyHex) {
   const priv = hexToBytes(privKeyHex);

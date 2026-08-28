@@ -4,7 +4,7 @@
  *
  * Exposes AgentPay's 17 free tools as MCP tools via stdio transport,
  * plus `verified_route` / `route` for buyer-side x402 marketplace routing.
- * No Python, no repo checkout, no wallet — runs anywhere with Node ≥ 18.
+ * No Python, no repo checkout — runs anywhere with Node ≥ 18.
  *
  * x402 free-flow (mirrors agentpay/_client.py):
  *   1. POST /tools/{name}/call → 402 with payment_id, amount_usdc = "0"
@@ -21,21 +21,26 @@
  *
  * route(need, budget) — MCP-2 (legacy alias kept for back-compat).
  *
- * Optional wallet (v2.4.0 — AGE-40): set AGENTPAY_BASE_KEY (EVM private key)
- * and paid tools settle x402 IN-PLACE via the gasless EIP-3009 Mode A flow —
- * the same PAYMENT-SIGNATURE path as the Python SDK (agentpay/_client.py).
+ * Wallet identity (v2.5.0 — AGE-139): every install mints ONE EVM key on
+ * first run, persisted at ~/.agentpay/mcp-wallet.json (0600); the address is
+ * the stable agent_address across restarts. SPENDING IS OFF BY DEFAULT: paid
+ * tools settle x402 in-place (gasless EIP-3009 Mode A, same PAYMENT-SIGNATURE
+ * path as the Python SDK) only with AGENTPAY_ENABLE_PAID=1 (fund the wallet
+ * first) or a BYO AGENTPAY_BASE_KEY (explicit intent — v2.4.x behaviour).
  * Every settle goes through the CDP facilitator, so it also feeds Bazaar
  * indexing. AGENTPAY_MAX_SPEND caps the session's total spend (default $0.10).
- * With a key present, verified_route returns the FULL paid payload (provider
- * URL + ready_to_pay); keyless stays exactly today's thin preview.
+ * In paid mode, verified_route returns the FULL paid payload (provider URL +
+ * ready_to_pay); otherwise it is the free thin preview.
  *
  * Usage:
  *   npx @romudille/agentpay-mcp
  *
  * Env:
  *   AGENTPAY_GATEWAY_URL  — default https://agentpay.tools
- *   AGENTPAY_BASE_KEY     — optional EVM private key; enables in-place paid settles
- *   AGENTPAY_MAX_SPEND    — session budget cap in USDC (default 0.10; wallet mode only)
+ *   AGENTPAY_ENABLE_PAID  — "1" to settle paid tools from the persisted wallet
+ *   AGENTPAY_BASE_KEY     — optional BYO EVM private key (implies paid mode)
+ *   AGENTPAY_WALLET_PATH  — override the wallet file location (sandboxed hosts)
+ *   AGENTPAY_MAX_SPEND    — session budget cap in USDC (default 0.10; paid mode only)
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -46,30 +51,28 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
-import { randomUUID } from 'crypto';
-import { privateKeyToAddress, buildPaymentSignature } from './eip3009.js';
+import { buildPaymentSignature } from './eip3009.js';
+import { loadOrCreateWallet, paidModeEnabled } from './wallet.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.4.3';
+const VERSION = '2.5.0';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
 // All diagnostic output goes to stderr. (Declared before wallet init uses it.)
 const log = (...args) => process.stderr.write(args.join(' ') + '\n');
 
-// ── Optional wallet (AGE-40) ─────────────────────────────────────────────────
-// AGENTPAY_BASE_KEY (EVM private key) is OPT-IN. Unset → exactly the keyless
-// behavior below. Set → paid tools settle in-place via EIP-3009 Mode A.
-const BASE_KEY = (process.env.AGENTPAY_BASE_KEY || '').trim();
-let WALLET = null; // { key, address }
-if (BASE_KEY) {
-  try {
-    WALLET = { key: BASE_KEY, address: privateKeyToAddress(BASE_KEY) };
-  } catch (err) {
-    log(`AgentPay MCP: invalid AGENTPAY_BASE_KEY (${err.message}) — running keyless`);
-  }
-}
+// ── Wallet identity + paid mode (AGE-40 → AGE-139) ───────────────────────────
+// EVERY install has a wallet now: AGENTPAY_BASE_KEY if set (BYO), else a key
+// minted on first run and persisted at ~/.agentpay/mcp-wallet.json (override:
+// AGENTPAY_WALLET_PATH). The address is the stable agent identity across
+// restarts — installs, retention and paid-wall reaches become measurable.
+// SPENDING is separate: paid tools settle in-place only in PAID mode —
+// AGENTPAY_ENABLE_PAID=1 (persisted wallet, once funded) or a BYO key
+// (explicit intent, preserves 2.4.x behaviour). Default: identity only.
+const WALLET = loadOrCreateWallet(process.env, log);   // { key, address, source, path }
+const PAID = paidModeEnabled(process.env, WALLET.source);
 
 // Session budget guard (wallet mode). Tracked in micro-USDC integers so float
 // drift can never leak past the cap. Default $0.10 — the cap story, dogfooded.
@@ -80,15 +83,15 @@ const MAX_SPEND_USD = (() => {
 const MAX_SPEND_MICRO = Math.round(MAX_SPEND_USD * 1_000_000);
 let spentMicro = 0;
 
-const fundingHint = () => WALLET
+const fundingHint = () => PAID
   ? `To settle paid tools, fund ${WALLET.address} with USDC on Base mainnet ` +
     '(gasless EIP-3009 — no ETH needed).'
-  : 'Set AGENTPAY_BASE_KEY to an EVM private key to settle paid tools in-place.';
+  : `This install's wallet is ${WALLET.address} — fund it with USDC on Base and ` +
+    'set AGENTPAY_ENABLE_PAID=1 to settle paid tools in-place (gasless, no ETH needed).';
 
-// Agent identity — the wallet address when a key is set (so paid + free calls
-// share one identity in payment_logs), else an ephemeral UUID used only for
-// the `from=` field in X-Payment (gateway logs only).
-const AGENT_ADDRESS = WALLET ? WALLET.address : `mcp-free-${randomUUID()}`;
+// Agent identity — the wallet address in ALL modes, so free and paid calls
+// share one stable identity in payment_logs across restarts (AGE-139).
+const AGENT_ADDRESS = WALLET.address;
 
 const USER_AGENT = `agentpay-mcp/${VERSION} (+https://agentpay.tools)`;
 
@@ -147,12 +150,13 @@ async function callTool(toolName, params) {
   const isFree = parseFloat(amountUsdc) === 0;
   if (!isFree) {
     // ── Paid tool: settle in-place when a wallet is configured (AGE-40) ──
-    if (!WALLET) {
+    if (!PAID) {
       throw new McpError(
         ErrorCode.InvalidRequest,
-        `'${toolName}' is a paid tool (${amountUsdc} USDC) and this MCP is running keyless. ` +
-        `Set AGENTPAY_BASE_KEY (EVM private key) to settle paid tools in-place on Base ` +
-        `(gasless EIP-3009 — no ETH needed), or use the agentpay-x402 Python SDK.`,
+        `'${toolName}' is a paid tool ($${amountUsdc} USDC). This install's wallet is ` +
+        `${WALLET.address} — fund it with USDC on Base and set AGENTPAY_ENABLE_PAID=1 ` +
+        `to settle paid tools in-place (gasless EIP-3009, no ETH needed). ` +
+        `Spending stays capped by AGENTPAY_MAX_SPEND (default $0.10).`,
       );
     }
     return settlePaid(toolName, url, body, baseHeaders, challenge);
@@ -516,19 +520,20 @@ const VERIFIED_ROUTE_TOOL_DEF = {
     'tool is real?" Vets Coinbase Bazaar (discover → drop stubs/factory clones →',
     'rank by real unique-payer usage → budget-gate).',
     '',
-    ...(WALLET ? [
-      'WALLET MODE (AGENTPAY_BASE_KEY set): this call runs the PAID verified_route',
+    ...(PAID ? [
+      'PAID MODE (AGENTPAY_ENABLE_PAID=1 or AGENTPAY_BASE_KEY): this call runs the PAID verified_route',
       '($0.01 USDC, settled in-place on Base, gasless) and returns the FULL payload —',
       'the vetted pick WITH provider URL + ready-to-pay x402 challenge, from the full',
       'multi-query catalog sweep + usage-based sybil-collapse + trust allowlist.',
       'The $0.01 counts against the AGENTPAY_MAX_SPEND session cap.',
     ] : [
-      'This MCP runs the KEYLESS, single-query PREVIEW: it returns the vetted pick',
+      'This MCP runs the FREE single-query PREVIEW: it returns the vetted pick',
       '(name + usage stats + why) and survivor count to PROVE a real provider exists,',
       'but WITHHOLDS the provider URL + ready-to-pay x402 challenge. To get those —',
       'plus the full multi-query sweep + usage-based sybil-collapse + trust allowlist —',
-      'set AGENTPAY_BASE_KEY (funded EVM key) to settle the paid verified_route ($0.01)',
-      'in-place, or use the agentpay-x402 SDK. No payment happens keyless.',
+      'fund this install\'s wallet with USDC on Base and set AGENTPAY_ENABLE_PAID=1',
+      '(the paid verified_route costs $0.01), or use the agentpay-x402 SDK.',
+      'No payment happens while paid mode is off.',
     ]),
     '',
     'Use when: "which x402 tool for X", "find a real/trustworthy paid API for X",',
@@ -554,11 +559,13 @@ const VERIFIED_ROUTE_TOOL_DEF = {
     required: ['need'],
   },
   annotations: {
-    // Wallet mode runs the PAID tool ($0.01 settles on call) — not read-only.
-    title: WALLET
+    // Paid mode runs the PAID tool ($0.01 settles on call) — not read-only.
+    // A persisted wallet WITHOUT AGENTPAY_ENABLE_PAID stays read-only: the
+    // "read-only tool that moves money" case must remain impossible (AGE-44).
+    title: PAID
       ? 'Verified Route (x402 trust oracle, paid $0.01)'
       : 'Verified Route (x402 trust oracle, preview)',
-    readOnlyHint: !WALLET,
+    readOnlyHint: !PAID,
     openWorldHint: true,
   },
 };
@@ -658,8 +665,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       description += `\nExample response: ${JSON.stringify(t.response_example)}`;
     }
     description += `\n\nPrice: $${t.price_usdc} USDC per call`;
-    if (WALLET && parseFloat(t.price_usdc) > 0) {
-      description += ' (wallet mode: settles in-place on Base, gasless; counts against AGENTPAY_MAX_SPEND)';
+    if (PAID && parseFloat(t.price_usdc) > 0) {
+      description += ' (paid mode: settles in-place on Base, gasless; counts against AGENTPAY_MAX_SPEND)';
     }
 
     // Directory requirement: every tool carries a human title + read/destructive
@@ -667,7 +674,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     // a read-only data/advice call. Wallet mode (AGE-44): a priced tool SPENDS
     // USDC when called — declare it, so clients prompt before the first paid
     // call instead of auto-approving a "read-only" tool that moves money.
-    const spends = Boolean(WALLET) && parseFloat(t.price_usdc) > 0;
+    const spends = PAID && parseFloat(t.price_usdc) > 0;
     const title = t.name
       .split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     return {
@@ -714,7 +721,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const budget = typeof args.budget_usd === 'number' ? args.budget_usd : DEFAULT_BUDGET;
       const chain = typeof args.chain === 'string' ? args.chain : '';
-      const result = WALLET
+      const result = PAID
         ? await callTool('verified_route', { need, budget_usd: budget, ...(chain ? { chain } : {}) })
         : await verifiedRouteTool(need, budget, chain);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -766,9 +773,12 @@ async function main() {
   try {
     const tools = await getTools();
     log(`AgentPay MCP v${VERSION}: loaded ${tools.length} tools from ${GATEWAY_URL} (+ verified_route, route, estimate_plan)`);
-    log(WALLET
-      ? `AgentPay MCP: wallet mode — ${WALLET.address} | session cap $${MAX_SPEND_USD} (AGENTPAY_MAX_SPEND)`
-      : 'AgentPay MCP: keyless — free tools only; set AGENTPAY_BASE_KEY to settle paid tools in-place');
+    const src = { env: 'AGENTPAY_BASE_KEY', file: WALLET.path, minted: `minted → ${WALLET.path}`,
+                  ephemeral: 'EPHEMERAL (not persisted — see stderr above)' }[WALLET.source];
+    log(`AgentPay MCP: wallet ${WALLET.address} (${src})`);
+    log(PAID
+      ? `AgentPay MCP: paid mode ON — paid tools settle in-place | session cap $${MAX_SPEND_USD} (AGENTPAY_MAX_SPEND)`
+      : 'AgentPay MCP: paid mode OFF — free tools only. Fund the wallet with USDC on Base and set AGENTPAY_ENABLE_PAID=1 to enable paid tools.');
   } catch (err) {
     log(`AgentPay MCP v${VERSION}: could not pre-fetch tools (${err.message}) — will retry on first request`);
   }

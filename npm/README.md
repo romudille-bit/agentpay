@@ -13,12 +13,19 @@ ready-to-pay payload by design; the full multi-query sweep + ready-to-pay challe
 the paid `verified_route` ($0.01). (`route` is kept as a legacy alias; `estimate_plan`
 prices a multi-tool plan before you spend.)
 
-**New in v2.4.0 — optional wallet.** Set `AGENTPAY_BASE_KEY` (an EVM private key) and paid
-tools settle **in-place**, right inside the MCP: gasless EIP-3009 on Base (no ETH needed,
-nothing broadcast client-side — a rejected call moves no USDC), under a hard
-`AGENTPAY_MAX_SPEND` session cap. With a key present, `verified_route` returns the **full
-paid payload** — provider URL + ready-to-pay challenge. Unset, everything stays exactly
-keyless as before.
+**New in v2.5.0 — a wallet per install, spending off by default.** On first run the MCP
+mints an EVM key and keeps it in `~/.agentpay/mcp-wallet.json` (file mode 0600; override the
+location with `AGENTPAY_WALLET_PATH`). That address is this install's stable identity —
+free calls carry it, and it's the account you'd fund. **Nothing can spend from it until you
+say so:** paid tools settle **in-place** (gasless EIP-3009 on Base, no ETH needed, nothing
+broadcast client-side — a rejected call moves no USDC) only when you set
+`AGENTPAY_ENABLE_PAID=1` after funding the wallet with USDC on Base, or when you bring your
+own key via `AGENTPAY_BASE_KEY` (which implies paid mode, as in v2.4.x). Spending is always
+capped by `AGENTPAY_MAX_SPEND`. In paid mode, `verified_route` returns the **full paid
+payload** — provider URL + ready-to-pay challenge; otherwise it's the free preview.
+
+To rotate the wallet, stop the MCP and delete (or move) `~/.agentpay/mcp-wallet.json` — a
+fresh key is minted next start. Sweep any USDC out first; the key never leaves the file.
 
 Gateway: `https://agentpay.tools`
 
@@ -79,10 +86,29 @@ or the `agentpay-x402` Python SDK.
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `AGENTPAY_GATEWAY_URL` | `https://agentpay.tools` | Point at a different gateway |
-| `AGENTPAY_BASE_KEY` | *(unset — keyless)* | EVM private key; enables in-place paid settles on Base (gasless EIP-3009) |
-| `AGENTPAY_MAX_SPEND` | `0.10` | Hard session spend cap in USDC (wallet mode) — calls past the cap are refused |
+| `AGENTPAY_ENABLE_PAID` | *(unset — off)* | `1` to settle paid tools from this install's persisted wallet (fund it first) |
+| `AGENTPAY_BASE_KEY` | *(unset)* | Bring-your-own EVM private key; implies paid mode (v2.4.x behaviour) |
+| `AGENTPAY_WALLET_PATH` | `~/.agentpay/mcp-wallet.json` | Where the minted wallet lives (sandboxed hosts: point somewhere writable) |
+| `AGENTPAY_MAX_SPEND` | `0.10` | Hard session spend cap in USDC (paid mode) — calls past the cap are refused |
 
-## Wallet mode (settle paid tools in-place)
+## Paid mode (settle paid tools in-place)
+
+The startup line on stderr prints this install's wallet address. Fund it with USDC on
+Base mainnet, then:
+
+```json
+{
+  "mcpServers": {
+    "agentpay": {
+      "command": "npx",
+      "args": ["-y", "@romudille/agentpay-mcp"],
+      "env": { "AGENTPAY_ENABLE_PAID": "1", "AGENTPAY_MAX_SPEND": "0.10" }
+    }
+  }
+}
+```
+
+Or bring your own key:
 
 ```json
 {
@@ -122,7 +148,8 @@ print(s.spending_summary())                 # receipt: every call, cost, tx, cha
 ## Privacy Policy
 
 AgentPay is built for autonomous agents and does not collect names, emails, or other personal
-identifiers. The MCP server can run keyless (ephemeral identity). It processes tool-call metadata
+identifiers. The MCP mints a local wallet identity on first run (stored only on your machine;
+the private key is never sent anywhere — payment signatures are computed locally). It processes tool-call metadata
 (wallet address, tool name, parameters, amount, tx hash, timestamp) to operate the service and
 forwards requests to upstream public data providers. Full policy: **https://agentpay.tools/privacy**
 

@@ -328,6 +328,38 @@ def main():
     print(f"    unique agent wallets    : {len(agents)}   (note: quickstart mints a NEW wallet per run,")
     print(f"                                       so this overcounts distinct users)")
 
+    # ── MCP bucket (AGE-139): persisted-address identity ────────────────────
+    # v2.5.0 mints one EVM key per install (~/.agentpay/mcp-wallet.json), so
+    # the agent_address on agentpay-mcp/* UA rows is finally a stable install
+    # id. Pre-2.5.0 rows carry mcp-free-<uuid>, regenerated per process start —
+    # counted separately as "legacy ephemeral" and NOT installs.
+    mcp_rows = [r for r in real if (r.get("user_agent") or "").startswith("agentpay-mcp/")]
+    if mcp_rows:
+        persisted = [r for r in mcp_rows
+                     if (r.get("agent_address") or "").startswith("0x")]
+        legacy = {r.get("agent_address") for r in mcp_rows
+                  if (r.get("agent_address") or "").startswith("mcp-free-")}
+        installs = {(r.get("agent_address") or "").lower() for r in persisted}
+        installs.discard("")
+        weeks_by_addr = {}
+        for r in persisted:
+            a = (r.get("agent_address") or "").lower()
+            wk = str(r.get("created_at") or "")[:10]
+            if a and wk:
+                y, m, d = wk.split("-")
+                iso = datetime(int(y), int(m), int(d)).isocalendar()
+                weeks_by_addr.setdefault(a, set()).add((iso[0], iso[1]))
+        retained = {a for a, ws in weeks_by_addr.items() if len(ws) >= 2}
+        wall_rows = [r for r in persisted if r.get("tool_name") in PAID_TOOLS
+                     and r.get("state") not in ("payment_done", "verified")]
+        wall_addrs = {(r.get("agent_address") or "").lower() for r in wall_rows}
+        wall_addrs.discard("")
+        print(f"\n  MCP bucket (agentpay-mcp UA; persisted-address identity, AGE-139):")
+        print(f"    installs (distinct persisted addresses) : {len(installs)}"
+              + (f"   (+{len(legacy)} legacy mcp-free ephemerals — pre-2.5.0, not installs)" if legacy else ""))
+        print(f"    retained (seen in ≥2 ISO weeks)         : {len(retained)}")
+        print(f"    paid-wall reaches (402, never settled)  : {len(wall_addrs)} address(es) / {len(wall_rows)} row(s)")
+
     if not human:
         print("\n  No non-crawler activity yet. Bazaar's crawler is hitting you (good), but no")
         print("  real agent has called through yet. Run with --all to confirm logging works.\n")
