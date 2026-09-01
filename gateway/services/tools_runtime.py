@@ -72,9 +72,12 @@ _EXCHANGE_WALLETS: dict[str, str] = {
     "0x6cc5f688a315f3dc28a7781717a9a798a59fda7b": "OKX",
     "0x236f9f97e0e62388479bf9e5ba4889e46b0273c3": "OKX",
     "0xa7efae728d2936e78bda97dc267687568dd593f3": "OKX",
+    "0x559432e18b281731c054cd703d4b49872be4ed53": "OKX",     # OKX: Hot Wallet 5 — EOA, $211M/5 chains, 7.05M txs, last verified active 2026-09-01
+    "0xa9ac43f5b5e38155a288d1a01d2cbc4478e14573": "OKX",     # OKX: Hot Wallet 3 — EOA, $51M, 1.72M txs, last verified active 2026-09-01
     # Bybit
     "0xf89d7b9c864f589bbf53a82105107622b35eaa40": "Bybit",
     "0x18e296053cbdf986196903e889b7dca7a73882f6": "Bybit",   # ByBit: Hot Wallet 5 — EOA, 1.0M nonce (audit 2026-08-01)
+    "0xa1abfa21f80ecf401bd41365adbb6fef6fefdf09": "Bybit",   # Bybit: Hot Wallet 12 — EOA, current-gen (first tx Jun 2025), last verified active 2026-09-01
     "0x2b5634c42055806a59e9107ed44d43c426e58258": "KuCoin",  # was "Bybit" — Etherscan labels this "KuCoin 1"
     # Bitfinex
     "0x77134cbc06cb00b66f4c7e623d5fdbf6777635ec": "Bitfinex",
@@ -94,19 +97,19 @@ _EXCHANGE_WALLETS: dict[str, str] = {
     "0x94372cc8bf179d1797fe6e5a6dd3d724ff95d953": "Gate.io",  # Gate Deposit — EOA (audit 2026-08-01)
     # KuCoin
     "0x2933782b5a8d72f2754103d1489614f29bfa4625": "KuCoin",  # KuCoin: Wallet — $48M, active Feb 2026
-    "0xd6216fc19db775df9774a6e33526131da7d19a2c": "KuCoin",  # KuCoin 6 — $1.2B, active Sep 2025
+    "0xd6216fc19db775df9774a6e33526131da7d19a2c": "KuCoin",  # KuCoin 6 — EOA, $20M/8 chains, last verified active 2026-09-01
     "0xf16e9b0d03470827a95cdfd0cb8a8a3b46969b91": "KuCoin",  # KuCoin 9 — $521K, active Apr 2026
     "0x53f78a071d04224b8e254e243fffc6d9f2f3fa23": "KuCoin",  # KuCoin: Hot Wallet 2 — ~$16M, EOA, active Jun 2026 (audit 2026-08-01)
     # Bitget
-    "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23": "Bitget",  # Bitget 6 — $377M, active Oct 2025
+    "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23": "Bitget",  # Bitget 6 — EOA, highly active, last verified active 2026-09-01
     "0x0639556f03714a74a5feeaf5736a4a64ff70d206": "Bitget",  # Bitget 4 — $63M, active Jan 2026
     # MEXC
     "0x3cc936b795a188f0e246cbb2d74c5bd190aecf18": "MEXC",    # MEXC 3 — $595M, active 2025
     "0x75e89d5979e4f6fba9f97c104c2f0afb3f1dcb88": "MEXC",    # MEXC 1 — primary hot wallet, ~$41M, EOA, 8.0M nonce (audit 2026-08-01)
     "0x0211f3cedbef3143223d3acf0e589747933e8527": "MEXC",    # MEXC 2 — EOA (audit 2026-08-01)
     # Crypto.com
-    "0xa023f08c70a23abc7edfc5b6b5e171d78dfc947e": "Crypto.com",  # Crypto.com 22 — $1.6B, active Oct 2025
-    "0x72a53cdbbcc1b9efa39c834a540550e23463aacb": "Crypto.com",  # Crypto.com 14 — $5.7M, active Oct 2025
+    "0xa023f08c70a23abc7edfc5b6b5e171d78dfc947e": "Crypto.com",  # Crypto.com 22 — EOA, $830M, last verified active 2026-09-01
+    "0x72a53cdbbcc1b9efa39c834a540550e23463aacb": "Crypto.com",  # Crypto.com 14 — EOA, $2.7M, last verified active 2026-09-01
     "0x46340b20830761efd32832a74d7169b29feb9758": "Crypto.com",  # Crypto.com 12 — most active CDC wallet, EOA, 17.5M nonce (audit 2026-08-01)
     "0x6262998ced04146fa42253a5c0af90ca02dfd2a3": "Crypto.com",  # Crypto.com 1 — ~$172M in ERC-20s, EOA (audit 2026-08-01)
     # Bithumb
@@ -116,9 +119,15 @@ _EXCHANGE_WALLETS: dict[str, str] = {
     "0x390de26d772d2e2005c6d1d24afc902bae37a4bb": "Upbit",    # Upbit 1 — EOA, 475K nonce
     "0xba826fec90cefdf6706858e5fbafcb27a290fbe0": "Upbit",    # Upbit 2 — EOA, 986K nonce
     "0x5e032243d507c743b061ef021e2ec7fcc6d3ab89": "Upbit",    # Upbit 3 — EOA, 588K nonce
+    # Bitstamp (added 2026-09-01)
+    "0x00bdb5699745f5b860228c8f939abf1b9ae374ed": "Bitstamp",  # Bitstamp 1 — EOA, 2.18M txs over 9 yrs, last verified active 2026-09-01
     # NOT added (Etherscan-labeled but CONTRACT addresses, verified via eth_getCode 2026-08-01):
     #   0xa7a93fd0a276fc1c0197a5b5623ed117786eed06  Bybit: Hot Wallet 2
     #   0xe6a421f24d330967a3af2f4cdb5c34067e7e4d75  Bitget: Hot Wallet 1
+    # NOT added (audit 2026-09-01):
+    #   0x4e7b110335511f662fdbb01bf958a7844118c0d4  OKX: Hot Wallet 2 — retired (last sent tx ~2023, $1.48 bal)
+    #   0xbaed383ede0e5d9d72430661f3285daa77e9439f  Bybit: Hot Wallet 6 — dormant since ~2023
+    #   0x48ec5560bfd59b95859965cce48cc244cfdf6b0c  Bitstamp: Wallet — CONTRACT (EIP-1167 proxy, verified via eth_getCode 2026-09-01)
 }
 
 
