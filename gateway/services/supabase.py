@@ -1960,6 +1960,14 @@ def _group_paid_receipts(rows: list[dict]) -> list[dict]:
     return sorted(by_tool.values(), key=lambda r: -r["paid_calls"])
 
 
+_RECEIPTS_TTL_SECONDS = 600
+_receipts_cache: dict = {"at": 0.0, "rows": None}
+
+
+def _receipts_cache_clear() -> None:
+    _receipts_cache["at"], _receipts_cache["rows"] = 0.0, None
+
+
 async def fetch_own_tool_receipts() -> list[dict]:
     """Per-tool receipt evidence for AgentPay's own PAID tools, from
     payment_logs (state=payment_done, amount > 0). Powers the /probes
@@ -1969,9 +1977,17 @@ async def fetch_own_tool_receipts() -> list[dict]:
     NOTE: the server-side `amount_usdc=gt.0` filter is best-effort only
     (text column — see _group_paid_receipts); it never drops a paid row
     but does NOT reliably drop free ones. _group_paid_receipts is the
-    authoritative filter."""
+    authoritative filter.
+
+    Cached 10 min (disk-IO fix #3, 2026-09-01): /scores.json is a public,
+    crawler-hit route and this query is a filtered scan of payment_logs
+    (no index on state) — one scan per 10 min instead of one per hit."""
     if not sb_enabled():
         return []
+    import time as _time
+    now = _time.monotonic()
+    if _receipts_cache["rows"] is not None and now - _receipts_cache["at"] < _RECEIPTS_TTL_SECONDS:
+        return _receipts_cache["rows"]
     try:
         async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
             resp = await client.get(
@@ -1987,11 +2003,13 @@ async def fetch_own_tool_receipts() -> list[dict]:
             )
         if resp.status_code != 200:
             logger.error(f"fetch_own_tool_receipts error: HTTP {resp.status_code}")
-            return []
-        return _group_paid_receipts(resp.json())
+            return _receipts_cache["rows"] or []
+        rows = _group_paid_receipts(resp.json())
+        _receipts_cache["at"], _receipts_cache["rows"] = now, rows
+        return rows
     except Exception as e:
         logger.error(f"fetch_own_tool_receipts failure: {e}")
-        return []
+        return _receipts_cache["rows"] or []
 
 
 async def fetch_service_scores() -> dict[str, dict]:

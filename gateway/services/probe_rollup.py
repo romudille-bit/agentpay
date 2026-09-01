@@ -10,8 +10,9 @@ what preserves the market signal they carried.
 
 Every 402 issuance is counted in an in-memory Counter keyed
 (utc_day, tool_name, user_agent, kind) and flushed as a batch INSERT into
-`payment_logs_daily_rollup` every FLUSH_INTERVAL_SECONDS — one write per
-window regardless of probe volume. Rows are ADDITIVE events: consumers
+`payment_logs_daily_rollup` every ROLLUP_FLUSH_INTERVAL_SECONDS (hourly since
+disk-IO fix #3) — one write per window regardless of probe volume, and one
+row per live key per window. Rows are ADDITIVE events: consumers
 SUM(n) GROUP BY day/tool/user_agent, so no server-side upsert/increment is
 needed. New crawlers, UA changes, and volume trends all remain visible in
 the rollup (the "who monitors AgentPay" feed for the weekly market review).
@@ -42,7 +43,18 @@ from gateway.services import supabase as sb
 
 logger = logging.getLogger(__name__)
 
+# Loop tick. provider_map (AGE-138) still flushes every tick so verified_route
+# discoveries land within minutes; the ROLLUP itself flushes once an hour.
 FLUSH_INTERVAL_SECONDS = 300
+
+# Disk-IO fix #3 (2026-09-01): rows are additive EVENTS, so every flush
+# appends one row per live (day, tool, UA, kind) key. At a 5-min cadence
+# with ~30 keys alive per window that was ~8,400 rows/day (139,848 rows by
+# 09-01; 3rd "Disk IO budget" email on 08-29) — the rollup had become the
+# write churn it was built to remove. Hourly: ~700 rows/day. A crash now
+# loses ≤1h of probe telemetry instead of ≤5min; payments are never
+# tracked here, so that is the whole cost. Consumers still SUM(n) GROUP BY.
+ROLLUP_FLUSH_INTERVAL_SECONDS = 3600
 
 # Bound memory: (day × tool × UA × kind) keys. 5k keys ≈ a very hostile UA
 # rotation; beyond that, new keys collapse into the '(overflow)' UA bucket
@@ -99,16 +111,30 @@ async def flush() -> int:
         return 0
 
 
+def _rollup_due(last_flush: float, now: float) -> bool:
+    """Pure: has ROLLUP_FLUSH_INTERVAL_SECONDS elapsed since the last
+    rollup flush? (Failed flushes re-queue and retry on the next due tick.)"""
+    return now - last_flush >= ROLLUP_FLUSH_INTERVAL_SECONDS
+
+
 async def flush_loop() -> None:
-    """Background flusher — register in main.py's lifespan."""
+    """Background flusher — register in main.py's lifespan.
+
+    Ticks every FLUSH_INTERVAL_SECONDS; the rollup INSERT runs only when
+    ROLLUP_FLUSH_INTERVAL_SECONDS has elapsed, provider_map every tick."""
+    import time as _time
+    last_rollup_flush = _time.monotonic()
     while True:
         await asyncio.sleep(FLUSH_INTERVAL_SECONDS)
-        try:
-            n = await flush()
-            if n:
-                logger.info(f"[ROLLUP] flushed {n} probe-count rows")
-        except Exception as e:  # pragma: no cover
-            logger.error(f"probe rollup loop error: {e}")
+        now = _time.monotonic()
+        if _rollup_due(last_rollup_flush, now):
+            last_rollup_flush = now
+            try:
+                n = await flush()
+                if n:
+                    logger.info(f"[ROLLUP] flushed {n} probe-count rows")
+            except Exception as e:  # pragma: no cover
+                logger.error(f"probe rollup loop error: {e}")
         # AGE-138: provider rows discovered by verified_route since the last
         # window — same batch vehicle, same one-write-per-window rule.
         try:

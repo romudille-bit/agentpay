@@ -460,3 +460,76 @@ def test_ingest_without_providers_is_unchanged(monkeypatch):
     r = _client().post("/v1/prober/run", json={"probes": [_paid_probe()]}, headers=SECRET_HDR)
     assert r.status_code in (200, 202)
     assert r.json()["providers_stored"] == 0 and called == []
+
+
+# ── disk-IO fix #3 (2026-09-01): fetch_own_tool_receipts is cached 10 min ──
+# /scores.json is public + crawler-hit and this query is a filtered scan of
+# payment_logs (no index on state): one scan per TTL, not one per hit.
+
+def test_fetch_own_tool_receipts_cached_within_ttl(monkeypatch):
+    import asyncio
+    from gateway.services import supabase
+
+    supabase._receipts_cache_clear()
+    monkeypatch.setattr(supabase, "sb_enabled", lambda: True)
+    monkeypatch.setattr(supabase, "sb_headers", lambda: {})
+    monkeypatch.setattr(supabase.settings, "SUPABASE_URL", "https://sb.example", raising=False)
+
+    calls = {"n": 0}
+
+    class Resp:
+        status_code = 200
+        def json(self):
+            return [{"tool_name": "verified_route", "created_at": "2026-08-30T00:00:00Z",
+                     "amount_usdc": "0.005000"}]
+
+    class Client:
+        def __init__(self, *a, **kw): ...
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, url, headers=None, params=None):
+            calls["n"] += 1
+            return Resp()
+
+    monkeypatch.setattr(supabase.httpx, "AsyncClient", Client)
+    try:
+        first = asyncio.run(supabase.fetch_own_tool_receipts())
+        second = asyncio.run(supabase.fetch_own_tool_receipts())
+        assert first == second == [{"tool": "verified_route", "paid_calls": 1,
+                                    "last_paid_at": "2026-08-30T00:00:00Z"}]
+        assert calls["n"] == 1                      # second call served from cache
+        supabase._receipts_cache["at"] -= supabase._RECEIPTS_TTL_SECONDS + 1
+        asyncio.run(supabase.fetch_own_tool_receipts())
+        assert calls["n"] == 2                      # TTL elapsed → refetched
+    finally:
+        supabase._receipts_cache_clear()
+
+
+def test_fetch_own_tool_receipts_serves_stale_cache_on_error(monkeypatch):
+    import asyncio
+    from gateway.services import supabase
+
+    supabase._receipts_cache_clear()
+    monkeypatch.setattr(supabase, "sb_enabled", lambda: True)
+    monkeypatch.setattr(supabase, "sb_headers", lambda: {})
+    monkeypatch.setattr(supabase.settings, "SUPABASE_URL", "https://sb.example", raising=False)
+    cached = [{"tool": "pre_trade_check", "paid_calls": 3, "last_paid_at": "x"}]
+    supabase._receipts_cache["rows"] = cached
+    supabase._receipts_cache["at"] = -1e9            # expired → must refetch
+
+    class Boom:
+        def __init__(self, *a, **kw): ...
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, *a, **kw):
+            raise RuntimeError("supabase blip")
+
+    monkeypatch.setattr(supabase.httpx, "AsyncClient", Boom)
+    try:
+        assert asyncio.run(supabase.fetch_own_tool_receipts()) == cached
+    finally:
+        supabase._receipts_cache_clear()

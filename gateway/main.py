@@ -103,10 +103,17 @@ async def _cleanup_loop():
 
 
 # How often the abandoned-pending sweep runs.
-# 5 min matches the 5-min cutoff in sb.sweep_abandoned_pending, so
-# worst case a stuck pending row spends ~10 min before transitioning
-# to 'abandoned'.
-_ABANDONED_SWEEP_INTERVAL_SECS = 300
+# Was 5 min (matching the 5-min cutoff in sb.sweep_abandoned_pending).
+# Disk-IO fix #3 (2026-09-01): since disk-IO fix #2 (2f0b03b) NO code path
+# writes state='pending' any more — rows are born 'verified' /
+# 'payment_done' / 'rejected' at settle time — so the sweep's
+# `UPDATE payment_logs … WHERE state='pending'` matched 0 rows on every one
+# of its 288 daily runs per gateway (× 2 gateways on the same project),
+# each an UPDATE over a 77 MB bloated heap (idx_payment_logs_state exists
+# but the heap is ~1.2 KB/row of dead-tuple space — see
+# db/migrations/disk_io_fix3.sql). Hourly keeps it as a safety net for a
+# future writer at 1/12 of the cost.
+_ABANDONED_SWEEP_INTERVAL_SECS = 3600
 
 
 # How often the refund worker runs.

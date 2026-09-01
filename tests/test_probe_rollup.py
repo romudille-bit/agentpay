@@ -132,3 +132,20 @@ class TestFlush:
         assert by_key[("gas_tracker", "node", "probe_get")] == 1
         assert all(set(r) == {"day", "tool_name", "user_agent", "state",
                               "network", "n"} for r in posted["rows"])
+
+
+class TestHourlyRollupCadence:
+    """Disk-IO fix #3 (2026-09-01): the rollup INSERT is hourly, not every
+    5-min tick — additive rows made a 5-min cadence ~8,400 rows/day."""
+
+    def test_rollup_interval_is_hourly_and_coarser_than_tick(self):
+        assert probe_rollup.ROLLUP_FLUSH_INTERVAL_SECONDS == 3600
+        assert probe_rollup.ROLLUP_FLUSH_INTERVAL_SECONDS > probe_rollup.FLUSH_INTERVAL_SECONDS
+
+    def test_rollup_due_only_after_interval(self):
+        due = probe_rollup._rollup_due
+        assert not due(last_flush=0.0, now=0.0)
+        assert not due(last_flush=0.0, now=probe_rollup.FLUSH_INTERVAL_SECONDS)
+        assert not due(last_flush=0.0, now=probe_rollup.ROLLUP_FLUSH_INTERVAL_SECONDS - 1)
+        assert due(last_flush=0.0, now=probe_rollup.ROLLUP_FLUSH_INTERVAL_SECONDS)
+        assert due(last_flush=100.0, now=100.0 + probe_rollup.ROLLUP_FLUSH_INTERVAL_SECONDS)
