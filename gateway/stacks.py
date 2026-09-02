@@ -49,6 +49,9 @@ __all__ = [
     "decode_sbtc_transfer",
     "decode_payment_signature",
     "build_stacks_402_option",
+    "stacks_402_option",
+    "stacks_offerable",
+    "stacks_quote",
     "stacks_quote_sats",
     "stacks_configured",
 ]
@@ -150,18 +153,6 @@ def _sbtc_contract() -> str:
 
 _rate_cache: dict = {"rate": None, "at": 0.0}   # {"rate": Decimal|None, "at": monotonic}
 
-# Per-payment quote store: the sats quoted at 402-ISSUANCE are authoritative
-# for that payment. Settle verifies against THIS, not a fresh re-quote, so a
-# BTC move between issuance and settle can't spuriously fail the amount check.
-# The validity window is the challenge's own expiry (settle already rejects an
-# expired challenge). In-memory + single-process, exactly like x402's
-# _pending_challenges — fine for the 402→settle window; durable per-payment
-# rate columns in payment_logs are the M2 auditability follow-up.
-_stacks_quotes: dict[str, dict] = {}   # payment_id → {"sats", "rate", "quoted_at"}
-_QUOTE_STORE_MAX = 5000
-_QUOTE_STORE_TTL_S = 3600
-
-
 # AGE-135: single-flight guard for the background rate refresh. The 402 path
 # must never block on CoinGecko when ANY cached rate exists — see _btc_usd_rate.
 _rate_refresh_task: Optional[asyncio.Task] = None
@@ -203,9 +194,9 @@ async def _btc_usd_rate() -> Optional[Decimal]:
     Fresh cache (< STACKS_RATE_CACHE_S) → serve it.
     Stale cache → serve the stale value IMMEDIATELY and refresh in the
       background (single-flight). Staleness is safe: the quote binds at
-      402-issuance and settle verifies against the stored quote
-      (_stacks_quotes), so a stale rate only drifts the sats price slightly —
-      it can never fail a settle.
+      402-issuance and settle verifies against the quote stored on the
+      challenge, so a stale rate only drifts the sats price slightly — it
+      can never fail a settle.
     Empty cache (cold boot) → one bounded (3s) blocking fetch, then
       STACKS_FIXED_BTC_USD, then None (the 402 omits the stacks option).
     """
@@ -252,65 +243,45 @@ async def stacks_quote_sats(price_usdc) -> Optional[int]:
     return None if q is None else q[0]
 
 
-def _remember_quote(payment_id: str, sats: int, rate: Decimal) -> None:
-    if len(_stacks_quotes) >= _QUOTE_STORE_MAX:
-        cutoff = time.time() - _QUOTE_STORE_TTL_S
-        for pid in [p for p, q in _stacks_quotes.items() if q["quoted_at"] < cutoff]:
-            _stacks_quotes.pop(pid, None)
-    _stacks_quotes[payment_id] = {
-        "sats": sats, "rate": str(rate), "quoted_at": time.time(),
-    }
-
-
-def stacks_quoted_sats(payment_id: str) -> Optional[dict]:
-    """The quote recorded at 402-issuance for this payment, or None if it was
-    never stored / was swept (restart, multi-worker, GET-issued 402). Settle
-    prefers this over re-quoting."""
-    return _stacks_quotes.get(payment_id)
-
-
-def forget_stacks_quote(payment_id: str) -> None:
-    """Drop a stored quote once its payment reaches a terminal settle state."""
-    _stacks_quotes.pop(payment_id, None)
-
-
-async def build_stacks_402_option(
-    price_usdc, resource_url: str = "", *, payment_id: Optional[str] = None,
-) -> Optional[dict]:
-    """The `payment_options.stacks` block of AgentPay's native 402
-    (docs/stacks-adapter.md §Wire contract). None when Stacks isn't
-    configured/quotable — the 402 then omits the option entirely.
-
-    When `payment_id` is given, the quoted sats + rate are stored so settle
-    verifies against THIS quote rather than re-quoting (FX-drift safety).
-
-    $0 tools never offer a stacks option: free calls must never touch the
-    signing path (the SDK's free:<id> proof flow handles them chain-free).
-    """
-    if not stacks_configured():
-        return None
-    try:
-        if Decimal(str(price_usdc or "0")) == 0:
-            return None
-    except Exception:
-        return None
-    q = await stacks_quote(price_usdc)
-    if q is None:
-        return None
-    sats, rate = q
-    if payment_id:
-        _remember_quote(payment_id, sats, rate)
+def stacks_402_option(quote: tuple[int, Decimal], price_usdc) -> dict:
+    """The `payment_options.stacks` block for an already-computed quote
+    (docs/stacks-adapter.md §Wire contract)."""
+    sats, rate = quote
     return {
         "scheme": "exact",
         "network": _caip2(),
-        "amount_sats": sats,
+        "amount_sats": int(sats),
         "amount_usdc": str(price_usdc),
-        "btc_usd_rate": str(rate),   # transparency: the rate this quote used
+        "btc_usd_rate": str(rate),
         "pay_to": settings.STACKS_GATEWAY_ADDRESS,
         "fee_microstx": settings.STACKS_SUGGESTED_FEE_MICROSTX,
         "asset": "sbtc",
         "header": "payment-signature: <base64(StacksPaymentPayload JSON)>",
     }
+
+
+def stacks_offerable(price_usdc) -> bool:
+    """Stacks is configured and the tool is priced. $0 tools never offer a
+    stacks option: free calls must never touch the signing path."""
+    if not stacks_configured():
+        return False
+    try:
+        return Decimal(str(price_usdc or "0")) > 0
+    except Exception:
+        return False
+
+
+async def build_stacks_402_option(price_usdc, resource_url: str = "") -> Optional[dict]:
+    """Quote + option in one step. None when Stacks isn't configured or
+    quotable — the 402 then omits the option entirely. The route quotes
+    first and stores the quote on the challenge (AGE-95); this wrapper is
+    for callers without a challenge."""
+    if not stacks_offerable(price_usdc):
+        return None
+    q = await stacks_quote(price_usdc)
+    if q is None:
+        return None
+    return stacks_402_option(q, price_usdc)
 
 
 # ── payload + transaction decoding ───────────────────────────────────────────

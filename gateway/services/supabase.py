@@ -323,6 +323,8 @@ async def store_pending_challenge(
     developer_address: str,
     expires_at: float,
     request_data: dict,
+    stacks_sats: Optional[int] = None,
+    stacks_rate: Optional[str] = None,
 ) -> None:
     """INSERT into pending_challenges. Fire-and-forget, with one retry.
 
@@ -347,6 +349,11 @@ async def store_pending_challenge(
         "request_data":      request_data,
         "expires_at":        _unix_to_iso(expires_at),
     }
+    # Only sent when a Stacks quote exists (migration
+    # db/migrations/pending_challenges_stacks_quote.sql adds the columns).
+    if stacks_sats is not None:
+        body["stacks_sats"] = int(stacks_sats)
+        body["stacks_rate"] = stacks_rate
     last_err = ""
     for attempt in (1, 2):
         try:

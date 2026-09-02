@@ -859,12 +859,25 @@ async def _issue_402(
     except Exception:
         is_free = False
 
+    # Stacks quote first so it rides on the challenge (durable, AGE-95).
+    # Bounded: the option is optional, a slow quote must never slow the 402.
+    stacks_quote = None
+    if stacks_pay.stacks_offerable(tool.price_usdc):
+        try:
+            stacks_quote = await asyncio.wait_for(
+                stacks_pay.stacks_quote(tool.price_usdc), timeout=4.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[CALL] tool={tool_name} stacks quote timed out — "
+                           "402 issued without the stacks option")
+
     challenge = issue_payment_challenge(
         tool_name=tool_name,
         price_usdc=tool.price_usdc,
         developer_address=tool.developer_address,
         request_data={"parameters": body.parameters},
         persist=(log_pending and not is_free),
+        stacks_quote=stacks_quote,
     )
 
     # Aggregate telemetry for EVERY 402 issued — this is the durable record
@@ -888,25 +901,10 @@ async def _issue_402(
 
     base_option, payment_required_header, accepts_entry = _base_402_option(tool, resource_url)
 
-    # AGE-24: compute the Stacks option (live USD→sats quote) before building
-    # the body — the quote fetch is async, and passing the payment_id records
-    # the quote so settle reads it back instead of re-quoting.
-    # AGE-135: hard-bound the quote leg. The stacks option is an OPTIONAL
-    # payment rail on the challenge — a slow quote must degrade to "option
-    # omitted", never to a slow/failed 402 (external probers score exactly
-    # that as unavailability; pre_trade_check read 97.94% trailing-30d while
-    # session_create, whose 402 has no stacks leg, read 99.36%).
-    try:
-        stacks_option = await asyncio.wait_for(
-            stacks_pay.build_stacks_402_option(
-                tool.price_usdc, resource_url, payment_id=challenge.payment_id,
-            ),
-            timeout=4.0,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(f"[CALL] tool={tool_name} stacks quote timed out — "
-                       "402 issued without the stacks option")
-        stacks_option = None
+    stacks_option = (
+        stacks_pay.stacks_402_option(stacks_quote, tool.price_usdc)
+        if stacks_quote else None
+    )
 
     headers = build_402_headers(challenge)
     if payment_required_header:
@@ -964,11 +962,8 @@ async def _issue_402(
                 ),
             },
             **({"base": base_option} if base_option else {}),
-            # Stacks/sBTC (AGE-23/24): present only when the gateway is
-            # configured AND the tool is priced (never for $0 tools) AND a
-            # USD→sats quote is available. Passing challenge.payment_id stores
-            # the quoted sats + rate so settle verifies against THIS quote
-            # (FX-drift safety). Wire contract: docs/stacks-adapter.md.
+            # Stacks/sBTC: only when configured and quotable
+            # (docs/stacks-adapter.md).
             **({"stacks": stacks_option} if stacks_option else {}),
         },
     }
@@ -1162,14 +1157,13 @@ async def _settle_stacks_path(
     if challenge.get("tool_name") and challenge["tool_name"] not in (tool.name, tool_name):
         return _reject("challenge_tool_mismatch")
 
-    # AGE-24: verify against the quote recorded at 402-ISSUANCE, not a fresh
-    # re-quote — a BTC move between issue and settle must not fail the amount
-    # check (the challenge's own expiry, already checked above, is the quote's
-    # validity window). Re-quote only if the stored quote is gone (restart /
-    # multi-worker / GET-issued 402); the verify tolerance absorbs the drift.
-    quoted = stacks_pay.stacks_quoted_sats(payment_id)
-    if quoted is not None:
-        expected_sats, quote_rate = quoted["sats"], quoted["rate"]
+    # Verify against the quote recorded on the challenge at issuance, not a
+    # fresh re-quote: a BTC move between issue and settle must not fail the
+    # amount check. Re-quote only when the challenge carries no quote
+    # (issued before AGE-95 or without a Stacks option).
+    if challenge.get("stacks_sats"):
+        expected_sats = int(challenge["stacks_sats"])
+        quote_rate = str(challenge.get("stacks_rate") or "")
     else:
         requote = await stacks_pay.stacks_quote(
             challenge.get("amount_usdc") or tool.price_usdc)
@@ -1189,7 +1183,6 @@ async def _settle_stacks_path(
     if not auth["authorized"]:
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=FAILED "
                     f"reason={auth['reason']}")
-        stacks_pay.forget_stacks_quote(payment_id)
         # Disk-IO fix #2: no pending row — record the rejected attempt
         # (payment_id is bound to a KNOWN challenge here, so this is a real
         # attempt, never scanner noise).
@@ -1233,7 +1226,6 @@ async def _settle_stacks_path(
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status={status} "
                     f"state={settle['state']} reason={settle['reason']}")
         if settle["state"] == "rejected":
-            stacks_pay.forget_stacks_quote(payment_id)
             await _record_rejected_attempt(
                 payment_id, settle["reason"],
                 tool_name=tool.name,
@@ -1253,15 +1245,12 @@ async def _settle_stacks_path(
     logger.info(f"[PAYMENT] tool={tool_name} network=stacks "
                 f"agent={auth['sender'][:8]}... status=OK "
                 f"state={settle['state']} tx={settle['txid'][:16]}")
-    stacks_pay.forget_stacks_quote(payment_id)
     return {
         "authorized": True,
         "tx_hash":    settle["txid"],
         "payer":      auth["sender"],
         "network":    f"stacks-{settings.STACKS_NETWORK}",
         "recovered":  settle["state"] == "ok_recovered",
-        # AGE-24: receipt-level record of what was quoted + paid (durable
-        # payment_logs rate columns are the M2 follow-up).
         "amount_sats":  auth["amount_sats"],
         "btc_usd_rate": quote_rate,
     }

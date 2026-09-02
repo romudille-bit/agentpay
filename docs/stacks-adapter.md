@@ -165,10 +165,10 @@ it must be enforced.
   direct-Hiro fallback, `ok_recovered` poll path, atomic pre-settle txid
   consume, Clarity contract-call decode for verification.
 - Pricing (AGE-24) — live BTC/USD (CoinGecko, cached, fixed fallback);
-  quote-at-issuance stored per payment_id and read back at settle; rate + sats
-  on the 402 option and the settle receipt. Durable per-payment rate columns
-  in `payment_logs` are the M2 auditability follow-up (the table has no
-  metadata column today). USDCx deferred (see below).
+  the quote (sats + rate) is stored on the challenge — in memory and in the
+  `pending_challenges` row (`stacks_sats`, `stacks_rate`) — and read back at
+  settle, so it survives a gateway restart; rate + sats on the 402 option and
+  the settle receipt. USDCx deferred (see below).
 - Testnet: at least one nonzero-priced tool on the testnet registry (the
   free-funnel pricing left testnet with no payable tool), so the capped
   session, real payment, and over-cap rejection are all demonstrable.
@@ -189,11 +189,10 @@ it must be enforced.
   Stacks is ~nil today (see the x402-demand-reality note). It's additive, not
   a blocker — revisit post-M1 if a concrete USDCx buyer appears. The FX path
   above makes the sBTC quote dollar-accurate in the meantime.
-- Multi-worker note: the issuance→settle quote store is in-memory
-  single-process (like `_pending_challenges`). Fine for the short 402→settle
-  window on a single gateway worker; if gateway-testnet runs >1 worker, a
-  quote issued on worker A and settled on worker B falls back to a re-quote
-  (tolerance absorbs the drift). Durable quote storage is the M2 hardening.
+- The issuance quote lives on the challenge, so a settle on another worker
+  or after a restart reads it from `pending_challenges`. Only a challenge
+  issued without a Stacks option (or before the columns existed) falls back
+  to a re-quote, where the verify tolerance absorbs small drift.
 - No mature Python Stacks signing lib exists — `_stacks_tx.py` is a minimal,
   spec-documented implementation (SIP-005/SIP-010), fixture-validated against
   stacks.js. secp256k1 primitives come from the existing dependency tree.

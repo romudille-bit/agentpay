@@ -101,6 +101,8 @@ def _normalize_supabase_challenge(row: dict) -> dict:
         "developer_address": row.get("developer_address") or "",
         "expires_at":        expires_unix,
         "request_data":      row.get("request_data") or {},
+        "stacks_sats":       int(row["stacks_sats"]) if row.get("stacks_sats") else None,
+        "stacks_rate":       str(row["stacks_rate"]) if row.get("stacks_rate") else None,
     }
 
 
@@ -163,6 +165,8 @@ class PaymentChallenge:
     issued_at: float         # Unix timestamp
     expires_at: float        # Unix timestamp
     request_data: dict       # Original request (to replay after payment)
+    stacks_sats: Optional[int] = None    # sBTC quote at issuance (AGE-95)
+    stacks_rate: Optional[str] = None    # BTC/USD rate that quote used
 
 
 def issue_payment_challenge(
@@ -172,6 +176,7 @@ def issue_payment_challenge(
     request_data: dict,
     ttl_seconds: int = 120,
     persist: bool = True,
+    stacks_quote: Optional[tuple] = None,
 ) -> PaymentChallenge:
     """
     Create a payment challenge for an agent to fulfill.
@@ -184,6 +189,9 @@ def issue_payment_challenge(
     (production runs a single uvicorn worker), so the in-memory dict is
     sufficient. Paid POST challenges keep the durable mirror — a paying
     agent may straddle a worker restart mid-payment.
+
+    stacks_quote=(sats, rate): the sBTC quote the 402 offers, kept on the
+    challenge so settle verifies against it after a restart (AGE-95).
     """
     payment_id = str(uuid.uuid4())
     now = time.time()
@@ -197,6 +205,8 @@ def issue_payment_challenge(
         issued_at=now,
         expires_at=now + ttl_seconds,
         request_data=request_data,
+        stacks_sats=int(stacks_quote[0]) if stacks_quote else None,
+        stacks_rate=str(stacks_quote[1]) if stacks_quote else None,
     )
 
     _pending_challenges[payment_id] = asdict(challenge)
@@ -215,6 +225,8 @@ def issue_payment_challenge(
             developer_address=developer_address,
             expires_at=challenge.expires_at,
             request_data=request_data,
+            stacks_sats=challenge.stacks_sats,
+            stacks_rate=challenge.stacks_rate,
         )
     )
     return challenge
