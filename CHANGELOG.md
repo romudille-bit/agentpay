@@ -6,6 +6,18 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Stacks signing with a raw 64-hex key** — the presign sighash cleared the
+  origin condition with the compressed key-encoding byte regardless of the
+  key, so uncompressed keys produced signatures the node rejected
+  (`SignatureValidation`). The sighash now keeps the key's own encoding;
+  both encodings are fixture-tested byte-for-byte against stacks.js.
+
+### Added
+- `agentpay._stacks_tx.verify_origin_signature(signed_tx)` — pure check that
+  a signed transaction's origin signature recovers to its signer; the
+  gateway runs it before consuming replay state or broadcasting.
+
 ## [0.4.0] — 2026-08-22
 
 ### Added

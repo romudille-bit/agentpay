@@ -29,6 +29,7 @@ __all__ = [
     "PostCondition",
     "build_sbtc_transfer",
     "sign_transaction",
+    "verify_origin_signature",
     "txid_of",
     "c32_address",
     "c32_decode",
@@ -528,57 +529,85 @@ def _with_origin_condition(tx: bytes, condition: bytes) -> bytes:
     return tx[:o] + condition + tx[o + _SPENDING_CONDITION_LEN :]
 
 
-def sign_transaction(unsigned_tx: bytes, keypair: StacksKeypair) -> bytes:
-    """Chained presign-sighash signing (SIP-005 single-sig)."""
-    if len(unsigned_tx) < _ORIGIN_CONDITION_OFFSET + _SPENDING_CONDITION_LEN:
-        raise ValueError("malformed Stacks transaction")
-    auth_type = unsigned_tx[5]
-    if auth_type not in (_AUTH_STANDARD, _AUTH_SPONSORED):
-        raise ValueError("malformed Stacks transaction")
-    nonce, fee, _ = _origin_condition_fields(unsigned_tx)
-    signer = keypair.signer_hash160()
-    if unsigned_tx[7:27] != signer:
-        raise ValueError("keypair does not match transaction signer")
+def _origin_presign_hash(tx: bytes, signer: bytes, key_encoding: int) -> bytes:
+    """Presign sighash of the origin condition: H(signBegin || 0x04 || fee || nonce).
 
-    # signBegin: the tx serialized with the origin condition CLEARED
-    # (nonce=0, fee=0, zero signature). For sponsored auth the sponsor
-    # condition is cleared to the all-zero-signer form for the sighash
-    # (it serializes differently in the tx itself — see _SPONSOR_PLACEHOLDER).
-    cleared = _serialize_spending_condition(
-        signer, 0, 0, _KEY_ENCODING_COMPRESSED, _SIG_PLACEHOLDER
-    )
-    sighash_tx = _with_origin_condition(unsigned_tx, cleared)
+    signBegin is the tx with the origin condition cleared (nonce=0, fee=0,
+    zero signature, key encoding kept) and, for sponsored auth, the sponsor
+    condition cleared to the all-zero-signer form. The origin always signs
+    with the standard auth-type byte, even in a sponsored tx (SIP-005).
+    """
+    auth_type = tx[5]
+    nonce, fee, _ = _origin_condition_fields(tx)
+    cleared = _serialize_spending_condition(signer, 0, 0, key_encoding, _SIG_PLACEHOLDER)
+    sighash_tx = _with_origin_condition(tx, cleared)
     if auth_type == _AUTH_SPONSORED:
         o = _ORIGIN_CONDITION_OFFSET + _SPENDING_CONDITION_LEN
         sighash_tx = (
             sighash_tx[:o] + _SPONSOR_CLEARED + sighash_tx[o + _SPENDING_CONDITION_LEN :]
         )
-    sign_begin = _sha512_256(sighash_tx)
-
-    # presign sighash: H(sign_begin || auth_type || fee || nonce).
-    # SIP-005 quirk: the ORIGIN always signs with the STANDARD auth-type byte,
-    # even in a sponsored transaction — only the sponsor's own signature uses
-    # 0x05 (stacks.js `signNextOrigin` hardcodes AuthType.Standard).
-    presign = _sha512_256(
-        sign_begin
+    return _sha512_256(
+        _sha512_256(sighash_tx)
         + bytes([_AUTH_STANDARD])
         + fee.to_bytes(8, "big")
         + nonce.to_bytes(8, "big")
     )
 
-    # RFC6979 deterministic recoverable ECDSA over the presign hash.
+
+def sign_transaction(unsigned_tx: bytes, keypair: StacksKeypair) -> bytes:
+    """Chained presign-sighash signing (SIP-005 single-sig)."""
+    if len(unsigned_tx) < _ORIGIN_CONDITION_OFFSET + _SPENDING_CONDITION_LEN:
+        raise ValueError("malformed Stacks transaction")
+    if unsigned_tx[5] not in (_AUTH_STANDARD, _AUTH_SPONSORED):
+        raise ValueError("malformed Stacks transaction")
+    nonce, fee, _ = _origin_condition_fields(unsigned_tx)
+    signer = keypair.signer_hash160()
+    if unsigned_tx[7:27] != signer:
+        raise ValueError("keypair does not match transaction signer")
+    key_encoding = (
+        _KEY_ENCODING_COMPRESSED if keypair.compressed else _KEY_ENCODING_UNCOMPRESSED
+    )
+
+    presign = _origin_presign_hash(unsigned_tx, signer, key_encoding)
     sig = _eth_keys.PrivateKey(keypair.private_key).sign_msg_hash(presign)
     signature = (
         bytes([sig.v]) + sig.r.to_bytes(32, "big") + sig.s.to_bytes(32, "big")
-    )
-
-    key_encoding = (
-        _KEY_ENCODING_COMPRESSED if keypair.compressed else _KEY_ENCODING_UNCOMPRESSED
     )
     signed_condition = _serialize_spending_condition(
         signer, nonce, fee, key_encoding, signature
     )
     return _with_origin_condition(unsigned_tx, signed_condition)
+
+
+def verify_origin_signature(signed_tx: bytes) -> bool:
+    """True iff the origin signature recovers to the tx's own signer hash160.
+
+    Pure computation, no I/O. False on any malformed input — callers treat
+    that as a rejection, never an error.
+    """
+    o = _ORIGIN_CONDITION_OFFSET
+    try:
+        if len(signed_tx) < o + _SPENDING_CONDITION_LEN:
+            return False
+        if signed_tx[5] not in (_AUTH_STANDARD, _AUTH_SPONSORED):
+            return False
+        _, _, key_encoding = _origin_condition_fields(signed_tx)
+        if key_encoding not in (_KEY_ENCODING_COMPRESSED, _KEY_ENCODING_UNCOMPRESSED):
+            return False
+        signer = signed_tx[o + 1 : o + 21]
+        sig = signed_tx[o + 38 : o + 38 + 65]
+        v, r, s = sig[0], int.from_bytes(sig[1:33], "big"), int.from_bytes(sig[33:], "big")
+        if v > 1 or not 0 < r < _SECP256K1_N or not 0 < s < _SECP256K1_N:
+            return False
+        presign = _origin_presign_hash(signed_tx, signer, key_encoding)
+        raw = _eth_keys.Signature(vrs=(v, r, s)).recover_public_key_from_msg_hash(presign).to_bytes()
+        if key_encoding == _KEY_ENCODING_COMPRESSED:
+            pubkey = bytes([0x02 + (raw[63] & 1)]) + raw[:32]
+        else:
+            pubkey = b"\x04" + raw
+        return _hash160(pubkey) == signer
+    except Exception:
+        return False
 
 
 def txid_of(signed_tx: bytes) -> str:

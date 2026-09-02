@@ -35,6 +35,7 @@ from agentpay._stacks_tx import (
     c32_address,
     sats_from_usd,
     txid_of,
+    verify_origin_signature,
 )
 from gateway.config import settings
 from gateway.services import supabase as sb
@@ -511,8 +512,9 @@ async def verify_stacks_payment(
 ) -> dict:
     """Decode + statically verify a signed-but-unbroadcast sBTC transfer.
 
-    NO network I/O: everything here is checkable from the bytes. Same result
-    contract shape as stellar/base verify:
+    No network I/O: structure, binding, amount, post-conditions and the
+    origin signature are all checked from the bytes. Same result contract
+    shape as stellar/base verify:
     {"authorized", "reason", "txid", "sender", "amount_sats", "overpaid"}.
     The txid is RECOMPUTED from the signed bytes — the header's copy is
     never trusted (wire contract).
@@ -597,6 +599,11 @@ async def verify_stacks_payment(
     )
     if not pc_ok:
         return _fail("unsafe_post_conditions")
+
+    # Last, so the structural reasons above stay specific; still before any
+    # consume or broadcast, so an unsigned tx never touches the replay store.
+    if not verify_origin_signature(signed_tx):
+        return _fail("invalid_origin_signature")
 
     return {
         "authorized": True,

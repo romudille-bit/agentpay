@@ -37,6 +37,7 @@ from agentpay._stacks_tx import (
     sats_from_usd,
     sign_transaction,
     txid_of,
+    verify_origin_signature,
 )
 import agentpay._stacks_tx as stacks_tx
 
@@ -359,6 +360,52 @@ class TestSignTransaction:
 
 
 # ---------------------------------------------------------------- hashing
+
+
+class TestVerifyOriginSignature:
+    @pytest.mark.parametrize(
+        "t", FIXTURES["transactions"], ids=lambda t: t["name"]
+    )
+    def test_stacksjs_vectors_verify(self, t):
+        assert verify_origin_signature(bytes.fromhex(t["serialized_hex"]))
+
+    def test_both_key_encodings_roundtrip(self):
+        raw = FIXTURES["keys"][1]["private_key"][:64]
+        for secret in (raw + "01", raw):
+            kp = StacksKeypair.from_secret(secret)
+            unsigned = build_sbtc_transfer(
+                sender=kp, recipient=FIXTURES["keys"][0]["address_testnet"],
+                amount_sats=5, payment_id="pay_enc", nonce=1, fee_microstx=1,
+            )
+            assert verify_origin_signature(sign_transaction(unsigned, kp))
+
+    def test_tampered_payload_fails(self):
+        t = FIXTURES["transactions"][0]
+        tx = bytearray(bytes.fromhex(t["serialized_hex"]))
+        tx[-1] ^= 0x01
+        assert not verify_origin_signature(bytes(tx))
+
+    def test_tampered_signature_fails(self):
+        t = FIXTURES["transactions"][0]
+        tx = bytearray(bytes.fromhex(t["serialized_hex"]))
+        o = stacks_tx._ORIGIN_CONDITION_OFFSET + 38
+        tx[o + 10] ^= 0x01
+        assert not verify_origin_signature(bytes(tx))
+
+    def test_unsigned_fails(self):
+        t = FIXTURES["transactions"][0]
+        assert not verify_origin_signature(_build(t))
+
+    def test_signer_swap_fails(self):
+        t = FIXTURES["transactions"][0]
+        tx = bytearray(bytes.fromhex(t["serialized_hex"]))
+        o = stacks_tx._ORIGIN_CONDITION_OFFSET + 1
+        tx[o : o + 20] = bytes(20)
+        assert not verify_origin_signature(bytes(tx))
+
+    def test_garbage_is_false_not_error(self):
+        assert not verify_origin_signature(b"")
+        assert not verify_origin_signature(b"\x00" * 120)
 
 
 class TestHashing:

@@ -172,7 +172,26 @@ await addTx('testnet_transfer_memo34_large', {
   contract: SBTC_TESTNET,
 });
 
-// 5. unsigned serialization + presign sighash chain (standard auth)
+// 5. raw 64-hex key => uncompressed pubkey, key-encoding 0x01 (AGE-146)
+await addTx('testnet_transfer_uncompressed_key', {
+  contractAddress: tContract,
+  contractName: tName,
+  functionName: 'transfer',
+  functionArgs: sbtcArgs(1234n, getAddressFromPrivateKey(KEYS[3], 'testnet'), recipientT, 'pay_uncompressed_key'),
+  senderKey: KEYS[3],
+  network: 'testnet',
+  fee: 3000n,
+  nonce: 7n,
+  postConditionMode: PostConditionMode.Deny,
+  postConditions: [Pc.principal(getAddressFromPrivateKey(KEYS[3], 'testnet')).willSendEq(1234n).ft(SBTC_TESTNET, 'sbtc-token')],
+}, {
+  network: 'testnet', amount_sats: '1234', fee: '3000', nonce: '7',
+  sender: getAddressFromPrivateKey(KEYS[3], 'testnet'), recipient: recipientT,
+  payment_id: 'pay_uncompressed_key', sponsored: false,
+  contract: SBTC_TESTNET,
+});
+
+// 6. unsigned serialization + presign sighash chain (standard auth)
 {
   const unsigned = await makeUnsignedContractCall({
     contractAddress: tContract,

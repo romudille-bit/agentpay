@@ -264,6 +264,28 @@ class TestVerify:
         assert not auth["authorized"]
         assert auth["reason"] == "unsafe_post_conditions"
 
+    async def test_forged_signature_rejected_before_consume(self):
+        tx = bytearray(_signed_tx())
+        tx[6 + 38 + 20] ^= 0x01
+        auth = await _verify(_header_for(bytes(tx)))
+        assert not auth["authorized"]
+        assert auth["reason"] == "invalid_origin_signature"
+
+    async def test_unsigned_tx_rejected(self):
+        unsigned = build_sbtc_transfer(
+            sender=PAYER, recipient=GATEWAY_ADDR, amount_sats=1030,
+            payment_id=PAYMENT_ID, nonce=4, fee_microstx=500, network="testnet",
+        )
+        auth = await _verify(_header_for(unsigned))
+        assert not auth["authorized"]
+        assert auth["reason"] == "invalid_origin_signature"
+
+    async def test_uncompressed_payer_key_accepted(self):
+        tx = _signed_tx(key=PAYER_KEY[:64])
+        auth = await _verify(_header_for(tx))
+        assert auth["authorized"], auth["reason"]
+        assert auth["sender"] == StacksKeypair.from_secret(PAYER_KEY[:64]).address("testnet")
+
     async def test_garbage_header_rejected(self):
         auth = await _verify("not!!base64@@")
         assert not auth["authorized"]
