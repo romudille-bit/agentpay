@@ -210,6 +210,7 @@ class AgentPayClient:
                         f"signed Stacks tx transmitted; settlement not confirmed "
                         f"in time (spend recorded, the tx may be live): {e}",
                         tx_hash=built["txid"], network="stacks",
+                        redeem_ctx=self._redeem_ctx(url, payload, built, tool_name),
                     )
 
                 if retry.status_code == 200:
@@ -309,7 +310,72 @@ class AgentPayClient:
                 # Keep the spend recorded; the shared non-200 handling
                 # classifies it (RefundPending / uncertain_settlement).
                 self.wallet.note_stacks_nonce_used(built["nonce"])
+                self._stacks_redeem_ctx = self._redeem_ctx(url, payload, built, tool_name)
                 return retry, built["txid"]
+
+    @staticmethod
+    def _redeem_ctx(url: str, payload: dict, built: dict, tool_name: str) -> dict:
+        return {"url": url, "json": payload, "header": built["header"],
+                "txid": built["txid"], "address": None, "tool": tool_name}
+
+    def redeem(self, exc: SettlementUncertain, *, wait_s: float = 180.0,
+               poll_s: float = 5.0) -> dict:
+        """Finish a Stacks call that ended in SettlementUncertain.
+
+        Waits for the transmitted transaction to confirm on Hiro (up to
+        `wait_s`), then re-presents the identical signed payment. The gateway
+        delivers exactly once for a given txid, so this never double-pays:
+        the bytes are the same, so the txid is the same. Raises PaymentFailed
+        if the transaction aborted or the gateway refuses, SettlementUncertain
+        again if it is still unconfirmed when time runs out.
+        """
+        import time as _time
+        ctx = getattr(exc, "redeem_ctx", None)
+        if not ctx or exc.network != "stacks":
+            raise PaymentFailed("nothing to redeem: not an uncertain Stacks settlement")
+        txid = ctx["txid"]
+        status_url = f"{self.wallet._stacks_api_base}/extended/v1/tx/0x{txid}"
+        deadline = _time.monotonic() + wait_s
+        status = ""
+        with httpx.Client(timeout=15.0) as client:
+            while True:
+                try:
+                    r = client.get(status_url)
+                    if r.status_code == 200:
+                        status = str(r.json().get("tx_status") or "")
+                except Exception:
+                    status = ""
+                if status == "success":
+                    break
+                if status.startswith("abort_"):
+                    raise PaymentFailed(f"stacks tx {txid[:16]}… {status}: nothing to redeem")
+                if _time.monotonic() >= deadline:
+                    raise SettlementUncertain(
+                        f"stacks tx {txid[:16]}… still {status or 'unconfirmed'} after "
+                        f"{int(wait_s)}s; call redeem() again later",
+                        tx_hash=txid, network="stacks", redeem_ctx=ctx,
+                    )
+                _time.sleep(poll_s)
+            resp = client.post(
+                ctx["url"], json=ctx["json"],
+                headers={"payment-signature": ctx["header"],
+                         "x-agent-address": self.wallet.stacks_address or ""},
+                timeout=120.0,
+            )
+        if resp.status_code == 200:
+            return resp.json()
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        if body.get("payment_status") == "uncertain":
+            raise SettlementUncertain(
+                f"gateway still cannot confirm {txid[:16]}…: {body.get('error_reason', '')}",
+                tx_hash=txid, network="stacks", redeem_ctx=ctx,
+            )
+        raise PaymentFailed(
+            f"redeem refused: {body.get('error_reason') or resp.text[:200]}"
+        )
 
     def call_tool(
         self,
@@ -676,6 +742,8 @@ class AgentPayClient:
                         f"settlement (the tx may be live): {retry.text[:200]}",
                         tx_hash=tx_hash or "",
                         network=("stacks" if prefer_chain == "stacks" else "base"),
+                        redeem_ctx=(getattr(self, "_stacks_redeem_ctx", None)
+                                    if prefer_chain == "stacks" else None),
                     )
                 raise Exception(f"Tool call failed after payment: {retry.text}")
 

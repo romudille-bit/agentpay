@@ -46,6 +46,7 @@ from gateway._limiter import limiter, wallet_or_ip
 from gateway.config import GATEWAY_URL, settings
 from gateway.services.supabase import (
     correlate_pending_challenge,
+    get_payment_log,
     insert_pending_payment_log,
     record_payment_id,
     persist_tool_registration,
@@ -1118,8 +1119,67 @@ async def _settle_base_path(
     }
 
 
+def _stacks_reject(reason: str, status: int = 402) -> JSONResponse:
+    return JSONResponse(
+        status_code=status,
+        content={"error": "Stacks payment settlement failed",
+                 "payment_status": "rejected", "error_reason": reason},
+    )
+
+
+def _stacks_uncertain(reason: str, payment_id: str, txid: str) -> JSONResponse:
+    return JSONResponse(status_code=502, content={
+        "error": "Stacks settlement uncertain",
+        "payment_status": "uncertain",
+        "error_reason": reason,
+        "payment_id": payment_id,
+        "txid": txid,
+        "redeem": "re-present the same payment-signature once the tx confirms",
+    })
+
+
+async def _redeem_uncertain_stacks(
+    tool, tool_name: str, signed_tx: bytes,
+) -> Optional[Union[dict, JSONResponse]]:
+    """Redemption for a settle that ended uncertain: the same signed bytes
+    are presented again after the tx confirmed. The `payment_logs` row keyed
+    on the recomputed txid, in state 'uncertain', is the proof this gateway
+    verified and broadcast exactly these bytes; delivery happens once, via
+    the uncertain→verified compare-and-set. None when no such row exists.
+    """
+    if not sb_enabled():
+        return None
+    txid = stacks_pay.txid_of(signed_tx)
+    row = await get_payment_log(txid)
+    if not row or row.get("state") != "uncertain":
+        return None
+    if row.get("tool_name") not in (tool.name, tool_name):
+        return _stacks_reject("redeem_tool_mismatch")
+    confirm = await stacks_pay.poll_confirmation(txid, max_polls=2)
+    if confirm["status"] == "rejected":
+        await update_payment_log_state(txid, "rejected", expected_state="uncertain",
+                                       error_reason=confirm["reason"])
+        return _stacks_reject(confirm["reason"])
+    if confirm["status"] != "success":
+        return _stacks_uncertain("still_unconfirmed", row.get("payment_id") or "", txid)
+    claimed = await update_payment_log_state(txid, "verified", expected_state="uncertain",
+                                             clear_fields=["error_reason"])
+    if not claimed:
+        return _stacks_reject("already_redeemed")
+    logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=REDEEMED tx={txid[:16]}")
+    return {
+        "authorized": True,
+        "tx_hash":    txid,
+        "payer":      row.get("agent_address") or "",
+        "network":    row.get("network") or f"stacks-{settings.STACKS_NETWORK}",
+        "recovered":  True,
+        "redeemed":   True,
+    }
+
+
 async def _settle_stacks_path(
     tool, tool_name: str, payment_signature: str, payload: dict,
+    parameters: Optional[dict] = None,
 ) -> Union[dict, JSONResponse]:
     """Stacks payment-signature payload → verify, consume, broadcast, confirm
     (AGE-23). `payload` is the already-decoded payment-signature JSON (the
@@ -1130,18 +1190,20 @@ async def _settle_stacks_path(
     (docs/stacks-adapter.md §Wire contract):
       - "rejected"  → nothing broadcast/settleable; SDK zeroes the leg and
         re-signs ONCE on a nonce conflict.
-      - "uncertain" → the tx may be live; SDK keeps the spend recorded.
+      - "uncertain" → the tx may be live; SDK keeps the spend recorded and
+        can redeem by re-presenting the same header once it confirms.
     """
     if not stacks_pay.stacks_configured():
         raise HTTPException(status_code=503,
                             detail="Stacks payment not configured on this gateway")
+    _reject = _stacks_reject
 
-    def _reject(reason: str, status: int = 402) -> JSONResponse:
-        return JSONResponse(
-            status_code=status,
-            content={"error": "Stacks payment settlement failed",
-                     "payment_status": "rejected", "error_reason": reason},
-        )
+    try:
+        signed_tx = bytes.fromhex((payload.get("payload") or {}).get("signedTransaction") or "")
+    except (ValueError, TypeError, AttributeError):
+        signed_tx = b""
+    if not signed_tx:
+        return _reject("missing_or_invalid_signed_transaction")
 
     # ── payment_id binding: the payload names the challenge; the memo inside
     # the signed tx must match it (verified below), and the challenge fixes
@@ -1150,10 +1212,13 @@ async def _settle_stacks_path(
     if not payment_id:
         return _reject("missing_payment_id")
     challenge = await _lookup_challenge(payment_id)
-    if challenge is None:
-        return _reject("unknown_or_expired_payment_id")
-    if challenge.get("expires_at") and challenge["expires_at"] < time.time():
-        return _reject("challenge_expired")
+    expired = bool(challenge and challenge.get("expires_at")
+                   and challenge["expires_at"] < time.time())
+    if challenge is None or expired:
+        redeemed = await _redeem_uncertain_stacks(tool, tool_name, signed_tx)
+        if redeemed is not None:
+            return redeemed
+        return _reject("challenge_expired" if expired else "unknown_or_expired_payment_id")
     if challenge.get("tool_name") and challenge["tool_name"] not in (tool.name, tool_name):
         return _reject("challenge_tool_mismatch")
 
@@ -1200,6 +1265,9 @@ async def _settle_stacks_path(
     if sb_enabled():
         pid_recorded = await record_payment_id(payment_id)
         if pid_recorded is False:
+            redeemed = await _redeem_uncertain_stacks(tool, tool_name, signed_tx)
+            if redeemed is not None:
+                return redeemed
             return _reject("payment_id_already_used_replay")
         if pid_recorded is None:
             return JSONResponse(status_code=502, content={
@@ -1209,7 +1277,6 @@ async def _settle_stacks_path(
                                  "unreachable — retry the same proof"),
             })
 
-    signed_tx = bytes.fromhex(payload["payload"]["signedTransaction"])
     settle = await stacks_pay.settle_stacks_payment(
         signed_tx, auth["txid"], payment_id=payment_id,
         payment_payload=payload,
@@ -1233,14 +1300,23 @@ async def _settle_stacks_path(
                 amount_usdc=str(tool.price_usdc or "0"),
             )
             return _reject(settle["reason"])
-        # uncertain → 502; the SDK keeps the spend recorded, support resolves.
-        return JSONResponse(status_code=502, content={
-            "error": "Stacks settlement uncertain",
-            "payment_status": "uncertain",
-            "error_reason": settle["reason"],
-            "payment_id": payment_id,
-            "txid": settle["txid"],
-        })
+        # uncertain → the tx may be live. Record it so the payer can redeem
+        # (same header, once confirmed) and the ledger never loses a
+        # broadcast; the SDK keeps the spend recorded meanwhile.
+        if sb_enabled() and settle["reason"] != "replay_attack":
+            await insert_pending_payment_log(
+                payment_id=settle["txid"],
+                tool_name=tool.name,
+                network=f"stacks-{settings.STACKS_NETWORK}",
+                amount_usdc=str(tool.price_usdc or "0"),
+                state="uncertain",
+                agent_address=auth["sender"],
+                tx_hash=settle["txid"],
+                developer_address=tool.developer_address or None,
+                error_reason=f"{settle['reason']} challenge={payment_id}",
+                parameters=parameters or None,
+            )
+        return _stacks_uncertain(settle["reason"], payment_id, settle["txid"])
 
     logger.info(f"[PAYMENT] tool={tool_name} network=stacks "
                 f"agent={auth['sender'][:8]}... status=OK "
@@ -1409,7 +1485,7 @@ async def _execute_and_log(
     # then the insert landed 'verified' — and the row never advanced
     # (the "stuck in verified / phantom-abandon" class, AGE-52).
     insert_task: Optional[asyncio.Task] = None
-    if sb_enabled() and not is_free_call:
+    if sb_enabled() and not is_free_call and not auth.get("redeemed"):
         insert_task = asyncio.create_task(insert_pending_payment_log(
             payment_id=payment_id,
             tool_name=resolved,
@@ -1664,7 +1740,7 @@ async def call_tool(
         )
         if _is_stacks:
             auth = await _settle_stacks_path(tool, tool_name, payment_signature,
-                                             _ps_payload)
+                                             _ps_payload, parameters=body.parameters)
             if isinstance(auth, JSONResponse):
                 return auth
             # Verified payer = the tx's origin signer (c32) — same

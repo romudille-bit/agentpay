@@ -218,3 +218,112 @@ def test_totals_split_gateway_chain_attested_unsettled():
     assert t["unsettled_paid_calls"] == 1
     assert t["verified_share"] == "0.667"
     assert t["verified_share_of_settled"] == "0.800"
+
+
+# ── Stacks legs (AGE-148) ────────────────────────────────────────────────────
+
+import httpx
+import pytest
+import respx
+
+from gateway.config import settings
+
+PAYEE = "SP23XKWSEQ9D4CVPT0H39N2TYVEE5AJECPKW6CZ3C"
+PAYER = "SP1RGEE1XD949A8FFSTV9Q0KHE71N0HHW1TDXRSCB"
+SBTC_MAIN = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token"
+TXID = "ab" * 32
+
+
+def _hiro_tx(txid=TXID, status="success", recipient=PAYEE, sender=PAYER,
+             contract=SBTC_MAIN, fn="transfer", sats=13):
+    return {
+        "tx_id": "0x" + txid, "tx_status": status, "tx_type": "contract_call",
+        "sender_address": sender,
+        "contract_call": {
+            "contract_id": contract, "function_name": fn,
+            "function_args": [
+                {"repr": f"u{sats}", "type": "uint"},
+                {"repr": f"'{sender}", "type": "principal"},
+                {"repr": f"'{recipient}", "type": "principal"},
+                {"repr": "(some 0x30)", "type": "(optional (buff 34))"},
+            ],
+        },
+    }
+
+
+def test_stacks_tx_matches_confirmed_transfer_to_payee():
+    m = lv.stacks_tx_matches(_hiro_tx(), TXID, payee=PAYEE, contract=SBTC_MAIN, wallet=PAYER)
+    assert m == {"to": PAYEE, "sender": PAYER, "amount_sats": 13}
+
+
+@pytest.mark.parametrize("bad", [
+    dict(status="pending"), dict(status="abort_by_post_condition"),
+    dict(recipient=PAYER), dict(fn="transfer-memo"), dict(contract="SP1.other"),
+    dict(txid="cd" * 32),
+])
+def test_stacks_tx_matches_rejects(bad):
+    assert lv.stacks_tx_matches(_hiro_tx(**bad), TXID, payee=PAYEE, contract=SBTC_MAIN) is None
+
+
+def test_stacks_tx_matches_wallet_binding():
+    assert lv.stacks_tx_matches(_hiro_tx(), TXID, payee=PAYEE, contract=SBTC_MAIN,
+                                wallet=PAYEE) is None
+    assert lv.stacks_tx_matches(_hiro_tx(), TXID, payee=PAYEE, contract=SBTC_MAIN,
+                                wallet=None) is not None
+
+
+def test_stacks_run_wallet_sources():
+    assert lv.stacks_run_wallet({"stacks_wallet": PAYER}, []) == PAYER
+    assert lv.stacks_run_wallet({"wallet": PAYER}, []) == PAYER
+    assert lv.stacks_run_wallet({"wallet": WALLET}, [WALLET, PAYER]) == PAYER
+    assert lv.stacks_run_wallet({}, [WALLET]) is None
+
+
+@pytest.mark.asyncio
+async def test_verify_run_stacks_leg_via_hiro(monkeypatch):
+    monkeypatch.setattr(settings, "STACKS_NETWORK", "mainnet")
+    monkeypatch.setattr(settings, "STACKS_HIRO_API", "")
+    monkeypatch.setattr(settings, "STACKS_SBTC_CONTRACT", "")
+    monkeypatch.setattr(settings, "STACKS_GATEWAY_ADDRESS", PAYEE)
+    meta = {"run_at": "2026-10-01T12:00:00+00:00", "stacks_wallet": PAYER,
+            "receipt": {"breakdown": [
+                {"tool": "pre_trade_check", "cost": "$0.01", "tx_hash": TXID, "network": "stacks"},
+                {"tool": "token_price", "cost": "$0", "network": "stacks"},
+            ]}}
+    with respx.mock:
+        respx.get(f"https://api.hiro.so/extended/v1/tx/0x{TXID}").mock(
+            return_value=httpx.Response(200, json=_hiro_tx()))
+        rows = await lv.verify_run(meta, [])
+    legs = [r for r in rows if r["leg_index"] != lv.MARKER_LEG]
+    assert len(legs) == 1
+    assert legs[0]["leg_index"] == 1 and legs[0]["method"] == "hiro"
+    assert legs[0]["network"] == "stacks" and legs[0]["to_addr"] == PAYEE
+    assert legs[0]["amount_usdc"] == "0.01" and legs[0]["wallet"] == PAYER
+    marker = [r for r in rows if r["leg_index"] == lv.MARKER_LEG][0]
+    assert marker["network"] == "stacks" and marker["method"] == "checked"
+
+
+@pytest.mark.asyncio
+async def test_verify_run_stacks_unconfirmed_leg_stays_unverified(monkeypatch):
+    monkeypatch.setattr(settings, "STACKS_NETWORK", "mainnet")
+    monkeypatch.setattr(settings, "STACKS_HIRO_API", "")
+    monkeypatch.setattr(settings, "STACKS_SBTC_CONTRACT", "")
+    monkeypatch.setattr(settings, "STACKS_GATEWAY_ADDRESS", PAYEE)
+    meta = {"run_at": "2026-10-01T12:00:00+00:00",
+            "receipt": {"breakdown": [
+                {"tool": "pre_trade_check", "cost": "$0.01", "tx_hash": TXID, "network": "stacks"}]}}
+    with respx.mock:
+        respx.get(f"https://api.hiro.so/extended/v1/tx/0x{TXID}").mock(
+            return_value=httpx.Response(200, json=_hiro_tx(status="pending")))
+        rows = await lv.verify_run(meta, [])
+    assert [r["leg_index"] for r in rows] == [lv.MARKER_LEG]
+
+
+def test_ledger_stacks_network_and_explorer():
+    assert ledger._norm_network("stacks-mainnet") == "stacks"
+    assert ledger._norm_network("stacks:1") == "stacks"
+    assert ledger._norm_network("stacks-testnet") == "stacks-testnet"
+    assert ledger._explorer_url("stacks", TXID) == \
+        f"https://explorer.hiro.so/txid/0x{TXID}?chain=mainnet"
+    assert ledger._explorer_url("stacks-testnet", "0x" + TXID) == \
+        f"https://explorer.hiro.so/txid/0x{TXID}?chain=testnet"

@@ -36,6 +36,10 @@ The label on /ledger is three-way and never collapsed:
   onchain          gateway-settled (payment_logs)      — we settled it
   onchain_chain    chain-verified (this module)        — we observed it
   agent_attested   no evidence found                   — reported only
+
+Stacks legs (network "stacks…") carry the txid the SDK computed before
+broadcast; each is looked up on Hiro and must be a confirmed
+`sbtc-token::transfer` to the gateway's payee address (method "hiro").
 """
 from __future__ import annotations
 
@@ -250,6 +254,77 @@ def run_key(value) -> str:
     return d.astimezone(timezone.utc).isoformat() if d else str(value or "")
 
 
+def _is_stacks_leg(entry: dict) -> bool:
+    return str(entry.get("network") or "").lower().startswith("stacks")
+
+
+def _c32_arg(arg: dict) -> str:
+    """Principal from a Hiro function_args entry (repr is `'SP…` or `'SP….name`)."""
+    return str(arg.get("repr") or "").lstrip("'")
+
+
+def stacks_tx_matches(tx: dict, leg_txid: str, *, payee: str, contract: str,
+                      wallet: Optional[str] = None) -> Optional[dict]:
+    """Pure check of a Hiro `/extended/v1/tx/{id}` body against a receipt leg:
+    confirmed sbtc-token::transfer from `wallet` (when known) to `payee`.
+    Returns {"to", "sender", "amount_sats"} or None. """
+    if str(tx.get("tx_status")) != "success" or tx.get("tx_type") != "contract_call":
+        return None
+    if str(tx.get("tx_id") or "").lower().removeprefix("0x") != leg_txid.lower().removeprefix("0x"):
+        return None
+    call = tx.get("contract_call") or {}
+    if call.get("contract_id") != contract or call.get("function_name") != "transfer":
+        return None
+    args = call.get("function_args") or []
+    if len(args) < 3:
+        return None
+    recipient = _c32_arg(args[2])
+    sender = str(tx.get("sender_address") or "")
+    if recipient != payee:
+        return None
+    if wallet and sender != wallet:
+        return None
+    try:
+        amount_sats = int(str(args[0].get("repr") or "u0").lstrip("u"))
+    except ValueError:
+        amount_sats = 0
+    return {"to": recipient, "sender": sender, "amount_sats": amount_sats}
+
+
+def stacks_run_wallet(meta: dict, fallbacks: Iterable[str]) -> Optional[str]:
+    """The Stacks payer of this run: meta `stacks_wallet`, a c32 `wallet`, or
+    the first c32 address in the allowlist."""
+    for w in (meta.get("stacks_wallet"), meta.get("wallet"), *fallbacks):
+        w = str(w or "")
+        if w[:2] in ("SP", "SM", "ST", "SN") and 38 <= len(w) <= 42:
+            return w
+    return None
+
+
+async def verify_stacks_legs(legs: list[tuple[int, dict]], wallet: Optional[str],
+                             client: httpx.AsyncClient) -> list[dict]:
+    """Hiro lookups for the Stacks legs of one run. One GET per leg; a leg
+    without a txid, or whose tx is not a confirmed transfer to our payee,
+    stays unverified."""
+    from gateway import stacks as stacks_pay
+    payee = settings.STACKS_GATEWAY_ADDRESS
+    contract = stacks_pay._sbtc_contract()
+    out = []
+    for idx, e in legs:
+        txid = str(e.get("tx_hash") or "").lower().removeprefix("0x")
+        if not txid or not payee:
+            continue
+        resp = await client.get(f"{stacks_pay._hiro_api()}/extended/v1/tx/0x{txid}")
+        if resp.status_code != 200:
+            continue
+        m = stacks_tx_matches(resp.json(), txid, payee=payee, contract=contract, wallet=wallet)
+        if m:
+            out.append({"leg_index": idx, "tx_hash": txid, "to": m["to"],
+                        "amount_usdc": f"{Decimal(_atomic(e.get('cost'))) / Decimal(1_000_000):f}",
+                        "method": "hiro", "wallet": m["sender"]})
+    return out
+
+
 def run_wallet(meta: dict, fallbacks: Iterable[str]) -> Optional[str]:
     """The Base wallet that paid this run: the meta's own `wallet` if it's an
     EVM address, else the first EVM address in the ledger allowlist."""
@@ -269,26 +344,52 @@ async def verify_run(meta: dict, fallbacks: Iterable[str],
     + the marker row). [] if the run has no paid legs or no usable wallet."""
     run_at = _parse_ts(meta.get("run_at"))
     breakdown = (meta.get("receipt") or {}).get("breakdown") or []
-    if run_at is None or not paid_legs(breakdown):
+    legs = paid_legs(breakdown)
+    if run_at is None or not legs:
         return []
-    wallet = run_wallet(meta, fallbacks)
-    if not wallet:
-        return []
-    transfers = await wallet_transfers(wallet, run_at - WINDOW_LEAD,
-                                       run_at + WINDOW_LAG, client=client)
-    matches = match_legs(breakdown, transfers, payto_hints)
+    stacks_legs = [(i, e) for i, e in legs if _is_stacks_leg(e)]
+    base_breakdown = [e if not _is_stacks_leg(e) else {**e, "cost": "0"} for e in breakdown]
     now = datetime.now(timezone.utc).isoformat()
-    rows = [{
-        "run_at": meta.get("run_at"), "leg_index": m["leg_index"],
-        "tx_hash": m["tx_hash"], "to_addr": m["to"],
-        "amount_usdc": m["amount_usdc"], "wallet": wallet.lower(),
-        "network": "base", "method": m["method"], "verified_at": now,
-    } for m in matches]
+    rows: list[dict] = []
+    marker_wallet = None
+
+    wallet = run_wallet(meta, fallbacks) if paid_legs(base_breakdown) else None
+    if wallet:
+        transfers = await wallet_transfers(wallet, run_at - WINDOW_LEAD,
+                                           run_at + WINDOW_LAG, client=client)
+        for m in match_legs(base_breakdown, transfers, payto_hints):
+            rows.append({
+                "run_at": meta.get("run_at"), "leg_index": m["leg_index"],
+                "tx_hash": m["tx_hash"], "to_addr": m["to"],
+                "amount_usdc": m["amount_usdc"], "wallet": wallet.lower(),
+                "network": "base", "method": m["method"], "verified_at": now,
+            })
+        marker_wallet = wallet.lower()
+
+    if stacks_legs:
+        own = client is None
+        client = client or httpx.AsyncClient(timeout=20.0)
+        try:
+            swallet = stacks_run_wallet(meta, fallbacks)
+            for m in await verify_stacks_legs(stacks_legs, swallet, client):
+                rows.append({
+                    "run_at": meta.get("run_at"), "leg_index": m["leg_index"],
+                    "tx_hash": m["tx_hash"], "to_addr": m["to"],
+                    "amount_usdc": m["amount_usdc"], "wallet": m["wallet"],
+                    "network": "stacks", "method": m["method"], "verified_at": now,
+                })
+            marker_wallet = marker_wallet or swallet
+        finally:
+            if own:
+                await client.aclose()
+
+    if marker_wallet is None and not stacks_legs:
+        return []
     rows.append({
         "run_at": meta.get("run_at"), "leg_index": MARKER_LEG,
         "tx_hash": None, "to_addr": None, "amount_usdc": None,
-        "wallet": wallet.lower(), "network": "base", "method": "checked",
-        "verified_at": now,
+        "wallet": marker_wallet, "network": "stacks" if not wallet else "base",
+        "method": "checked", "verified_at": now,
     })
     return rows
 

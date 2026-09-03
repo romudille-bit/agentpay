@@ -187,6 +187,10 @@ def _norm_network(network: str | None) -> str:
         return "stellar-testnet"
     if n.startswith("stellar"):
         return "stellar"
+    if n in ("stacks-testnet", "stacks:2147483648"):
+        return "stacks-testnet"
+    if n.startswith("stacks"):
+        return "stacks"
     return n or "unknown"
 
 
@@ -199,6 +203,8 @@ def _explorer_url(network: str, tx_hash: str | None) -> str | None:
         "base-sepolia":   f"https://sepolia.basescan.org/tx/{tx_hash}",
         "stellar":        f"https://stellar.expert/explorer/public/tx/{tx_hash}",
         "stellar-testnet": f"https://stellar.expert/explorer/testnet/tx/{tx_hash}",
+        "stacks":         f"https://explorer.hiro.so/txid/0x{str(tx_hash).removeprefix('0x')}?chain=mainnet",
+        "stacks-testnet": f"https://explorer.hiro.so/txid/0x{str(tx_hash).removeprefix('0x')}?chain=testnet",
     }.get(network)
 
 
@@ -1131,7 +1137,7 @@ function execStep(run){
         mark = `<span class="tunset" title="The agent's receipt booked this spend fail-closed (a signed authorization was transmitted), but AgentPay checked the agent's wallet on Base for the run window and found no USDC transfer for this leg — the seller never settled it. Money did not leave the wallet.">no settlement found</span>`;
       } else if(s.verification==="onchain_chain"){
         const how = (s.verification_method||"chain").replace("chain:","");
-        mark = `<span class="tchain" title="Not settled through AgentPay's gateway; AgentPay located the USDC transfer from the agent's wallet on Base for this leg (match: ${esc(how)})">chain-verified</span>`
+        mark = `<span class="tchain" title="Not settled through AgentPay's gateway; AgentPay located this leg's transfer on-chain from the agent's wallet (match: ${esc(how)})">chain-verified</span>`
              + (s.explorer_url? ` <a class="tlink" href="${esc(s.explorer_url)}" target="_blank" rel="noopener">tx ↗</a>` : "");
       } else if(s.explorer_url){
         mark = `<a class="tlink" href="${esc(s.explorer_url)}" target="_blank" rel="noopener">tx ↗</a>`;

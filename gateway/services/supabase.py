@@ -713,6 +713,29 @@ async def insert_pending_payment_log(
         return None
 
 
+async def get_payment_log(payment_id: str, columns: str = "payment_id,state,tx_hash,tool_name,network,amount_usdc,agent_address,error_reason") -> Optional[dict]:
+    """SELECT one payment_logs row by payment_id (newest if several).
+    None when disabled, missing, or on error."""
+    if not sb_enabled():
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
+                headers=sb_headers(),
+                params={"payment_id": f"eq.{payment_id}", "select": columns,
+                        "order": "id.desc", "limit": "1"},
+            )
+        if resp.status_code != 200:
+            logger.error(f"get_payment_log Supabase error: HTTP {resp.status_code}")
+            return None
+        rows = resp.json()
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(f"get_payment_log failure (payment_id={payment_id}): {e}")
+        return None
+
+
 async def update_payment_log_state(
     payment_id: str,
     state: str,

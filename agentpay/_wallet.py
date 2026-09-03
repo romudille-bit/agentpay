@@ -151,18 +151,23 @@ class SettlementUncertain(PaymentFailed):
     connection that long). Distinct from PaymentFailed (nothing settled) and
     RefundPending (settled, then the tool failed).
 
-    The spend is recorded; DO NOT retry (a retry would double-pay) — verify
-    ``tx_hash`` on-chain instead. Subclasses PaymentFailed so existing
-    ``except PaymentFailed`` handlers still catch it.
+    The spend is recorded; DO NOT retry the call (a retry would double-pay).
+    On the Stacks rail, ``Session.redeem(exc)`` / ``AgentPayClient.redeem(exc)``
+    waits for the transaction to confirm and re-presents the SAME signed
+    payment, which the gateway honours exactly once. Subclasses PaymentFailed
+    so existing ``except PaymentFailed`` handlers still catch it.
 
     Attributes:
-        tx_hash:  the transmitted transaction id, when known.
-        network:  the settlement network ("stacks" / "base").
+        tx_hash:     the transmitted transaction id, when known.
+        network:     the settlement network ("stacks" / "base").
+        redeem_ctx:  what redeem() needs to re-present the payment (Stacks).
     """
-    def __init__(self, message: str, *, tx_hash: str = "", network: str = ""):
+    def __init__(self, message: str, *, tx_hash: str = "", network: str = "",
+                 redeem_ctx: dict | None = None):
         super().__init__(message)
         self.tx_hash = tx_hash
         self.network = network
+        self.redeem_ctx = redeem_ctx
 
 
 class PrePaymentError(Exception):
@@ -2112,6 +2117,22 @@ class Session:
             self._call_log.append(entry)
             if entry["success"]:
                 self._tool_cache.setdefault(entry["tool"], {})["price_usdc"] = str(cost)
+
+    def redeem(self, exc: "SettlementUncertain", **kw) -> dict:
+        """Finish a Stacks call this session left in SettlementUncertain: wait
+        for the tx to confirm, re-present the same signed payment, and mark
+        the ledger leg settled. The spend was already counted at transmission,
+        so nothing changes in the budget. See AgentPayClient.redeem."""
+        from agentpay._client import AgentPayClient
+        client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
+        result = client.redeem(exc, **kw)
+        with self._lock:
+            for e in reversed(self._call_log):
+                if e.get("tx_hash") == exc.tx_hash and e.get("state") == "uncertain_settlement":
+                    e["state"] = "settled"
+                    e["success"] = True
+                    break
+        return result
 
     def summary(self) -> dict:
         return {
