@@ -17,6 +17,19 @@ project uses [Semantic Versioning](https://semver.org/).
 - `agentpay._stacks_tx.verify_origin_signature(signed_tx)` — pure check that
   a signed transaction's origin signature recovers to its signer; the
   gateway runs it before consuming replay state or broadcasting.
+- **`Session.redeem(exc)` / `AgentPayClient.redeem(exc)`** — finish a Stacks
+  call that ended in `SettlementUncertain`: wait for the transaction to
+  confirm, then re-present the identical signed payment; the gateway
+  delivers exactly once per txid. `SettlementUncertain.redeem_ctx` carries
+  what `redeem` needs.
+- **Stacks mainnet** — `AgentWallet(network="mainnet", stacks_key=…)` pays
+  sBTC on `stacks:1` against `agentpay.tools`; see `docs/stacks-mainnet.md`.
+  `examples/stacks_m1_demo.py` takes `STACKS_NETWORK=mainnet`.
+
+### Changed
+- The STX fee a 402 suggests is clamped to `STACKS_MAX_FEE_MICROSTX`
+  (0.1 STX; env can only lower it) before signing — a gateway cannot name
+  the payer's fee freely.
 
 ## [0.4.0] — 2026-08-22
 

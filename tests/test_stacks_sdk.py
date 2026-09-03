@@ -587,3 +587,159 @@ class TestStacksOnlyWallet:
                         stacks_key=STACKS_KEY)
         assert w.stellar_ephemeral is False
         assert w.stacks_address
+
+
+# ── redemption after an uncertain settle (AGE-147) ───────────────────────────
+
+HIRO_TX = r"https://api\.testnet\.hiro\.so/extended/v1/tx/0x[0-9a-f]+"
+
+
+def _uncertain_502(txid):
+    return httpx.Response(502, json={
+        "error": "Stacks settlement uncertain", "payment_status": "uncertain",
+        "error_reason": "broadcast_accepted_pending_confirmation",
+        "payment_id": "pay_stacks_test_0001", "txid": txid,
+    })
+
+
+class TestRedeem:
+    def _leave_uncertain(self, client):
+        captured = {}
+        def _settle(request):
+            captured["header"] = request.headers["payment-signature"]
+            _, tx, _ = _decode_ps_header(captured["header"])
+            from agentpay._stacks_tx import txid_of
+            captured["txid"] = txid_of(tx)
+            return _uncertain_502(captured["txid"])
+        respx.post(TOOL_URL).mock(side_effect=[
+            httpx.Response(402, json=_stacks_402()), _settle,
+        ])
+        with pytest.raises(SettlementUncertain) as exc:
+            client.call_tool("verified_route", {}, max_spend="0.0011",
+                             prefer_chain="stacks", chain_is_explicit=True)
+        return exc.value, captured
+
+    def test_uncertain_carries_redeem_context(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            exc, cap = self._leave_uncertain(client)
+        assert exc.network == "stacks" and exc.tx_hash == cap["txid"]
+        assert exc.redeem_ctx["header"] == cap["header"]
+        assert exc.redeem_ctx["txid"] == cap["txid"]
+
+    def test_redeem_waits_for_confirmation_then_represents_same_header(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            exc, cap = self._leave_uncertain(client)
+            respx.get(url__regex=HIRO_TX).mock(side_effect=[
+                httpx.Response(200, json={"tx_status": "pending"}),
+                httpx.Response(200, json={"tx_status": "success"}),
+            ])
+            redeem_route = respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(200, json=_ok_200()))
+            result = client.redeem(exc, wait_s=30, poll_s=0)
+        assert result["result"] == {"ok": True}
+        sent = redeem_route.calls[-1].request
+        assert sent.headers["payment-signature"] == cap["header"]
+        assert len(client.call_log) == 1          # no new spend recorded
+
+    def test_redeem_aborted_tx_raises_payment_failed(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            exc, _ = self._leave_uncertain(client)
+            respx.get(url__regex=HIRO_TX).mock(
+                return_value=httpx.Response(200, json={"tx_status": "abort_by_post_condition"}))
+            with pytest.raises(PaymentFailed, match="abort_by_post_condition"):
+                client.redeem(exc, wait_s=5, poll_s=0)
+
+    def test_redeem_times_out_as_uncertain_again(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            exc, _ = self._leave_uncertain(client)
+            respx.get(url__regex=HIRO_TX).mock(
+                return_value=httpx.Response(200, json={"tx_status": "pending"}))
+            with pytest.raises(SettlementUncertain) as again:
+                client.redeem(exc, wait_s=0, poll_s=0)
+        assert again.value.redeem_ctx is exc.redeem_ctx
+
+    def test_redeem_refused_by_gateway_raises_payment_failed(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            exc, _ = self._leave_uncertain(client)
+            respx.get(url__regex=HIRO_TX).mock(
+                return_value=httpx.Response(200, json={"tx_status": "success"}))
+            respx.post(TOOL_URL).mock(return_value=httpx.Response(402, json={
+                "payment_status": "rejected", "error_reason": "payment_id_already_used_replay"}))
+            with pytest.raises(PaymentFailed, match="already_used_replay"):
+                client.redeem(exc, wait_s=5, poll_s=0)
+
+    def test_session_redeem_marks_leg_settled(self):
+        from agentpay import Session
+        wallet = _make_wallet()
+        s = Session(wallet, max_spend="0.05", gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            respx.get(f"{GATEWAY}/tools/verified_route").mock(
+                return_value=httpx.Response(200, json={
+                    "name": "verified_route", "price_usdc": "0.001", "category": "data"}))
+            captured = {}
+            def _settle(request):
+                captured["header"] = request.headers["payment-signature"]
+                _, tx, _ = _decode_ps_header(captured["header"])
+                from agentpay._stacks_tx import txid_of
+                captured["txid"] = txid_of(tx)
+                return _uncertain_502(captured["txid"])
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=_stacks_402()), _settle,
+                httpx.Response(200, json=_ok_200()),
+            ])
+            with pytest.raises(SettlementUncertain) as exc:
+                s.call("verified_route", {}, chain="stacks")
+            assert s._call_log[-1]["state"] == "uncertain_settlement"
+            respx.get(url__regex=HIRO_TX).mock(
+                return_value=httpx.Response(200, json={"tx_status": "success"}))
+            result = s.redeem(exc.value, wait_s=5, poll_s=0)
+        assert result["result"] == {"ok": True}
+        leg = s._call_log[-1]
+        assert leg["state"] == "settled" and leg["success"] is True
+        assert s.spent_usd() == Decimal("0.001")
+
+    def test_not_a_stacks_uncertain_is_refused(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with pytest.raises(PaymentFailed, match="nothing to redeem"):
+            client.redeem(SettlementUncertain("x", tx_hash="", network="base"))
+
+
+# ── fee clamp (AGE-151) ──────────────────────────────────────────────────────
+
+
+class TestFeeClamp:
+    def _built(self, monkeypatch, fee, env=None):
+        wallet = _make_wallet()
+        if env is not None:
+            monkeypatch.setenv("STACKS_MAX_FEE_MICROSTX", str(env))
+        opt = _stacks_402()["payment_options"]["stacks"]
+        opt["fee_microstx"] = fee
+        with respx.mock:
+            _mock_nonce(1)
+            return _decode_ps_header(
+                wallet.build_stacks_payment(opt, "pay_x", TOOL_URL)["header"])[1]
+
+    @staticmethod
+    def _fee(tx):
+        return int.from_bytes(tx[35:43], "big")
+
+    def test_reasonable_fee_passes_through(self, monkeypatch):
+        assert self._fee(self._built(monkeypatch, 4000)) == 4000
+
+    def test_hostile_fee_is_capped(self, monkeypatch):
+        assert self._fee(self._built(monkeypatch, 10**12)) == 100_000
+
+    def test_env_can_lower_but_not_raise_the_cap(self, monkeypatch):
+        assert self._fee(self._built(monkeypatch, 50_000, env=10_000)) == 10_000
+        assert self._fee(self._built(monkeypatch, 10**9, env=10**9)) == 100_000

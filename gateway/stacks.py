@@ -34,6 +34,7 @@ from agentpay._stacks_tx import (
     STACKS_TESTNET_CAIP2,
     c32_address,
     sats_from_usd,
+    serialize_transfer_payload,
     txid_of,
     verify_origin_signature,
 )
@@ -50,8 +51,10 @@ __all__ = [
     "decode_payment_signature",
     "build_stacks_402_option",
     "stacks_402_option",
+    "stacks_offer",
     "stacks_offerable",
     "stacks_quote",
+    "suggested_fee_microstx",
     "stacks_quote_sats",
     "stacks_configured",
 ]
@@ -243,10 +246,79 @@ async def stacks_quote_sats(price_usdc) -> Optional[int]:
     return None if q is None else q[0]
 
 
-def stacks_402_option(quote: tuple[int, Decimal], price_usdc) -> dict:
+# ── STX fee suggestion ────────────────────────────────────────────────────────
+# Hiro's estimator prices a payload; the shape of an sBTC transfer is fixed,
+# so one template payload per network is enough. Cached like the BTC rate.
+
+_fee_cache: dict = {"fee": None, "at": 0.0}
+_fee_refresh_task: Optional[asyncio.Task] = None
+_FEE_FETCH_TIMEOUT_S = 3.0
+_FEE_ESTIMATED_LEN = 300     # bytes of a signed single-sig sBTC transfer
+
+
+def _fee_template_payload() -> bytes:
+    payee = settings.STACKS_GATEWAY_ADDRESS
+    return serialize_transfer_payload(
+        contract=_sbtc_contract(), sender=payee, recipient=payee,
+        amount_sats=1, memo=b"0" * 34,
+    )
+
+
+async def _fetch_fee_live() -> Optional[int]:
+    """Fast-tier estimate from Hiro, or None (testnet returns NoEstimateAvailable)."""
+    try:
+        async with httpx.AsyncClient(timeout=_FEE_FETCH_TIMEOUT_S) as client:
+            resp = await client.post(
+                f"{_hiro_api()}/v2/fees/transaction",
+                json={"transaction_payload": _fee_template_payload().hex(),
+                      "estimated_len": _FEE_ESTIMATED_LEN},
+            )
+        if resp.status_code != 200:
+            return None
+        tiers = resp.json().get("estimations") or []
+        fee = int(max(int(t["fee"]) for t in tiers))
+        if fee <= 0:
+            return None
+        _fee_cache["fee"] = fee
+        _fee_cache["at"] = time.monotonic()
+        return fee
+    except Exception as e:
+        logger.warning(f"[STACKS] fee estimate failed ({e})")
+        return None
+
+
+async def suggested_fee_microstx() -> int:
+    """Fee to put on the 402: max(fast-tier estimate, STACKS_SUGGESTED_FEE_MICROSTX),
+    capped at STACKS_FEE_CAP_MICROSTX. Stale-while-revalidate; never blocks
+    a 402 when any estimate is cached; falls back to the configured fee."""
+    global _fee_refresh_task
+    floor = int(settings.STACKS_SUGGESTED_FEE_MICROSTX)
+    cap = int(settings.STACKS_FEE_CAP_MICROSTX)
+    if not settings.STACKS_FEE_ESTIMATE:
+        return min(floor, cap)
+    now = time.monotonic()
+    est = _fee_cache["fee"]
+    if est is None or (now - _fee_cache["at"]) >= settings.STACKS_RATE_CACHE_S:
+        if est is None:
+            est = await _fetch_fee_live()
+        elif _fee_refresh_task is None or _fee_refresh_task.done():
+            _fee_refresh_task = asyncio.create_task(_fetch_fee_live())
+    return min(max(floor, est or 0), cap)
+
+
+async def stacks_offer(price_usdc) -> Optional[tuple[int, Decimal, int]]:
+    """(sats, rate, fee_microstx) for a 402, or None when unquotable."""
+    q = await stacks_quote(price_usdc)
+    if q is None:
+        return None
+    return q[0], q[1], await suggested_fee_microstx()
+
+
+def stacks_402_option(quote: tuple[int, Decimal], price_usdc,
+                      fee_microstx: Optional[int] = None) -> dict:
     """The `payment_options.stacks` block for an already-computed quote
     (docs/stacks-adapter.md §Wire contract)."""
-    sats, rate = quote
+    sats, rate = quote[0], quote[1]
     return {
         "scheme": "exact",
         "network": _caip2(),
@@ -254,7 +326,8 @@ def stacks_402_option(quote: tuple[int, Decimal], price_usdc) -> dict:
         "amount_usdc": str(price_usdc),
         "btc_usd_rate": str(rate),
         "pay_to": settings.STACKS_GATEWAY_ADDRESS,
-        "fee_microstx": settings.STACKS_SUGGESTED_FEE_MICROSTX,
+        "fee_microstx": int(fee_microstx if fee_microstx is not None
+                            else settings.STACKS_SUGGESTED_FEE_MICROSTX),
         "asset": "sbtc",
         "header": "payment-signature: <base64(StacksPaymentPayload JSON)>",
     }
@@ -278,10 +351,10 @@ async def build_stacks_402_option(price_usdc, resource_url: str = "") -> Optiona
     for callers without a challenge."""
     if not stacks_offerable(price_usdc):
         return None
-    q = await stacks_quote(price_usdc)
-    if q is None:
+    offer = await stacks_offer(price_usdc)
+    if offer is None:
         return None
-    return stacks_402_option(q, price_usdc)
+    return stacks_402_option(offer, price_usdc, fee_microstx=offer[2])
 
 
 # ── payload + transaction decoding ───────────────────────────────────────────

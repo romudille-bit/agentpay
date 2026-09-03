@@ -362,14 +362,15 @@ gateway (FastAPI on Railway)
 
 ---
 
-## Stacks sBTC settlement (M1)
+## Stacks sBTC settlement
 
 AgentPay settles x402 micropayments in **sBTC on Stacks** — budget-capped, signed
-sign-don't-broadcast, broadcast by the gateway. Milestone 1 of the Stacks Endowment
-grant is demonstrated live on testnet:
+sign-don't-broadcast, broadcast by the gateway. Testnet (Milestone 1 of the Stacks
+Endowment grant) is demonstrated live; mainnet settles against `agentpay.tools`:
 
-- **Developer guide:** [`docs/stacks-m1.md`](docs/stacks-m1.md) — setup, known limitations, dependencies.
-- **Runnable demo:** [`examples/stacks_m1_demo.py`](examples/stacks_m1_demo.py) — capped session → sBTC payment → receipt → over-cap rejection.
+- **Mainnet guide:** [`docs/stacks-mainnet.md`](docs/stacks-mainnet.md) — config, the one-liner, redeeming an uncertain settle, ledger verification.
+- **Testnet guide:** [`docs/stacks-m1.md`](docs/stacks-m1.md) — setup, known limitations, dependencies.
+- **Runnable demo:** [`examples/stacks_m1_demo.py`](examples/stacks_m1_demo.py) — capped session → sBTC payment → receipt → over-cap rejection (`STACKS_NETWORK=mainnet` for mainnet).
 - **Demo video:** [YouTube (~40s)](https://www.youtube.com/watch?v=rGb07rwyG1I)
 - **On-chain proof:** [`0xa5351bad…`](https://explorer.hiro.so/txid/0xa5351bad31ed6bbcb57c0f9fcbcd997cc203b7011d62666176452edaed2d8c87?chain=testnet) — `sbtc-token::transfer`, payer → gateway, status `success` (PoX-5 testnet, block 82215).
 

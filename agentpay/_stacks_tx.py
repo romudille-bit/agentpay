@@ -28,6 +28,7 @@ __all__ = [
     "StacksKeypair",
     "PostCondition",
     "build_sbtc_transfer",
+    "serialize_transfer_payload",
     "sign_transaction",
     "verify_origin_signature",
     "txid_of",
@@ -498,19 +499,30 @@ def build_sbtc_transfer(
     )
     out += (1).to_bytes(4, "big") + pc.serialize()
 
-    # -- payload: contract call --
-    out += bytes([_PAYLOAD_CONTRACT_CALL])
+    out += serialize_transfer_payload(
+        contract=contract_id, sender=sender_address, recipient=recipient,
+        amount_sats=amount_sats, memo=memo_bytes,
+    )
+    return out
+
+
+def serialize_transfer_payload(
+    *, contract: str, sender: str, recipient: str, amount_sats: int, memo: bytes,
+) -> bytes:
+    """The contract-call payload of an `sbtc-token::transfer` (SIP-005
+    payload section only). Also what Hiro's fee estimator takes as input."""
+    contract_addr, contract_name = _split_contract_id(contract)
+    out = bytes([_PAYLOAD_CONTRACT_CALL])
     out += _serialize_address(contract_addr)
     out += _clarity_name(contract_name)
     out += _clarity_name("transfer")
     args = [
         _cv_uint(amount_sats),
-        _cv_standard_principal(sender_address),
+        _cv_standard_principal(sender),
         _cv_standard_principal(recipient),
-        _cv_some(_cv_buffer(memo_bytes)),
+        _cv_some(_cv_buffer(memo)),
     ]
-    out += len(args).to_bytes(4, "big") + b"".join(args)
-    return out
+    return out + len(args).to_bytes(4, "big") + b"".join(args)
 
 
 def _origin_condition_fields(tx: bytes) -> tuple[int, int, int]:

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-stacks_m1_demo.py — AGE-26 M1 demo (Stacks sBTC Endowment milestone).
+stacks_m1_demo.py — Stacks sBTC demo (Endowment milestones M1 / M2).
 
-Proves the two M1 acceptance criteria against the LIVE testnet gateway:
+Proves the two acceptance criteria against a LIVE gateway — testnet by
+default, mainnet with STACKS_NETWORK=mainnet:
 
   1. a budget-capped Session pays a real sBTC charge on Stacks testnet — the
      signed transfer is broadcast and the txid is surfaced (Stacks testnet
@@ -18,10 +19,14 @@ and broadcast by the gateway (AGE-23).
 Run (payer key stays in your environment, never in the repo):
 
     export STACKS_AGENT_KEY=<funded payer Stacks private key>
-    python examples/stacks_m1_demo.py
+    python examples/stacks_m1_demo.py                     # testnet, token_price
+    STACKS_NETWORK=mainnet python examples/stacks_m1_demo.py   # mainnet, pre_trade_check
 
-The payer is a Stacks-testnet wallet funded with testnet sBTC (to spend) and
-STX (to pay the tx fee).
+The payer wallet holds sBTC (to spend) and a little STX (the tx fee) on the
+chosen network. Override the gateway with AGENTPAY_GATEWAY_URL and the tool
+with AGENTPAY_DEMO_TOOL. If the gateway cannot confirm the settle inside its
+window the SDK raises SettlementUncertain; the demo then redeems: it waits
+for the tx to confirm and re-presents the same signed payment.
 """
 from __future__ import annotations
 
@@ -42,10 +47,18 @@ except ModuleNotFoundError:
 # Keep the console clean for the spinner — SDK INFO/WARNING logs stay quiet.
 logging.getLogger("agentpay").setLevel(logging.ERROR)
 
-TESTNET_GATEWAY = "https://gateway-testnet-production.up.railway.app"
-TOOL = "token_price"
+NETWORK = os.environ.get("STACKS_NETWORK", "testnet").strip().lower() or "testnet"
+if NETWORK not in ("testnet", "mainnet"):
+    sys.exit("STACKS_NETWORK must be 'testnet' or 'mainnet'")
+GATEWAYS = {
+    "testnet": "https://gateway-testnet-production.up.railway.app",
+    "mainnet": "https://agentpay.tools",
+}
+GATEWAY = os.environ.get("AGENTPAY_GATEWAY_URL", "").rstrip("/") or GATEWAYS[NETWORK]
+TOOL = os.environ.get("AGENTPAY_DEMO_TOOL") or ("token_price" if NETWORK == "testnet" else "pre_trade_check")
 PARAMS = {"symbol": "BTC"}
 EXPLORER = "https://explorer.hiro.so"
+NET = NETWORK.upper()
 
 
 class _Spinner:
@@ -80,7 +93,7 @@ def _wallet():
     if not payer:
         sys.exit("Set STACKS_AGENT_KEY to the funded payer's Stacks private key, then re-run.")
     # Stacks-only payer: no Stellar secret needed.
-    w = AgentWallet(network="testnet", stacks_key=payer)
+    w = AgentWallet(network=NETWORK, stacks_key=payer)
     if not w.stacks_address:
         sys.exit(f"Stacks wallet failed to load: {w.stacks_disabled_reason}")
     return w
@@ -90,16 +103,16 @@ def pay_once() -> None:
     from agentpay import Session, SettlementUncertain, PaymentFailed
 
     print("=" * 68)
-    print("1) BUDGET-CAPPED SESSION  ->  sBTC PAYMENT ON STACKS TESTNET")
+    print(f"1) BUDGET-CAPPED SESSION  ->  sBTC PAYMENT ON STACKS {NET}")
     print("=" * 68)
     w = _wallet()
-    print(f"payer (Stacks testnet): {w.stacks_address}")
-    s = Session(wallet=w, gateway_url=TESTNET_GATEWAY, max_spend="0.05",
+    print(f"payer (Stacks {NETWORK}): {w.stacks_address}   gateway: {GATEWAY}")
+    s = Session(wallet=w, gateway_url=GATEWAY, max_spend="0.05",
                 prefer_chain="stacks")
     print(f"session cap: ${s.max_spend}   paying {TOOL}({PARAMS}) in sBTC ...\n")
 
     result = uncertain = failed = None
-    with _Spinner("waiting for on-chain settlement (Stacks testnet blocks take a few minutes)"):
+    with _Spinner("waiting for on-chain settlement"):
         try:
             result = s.call(TOOL, PARAMS)
         except SettlementUncertain as e:
@@ -116,18 +129,28 @@ def pay_once() -> None:
         print("  NETWORK:", getattr(result, "network", None))
         print("  RECEIPT:", s.spending_summary())
         if tx:
-            print(f"  verify : {EXPLORER}/txid/{tx}?chain=testnet")
+            print(f"  verify : {EXPLORER}/txid/0x{str(tx).removeprefix('0x')}?chain={NETWORK}")
     elif uncertain is not None:
-        # Expected on testnet: broadcast, confirming asynchronously.
+        # Broadcast, confirming asynchronously: redeem once the tx confirms.
         print("  ✓ sBTC PAYMENT BROADCAST — confirming on-chain")
         print("  TX     :", uncertain.tx_hash or "(not returned — see payer address below)")
-        print("  NETWORK:", uncertain.network or "stacks")
-        print("  RECEIPT:", s.spending_summary())
         if uncertain.tx_hash:
-            print(f"  verify : {EXPLORER}/txid/{uncertain.tx_hash}?chain=testnet")
+            print(f"  verify : {EXPLORER}/txid/0x{uncertain.tx_hash}?chain={NETWORK}")
         else:
-            print(f"  payer  : {EXPLORER}/address/{w.stacks_address}?chain=testnet")
-        print("  (Testnet confirmation takes a few minutes — the tx is on-chain now.)")
+            print(f"  payer  : {EXPLORER}/address/{w.stacks_address}?chain={NETWORK}")
+        redeemed = None
+        with _Spinner("waiting for confirmation, then redeeming the same signed payment"):
+            try:
+                redeemed = s.redeem(uncertain, wait_s=600, poll_s=10)
+            except SettlementUncertain as e:
+                print("\n  still unconfirmed:", str(e)[:160])
+            except PaymentFailed as e:
+                print("\n  ✗ redeem refused:", str(e)[:200])
+                sys.exit(1)
+        if redeemed is not None:
+            print("  ✓ REDEEMED — tool result delivered for the confirmed payment")
+            print("  RESULT :", redeemed.get("result"))
+        print("  RECEIPT:", s.spending_summary())
     else:
         print("  ✗ payment failed (nothing settled):", str(failed)[:200])
         sys.exit(1)
@@ -140,10 +163,10 @@ def reject_over_cap() -> None:
     print("2) PER-TOOL CAP BELOW PRICE  ->  REJECTED BEFORE ANY PAYMENT")
     print("=" * 68)
     w = _wallet()
-    # Comfortable session budget, but token_price is capped at half its price:
+    # Comfortable session budget, but the tool is capped at half its price:
     # the call is refused pre-settlement (no fallback, no sBTC moved).
-    per_tool_cap = 0.005   # below token_price's $0.01 -> refused pre-settlement
-    s = Session(wallet=w, gateway_url=TESTNET_GATEWAY, max_spend="0.05",
+    per_tool_cap = 0.005   # below the tool's $0.01 -> refused pre-settlement
+    s = Session(wallet=w, gateway_url=GATEWAY, max_spend="0.05",
                 prefer_chain="stacks", max_per_tool={TOOL: per_tool_cap})
     print(f"session cap ${s.max_spend}, per-tool cap ${per_tool_cap} "
           f"(< $0.01 price)   calling {TOOL} ...")
@@ -159,4 +182,4 @@ def reject_over_cap() -> None:
 if __name__ == "__main__":
     pay_once()
     reject_over_cap()
-    print("\nDone. The sBTC txid above is M1's on-chain payment proof.")
+    print(f"\nDone. The sBTC txid above is the on-chain payment proof (Stacks {NETWORK}).")

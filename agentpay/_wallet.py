@@ -30,10 +30,12 @@ HORIZON_MAINNET = "https://horizon.stellar.org"
 # ── Stacks (sBTC) settlement (AGE-25) ────────────────────────────────────────
 STACKS_API_TESTNET = "https://api.testnet.hiro.so"
 STACKS_API_MAINNET = "https://api.hiro.so"
-# Suggested STX network fee when neither the 402's stacks option nor the
-# STACKS_FEE_MICROSTX env var provides one. sBTC contract calls land
-# comfortably under this on testnet; the gateway's 402 can always override.
+# STX network fee when neither the 402's stacks option nor STACKS_FEE_MICROSTX
+# provides one. The 402's suggestion is clamped to STACKS_MAX_FEE_MICROSTX
+# (env can only lower it): the fee leaves the payer's STX balance, so a
+# gateway must not be able to name it freely.
 DEFAULT_STACKS_FEE_MICROSTX = 3000
+MAX_STACKS_FEE_MICROSTX = 100_000
 USDC_ISSUER_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
 USDC_ISSUER_MAINNET = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
@@ -789,6 +791,15 @@ class AgentWallet:
             or os.environ.get("STACKS_FEE_MICROSTX")
             or DEFAULT_STACKS_FEE_MICROSTX
         )
+        fee_cap = min(
+            int(os.environ.get("STACKS_MAX_FEE_MICROSTX", MAX_STACKS_FEE_MICROSTX)),
+            MAX_STACKS_FEE_MICROSTX,
+        )
+        if fee > fee_cap:
+            logger.warning(f"402 suggested fee {fee} µSTX exceeds the cap; using {fee_cap}")
+            fee = fee_cap
+        if fee < 1:
+            raise ValueError("fee_microstx must be positive")
         chain_nonce = self.fetch_stacks_nonce()
         nonce = (
             chain_nonce if self._stacks_next_nonce is None

@@ -862,15 +862,16 @@ async def _issue_402(
 
     # Stacks quote first so it rides on the challenge (durable, AGE-95).
     # Bounded: the option is optional, a slow quote must never slow the 402.
-    stacks_quote = None
+    stacks_offer = None
     if stacks_pay.stacks_offerable(tool.price_usdc):
         try:
-            stacks_quote = await asyncio.wait_for(
-                stacks_pay.stacks_quote(tool.price_usdc), timeout=4.0,
+            stacks_offer = await asyncio.wait_for(
+                stacks_pay.stacks_offer(tool.price_usdc), timeout=4.0,
             )
         except asyncio.TimeoutError:
             logger.warning(f"[CALL] tool={tool_name} stacks quote timed out — "
                            "402 issued without the stacks option")
+    stacks_quote = stacks_offer[:2] if stacks_offer else None
 
     challenge = issue_payment_challenge(
         tool_name=tool_name,
@@ -903,8 +904,9 @@ async def _issue_402(
     base_option, payment_required_header, accepts_entry = _base_402_option(tool, resource_url)
 
     stacks_option = (
-        stacks_pay.stacks_402_option(stacks_quote, tool.price_usdc)
-        if stacks_quote else None
+        stacks_pay.stacks_402_option(stacks_quote, tool.price_usdc,
+                                     fee_microstx=stacks_offer[2])
+        if stacks_offer else None
     )
 
     headers = build_402_headers(challenge)

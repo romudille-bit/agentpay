@@ -79,6 +79,8 @@ def stacks_settings(monkeypatch):
     stacks_pay._used_stacks_txids.clear()
     stacks_pay._rate_cache["rate"] = None
     stacks_pay._rate_cache["at"] = 0.0
+    stacks_pay._fee_cache["fee"] = None
+    stacks_pay._fee_cache["at"] = 0.0
     if stacks_pay._rate_refresh_task is not None:
         stacks_pay._rate_refresh_task.cancel()
         stacks_pay._rate_refresh_task = None
@@ -821,3 +823,216 @@ class TestRoute402CarriesQuote:
         body = r.json()
         assert "stacks" not in (body.get("payment_options") or {})
         assert _pending_challenges[body["payment_id"]]["stacks_sats"] is None
+
+
+# ── fee suggestion (AGE-151) ─────────────────────────────────────────────────
+
+
+def _hiro_fees(*fees):
+    return respx.post(f"{HIRO}/v2/fees/transaction").mock(
+        return_value=httpx.Response(200, json={
+            "estimations": [{"fee_rate": 1, "fee": f} for f in fees]}))
+
+
+class TestFeeSuggestion:
+    async def test_offers_fast_tier_when_above_floor(self):
+        with respx.mock:
+            _mock_coingecko(100000)
+            _hiro_fees(300, 481, 7590)
+            opt = await stacks_pay.build_stacks_402_option("0.01")
+        assert opt["fee_microstx"] == 7590
+
+    async def test_floor_wins_when_estimate_is_low(self):
+        with respx.mock:
+            _mock_coingecko(100000)
+            _hiro_fees(300, 481, 759)
+            opt = await stacks_pay.build_stacks_402_option("0.01")
+        assert opt["fee_microstx"] == settings.STACKS_SUGGESTED_FEE_MICROSTX == 3000
+
+    async def test_cap_bounds_a_spiking_estimate(self):
+        with respx.mock:
+            _mock_coingecko(100000)
+            _hiro_fees(1, 2, 5_000_000)
+            opt = await stacks_pay.build_stacks_402_option("0.01")
+        assert opt["fee_microstx"] == settings.STACKS_FEE_CAP_MICROSTX
+
+    async def test_no_estimate_falls_back_to_floor(self):
+        with respx.mock:
+            _mock_coingecko(100000)
+            respx.post(f"{HIRO}/v2/fees/transaction").mock(
+                return_value=httpx.Response(400, json={"reason": "NoEstimateAvailable"}))
+            opt = await stacks_pay.build_stacks_402_option("0.01")
+        assert opt["fee_microstx"] == 3000
+
+    async def test_estimate_is_cached(self):
+        with respx.mock:
+            _mock_coingecko(100000)
+            fees = _hiro_fees(300, 481, 7590)
+            await stacks_pay.build_stacks_402_option("0.01")
+            await stacks_pay.build_stacks_402_option("0.01")
+        assert fees.call_count == 1
+
+    async def test_disabled_estimate_uses_floor_without_io(self, monkeypatch):
+        monkeypatch.setattr(settings, "STACKS_FEE_ESTIMATE", False)
+        with respx.mock:
+            _mock_coingecko(100000)
+            opt = await stacks_pay.build_stacks_402_option("0.01")
+        assert opt["fee_microstx"] == 3000
+
+
+# ── uncertain settle: row + redemption (AGE-147) ─────────────────────────────
+
+
+class TestUncertainRedemption:
+    class _Tool:
+        name = "verified_route"
+        price_usdc = "0.001"
+        developer_address = ""
+
+    @pytest.fixture(autouse=True)
+    def _mocks(self, monkeypatch):
+        import gateway.routes.tools as rt
+        self.rt = rt
+        self.inserted: list[dict] = []
+        self.patched: list[tuple] = []
+        self.rows: dict[str, dict] = {}
+        self.challenge = {"payment_id": PAYMENT_ID, "tool_name": "verified_route",
+                          "amount_usdc": "0.001", "expires_at": 9999999999.0,
+                          "stacks_sats": 1, "stacks_rate": "100000"}
+        self.pid_consumed = False
+
+        async def _lookup(pid):
+            return self.challenge if pid == PAYMENT_ID else None
+        async def _insert(**kw):
+            self.inserted.append(kw)
+            self.rows[kw["payment_id"]] = dict(kw)
+            return 1
+        async def _get(pid, columns=None):
+            return self.rows.get(pid)
+        async def _update(pid, state, *, expected_state=None, clear_fields=None, **f):
+            row = self.rows.get(pid)
+            self.patched.append((pid, state, expected_state))
+            if row is None or (expected_state and row["state"] != expected_state):
+                return 0
+            row["state"] = state
+            return 1
+        async def _record_pid(pid):
+            return not self.pid_consumed
+        async def _record_tx(txid, net):
+            return True
+        monkeypatch.setattr(rt, "_lookup_challenge", _lookup)
+        monkeypatch.setattr(rt, "insert_pending_payment_log", _insert)
+        monkeypatch.setattr(rt, "get_payment_log", _get)
+        monkeypatch.setattr(rt, "update_payment_log_state", _update)
+        monkeypatch.setattr(rt, "record_payment_id", _record_pid)
+        monkeypatch.setattr(rt, "sb_enabled", lambda: True)
+        monkeypatch.setattr(sb, "sb_enabled", lambda: True)
+        monkeypatch.setattr(sb, "record_tx_hash", _record_tx)
+        yield
+
+    def _header(self):
+        tx = _signed_tx(amount_sats=1, payment_id=PAYMENT_ID)
+        h = _header_for(tx, payment_id=PAYMENT_ID)
+        return h, json.loads(base64.b64decode(h)), txid_of(tx)
+
+    async def _settle(self, header, payload):
+        return await self.rt._settle_stacks_path(
+            self._Tool(), "verified_route", header, payload, parameters={"q": 1})
+
+    async def test_uncertain_writes_row_keyed_on_txid(self):
+        header, payload, txid = self._header()
+        with respx.mock:
+            _hiro_broadcast_ok()
+            _hiro_status("pending", "pending", "pending")
+            resp = await self._settle(header, payload)
+        assert resp.status_code == 502
+        assert json.loads(resp.body)["redeem"]
+        row = self.rows[txid]
+        assert row["state"] == "uncertain" and row["tx_hash"] == txid
+        assert row["agent_address"] == PAYER.address("testnet")
+        assert PAYMENT_ID in row["error_reason"] and row["parameters"] == {"q": 1}
+
+    async def _leave_uncertain(self):
+        header, payload, txid = self._header()
+        with respx.mock:
+            _hiro_broadcast_ok()
+            _hiro_status("pending", "pending", "pending")
+            await self._settle(header, payload)
+        assert self.rows[txid]["state"] == "uncertain"
+        stacks_pay._used_stacks_txids.clear()
+        return header, payload, txid
+
+    async def test_redeem_after_challenge_expired(self):
+        header, payload, txid = await self._leave_uncertain()
+        self.challenge["expires_at"] = 1.0
+        with respx.mock:
+            _hiro_status("success")
+            auth = await self._settle(header, payload)
+        assert isinstance(auth, dict) and auth["redeemed"] and auth["tx_hash"] == txid
+        assert auth["payer"] == PAYER.address("testnet")
+        assert self.rows[txid]["state"] == "verified"
+
+    async def test_redeem_when_payment_id_consumed(self):
+        header, payload, txid = await self._leave_uncertain()
+        self.pid_consumed = True
+        with respx.mock:
+            _hiro_status("success")
+            auth = await self._settle(header, payload)
+        assert isinstance(auth, dict) and auth["redeemed"]
+
+    async def test_redeem_still_pending_is_uncertain_again(self):
+        header, payload, txid = await self._leave_uncertain()
+        self.pid_consumed = True
+        with respx.mock:
+            _hiro_status("pending", "pending")
+            resp = await self._settle(header, payload)
+        assert resp.status_code == 502
+        assert json.loads(resp.body)["error_reason"] == "still_unconfirmed"
+        assert self.rows[txid]["state"] == "uncertain"
+
+    async def test_redeem_aborted_tx_is_rejected_and_row_closed(self):
+        header, payload, txid = await self._leave_uncertain()
+        self.pid_consumed = True
+        with respx.mock:
+            _hiro_status("abort_by_post_condition")
+            resp = await self._settle(header, payload)
+        assert resp.status_code == 402
+        assert json.loads(resp.body)["payment_status"] == "rejected"
+        assert self.rows[txid]["state"] == "rejected"
+
+    async def test_redeem_delivers_once(self):
+        header, payload, txid = await self._leave_uncertain()
+        self.pid_consumed = True
+        with respx.mock:
+            _hiro_status("success", "success")
+            first = await self._settle(header, payload)
+            second = await self._settle(header, payload)
+        assert isinstance(first, dict) and first["redeemed"]
+        assert second.status_code == 402
+        assert json.loads(second.body)["error_reason"] == "payment_id_already_used_replay"
+
+    async def test_redeem_race_loser_is_refused(self, monkeypatch):
+        header, payload, txid = await self._leave_uncertain()
+        self.pid_consumed = True
+        async def _lost_cas(pid, state, **kw):
+            return 0
+        monkeypatch.setattr(self.rt, "update_payment_log_state", _lost_cas)
+        with respx.mock:
+            _hiro_status("success")
+            resp = await self._settle(header, payload)
+        assert json.loads(resp.body)["error_reason"] == "already_redeemed"
+
+    async def test_consumed_id_without_uncertain_row_is_a_replay(self):
+        header, payload, txid = self._header()
+        self.pid_consumed = True
+        resp = await self._settle(header, payload)
+        assert json.loads(resp.body)["error_reason"] == "payment_id_already_used_replay"
+
+    async def test_redeem_for_another_tool_refused(self):
+        header, payload, txid = await self._leave_uncertain()
+        self.rows[txid]["tool_name"] = "pre_trade_check"
+        self.pid_consumed = True
+        with respx.mock:
+            _hiro_status("success")
+            resp = await self._settle(header, payload)
+        assert json.loads(resp.body)["error_reason"] == "redeem_tool_mismatch"

@@ -62,12 +62,18 @@ class Settings(BaseSettings):
     STACKS_NETWORK: str = "testnet"          # "testnet" | "mainnet"
     STACKS_HIRO_API: str = ""                # default derived from STACKS_NETWORK
     STACKS_FACILITATOR_URL: str = ""         # empty ⇒ direct-broadcast mode only
-    STACKS_GATEWAY_ADDRESS: str = ""         # c32 (SP…/ST…); fund STX for fees
+    STACKS_GATEWAY_ADDRESS: str = ""         # c32 payee (SP…/ST…); receives only, never signs, needs no STX
     STACKS_SBTC_CONTRACT: str = ""           # default derived from STACKS_NETWORK
     STACKS_SETTLE_TIMEOUT_S: float = 30.0
     STACKS_CONFIRM_POLL_S: float = 3.0
     STACKS_CONFIRM_MAX_POLLS: int = 20
+    # Fee the 402 suggests to the payer (µSTX). With STACKS_FEE_ESTIMATE the
+    # gateway asks Hiro /v2/fees/transaction for the fast tier and offers
+    # max(estimate, SUGGESTED) capped at FEE_CAP; without an estimate
+    # (testnet has none) SUGGESTED is offered as-is.
     STACKS_SUGGESTED_FEE_MICROSTX: int = 3000
+    STACKS_FEE_ESTIMATE: bool = True
+    STACKS_FEE_CAP_MICROSTX: int = 100_000
     # USD→sats FX (AGE-24): live BTC/USD from CoinGecko, cached this many
     # seconds. STACKS_FIXED_BTC_USD is the fallback floor when the live fetch
     # fails (and the sole source if you'd rather pin the rate manually).
