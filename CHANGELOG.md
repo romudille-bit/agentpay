@@ -25,6 +25,9 @@ project uses [Semantic Versioning](https://semver.org/).
 - **Stacks mainnet** — `AgentWallet(network="mainnet", stacks_key=…)` pays
   sBTC on `stacks:1` against `agentpay.tools`; see `docs/stacks-mainnet.md`.
   `examples/stacks_m1_demo.py` takes `STACKS_NETWORK=mainnet`.
+- `tools/stacks_derive_key.py` — derive `STACKS_AGENT_KEY` from a Leather
+  24-word Secret Key (`m/44'/5757'/0'/0/<account>`), hidden prompt, key
+  written only with `--print-key`; tested against `@stacks/wallet-sdk`.
 
 ### Changed
 - The STX fee a 402 suggests is clamped to `STACKS_MAX_FEE_MICROSTX`

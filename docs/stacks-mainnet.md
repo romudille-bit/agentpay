@@ -73,6 +73,15 @@ with Session(wallet, max_spend="0.05", prefer_chain="stacks") as s:
 and sign correctly. The payer holds sBTC to spend and a little STX for
 fees. The Stellar secret is optional for a Stacks-only payer.
 
+Leather exports a 24-word Secret Key rather than a raw key.
+`tools/stacks_derive_key.py` turns it into the 66-hex form on the same path
+Leather uses (`m/44'/5757'/0'/0/<account>`); the words go into a hidden
+prompt and the key goes straight into the variable:
+
+```bash
+export STACKS_AGENT_KEY=$(python tools/stacks_derive_key.py --address SP<payer> --print-key)
+```
+
 The cap binds before signing: the SDK refuses to sign an `amount_sats` the
 USD cap does not bound at a floor BTC/USD rate, or one inconsistent with the
 quoted rate, and `max_per_tool` / `allowed_tools` apply as on any rail.
