@@ -6,6 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/npm/v/%40romudille%2Fagentpay-mcp?label=mcp&color=orange)](https://www.npmjs.com/package/@romudille/agentpay-mcp)
 [![Live gateway](https://img.shields.io/badge/gateway-agentpay.tools-black)](https://agentpay.tools)
+[![x402-list](https://x402-list.com/badge/agentpay.svg)](https://x402-list.com/services/agentpay?utm_source=badge&utm_medium=referral&utm_campaign=embed)
 
 *Most agent-payment tools are a wallet — they move money. AgentPay is the layer that decides whether to spend it at all.*
 
@@ -387,6 +388,7 @@ Endowment grant) is demonstrated live; mainnet settles against `agentpay.tools`:
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
 | [skills CLI](https://github.com/vercel-labs/skills) | ✅ `npx skills add romudille-bit/agentpay` |
 | [402index.io](https://402index.io) | ✅ domain verified, 17 tools synced |
+| [x402-list.com](https://x402-list.com/services/agentpay) | ✅ listed 2026-09-07 — 3 paid endpoints, 14/14 x402 compliance, measured (never self-attested) score |
 | Coinbase Bazaar | ✅ indexed via REST — `session_create`, `pre_trade_check`, `verified_route` (Base). ⚠️ NOT in the curated set: invisible on the MCP `search_resources` default (AGE-125) |
 | Claude Code plugin | ✅ `/plugin marketplace add romudille-bit/agentpay` |
 | [MCP Registry](https://registry.modelcontextprotocol.io) | ✅ `io.github.romudille-bit/agentpay` v2.4.3 (official) |

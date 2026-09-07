@@ -145,10 +145,19 @@ def build_payment_requirements(
     pay_to: str,
     resource_url: str,
     network: str = "base-sepolia",
+    description: str = "",
 ) -> dict:
     """
     Build the PaymentRequirements object used in both the 402 body and
     the /settle request to the CDP facilitator.
+
+    `description` is the human/agent-readable purpose of the paid resource.
+    Directories that read the base64 PAYMENT-REQUIRED header (x402-list.com's
+    "402 channel: header" capture, 2026-09-07) take `accepts[].description`
+    from HERE, not from the richer `resource.description` block — so a bare
+    fallback surfaced publicly as "AgentPay tool call" on every paid endpoint.
+    Pass the tool's real description at both the challenge and the settle
+    call site so the header and the /settle requirements stay identical.
     """
     caip2, usdc_contract = get_chain_config(network)
     # Token name must match the USDC contract's EIP-712 domain exactly.
@@ -163,7 +172,7 @@ def build_payment_requirements(
         "payTo":             pay_to,
         "maxTimeoutSeconds": 300,
         "resource":          resource_url,
-        "description":       "AgentPay tool call",
+        "description":       description or "AgentPay tool call",
         "mimeType":          "application/json",
         "extra": {
             "name":                token_name,

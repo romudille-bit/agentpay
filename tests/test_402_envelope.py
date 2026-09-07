@@ -223,3 +223,36 @@ class TestSharedBuilder:
         block = base_pay.build_resource_block("https://x/y", "desc")
         assert block == {"url": "https://x/y", "description": "desc",
                          "mimeType": "application/json"}
+
+
+class TestHeaderAcceptsDescription:
+    """x402-list.com (listed 2026-09-07) reads `accepts[].description` from
+    the base64 PAYMENT-REQUIRED header ("402 channel: header"), NOT from the
+    body's `accepts[]` or the `resource` block. The header used to hardcode
+    "AgentPay tool call" while the body carried the real description — a
+    fourth header/body dialect drift, this time on a field a public directory
+    renders verbatim on every paid endpoint."""
+
+    @pytest.mark.parametrize("path", [
+        "/tools/pre_trade_check/call",
+        "/tools/verified_route/call",
+        "/v1/session/create",
+    ])
+    def test_header_accepts_description_is_real(self, client, monkeypatch, path):
+        import gateway.routes.tools as rt
+        import gateway.routes.session as rs
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        monkeypatch.setattr(rs.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+
+        r = client.get(path)
+        assert r.status_code == 402
+        header = _decode_header(r)
+        desc = header["accepts"][0]["description"]
+        assert desc and desc != "AgentPay tool call", (
+            f"{path}: PAYMENT-REQUIRED accepts[0].description is the bare "
+            "fallback — pass the tool description into build_payment_requirements"
+        )
+        # Header and body accepts[] must agree on the description (the body
+        # may carry a longer variant, e.g. session_create appends usage notes).
+        body_desc = r.json()["accepts"][0]["description"]
+        assert body_desc.startswith(desc[:200])

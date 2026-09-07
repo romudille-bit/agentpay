@@ -649,6 +649,7 @@ def _base_402_option(tool, resource_url: str):
         pay_to=settings.BASE_GATEWAY_ADDRESS,
         resource_url=resource_url,
         network=settings.BASE_NETWORK,
+        description=tool.description,
     )
     base_option = {
         "scheme":            base_req["scheme"],
@@ -1094,6 +1095,7 @@ async def _settle_base_path(
         pay_to=settings.BASE_GATEWAY_ADDRESS,
         resource_url=resource_url,
         network=settings.BASE_NETWORK,
+        description=tool.description,
     )
     logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
     bz = _bazaar_for(tool.name)

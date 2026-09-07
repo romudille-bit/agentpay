@@ -197,6 +197,7 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
             pay_to=settings.BASE_GATEWAY_ADDRESS,
             resource_url=resource_url,
             network=settings.BASE_NETWORK,
+            description=_SESSION_BAZAAR_RESOURCE["description"],
         )
         base_option = {
             "scheme":            base_req["scheme"],
@@ -481,6 +482,7 @@ async def create_session(
             pay_to=settings.BASE_GATEWAY_ADDRESS,
             resource_url=resource_url,
             network=settings.BASE_NETWORK,
+            description=_SESSION_BAZAAR_RESOURCE["description"],
         )
         logger.info("[SESSION] verifying Base PAYMENT-SIGNATURE")
         result = await base_pay.settle_base_payment(
