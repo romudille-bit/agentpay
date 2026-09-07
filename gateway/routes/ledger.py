@@ -153,7 +153,8 @@ def _build_timeline(free_calls: list[dict], paid_calls: list[dict],
 # clause, so a stray `%`, `,`, or `(` in LEDGER_FLAGSHIP_ADDRESSES would broaden
 # the filter (and could surface unrelated wallets' rows on the public ledger).
 # Validate shape and drop anything that doesn't match before building the query.
-_ADDR_RE = re.compile(r"^(G[A-Z2-7]{55}|0x[0-9a-fA-F]{40})$")
+# Stellar G…, Base 0x…, Stacks SP…/ST… (c32: 0-9 A-Z without I L O U).
+_ADDR_RE = re.compile(r"^(G[A-Z2-7]{55}|0x[0-9a-fA-F]{40}|S[PT][0-9A-HJKMNP-TV-Z]{28,41})$")
 
 
 def _flagship_addresses() -> list[str]:

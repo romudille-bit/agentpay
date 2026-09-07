@@ -136,7 +136,9 @@ chain-verified by the ledger's background verifier: the txid must be a
 confirmed `sbtc-token::transfer` to the gateway's payee address, from the
 run's wallet when known. Such legs render as **chain-verified** on
 [agentpay.tools/ledger](https://agentpay.tools/ledger) with an
-`explorer.hiro.so` link.
+`explorer.hiro.so` link. The ledger lists only the wallets in
+`LEDGER_FLAGSHIP_ADDRESSES`; add the Stacks payer (`SP…`) there for its
+receipts to appear.
 
 ## Reproducing
 

@@ -16,6 +16,8 @@ project uses [Semantic Versioning](https://semver.org/).
   settle answered 502, which Cloudflare replaces with its own HTML page in
   front of `agentpay.tools`; the SDK saw no JSON. It is 503 now, and a
   5xx without a body on redeem keeps the redeem context instead of failing.
+- `LEDGER_FLAGSHIP_ADDRESSES` rejected Stacks addresses (`SP…`/`ST…`), so a
+  Stacks payer's receipts could never reach `/ledger`.
 - **Stacks signing with a raw 64-hex key** — the presign sighash cleared the
   origin condition with the compressed key-encoding byte regardless of the
   key, so uncompressed keys produced signatures the node rejected

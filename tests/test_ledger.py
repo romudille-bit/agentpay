@@ -741,3 +741,12 @@ def test_preconsume_leaves_reconciled_runs_legs_alone():
     assert ledger.reconcile_from_receipt(out["runs"], verified_legs) == 1
     leg = out["runs"][0]["timeline"][0]
     assert leg["verification"] == "onchain"
+
+
+def test_flagship_allowlist_accepts_stacks_addresses(monkeypatch):
+    monkeypatch.setattr(ledger.settings, "LEDGER_FLAGSHIP_ADDRESSES",
+                        "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5,"
+                        "ST1JAHE8GEHB0MCBGR8J6W0AA7TJEE1XKFSD2Q80H, SPILLOU, 0x" + "e" * 40)
+    addrs = ledger._flagship_addresses()
+    assert addrs == ["SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",
+                     "ST1JAHE8GEHB0MCBGR8J6W0AA7TJEE1XKFSD2Q80H", "0x" + "e" * 40]

@@ -186,7 +186,7 @@ class Settings(BaseSettings):
     # manages its own budget on AgentPay's rails. Additive, read-only, public,
     # and behind a flag (default on) like RADAR_ENABLED so it can be 404'd without
     # a redeploy. LEDGER_FLAGSHIP_ADDRESSES is a comma-separated allowlist of the
-    # agent's wallet addresses (its Base payer + its Stellar free-tier identity);
+    # agent's wallet addresses (Base payer, Stellar free-tier identity, Stacks payer);
     # empty = the built-in default pair in routes/ledger.py.
     LEDGER_ENABLED: bool = True
     LEDGER_FLAGSHIP_ADDRESSES: str = ""
