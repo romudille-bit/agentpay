@@ -672,8 +672,14 @@ class TestLifecycleStateMachine:
         calls = {"n": 0}
         real = x402_mod.sb.store_pending_challenge
 
-        async def counting_store(**kw):
+        # Count at call time: the mirror is fire-and-forget, so counting
+        # inside the coroutine would race the response.
+        async def _noop():
+            pass
+
+        def counting_store(**kw):
             calls["n"] += 1
+            return _noop()
         x402_mod.sb.store_pending_challenge = counting_store
         try:
             r = client.get("/tools/pre_trade_check/call")
@@ -1662,8 +1668,14 @@ class TestGetProbeBooksNoPendingRow:
         calls = {"n": 0}
         real = x402_mod.sb.store_pending_challenge
 
-        async def counting_store(**kw):
+        # Count at call time: the mirror is fire-and-forget, so counting
+        # inside the coroutine would race the response.
+        async def _noop():
+            pass
+
+        def counting_store(**kw):
             calls["n"] += 1
+            return _noop()
         x402_mod.sb.store_pending_challenge = counting_store
         try:
             r = client.post("/tools/pre_trade_check/call", json={"parameters": {}})
