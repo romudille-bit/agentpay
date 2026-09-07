@@ -329,6 +329,7 @@ async def session_create_probe(request: Request):
         price_usdc=SESSION_PRICE_USDC,
         developer_address=settings.GATEWAY_PUBLIC_KEY,
         request_data={"max_spend": "0.10"},
+        persist=False,   # a crawler never comes back to pay
     )
     # Disk-IO fix #2: count the probe in the rollup (parity with the tools
     # route — session_create 402 volume was previously invisible there).
@@ -413,6 +414,9 @@ async def create_session(
             price_usdc=SESSION_PRICE_USDC,
             developer_address=settings.GATEWAY_PUBLIC_KEY,
             request_data={"max_spend": body.max_spend},
+            # Disk-IO fix #4: durable mirror only for an identified payer
+            # (same rule as the tools route); monitors POST anonymously.
+            persist=bool(agent_address),
         )
 
         # Disk-IO fix #2 (2026-08-20): NO pre-402 payment_logs INSERT — same

@@ -159,3 +159,38 @@ class TestWellFormedCallersUnchanged:
     def test_session_max_spend_still_flows_into_challenge(self, client):
         r = client.post(SESSION_PATH, json={"max_spend": "0.25"})
         assert r.status_code == 402
+
+
+class TestSessionChallengeMirror:
+    """Disk-IO fix #4: /v1/session/create writes the durable
+    pending_challenges mirror only for an identified payer; the GET probe
+    and anonymous POSTs keep the challenge in memory only."""
+
+    def _count_stores(self, monkeypatch):
+        import gateway.x402 as x402_mod
+        calls = {"n": 0}
+
+        async def _noop():
+            pass
+
+        def counting_store(**kw):
+            calls["n"] += 1
+            return _noop()
+        monkeypatch.setattr(x402_mod.sb, "store_pending_challenge", counting_store)
+        return calls
+
+    def test_get_probe_and_anonymous_post_do_not_persist(self, client, monkeypatch):
+        calls = self._count_stores(monkeypatch)
+        assert client.get("/v1/session/create").status_code == 402
+        assert client.post("/v1/session/create", json={"max_spend": "0.10"}).status_code == 402
+        assert calls["n"] == 0
+
+    def test_identified_payer_persists(self, client, monkeypatch):
+        calls = self._count_stores(monkeypatch)
+        r = client.post("/v1/session/create",
+                        json={"max_spend": "0.10", "agent_address": "G" + "A" * 55})
+        assert r.status_code == 402
+        r = client.post("/v1/session/create", json={"max_spend": "0.10"},
+                        headers={"x-agent-address": "0x" + "e" * 40})
+        assert r.status_code == 402
+        assert calls["n"] == 2
