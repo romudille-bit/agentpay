@@ -33,6 +33,7 @@ from agentpay._stacks_tx import (
     StacksKeypair,
     build_sbtc_transfer,
     c32_address,
+    memo_of,
     c32_decode,
     sats_from_usd,
     sign_transaction,
@@ -360,6 +361,17 @@ class TestSignTransaction:
 
 
 # ---------------------------------------------------------------- hashing
+
+
+class TestMemoOf:
+    def test_reads_back_the_payment_id(self):
+        for t in FIXTURES["transactions"]:
+            tx = _build(t)
+            assert memo_of(tx) == t["payment_id"].encode()[:34]
+            assert memo_of(sign_transaction(tx, _keypair_for(t))) == memo_of(tx)
+
+    def test_empty_when_no_memo_tail(self):
+        assert memo_of(b"\x00" * 40) == b""
 
 
 class TestVerifyOriginSignature:

@@ -2145,6 +2145,15 @@ class Session:
                     break
         return result
 
+    def redeem_txid(self, txid: str, tool: str, params: "dict | None" = None, **kw) -> dict:
+        """`redeem` for a settle whose process is gone: only the txid is
+        needed, the signed bytes and challenge id are read back from Hiro.
+        Nothing is counted against this session's budget — the spend belongs
+        to the session that signed."""
+        from agentpay._client import AgentPayClient
+        client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
+        return client.redeem(client.uncertain_from_txid(txid, tool, params), **kw)
+
     def summary(self) -> dict:
         return {
             "calls": len(self._call_log),

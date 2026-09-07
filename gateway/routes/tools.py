@@ -1132,7 +1132,9 @@ def _stacks_reject(reason: str, status: int = 402) -> JSONResponse:
 
 
 def _stacks_uncertain(reason: str, payment_id: str, txid: str) -> JSONResponse:
-    return JSONResponse(status_code=502, content={
+    # 503, not 502: Cloudflare swaps an origin 502/504 for its own HTML page
+    # and the SDK would never see this body.
+    return JSONResponse(status_code=503, content={
         "error": "Stacks settlement uncertain",
         "payment_status": "uncertain",
         "error_reason": reason,
@@ -1274,7 +1276,7 @@ async def _settle_stacks_path(
                 return redeemed
             return _reject("payment_id_already_used_replay")
         if pid_recorded is None:
-            return JSONResponse(status_code=502, content={
+            return JSONResponse(status_code=503, content={
                 "error": "Stacks settlement deferred",
                 "payment_status": "uncertain",
                 "error_reason": ("replay_check_unavailable: durable store "

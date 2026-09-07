@@ -112,6 +112,22 @@ second redemption of the same payment is refused. If the transaction
 aborted on-chain the row closes as `rejected` and `redeem` raises
 `PaymentFailed`; nothing moved.
 
+The uncertain reply is HTTP 503 with a JSON body (`payment_status:
+"uncertain"`), not 502: Cloudflare replaces an origin 502/504 with its own
+HTML page, which is what `agentpay.tools` sits behind. If the redeem itself
+hits an edge error page, `redeem` raises `SettlementUncertain` again with
+the same context rather than giving up.
+
+If the process that signed is gone, the txid is enough — the signed bytes
+and the challenge id (the memo) are read back from Hiro:
+
+```python
+result = s.redeem_txid("30689b5e…", "pre_trade_check", {"symbol": "BTC"}, wait_s=600)
+```
+
+or, from the demo, `STACKS_REDEEM_TXID=<txid> STACKS_NETWORK=mainnet python
+examples/stacks_m1_demo.py`.
+
 ## Receipts and the ledger
 
 Each settled Stacks call returns `payment.tx_hash` (the txid) and

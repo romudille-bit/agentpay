@@ -594,8 +594,8 @@ class TestStacksOnlyWallet:
 HIRO_TX = r"https://api\.testnet\.hiro\.so/extended/v1/tx/0x[0-9a-f]+"
 
 
-def _uncertain_502(txid):
-    return httpx.Response(502, json={
+def _uncertain_503(txid):
+    return httpx.Response(503, json={
         "error": "Stacks settlement uncertain", "payment_status": "uncertain",
         "error_reason": "broadcast_accepted_pending_confirmation",
         "payment_id": "pay_stacks_test_0001", "txid": txid,
@@ -610,7 +610,7 @@ class TestRedeem:
             _, tx, _ = _decode_ps_header(captured["header"])
             from agentpay._stacks_tx import txid_of
             captured["txid"] = txid_of(tx)
-            return _uncertain_502(captured["txid"])
+            return _uncertain_503(captured["txid"])
         respx.post(TOOL_URL).mock(side_effect=[
             httpx.Response(402, json=_stacks_402()), _settle,
         ])
@@ -693,7 +693,7 @@ class TestRedeem:
                 _, tx, _ = _decode_ps_header(captured["header"])
                 from agentpay._stacks_tx import txid_of
                 captured["txid"] = txid_of(tx)
-                return _uncertain_502(captured["txid"])
+                return _uncertain_503(captured["txid"])
             respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=_stacks_402()), _settle,
                 httpx.Response(200, json=_ok_200()),
@@ -713,6 +713,68 @@ class TestRedeem:
         client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
         with pytest.raises(PaymentFailed, match="nothing to redeem"):
             client.redeem(SettlementUncertain("x", tx_hash="", network="base"))
+
+    def test_edge_error_page_on_redeem_stays_uncertain(self):
+        # A CDN 5xx HTML page is not the gateway's verdict: keep the context.
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            exc, _ = self._leave_uncertain(client)
+            respx.get(url__regex=HIRO_TX).mock(
+                return_value=httpx.Response(200, json={"tx_status": "success"}))
+            respx.post(TOOL_URL).mock(return_value=httpx.Response(
+                502, text="<!DOCTYPE html><html>bad gateway</html>"))
+            with pytest.raises(SettlementUncertain, match="HTTP 502") as again:
+                client.redeem(exc, wait_s=5, poll_s=0)
+        assert again.value.redeem_ctx is exc.redeem_ctx
+
+    def test_uncertain_from_txid_rebuilds_the_same_payment(self):
+        # The process that signed is gone; only the txid survives. The bytes
+        # come back from Hiro and the memo is the challenge id.
+        from agentpay._stacks_tx import memo_of, txid_of
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            exc, cap = self._leave_uncertain(client)
+            _, tx, _ = _decode_ps_header(cap["header"])
+            respx.get(f"https://api.testnet.hiro.so/extended/v1/tx/0x{cap['txid']}/raw").mock(
+                return_value=httpx.Response(200, json={"raw_tx": "0x" + tx.hex()}))
+            rebuilt = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY) \
+                .uncertain_from_txid(cap["txid"], "verified_route", {})
+            respx.get(url__regex=HIRO_TX).mock(
+                return_value=httpx.Response(200, json={"tx_status": "success"}))
+            route = respx.post(TOOL_URL).mock(return_value=httpx.Response(200, json=_ok_200()))
+            result = client.redeem(rebuilt, wait_s=5, poll_s=0)
+        assert result["result"] == {"ok": True}
+        sent = _decode_ps_header(route.calls[-1].request.headers["payment-signature"])
+        assert sent[1] == tx and txid_of(sent[1]) == cap["txid"]
+        assert memo_of(tx) == b"pay_stacks_test_0001"
+        assert rebuilt.redeem_ctx["json"]["parameters"] == {}
+
+    def test_uncertain_from_txid_rejects_bytes_that_do_not_hash(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            respx.get(url__regex=r".*/extended/v1/tx/0x[0-9a-f]+/raw").mock(
+                return_value=httpx.Response(200, json={"raw_tx": "0x00ff"}))
+            with pytest.raises(PaymentFailed, match="do not hash"):
+                client.uncertain_from_txid("ab" * 32, "verified_route")
+
+    def test_session_redeem_txid(self):
+        from agentpay import Session
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            _, cap = self._leave_uncertain(client)
+            _, tx, _ = _decode_ps_header(cap["header"])
+            respx.get(url__regex=r".*/extended/v1/tx/0x[0-9a-f]+/raw").mock(
+                return_value=httpx.Response(200, json={"raw_tx": "0x" + tx.hex()}))
+            respx.get(url__regex=HIRO_TX).mock(
+                return_value=httpx.Response(200, json={"tx_status": "success"}))
+            respx.post(TOOL_URL).mock(return_value=httpx.Response(200, json=_ok_200()))
+            s = Session(_make_wallet(), max_spend="0.05", gateway_url=GATEWAY)
+            result = s.redeem_txid(cap["txid"], "verified_route", {}, wait_s=5, poll_s=0)
+        assert result["result"] == {"ok": True}
+        assert s.spent_usd() == 0
 
 
 # ── fee clamp (AGE-151) ──────────────────────────────────────────────────────

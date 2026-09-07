@@ -622,6 +622,17 @@ def verify_origin_signature(signed_tx: bytes) -> bool:
         return False
 
 
+def memo_of(signed_tx: bytes) -> bytes:
+    """The memo (payment_id bytes) of a transfer built by this module. The
+    memo is the payload's last argument, so it is the tail of the tx:
+    (some (buff n)) = 0x0a 0x02 <n:4> <n bytes>. Empty when absent."""
+    for n in range(_MEMO_MAX_BYTES, 0, -1):
+        tail = signed_tx[-(n + 6):]
+        if tail[:6] == bytes([_CV_OPTIONAL_SOME, _CV_BUFFER]) + n.to_bytes(4, "big"):
+            return tail[6:]
+    return b""
+
+
 def txid_of(signed_tx: bytes) -> str:
     """Deterministic txid (sha512/256 over the signed tx), computable before
     broadcast. gateway/stacks.py consumes it for replay protection pre-settle

@@ -671,8 +671,9 @@ async def poll_confirmation(txid: str, *, max_polls: Optional[int] = None) -> di
     propagation lag).
     """
     polls = max_polls if max_polls is not None else settings.STACKS_CONFIRM_MAX_POLLS
-    url = f"{_hiro_api()}/extended/v1/tx/{txid}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    # Hiro 302-redirects the bare-hex form to 0x…; ask for 0x directly.
+    url = f"{_hiro_api()}/extended/v1/tx/0x{txid.removeprefix('0x')}"
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         for attempt in range(max(polls, 1)):
             if attempt:
                 await asyncio.sleep(settings.STACKS_CONFIRM_POLL_S)

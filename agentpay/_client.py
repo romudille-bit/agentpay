@@ -318,6 +318,38 @@ class AgentPayClient:
         return {"url": url, "json": payload, "header": built["header"],
                 "txid": built["txid"], "address": None, "tool": tool_name}
 
+    def uncertain_from_txid(self, txid: str, tool_name: str,
+                            parameters: "dict | None" = None) -> SettlementUncertain:
+        """Rebuild a redeemable SettlementUncertain from a transaction id alone
+        (the process that signed it is gone). The signed bytes come from
+        Hiro; the memo inside them is the challenge id. Pass the result to
+        `redeem`."""
+        import base64 as _b64
+        import json as _json
+        txid = txid.lower().removeprefix("0x")
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(f"{self.wallet._stacks_api_base}/extended/v1/tx/0x{txid}/raw",
+                           follow_redirects=True)
+        if r.status_code != 200:
+            raise PaymentFailed(f"stacks tx {txid[:16]}… not found on Hiro (HTTP {r.status_code})")
+        signed = bytes.fromhex(str(r.json().get("raw_tx") or "").removeprefix("0x"))
+        from agentpay import _stacks_tx
+        if _stacks_tx.txid_of(signed) != txid:
+            raise PaymentFailed("Hiro returned bytes that do not hash to the requested txid")
+        caip2 = (_stacks_tx.STACKS_MAINNET_CAIP2 if self.wallet.network == "mainnet"
+                 else _stacks_tx.STACKS_TESTNET_CAIP2)
+        header = _b64.b64encode(_json.dumps({
+            "x402Version": 2, "scheme": "exact", "network": caip2,
+            "payment_id": _stacks_tx.memo_of(signed).decode("utf-8", "replace") or txid,
+            "payload": {"signedTransaction": signed.hex(), "txid": txid},
+        }).encode()).decode()
+        ctx = {"url": f"{self.gateway_url}/tools/{tool_name}/call",
+               "json": {"parameters": parameters or {},
+                        "agent_address": self.wallet.public_key},
+               "header": header, "txid": txid, "address": None, "tool": tool_name}
+        return SettlementUncertain(f"stacks tx {txid[:16]}… rebuilt from chain",
+                                   tx_hash=txid, network="stacks", redeem_ctx=ctx)
+
     def redeem(self, exc: SettlementUncertain, *, wait_s: float = 180.0,
                poll_s: float = 5.0) -> dict:
         """Finish a Stacks call that ended in SettlementUncertain.
@@ -371,6 +403,13 @@ class AgentPayClient:
         if body.get("payment_status") == "uncertain":
             raise SettlementUncertain(
                 f"gateway still cannot confirm {txid[:16]}…: {body.get('error_reason', '')}",
+                tx_hash=txid, network="stacks", redeem_ctx=ctx,
+            )
+        if resp.status_code >= 500 and not body:
+            # An edge/CDN error page, not the gateway's verdict; the tx is
+            # confirmed and the row is still redeemable.
+            raise SettlementUncertain(
+                f"gateway unreachable for redeem (HTTP {resp.status_code}); call redeem() again",
                 tx_hash=txid, network="stacks", redeem_ctx=ctx,
             )
         raise PaymentFailed(

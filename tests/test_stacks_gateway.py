@@ -307,7 +307,9 @@ def _hiro_broadcast_ok():
 def _hiro_status(*statuses):
     responses = [httpx.Response(200, json={"tx_status": s}) if s != 404
                  else httpx.Response(404) for s in statuses]
-    return respx.get(url__regex=rf"{HIRO}/extended/v1/tx/.*").mock(
+    # Pinned to the 0x form: Hiro 302-redirects the bare-hex path, and a
+    # regex mock hid that the poll was asking for it.
+    return respx.get(url__regex=rf"{HIRO}/extended/v1/tx/0x[0-9a-f]{{64}}$").mock(
         side_effect=responses + [responses[-1]] * 10
     )
 
@@ -323,6 +325,21 @@ class TestSettle:
                 tx, txid_of(tx), payment_id=PAYMENT_ID)
         assert res["ok"] and res["state"] == "ok"
         assert bcast.call_count == 1
+
+    async def test_poll_asks_hiro_for_the_0x_form(self):
+        # Hiro answers the bare-hex path with a 302 to 0x…; a poll that asked
+        # for the bare form read every confirmed tx as "not yet".
+        tx = _signed_tx()
+        txid = txid_of(tx)
+        with respx.mock:
+            bare = respx.get(f"{HIRO}/extended/v1/tx/{txid}").mock(
+                return_value=httpx.Response(302, headers={
+                    "location": f"/extended/v1/tx/0x{txid}"}))
+            good = respx.get(f"{HIRO}/extended/v1/tx/0x{txid}").mock(
+                return_value=httpx.Response(200, json={"tx_status": "success"}))
+            res = await stacks_pay.poll_confirmation(txid, max_polls=1)
+        assert res["status"] == "success"
+        assert good.call_count == 1 and bare.call_count == 0
 
     async def test_replayed_txid_rejected_before_broadcast(self):
         # [CHECKLIST #6]: second settle of the same txid must die BEFORE any
@@ -743,7 +760,7 @@ class TestSettleStacksPath:
         assert body["payment_status"] == "rejected"
         assert "ConflictingNonceInMempool" in body["error_reason"]
 
-    async def test_uncertain_maps_to_502_with_txid(self):
+    async def test_uncertain_maps_to_503_with_txid(self):
         header, tx = self._header()
         payload = json.loads(base64.b64decode(header))
         with respx.mock:
@@ -751,7 +768,7 @@ class TestSettleStacksPath:
             _hiro_status("pending", "pending", "pending")
             resp = await self.rt._settle_stacks_path(
                 self._Tool(), "verified_route", header, payload)
-        assert resp.status_code == 502
+        assert resp.status_code == 503
         body = json.loads(resp.body)
         assert body["payment_status"] == "uncertain"
         assert body["txid"] == txid_of(tx)
@@ -945,7 +962,7 @@ class TestUncertainRedemption:
             _hiro_broadcast_ok()
             _hiro_status("pending", "pending", "pending")
             resp = await self._settle(header, payload)
-        assert resp.status_code == 502
+        assert resp.status_code == 503
         assert json.loads(resp.body)["redeem"]
         row = self.rows[txid]
         assert row["state"] == "uncertain" and row["tx_hash"] == txid
@@ -986,7 +1003,7 @@ class TestUncertainRedemption:
         with respx.mock:
             _hiro_status("pending", "pending")
             resp = await self._settle(header, payload)
-        assert resp.status_code == 502
+        assert resp.status_code == 503
         assert json.loads(resp.body)["error_reason"] == "still_unconfirmed"
         assert self.rows[txid]["state"] == "uncertain"
 

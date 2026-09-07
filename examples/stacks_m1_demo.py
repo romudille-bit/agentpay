@@ -26,7 +26,8 @@ The payer wallet holds sBTC (to spend) and a little STX (the tx fee) on the
 chosen network. Override the gateway with AGENTPAY_GATEWAY_URL and the tool
 with AGENTPAY_DEMO_TOOL. If the gateway cannot confirm the settle inside its
 window the SDK raises SettlementUncertain; the demo then redeems: it waits
-for the tx to confirm and re-presents the same signed payment.
+for the tx to confirm and re-presents the same signed payment. If that redeem
+was interrupted, STACKS_REDEEM_TXID=<txid> redeems it from the chain alone.
 """
 from __future__ import annotations
 
@@ -156,6 +157,25 @@ def pay_once() -> None:
         sys.exit(1)
 
 
+def redeem_only(txid: str) -> None:
+    from agentpay import Session, SettlementUncertain, PaymentFailed
+
+    print("=" * 68)
+    print(f"REDEEM FROM CHAIN  ->  {txid[:16]}… on STACKS {NET}")
+    print("=" * 68)
+    s = Session(wallet=_wallet(), gateway_url=GATEWAY, max_spend="0.05",
+                prefer_chain="stacks")
+    try:
+        redeemed = s.redeem_txid(txid, TOOL, PARAMS, wait_s=600, poll_s=10)
+    except SettlementUncertain as e:
+        sys.exit(f"  still unconfirmed: {str(e)[:160]}")
+    except PaymentFailed as e:
+        sys.exit(f"  ✗ redeem refused: {str(e)[:200]}")
+    print("  ✓ REDEEMED — tool result delivered for the confirmed payment")
+    print("  RESULT :", redeemed.get("result"))
+    print(f"  verify : {EXPLORER}/txid/0x{txid.removeprefix('0x')}?chain={NETWORK}")
+
+
 def reject_over_cap() -> None:
     from agentpay import Session, BudgetExceeded
 
@@ -180,6 +200,9 @@ def reject_over_cap() -> None:
 
 
 if __name__ == "__main__":
+    if os.environ.get("STACKS_REDEEM_TXID"):
+        redeem_only(os.environ["STACKS_REDEEM_TXID"].strip())
+        sys.exit(0)
     pay_once()
     reject_over_cap()
     print(f"\nDone. The sBTC txid above is the on-chain payment proof (Stacks {NETWORK}).")

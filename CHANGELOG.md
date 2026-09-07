@@ -7,6 +7,15 @@ project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Stacks confirmation never seen** — the gateway polled Hiro at
+  `/extended/v1/tx/<txid>` without `0x`; Hiro answers that with a 302 the
+  client did not follow, so every settle ended "uncertain" even after the
+  tx confirmed. The poll asks for the `0x` form (found on the first mainnet
+  settle, txid `30689b5e…`).
+- **Uncertain reply swallowed by Cloudflare** — the gateway's uncertain
+  settle answered 502, which Cloudflare replaces with its own HTML page in
+  front of `agentpay.tools`; the SDK saw no JSON. It is 503 now, and a
+  5xx without a body on redeem keeps the redeem context instead of failing.
 - **Stacks signing with a raw 64-hex key** — the presign sighash cleared the
   origin condition with the compressed key-encoding byte regardless of the
   key, so uncompressed keys produced signatures the node rejected
@@ -25,6 +34,11 @@ project uses [Semantic Versioning](https://semver.org/).
 - **Stacks mainnet** — `AgentWallet(network="mainnet", stacks_key=…)` pays
   sBTC on `stacks:1` against `agentpay.tools`; see `docs/stacks-mainnet.md`.
   `examples/stacks_m1_demo.py` takes `STACKS_NETWORK=mainnet`.
+- **`Session.redeem_txid(txid, tool, params)`** /
+  `AgentPayClient.uncertain_from_txid` — redeem an uncertain Stacks settle
+  from the txid alone when the signing process is gone: the signed bytes
+  come from Hiro and the memo is the challenge id. `_stacks_tx.memo_of`.
+  The demo takes `STACKS_REDEEM_TXID=<txid>`.
 - `tools/stacks_derive_key.py` — derive `STACKS_AGENT_KEY` from a Leather
   24-word Secret Key (`m/44'/5757'/0'/0/<account>`), hidden prompt, key
   written only with `--print-key`; tested against `@stacks/wallet-sdk`.
