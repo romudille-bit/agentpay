@@ -54,7 +54,9 @@ FLUSH_INTERVAL_SECONDS = 300
 # write churn it was built to remove. Hourly: ~700 rows/day. A crash now
 # loses ≤1h of probe telemetry instead of ≤5min; payments are never
 # tracked here, so that is the whole cost. Consumers still SUM(n) GROUP BY.
-ROLLUP_FLUSH_INTERVAL_SECONDS = 3600
+# Fix #4 (2026-09-07): hourly still appended ~2,400 rows/day (about 100 live
+# keys per window, not 30). Every 6 hours: ≤4 rows per key per day.
+ROLLUP_FLUSH_INTERVAL_SECONDS = 6 * 3600
 
 # Bound memory: (day × tool × UA × kind) keys. 5k keys ≈ a very hostile UA
 # rotation; beyond that, new keys collapse into the '(overflow)' UA bucket

@@ -874,12 +874,17 @@ async def _issue_402(
                            "402 issued without the stacks option")
     stacks_quote = stacks_offer[:2] if stacks_offer else None
 
+    # Disk-IO fix #4 (2026-09-07): the durable mirror exists so a PAYING
+    # agent can straddle a restart. Payers identify themselves on the first
+    # POST (the SDK and the npm client send agent_address); monitors that
+    # never pay send bare parameters — ~117 rows/hour of INSERT+DELETE
+    # churn for nothing. Anonymous callers keep the in-memory challenge.
     challenge = issue_payment_challenge(
         tool_name=tool_name,
         price_usdc=tool.price_usdc,
         developer_address=tool.developer_address,
         request_data={"parameters": body.parameters},
-        persist=(log_pending and not is_free),
+        persist=(log_pending and not is_free and bool(agent_address)),
         stacks_quote=stacks_quote,
     )
 

@@ -1660,10 +1660,10 @@ class TestGetProbeBooksNoPendingRow:
         self, client, supabase_lifecycle_capture
     ):
         """Disk-IO fix #2 (2026-08-20): unpaid POSTs on paid tools no longer
-        book a pending row either — monitors POST paid tools around the
-        clock and never pay. The paid-tool pending_challenges mirror is
-        KEPT (persist=True) so a real payer can straddle a restart; the
-        payment_logs row is created at settle time."""
+        book a pending row. Fix #4 (2026-09-07): the pending_challenges
+        mirror is written only when the caller identifies a payer
+        (agent_address) — monitors POST bare parameters around the clock
+        and never pay; an SDK payer still straddles a restart."""
         import gateway.x402 as x402_mod
         calls = {"n": 0}
         real = x402_mod.sb.store_pending_challenge
@@ -1681,7 +1681,15 @@ class TestGetProbeBooksNoPendingRow:
             r = client.post("/tools/pre_trade_check/call", json={"parameters": {}})
             assert r.status_code == 402
             assert supabase_lifecycle_capture["insert"] == []
-            assert calls["n"] == 1     # durable challenge mirror survives
+            assert calls["n"] == 0     # anonymous monitor: no mirror row
+            r = client.post("/tools/pre_trade_check/call",
+                            json={"parameters": {}, "agent_address": "G" + "A" * 55})
+            assert r.status_code == 402
+            assert calls["n"] == 1     # identified payer: mirror survives a restart
+            r = client.post("/tools/pre_trade_check/call", json={"parameters": {}},
+                            headers={"x-agent-address": "0x" + "e" * 40})
+            assert r.status_code == 402
+            assert calls["n"] == 2
         finally:
             x402_mod.sb.store_pending_challenge = real
 

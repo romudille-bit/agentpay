@@ -190,9 +190,12 @@ it must be enforced.
   a blocker — revisit post-M1 if a concrete USDCx buyer appears. The FX path
   above makes the sBTC quote dollar-accurate in the meantime.
 - The issuance quote lives on the challenge, so a settle on another worker
-  or after a restart reads it from `pending_challenges`. Only a challenge
-  issued without a Stacks option (or before the columns existed) falls back
-  to a re-quote, where the verify tolerance absorbs small drift.
+  or after a restart reads it from `pending_challenges`. The row is written
+  only when the 402 request identifies a payer (`agent_address` in the body
+  or `x-agent-address`), which the SDK always sends; an anonymous 402 keeps
+  the in-memory challenge only. A challenge issued without a Stacks option
+  (or without a row) falls back to a re-quote, where the verify tolerance
+  absorbs small drift.
 - No mature Python Stacks signing lib exists — `_stacks_tx.py` is a minimal,
   spec-documented implementation (SIP-005/SIP-010), fixture-validated against
   stacks.js. secp256k1 primitives come from the existing dependency tree.
