@@ -107,6 +107,7 @@ TRACKER.html
 
 # Internal strategy/ops docs (kept off GitHub, like STRATEGY.md)
 reviews/
+*_STEPS.md
 FUNNEL_FINDINGS_*.md
 COMPETITIVE_ACTION_AGENTCASH.md
 PARTNERSHIP_LANGCHAIN.md
