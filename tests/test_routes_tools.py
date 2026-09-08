@@ -294,12 +294,12 @@ class TestCallWithPayment:
             },
         )
 
-    def test_paid_tool_error_result_returns_502_refund(
+    def test_paid_tool_error_result_returns_500_refund(
         self, client, patch_route_verify, monkeypatch
     ):
         """A PAID tool whose executor returns {'error': ...} must NOT respond
         200 'payment_done' — it charged the agent for nothing (live incident:
-        session_create via /tools/…/call, 2026-07-13). Contract: 502 with
+        session_create via /tools/…/call, 2026-07-13). Contract: 500 with
         payment_status so SDK callers get RefundPending."""
         import gateway.routes.tools as rt
         async def erroring(tool_name, params):
@@ -307,7 +307,7 @@ class TestCallWithPayment:
         monkeypatch.setattr(rt, "real_tool_response", erroring)
 
         r = self._pay(client, "pre_trade_check")   # $0.01 — a paid tool
-        assert r.status_code == 502
+        assert r.status_code == 500   # AGE-155: never 502 (Cloudflare swallows it)
         body = r.json()
         assert body["payment_status"] in ("refund_pending", "refund_disabled")
         assert "upstream exploded" in body["error_reason"]
@@ -316,7 +316,7 @@ class TestCallWithPayment:
         self, client, patch_route_verify, monkeypatch
     ):
         """$0 tools keep the legacy in-band error (nothing was charged, and the
-        free x402 lifecycle the analytics pin must not gain a 502 branch)."""
+        free x402 lifecycle the analytics pin must not gain a 500 branch)."""
         import gateway.routes.tools as rt
         async def erroring(tool_name, params):
             return {"error": "upstream exploded"}
@@ -913,8 +913,8 @@ class TestLifecycleStateMachine:
                 "X-Agent-Address": "GAGENTAGENTAGENTAGENTAGENTAGENTAGENT",
             },
         )
-        # The 502 is the user-facing signal that the tool failed
-        assert r.status_code == 502
+        # The 500 is the user-facing signal that the tool failed
+        assert r.status_code == 500
 
         # The row transitioned: pending → verified (fire) → refund_pending (awaited)
         states_for_pid = [
@@ -957,7 +957,7 @@ class TestLifecycleStateMachine:
                 "X-Agent-Address": "GAGENTAGENTAGENTAGENTAGENTAGENTAGENT",
             },
         )
-        assert r.status_code == 502
+        assert r.status_code == 500
         body = r.json()
         assert body["error"] == "Tool execution failed"
         assert body["payment_id"] == payment_id
@@ -997,7 +997,7 @@ class TestLifecycleStateMachine:
                 "X-Agent-Address": "GAGENTAGENTAGENTAGENTAGENTAGENTAGENT",
             },
         )
-        assert r.status_code == 502
+        assert r.status_code == 500
         body = r.json()
         assert body["payment_status"] == "refund_pending"
         assert body["refund_eta_seconds"] == 60

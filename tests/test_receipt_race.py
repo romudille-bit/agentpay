@@ -136,7 +136,7 @@ class TestToolsRouteReceiptRace:
             json={"parameters": {"symbol": "ETH", "size_usd": 1000, "side": "long"}},
             headers={"PAYMENT-SIGNATURE": _v2_sig()},
         )
-        assert r.status_code == 502
+        assert r.status_code == 500
         _assert_insert_lands_before_terminal_write(race_capture, "0x" + "a" * 64)
 
 

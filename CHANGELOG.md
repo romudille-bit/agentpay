@@ -16,6 +16,16 @@ project uses [Semantic Versioning](https://semver.org/).
   settle answered 502, which Cloudflare replaces with its own HTML page in
   front of `agentpay.tools`; the SDK saw no JSON. It is 503 now, and a
   5xx without a body on redeem keeps the redeem context instead of failing.
+- **Refund contract reply was a 502** — the same Cloudflare replacement as
+  above hid the `refund_pending` body from the SDK on `agentpay.tools`; it
+  is a 500 now (`payment_status` unchanged). AGE-155.
+- **A gateway's `rejected` alone no longer zeroes a Stacks leg** — the SDK
+  checks Hiro first; unless the tx is unknown or aborted on-chain the spend
+  stays recorded and the call ends `SettlementUncertain` (redeemable).
+  AGE-152. The gateway also stops treating `dropped_*` as definitive.
+- **Stacks settle wall time is bounded** — `STACKS_SETTLE_DEADLINE_S`
+  (75 s) turns a slow broadcast+confirm into a structured `uncertain`
+  before the edge's 100 s cut can strip the body. AGE-150.
 - `LEDGER_FLAGSHIP_ADDRESSES` rejected Stacks addresses (`SP…`/`ST…`), so a
   Stacks payer's receipts could never reach `/ledger`.
 - **Stacks signing with a raw 64-hex key** — the presign sighash cleared the

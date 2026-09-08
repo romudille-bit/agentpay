@@ -107,12 +107,12 @@ class TestFreeTool:
         assert client.call_log[-1]["amount_usdc"] == "0.000"
 
 
-# ── 502 with refund_pending body → RefundPending raised ──────────────────────
+# ── 500 with refund_pending body → RefundPending raised ──────────────────────
 
 class TestRefundPendingParse:
 
-    def test_502_refund_pending_raises_typed_exception(self, fake_wallet):
-        """Gateway PR #12 contract: tool fails post-verify → 502 with
+    def test_500_refund_pending_raises_typed_exception(self, fake_wallet):
+        """Gateway PR #12 contract: tool fails post-verify → 500 with
         a body that carries payment_status='refund_pending',
         refund_eta_seconds=60, payment_id, and error_reason. The SDK
         should surface this as RefundPending, NOT a generic Exception,
@@ -122,7 +122,7 @@ class TestRefundPendingParse:
         with respx.mock:
             respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=VALID_402),
-                httpx.Response(502, json={
+                httpx.Response(500, json={
                     "error":              "Tool execution failed",
                     "tool":               "token_price",
                     "payment_id":         "fake-uuid-123",
@@ -144,7 +144,7 @@ class TestRefundPendingParse:
         # str(e) is the error_reason for readable logs
         assert "tool_exec_failed"     in str(e)
 
-    def test_502_refund_disabled_raises_typed_exception_with_null_eta(self, fake_wallet):
+    def test_500_refund_disabled_raises_typed_exception_with_null_eta(self, fake_wallet):
         """Dark-launch path: REFUND_ENABLED=false on the gateway means
         the row is marked refund_pending in Supabase but no on-chain
         refund will fire. Body carries payment_status='refund_disabled'
@@ -156,7 +156,7 @@ class TestRefundPendingParse:
         with respx.mock:
             respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=VALID_402),
-                httpx.Response(502, json={
+                httpx.Response(500, json={
                     "error":              "Tool execution failed",
                     "tool":               "token_price",
                     "payment_id":         "fake-uuid-123",
@@ -194,7 +194,7 @@ class TestRefundPendingParse:
         assert not isinstance(exc_info.value, RefundPending)
         assert "Tool call failed after payment" in str(exc_info.value)
 
-    def test_502_json_without_payment_status_falls_back(self, fake_wallet):
+    def test_500_json_without_payment_status_falls_back(self, fake_wallet):
         """If the 502 body is valid JSON but doesn't have payment_status
         (e.g. an older gateway version, or some other failure mode like
         a malformed-tool-output reject), fall back to generic Exception
@@ -203,7 +203,7 @@ class TestRefundPendingParse:
         with respx.mock:
             respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=VALID_402),
-                httpx.Response(502, json={"error": "Something else broke"}),
+                httpx.Response(500, json={"error": "Something else broke"}),
             ])
 
             with pytest.raises(Exception) as exc_info:
@@ -564,7 +564,7 @@ class TestSpendRecordedOnBroadcast:
                 return_value=httpx.Response(200, json=TOKEN_PRICE_INFO))
             respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=VALID_402),
-                httpx.Response(502, json={
+                httpx.Response(500, json={
                     "payment_id": "fake-uuid-123",
                     "payment_status": "refund_pending",
                     "refund_eta_seconds": 60,

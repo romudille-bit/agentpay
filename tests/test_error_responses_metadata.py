@@ -13,7 +13,7 @@ responses in BOTH places an agent reads:
   2. the body's extensions.bazaar.info.errors (mirrored header/body, AGE-123)
 
 and that the catalogue itself covers the statuses the gateway actually
-returns (402/422/404/429/502/503 — see gateway.base.build_error_responses).
+returns (402/422/404/429/500/503 — see gateway.base.build_error_responses).
 """
 
 import base64
@@ -40,7 +40,7 @@ class TestErrorCatalogue:
 
     def test_covers_the_statuses_the_gateway_returns(self):
         statuses = {e["status"] for e in build_error_responses()}
-        assert statuses == {402, 422, 404, 429, 502, 503}
+        assert statuses == {402, 422, 404, 429, 500, 503}
 
     def test_every_entry_has_when_and_body(self):
         for e in build_error_responses():
@@ -70,7 +70,7 @@ class TestCuratedResourcesDocumentErrors:
         schema = header["accepts"][0].get("outputSchema") or {}
         errors = schema.get("errors")
         assert errors, f"{path}: outputSchema.errors missing from PAYMENT-REQUIRED"
-        assert {e["status"] for e in errors} == {402, 422, 404, 429, 502, 503}
+        assert {e["status"] for e in errors} == {402, 422, 404, 429, 500, 503}
 
     @pytest.mark.parametrize("path", CURATED)
     def test_body_bazaar_info_carries_errors(self, client, monkeypatch, path):
@@ -84,7 +84,7 @@ class TestCuratedResourcesDocumentErrors:
         info = (r.json().get("extensions") or {}).get("bazaar", {}).get("info", {})
         errors = info.get("errors")
         assert errors, f"{path}: extensions.bazaar.info.errors missing from 402 body"
-        assert {e["status"] for e in errors} == {402, 422, 404, 429, 502, 503}
+        assert {e["status"] for e in errors} == {402, 422, 404, 429, 500, 503}
 
     def test_header_stays_a_sane_size(self, client, monkeypatch):
         """The catalogue rides inside the base64 PAYMENT-REQUIRED header on

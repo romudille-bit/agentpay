@@ -712,12 +712,14 @@ def _bazaar_for(tool_name: str) -> dict:
     return _TOOL_BAZAAR.get(tool_name, {})
 
 
-async def _refund_and_502(tool_name: str, payment_id: str, exc: Exception) -> JSONResponse:
+async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception) -> JSONResponse:
     """Payment accepted on-chain but tool execution failed → refund_pending.
 
     The PATCH is awaited (terminal state); the background refund worker
-    picks the row up when REFUND_ENABLED. The 502 body carries
-    payment_status so SDK callers can branch (RefundPending exception).
+    picks the row up when REFUND_ENABLED. The body carries payment_status
+    so SDK callers can branch (RefundPending exception). 500, not 502
+    (AGE-155): Cloudflare replaces an origin 502/504 with its own HTML page
+    in front of agentpay.tools, and the body never reached the SDK.
     """
     logger.error(f"Tool execution error: {exc}")
     await update_payment_log_state(
@@ -726,7 +728,7 @@ async def _refund_and_502(tool_name: str, payment_id: str, exc: Exception) -> JS
         error_reason=f"tool_exec_failed: {str(exc)[:200]}",
     )
     return JSONResponse(
-        status_code=502,
+        status_code=500,
         content={
             "error":               "Tool execution failed",
             "tool":                tool_name,
@@ -1548,9 +1550,9 @@ async def _execute_and_log(
     try:
         tool_result = await _run_tool(tool, resolved, tool_name, body.parameters)
     except Exception as e:
-        # _refund_and_502 PATCHes the row's state too — same ordering rule.
+        # _refund_and_500 PATCHes the row's state too — same ordering rule.
         await _ensure_row_inserted()
-        return await _refund_and_502(tool_name, payment_id, e)
+        return await _refund_and_500(tool_name, payment_id, e)
 
     # AGE-42: a PAID tool that produced only an error must refund, not charge.
     # real_tool_response swallows executor failures (missing implementation,
@@ -1563,7 +1565,7 @@ async def _execute_and_log(
     if (isinstance(tool_result, dict) and "error" in tool_result
             and Decimal(str(tool.price_usdc or "0")) > 0):
         await _ensure_row_inserted()
-        return await _refund_and_502(
+        return await _refund_and_500(
             tool_name, payment_id,
             RuntimeError(f"paid tool returned error: {tool_result['error']}"),
         )

@@ -285,7 +285,7 @@ def build_error_responses() -> list[dict]:
          "when": "Rate limited (per-IP and per-wallet limits)",
          "body": {"error": "Rate limit exceeded"},
          "retry": "Back off and retry after a minute"},
-        {"status": 502,
+        {"status": 500,
          "when": ("Payment settled on-chain but tool execution failed — the "
                   "payment is marked refund_pending automatically; you are "
                   "not charged for a failed call"),

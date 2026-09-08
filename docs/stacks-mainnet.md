@@ -88,10 +88,12 @@ quoted rate, and `max_per_tool` / `allowed_tools` apply as on any rail.
 
 ## When the gateway cannot confirm in time
 
-The gateway broadcasts and polls Hiro for confirmation inside the request.
-If the transaction is still pending when the window closes, the call ends
-with `SettlementUncertain`: the spend is recorded, the transaction is live,
-and the gateway keeps a `payment_logs` row for it in state `uncertain`.
+The gateway broadcasts and polls Hiro for confirmation inside the request,
+under one wall-clock bound (`STACKS_SETTLE_DEADLINE_S`, 75 s — below the
+edge's 100 s cut, so the reply always has a body). If the transaction is
+still pending when the window closes, the call ends with
+`SettlementUncertain`: the spend is recorded, the transaction is live, and
+the gateway keeps a `payment_logs` row for it in state `uncertain`.
 
 Redeem it:
 
@@ -111,6 +113,12 @@ the identical `payment-signature` header. The gateway recognises the txid
 second redemption of the same payment is refused. If the transaction
 aborted on-chain the row closes as `rejected` and `redeem` raises
 `PaymentFailed`; nothing moved.
+
+The SDK does not take a gateway's `rejected` on faith: before it zeroes a
+leg it asks Hiro for the txid, and unless the chain shows the transaction
+unknown or aborted, the spend stays recorded and the call ends
+`SettlementUncertain` with a redeem context. A gateway that broadcast and
+then claimed rejection cannot produce unrecorded spend.
 
 The uncertain reply is HTTP 503 with a JSON body (`payment_status:
 "uncertain"`), not 502: Cloudflare replaces an origin 502/504 with its own

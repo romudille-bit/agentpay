@@ -192,7 +192,7 @@ class RefundPending(Exception):
     execution itself failed. The gateway has marked the row for refund;
     the agent's USDC is on its way back (or already arrived).
 
-    Surfaces the gateway's refund contract — the 502 response body carries `payment_status`,
+    Surfaces the gateway's refund contract — the 500 response body carries `payment_status`,
     `refund_eta_seconds`, and `payment_id`, and this exception type
     lets callers branch on the failure mode without parsing JSON:
 
