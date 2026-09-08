@@ -104,26 +104,23 @@ class ToolCallRequest(BaseModel):
 async def parse_body_after_payment_gate(
     request: Request, model_cls, *, strict: bool,
 ):
-    """Parse the request body into `model_cls` AFTER the payment-gate decision.
+    """Parse the request body into `model_cls` after the payment-gate decision.
 
-    AGE-134: FastAPI's declarative body binding validated the body BEFORE the
-    handler ran, so an unpaid bare POST / empty body / non-JSON content-type
-    got a 422 (or a HEAD a 405) instead of the 402 challenge. Third-party
-    probers that send bodyless POSTs then score a healthy gateway as "not
-    returning 402" — the exact failure mode CDP's curation bar removes
-    listings for. The invariant this helper restores:
-
-        an unpaid request to a paid resource returns 402, ALWAYS;
-        body validation happens only on the paid path, before settlement.
+    FastAPI's declarative body binding validates before the handler runs, so
+    an unpaid bare POST, empty body, or non-JSON content type would get a 422
+    instead of the 402 challenge. The body is therefore read here, after the
+    gate, to keep the invariant: an unpaid request to a paid resource always
+    returns 402; body validation happens only on the paid path, before
+    settlement.
 
     Returns (model_instance, None) or (None, JSONResponse-422).
 
     strict=False (unpaid → 402 path): any body — absent, empty, non-JSON,
-    non-dict, or model-invalid — folds to model defaults. The challenge must
-    be issued regardless of body shape.
+    non-dict, or model-invalid — folds to model defaults. The challenge is
+    issued regardless of body shape.
 
     strict=True (payment header present): a malformed body returns a
-    FastAPI-shaped 422 BEFORE any on-chain settlement, so a payer never burns
+    FastAPI-shaped 422 before any on-chain settlement, so a payer never burns
     a real payment on a call the gateway cannot execute. An absent/empty body
     is accepted as model defaults (every field on both models has one — the
     caller is asking for the tool's default behaviour, which is a legitimate
@@ -173,7 +170,7 @@ _TOOL_ALIASES = {
 
 
 # ── In-band upsell (paid responses only) ─────────────────────────────────────
-# Paying buyers are wallets, not emails — the response payload is the ONLY
+# Paying buyers are wallets, not emails — the response payload is the only
 # channel that reliably reaches them. Every paid response carries one compact,
 # deterministic pointer to the complementary paid tools + the free plan
 # estimator. Kept off free responses (200x the volume; don't nag).
@@ -205,7 +202,7 @@ def normalize_payment_headers(
     """Route the x402 v2 payload to the Base path regardless of which header
     carried it.
 
-    X-PAYMENT is the x402 STANDARD header — pure-spec clients (Coinbase for
+    X-PAYMENT is the x402 standard header — pure-spec clients (Coinbase for
     Agents, x402 SDKs) send the base64 v2 payload there and nothing else.
     AgentPay's legacy Stellar proof shares the same header name. Rules:
       - X-Payment parses as a legacy Stellar proof → leave untouched.
@@ -225,26 +222,14 @@ def normalize_payment_headers(
 
 # ── Bazaar discovery metadata, per paid tool ──────────────────────────────────
 # Bazaar's validation crawl reads extensions.bazaar + resource.serviceName/tags
-# from the LIVE 402, and indexing fires on a Mode A settle that carries the
+# from the live 402, and indexing fires on a Mode A settle that carries the
 # extension. Tools listed here get both injected (mirrors routes/session.py).
 _TOOL_BAZAAR: dict[str, dict] = {
     "pre_trade_check": {
         "resource": {
-            # AGE-36 EXPERIMENT (2026-07-17) — does description text, not tags,
-            # drive Bazaar ranking? "trading" and "risk" are already TAGS here
-            # and query=trading / query=risk return us NOTHING, while every term
-            # we DO rank for (budget, session, slippage) appears in a description.
-            # The resources that beat us for head terms carry the word in their
-            # NAME ("Pair Trading: Bulk Signals" ranks #1 for trading without a
-            # trading tag at all). So: add "trading" + "risk" here naturally and
-            # re-query after one Mode-A settle.
-            #   CONTROL: verified_route's "routing"/"discovery" stay tag-only and
-            #   unchanged. If trading/risk start ranking while routing/discovery
-            #   stay absent, the model is confirmed and the fix is copy, not tags.
-            # If this holds, see AGE-36 for the real decision: head terms are won
-            # by keyword-in-name, which is the keyword-stuffed-stub pattern the
-            # competitor scan rejected — owning rare precise compounds
-            # (spend-control, trust-oracle, sybil-detection) may be the better game.
+            # Bazaar ranks head terms on name + description text, not on tags,
+            # so the search terms this tool should surface for ("trading",
+            # "risk") appear in the copy below as well as in the tag list.
             "serviceName": "AgentPay Pre-Trade Risk Check",
             "description": (
                 "Pre-trade risk check for AI agents trading crypto: live orderbook "
@@ -254,12 +239,10 @@ _TOOL_BAZAAR: dict[str, dict] = {
                 "embedded. Answers 'is this trade sane?' before trading, not after. "
                 "Replaces four API integrations plus the judgment layer."
             ),
-            # ≤5 tags, ≤32 chars each. NOTE (2026-07-17): the "Bazaar matches
-            # EXACT tags" finding is only half true. Exact-tag matching surfaces
-            # you for RARE compounds where competition is thin (spend-control,
-            # agent-budget, trust-oracle). For COMMON head terms, text relevance
-            # over name+description dominates and a tag contributes ~nothing —
-            # which is why these plain words alone never moved us.
+            # ≤5 tags, ≤32 chars each. Exact-tag matching surfaces a listing
+            # for rare compounds where competition is thin; for common head
+            # terms, text relevance over name+description dominates and a tag
+            # contributes little on its own.
             "tags": ["trading", "trade", "risk", "slippage", "pre-trade-check"],
         },
         "extension": {
@@ -302,10 +285,10 @@ _TOOL_BAZAAR: dict[str, dict] = {
                 },
             },
             # Schema follows the Bazaar convention every indexed resource
-            # uses: `input` describes the HTTP REQUEST ENVELOPE (type/method/
+            # uses: `input` describes the HTTP request envelope (type/method/
             # bodyType/body), not the bare tool params. Validation appears to
-            # enforce this shape — the params-only variant stayed stuck in
-            # 'processing' while session_create (envelope shape) indexed.
+            # enforce this shape — a params-only variant never leaves
+            # 'processing'.
             "schema": {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -363,17 +346,8 @@ _TOOL_BAZAAR: dict[str, dict] = {
     },
     "verified_route": {
         "resource": {
-            # AGE-36 READOUT (measured 2026-08-06): the experiment below ran and
-            # the model is CONFIRMED. pre_trade_check's trading/risk terms now
-            # rank (slippage, pre-trade check, trade safety all return us) while
-            # verified_route's tag-only routing/discovery stayed absent — as did
-            # trust, route, vetting, verify delivery, delivery score, and even
-            # "verified route" itself. 0 of 9 head terms; the ONLY query that
-            # returns this tool is the brand name, which 8 rival "AgentPay"
-            # products also own. Head terms are won by keyword-in-NAME.
-            # Naming it what it is ("Trust Oracle") is accurate description, NOT
-            # the keyword-stuffed-stub pattern we downrank: a stub claims
-            # capabilities it lacks, this one is measurably a trust oracle.
+            # Head terms are won by keyword-in-name, so the service name says
+            # what the tool is ("Trust Oracle") rather than relying on tags.
             "serviceName": "AgentPay x402 Trust Oracle",
             "description": (
                 "Buyer-side trust oracle for the x402 marketplace: 'I need X, "
@@ -434,7 +408,7 @@ _TOOL_BAZAAR: dict[str, dict] = {
                 },
             },
             # Same HTTP-envelope schema convention every indexed resource uses —
-            # `input` describes the REQUEST envelope, not the bare params.
+            # `input` describes the request envelope, not the bare params.
             "schema": {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -487,11 +461,10 @@ _TOOL_BAZAAR: dict[str, dict] = {
     },
 }
 
-# AGE-129: documented error responses are part of CDP's agent-ready curation
-# bar ("complete input schema … per-call pricing … documented error
-# responses"). One shared catalogue (gateway.base.build_error_responses)
-# injected into every listed resource's extensions.bazaar info block, so the
-# live 402 AND the settle payload both carry it.
+# Documented error responses are part of CDP's agent-ready curation bar.
+# One shared catalogue (gateway.base.build_error_responses) is injected into
+# every listed resource's extensions.bazaar info block, so the live 402 and
+# the settle payload both carry it.
 for _bz_cfg in _TOOL_BAZAAR.values():
     _bz_cfg["extension"].setdefault("info", {}).setdefault(
         "errors", base_pay.build_error_responses())
@@ -520,7 +493,7 @@ def _wants_html(request: Request) -> bool:
 
 
 def _demo_price_overrides() -> dict:
-    """Testnet-only paid-tool prices for the M1 Stacks demo (AGE-77). Parses
+    """Testnet-only paid-tool prices for the Stacks demo. Parses
     settings.TESTNET_PAID_TOOLS ('token_price:0.01,foo:0.02') into {name: price}.
     Empty on mainnet (env unset) so the free-funnel registry prices are untouched."""
     raw = (settings.TESTNET_PAID_TOOLS or "").strip()
@@ -537,7 +510,7 @@ def _demo_price_overrides() -> dict:
 
 def _apply_demo_pricing(tool):
     """Return the tool with its testnet demo price applied, else unchanged.
-    None-safe (an unresolved tool passes straight through). AGE-77."""
+    None-safe (an unresolved tool passes straight through)."""
     if tool is None:
         return tool
     price = _demo_price_overrides().get(tool.name)
@@ -588,14 +561,12 @@ async def head_tool(tool_name: str, request: Request):
     """
     HEAD pre-flight for x402 discovery — answers 402, mirroring the GET probe.
 
-    AGE-134: this used to answer 200 with pricing headers only. Any prober
-    scoring "does the resource return 402?" recorded a HEAD as a failure —
-    a free way to be marked unavailable against CDP's curation bar. Now it
-    returns the same 402 challenge as GET /tools/{name}/call (status +
-    PAYMENT-REQUIRED header incl. extensions.bazaar, no pending row) with an
-    empty body per HEAD semantics. The X-Price-USDC/X-Pay-To pre-flight
-    headers are preserved for existing cost-check callers — only the status
-    changed (200 → 402), which is strictly more informative for x402 clients.
+    Probers scoring "does the resource return 402?" treat any other status as
+    a failure, so HEAD returns the same 402 challenge as GET
+    /tools/{name}/call (status + PAYMENT-REQUIRED header incl.
+    extensions.bazaar, no pending row) with an empty body per HEAD semantics.
+    The X-Price-USDC/X-Pay-To pre-flight headers are kept for cost-check
+    callers.
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
     tool = _apply_demo_pricing(registry.get_tool(resolved))
@@ -639,7 +610,7 @@ def _base_402_option(tool, resource_url: str):
     when BASE_GATEWAY_ADDRESS isn't configured. `accepts_entry` is the
     standard-form x402 entry (payTo/maxAmountRequired) for the 402 JSON body,
     so generic x402 payers can discover the Base path without decoding the
-    PAYMENT-REQUIRED header (GitHub issue #1).
+    PAYMENT-REQUIRED header.
     """
     if not settings.BASE_GATEWAY_ADDRESS:
         return None, None, None
@@ -701,9 +672,9 @@ def _base_402_option(tool, resource_url: str):
 
 
 def _bazaar_for(tool_name: str) -> dict:
-    """Bazaar resource/extension for a tool. session_create is ALSO payable at
-    /v1/session/create; both paths must declare that one canonical resource
-    (AGE-112) or a settle here indexes a second, unnamed entry."""
+    """Bazaar resource/extension for a tool. session_create is also payable at
+    /v1/session/create; both paths declare the same canonical resource,
+    otherwise a settle here indexes a second, unnamed entry."""
     if tool_name == "session_create":
         from gateway.routes.session import (_SESSION_BAZAAR_EXTENSION,
                                             _SESSION_BAZAAR_RESOURCE)
@@ -717,9 +688,9 @@ async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception) -> JS
 
     The PATCH is awaited (terminal state); the background refund worker
     picks the row up when REFUND_ENABLED. The body carries payment_status
-    so SDK callers can branch (RefundPending exception). 500, not 502
-    (AGE-155): Cloudflare replaces an origin 502/504 with its own HTML page
-    in front of agentpay.tools, and the body never reached the SDK.
+    so SDK callers can branch (RefundPending exception). 500, not 502:
+    Cloudflare replaces an origin 502/504 with its own HTML page, and the
+    body would never reach the SDK.
     """
     logger.error(f"Tool execution error: {exc}")
     await update_payment_log_state(
@@ -740,15 +711,15 @@ async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception) -> JS
     )
 
 
-# ── AGE-59: endpoint safety (SSRF guard) ─────────────────────────────────────
+# ── Endpoint safety (SSRF guard) ─────────────────────────────────────────────
 
 def _endpoint_is_safe(url: str) -> tuple[bool, str]:
-    """True when `url` is an https endpoint whose host resolves ONLY to
+    """True when `url` is an https endpoint whose host resolves only to
     public addresses. Blocks SSRF to loopback/private/link-local/metadata
     (169.254.169.254 is link-local) targets. Blocking DNS work — call via
     asyncio.to_thread from async code.
 
-    Used at REGISTRATION time (reject early with a clear error) AND at CALL
+    Used at registration time (reject early with a clear error) and at call
     time in _run_tool (re-resolved per call, so a DNS-rebinding endpoint
     that turned private after registration is still blocked)."""
     try:
@@ -769,11 +740,11 @@ def _endpoint_is_safe(url: str) -> tuple[bool, str]:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             return False, "endpoint resolved to an unparseable address"
-        # F5 (2026-07-20): `not is_global` instead of enumerating flags — the
-        # flag list missed 100.64.0.0/10 (CGNAT, is_private=False), which is
-        # the very range Railway's internal fabric rides on. is_global is
-        # False for every special-purpose range (private, loopback,
-        # link-local, CGNAT, reserved, multicast, unspecified, ...).
+        # `not is_global` rather than enumerating flags: is_private misses
+        # 100.64.0.0/10 (CGNAT), which hosting providers' internal fabrics
+        # ride on. is_global is False for every special-purpose range
+        # (private, loopback, link-local, CGNAT, reserved, multicast,
+        # unspecified, ...).
         if not ip.is_global:
             return False, f"endpoint resolves to a non-public address ({ip})"
     return True, "ok"
@@ -783,10 +754,10 @@ async def _run_tool(tool, resolved: str, tool_name: str, parameters: dict):
     """Execute the tool — proxy endpoint when configured, real APIs otherwise."""
     if not tool.endpoint:
         return await real_tool_response(resolved, parameters)
-    # AGE-59: call-time SSRF guard. Registration validates too, but the check
-    # re-runs here on every call so (a) tools registered before this guard
-    # existed and (b) DNS-rebinding endpoints are both covered. An unsafe
-    # endpoint degrades to the real-API fallback, same as an unreachable one.
+    # Call-time SSRF guard. Registration validates too, but the check re-runs
+    # on every call so DNS-rebinding endpoints (and tools registered before
+    # the guard) are covered. An unsafe endpoint degrades to the real-API
+    # fallback, same as an unreachable one.
     safe, why = await asyncio.to_thread(_endpoint_is_safe, tool.endpoint)
     if not safe:
         logger.warning(
@@ -902,8 +873,8 @@ async def _issue_402(
         "error":       "Payment required",
         "x402Version": 2,
         "resource":    resource_block,
-        # Standard x402 accepts[] in the BODY (not just the PAYMENT-REQUIRED
-        # header) so generic payers find the Base path — GitHub issue #1.
+        # Standard x402 accepts[] in the body (not just the PAYMENT-REQUIRED
+        # header) so generic payers find the Base path.
         "accepts":     [accepts_entry] if accepts_entry else [],
         # Stellar option (backward-compatible top-level fields)
         "payment_id":  challenge.payment_id,
@@ -919,10 +890,10 @@ async def _issue_402(
         ),
         # Structured options for multi-chain clients
         "payment_options": {
-            # AGE-128: scheme named + noted honestly — classic Stellar payment
-            # with a text memo verified via Horizon, NOT the standard
-            # @x402/stellar Soroban scheme. Standard @x402/stellar clients
-            # cannot pay this option; the AgentPay SDK and manual payments can.
+            # Scheme named honestly: a classic Stellar payment with a text
+            # memo verified via Horizon, not the standard @x402/stellar
+            # Soroban scheme. Standard @x402/stellar clients cannot pay this
+            # option; the AgentPay SDK and manual payments can.
             "stellar": {
                 "scheme":      "agentpay-classic-memo",
                 "payment_id":  challenge.payment_id,
@@ -944,8 +915,8 @@ async def _issue_402(
             **({"stacks": stacks_option} if stacks_option else {}),
         },
     }
-    # AGE-123: mirror extensions.bazaar into the body too (header parity) —
-    # additive; validators/indexers that read the body see the same envelope.
+    # Mirror extensions.bazaar into the body too (header parity) — additive;
+    # validators/indexers that read the body see the same envelope.
     if bz.get("extension"):
         body_content["extensions"] = {"bazaar": bz["extension"]}
 
@@ -954,8 +925,8 @@ async def _issue_402(
 
 # Rejection reasons that carry no analytics value: the payment_id doesn't
 # correspond to any known challenge (scanner garbage / long-expired probe) or
-# the header never parsed. Recording these per-event would just recreate the
-# bot write churn disk-IO fix #2 removed.
+# the header never parsed. Recording these per-event would only generate
+# bot write churn.
 _REJECTION_NOISE_MARKERS = (
     "not found or expired",
     "invalid x-payment header",
@@ -971,17 +942,17 @@ async def _record_rejected_attempt(
     amount_usdc: str,
     agent_address: Optional[str] = None,
 ) -> None:
-    """Durably record a REJECTED real payment attempt (disk-IO fix #2).
+    """Durably record a rejected real payment attempt.
 
-    With no pre-402 pending row to PATCH anymore, a rejected attempt would
+    There is no pre-402 pending row to PATCH, so a rejected attempt would
     otherwise vanish from payment_logs. Transition-safe two-step:
-      1. PATCH pending/verified → 'rejected' — covers rows from challenges
-         issued by a pre-fix deploy (and keeps the F3 expected_state guard:
-         a header-supplied pid can never clobber a terminal row).
+      1. PATCH pending/verified → 'rejected' — covers legacy rows, with the
+         expected_state guard so a header-supplied pid can never clobber a
+         terminal row.
       2. If the PATCH confirmed 0 matches, INSERT a complete 'rejected'
          row — unless the reason marks it as noise (unknown payment_id /
          unparseable header), which is scanner traffic, not an attempt.
-    On an unknown PATCH outcome (None) we insert nothing: a transient blip
+    On an unknown PATCH outcome (None) nothing is inserted: a transient blip
     must not mint duplicate rows.
     """
     if not sb_enabled():
@@ -1023,12 +994,11 @@ async def _settle_stellar(
         status = "REPLAY_ATTACK" if "replay" in auth["reason"].lower() else "FAILED"
         logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status={status} reason={auth['reason']}")
 
-        # Terminal states are AWAITED so analytics are consistent at response
-        # time. (A create_task here loses the race: there's no downstream
-        # await before the return.) Disk-IO fix #2: there is no pending row
-        # anymore — _record_rejected_attempt PATCHes a legacy row if one
-        # exists (F3 expected_state guard intact) and otherwise INSERTs a
-        # complete 'rejected' row, unless the reason marks scanner noise.
+        # Terminal states are awaited so analytics are consistent at response
+        # time (a create_task here loses the race: there is no downstream
+        # await before the return). _record_rejected_attempt PATCHes a legacy
+        # row if one exists and otherwise INSERTs a complete 'rejected' row,
+        # unless the reason marks scanner noise.
         rejected_pid = (parse_payment_header(x_payment) or {}).get("id")
         if rejected_pid:
             _t = registry.get_tool(tool_name)
@@ -1046,10 +1016,9 @@ async def _settle_stellar(
         )
     logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=OK tx={auth.get('tx_hash','')[:16]}")
 
-    # Disk-IO fix #2: the old fire-and-forget intermediate 'verified' PATCH
-    # is gone — there is no pending row to advance. _execute_and_log now
-    # INSERTs the state='verified' row for every paid settle (both rails)
-    # and the terminal PATCH lands on it (AGE-58 barrier unchanged).
+    # No intermediate 'verified' PATCH here: there is no pending row to
+    # advance. _execute_and_log inserts the state='verified' row for every
+    # paid settle (both rails) and the terminal PATCH lands on it.
     return auth
 
 
@@ -1226,9 +1195,9 @@ async def _settle_stacks_path(
     if not auth["authorized"]:
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=FAILED "
                     f"reason={auth['reason']}")
-        # Disk-IO fix #2: no pending row — record the rejected attempt
-        # (payment_id is bound to a KNOWN challenge here, so this is a real
-        # attempt, never scanner noise).
+        # No pending row — record the rejected attempt (payment_id is bound
+        # to a known challenge here, so this is a real attempt, never
+        # scanner noise).
         await _record_rejected_attempt(
             payment_id, auth["reason"],
             tool_name=tool.name,
@@ -1317,27 +1286,25 @@ _used_free_v2_nonces: set[str] = set()
 async def _settle_free_v2(
     tool_name: str, payment_signature: str,
 ) -> Union[dict, JSONResponse]:
-    """PAYMENT-SIGNATURE on a FREE ($0) tool → fulfil WITHOUT on-chain settlement.
+    """PAYMENT-SIGNATURE on a free ($0) tool → fulfil without on-chain settlement.
 
-    Wall E fix (2026-07-01). Standards-pure x402 clients (x402-fetch, Coinbase
-    for Agents, plain-`node` agents) can't speak AgentPay's `free:<id>`
-    X-Payment dialect. They read the 402's PAYMENT-REQUIRED accepts, sign a $0
-    EIP-3009 authorization, and send the standard base64 v2 payload. Routing
-    that into _settle_base_path attempts a real CDP/JSON-RPC settlement of a
-    $0 transfer, which always fails — ~6k free calls/month bounced on this
-    (see FUNNEL_FINDINGS_2026-07.md).
+    Standards-pure x402 clients (x402-fetch, Coinbase for Agents) do not
+    speak AgentPay's `free:<id>` X-Payment dialect. They read the 402's
+    PAYMENT-REQUIRED accepts, sign a $0 EIP-3009 authorization, and send the
+    standard base64 v2 payload. Routing that into _settle_base_path would
+    attempt a real CDP/JSON-RPC settlement of a $0 transfer, which always
+    fails.
 
     There is no money to verify on a $0 challenge, so a well-formed v2 payload
-    IS the free proof: consume its EIP-3009 nonce for replay/dedup (atomic
+    is the free proof: consume its EIP-3009 nonce for replay/dedup (atomic
     in-memory check-and-add + awaited insert-only record_tx_hash, same pattern
-    as the paid paths) and hand back an auth dict. The full payment_logs
-    lifecycle is preserved exactly like the paid Base path: the pre-402 UUID
-    row is swept to 'abandoned', _execute_and_log inserts a tx-keyed row and
-    PATCHes it to payment_done. Nothing moves on-chain — the unsettled
+    as the paid paths) and hand back an auth dict. The payment_logs lifecycle
+    is the same as the paid Base path. Nothing moves on-chain — the unsettled
     authorization simply expires (EIP-3009 validity ≤300s).
 
     Payer identity is self-reported (signature not recovered) — the same trust
-    level as the SDK free flow's `from=` field. NEVER route priced tools here.
+    level as the SDK free flow's `from=` field. Priced tools are never routed
+    here.
     """
     payload, err = base_pay._decode_payment_signature(payment_signature)
     if err or not isinstance(payload, dict):
@@ -1382,12 +1349,11 @@ async def _settle_free_v2(
     _used_free_v2_nonces.add(free_key)
     if sb_enabled():
         recorded = await record_tx_hash(free_key, "free")
-        # AGE-60 note: record_tx_hash returns None on infra error and the
-        # paid paths fail CLOSED on it. Here we deliberately stay fail-OPEN
-        # (None falls through): this is a $0 free proof — nothing of value
-        # can be replayed — and bouncing ~6k free calls/month on a Supabase
-        # blip would hurt the funnel for zero security gain. The in-memory
-        # nonce set still dedupes within the process.
+        # record_tx_hash returns None on infra error and the paid paths fail
+        # closed on it. This path deliberately fails open (None falls
+        # through): it is a $0 free proof, nothing of value can be replayed,
+        # and bouncing free calls on a Supabase blip buys no security. The
+        # in-memory nonce set still dedupes within the process.
         if recorded is False:
             return JSONResponse(
                 status_code=402,
@@ -1445,8 +1411,8 @@ async def _execute_and_log(
     # the challenge UUID on Stellar and the tx_hash on Base/Stacks — and the
     # terminal PATCH lands on it. The insert runs concurrently with tool
     # execution, but its task handle is awaited before any terminal state
-    # write: a fire-and-forget insert once raced the terminal PATCH, which
-    # no-op'd on the missing row and left it stuck in 'verified'.
+    # write; otherwise the PATCH can race the insert, no-op on the missing
+    # row, and leave it stuck in 'verified'.
     insert_task: Optional[asyncio.Task] = None
     if sb_enabled() and not is_free_call and not auth.get("redeemed"):
         insert_task = asyncio.create_task(insert_pending_payment_log(
@@ -1466,17 +1432,15 @@ async def _execute_and_log(
             # vetted. This is the row the buyer-health digest reads.
             parameters=body.parameters or None,
         ))
-        # …and mark the 402 that prompted it 'superseded' instead of letting the
-        # sweep call it 'abandoned'. Without this every success also books a
-        # phantom abandonment, so conversion = done/(done+abandoned) is wrong by
-        # construction and the error GROWS with success (50% true → 33% reported).
-        # Fire-and-forget on purpose: the payment already settled on-chain, so
-        # analytics must never add latency or a failure mode to it. If this
-        # misses, the row falls through to the sweep = today's behaviour.
-        # Disk-IO fix #2 note: new deploys write no pending 402 rows, so this
-        # only matches LEGACY rows (pre-fix deploys / pre-cutover backlog);
-        # once those age out it's a cheap no-op PATCH per real payment and can
-        # be removed together with the abandoned sweep.
+        # Mark the 402 that prompted this payment 'superseded' instead of
+        # letting the sweep call it 'abandoned'; otherwise every success also
+        # books a phantom abandonment and the conversion ratio is wrong by
+        # construction. Fire-and-forget on purpose: the payment already
+        # settled on-chain, so analytics must not add latency or a failure
+        # mode to it. If this misses, the row falls through to the sweep.
+        # 402s no longer write pending rows, so this only matches legacy rows
+        # and can be removed together with the abandoned sweep once they age
+        # out.
         asyncio.create_task(correlate_pending_challenge(
             tool_name=resolved,
             client_ip=client_ip,
@@ -1485,7 +1449,7 @@ async def _execute_and_log(
         ))
 
     async def _ensure_row_inserted():
-        """AGE-58: barrier before every terminal state write on the Base path.
+        """Barrier before every terminal state write.
         A PATCH keyed on tx_hash must not run until the tx-keyed row exists.
         Insert failures are logged, not raised — the payment already settled
         on-chain, so bookkeeping must never fail the response."""
@@ -1504,12 +1468,11 @@ async def _execute_and_log(
         await _ensure_row_inserted()
         return await _refund_and_500(tool_name, payment_id, e)
 
-    # AGE-42: a PAID tool that produced only an error must refund, not charge.
+    # A paid tool that produced only an error refunds rather than charges.
     # real_tool_response swallows executor failures (missing implementation,
-    # upstream API errors) into {"error": ...} with a 200 — for a $0 tool that's
-    # harmless, but for a paid tool it charged the agent for nothing and left
-    # the payment in 'payment_done' with no refund state (live incident:
-    # session_create via /tools/…/call, 2026-07-13). "error" is the uniform
+    # upstream API errors) into {"error": ...} with a 200 — harmless for a $0
+    # tool, but a paid tool would charge the agent for nothing and leave the
+    # payment in 'payment_done' with no refund state. "error" is the uniform
     # top-level failure marker across every executor; success shapes never
     # carry it.
     if (isinstance(tool_result, dict) and "error" in tool_result
@@ -1531,8 +1494,8 @@ async def _execute_and_log(
     logger.info(f"[CALL] tool={tool_name} agent={agent_log}... status=completed tx={tx_hash}")
 
     # Terminal 'payment_done' write — awaited so analytics are consistent at
-    # response time. The single Supabase write on the happy path.
-    # AGE-58: barrier first — the PATCH must land on the inserted row.
+    # response time. The single Supabase write on the happy path. Barrier
+    # first so the PATCH lands on the inserted row.
     await _ensure_row_inserted()
     if is_free_call:
         # Free path: no pending row exists (skipped at _issue_402), so the
@@ -1598,8 +1561,7 @@ async def call_tool_get(tool_name: str, request: Request):
     """x402 discovery crawlers probe resources with GET — answer with the
     same 402 challenge POST issues, so the validation crawl can read the
     PAYMENT-REQUIRED header (incl. extensions.bazaar). Without this the
-    crawl gets a 405 and the listing never leaves 'processing' — the exact
-    failure session_create had before GET /v1/session/create existed.
+    crawl gets a 405 and the listing never leaves 'processing'.
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
     tool = _apply_demo_pricing(registry.get_tool(resolved))
@@ -1607,9 +1569,9 @@ async def call_tool_get(tool_name: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
     if not tool.active:
         raise HTTPException(status_code=503, detail=f"Tool '{tool_name}' is currently unavailable")
-    # F6 (2026-07-20): GET is the discovery-probe path — no pending row, or
-    # x402scout's 15-min health checks mint perpetual phantom
-    # pending→abandoned rows (and a Supabase blip 503s crawler probes).
+    # GET is the discovery-probe path: no pending row, or periodic health
+    # checks would mint phantom pending→abandoned rows and a Supabase blip
+    # would 503 crawler probes.
     return await _issue_402(
         tool, resolved, tool_name, ToolCallRequest(), request,
         None, f"{GATEWAY_URL}/tools/{tool_name}/call",
@@ -1619,8 +1581,8 @@ async def call_tool_get(tool_name: str, request: Request):
 
 @router.post(
     "/tools/{tool_name}/call",
-    # Body is read manually inside the handler (AGE-134) — keep the schema
-    # visible in OpenAPI/docs since FastAPI can no longer infer it.
+    # Body is read manually inside the handler — keep the schema visible in
+    # OpenAPI/docs since FastAPI cannot infer it.
     openapi_extra={"requestBody": {
         "required": False,
         "content": {"application/json": {
@@ -1645,12 +1607,12 @@ async def call_tool(
 
     Flow:
       1. Neither header → _issue_402 (advertise both options) — the body is
-         parsed LENIENTLY first (AGE-134): a bare/malformed POST still gets
-         the 402, never a 422.
+         parsed leniently first: a bare/malformed POST still gets the 402,
+         never a 422.
       2. X-Payment → _settle_stellar, then _execute_and_log
       3. PAYMENT-SIGNATURE + $0 tool → _settle_free_v2 (no on-chain settle)
       4. PAYMENT-SIGNATURE → _settle_base_path, then _execute_and_log
-      (2–4 validate the body strictly BEFORE settling, so a malformed paid
+      (2–4 validate the body strictly before settling, so a malformed paid
       call 422s without burning the payment.)
     """
     resolved = _TOOL_ALIASES.get(tool_name, tool_name)
@@ -1712,9 +1674,9 @@ async def call_tool(
             payment_id = auth.get("tx_hash", "")
             is_base = True   # tx-keyed payment_logs row semantics
         elif _is_free_tool:
-            # Wall E fix: standard v2 payload on a $0 tool — accept as the
-            # free proof, never attempt a real settlement of $0. Nothing is
-            # verified on a $0 call, so the declared address may keep priority.
+            # Standard v2 payload on a $0 tool — accept as the free proof,
+            # never attempt a real settlement of $0. Nothing is verified on a
+            # $0 call, so the declared address keeps priority.
             auth = await _settle_free_v2(tool_name, payment_signature)
             if isinstance(auth, JSONResponse):
                 return auth
@@ -1723,11 +1685,11 @@ async def call_tool(
             auth = await _settle_base_path(tool, tool_name, payment_signature, resource_url)
             if isinstance(auth, JSONResponse):
                 return auth
-            # The settle result's payer is VERIFIED (Mode A: CDP-attested
+            # The settle result's payer is verified (Mode A: CDP-attested
             # EIP-3009 signer; Mode B: bound to the Transfer log's from-topic).
-            # The declared agent_address is NOT — real buyers were logged as
-            # docs-example addresses (0x742d35Cc…, 0x0000…0) copy-pasted into
-            # the request. Verified payer wins; declared is fallback.
+            # The declared agent_address is not — buyers copy docs-example
+            # addresses into the request. Verified payer wins; declared is
+            # the fallback.
             agent_address = auth["payer"] or agent_address
         payment_id = auth.get("tx_hash", "")
         is_base = True
@@ -1738,9 +1700,9 @@ async def call_tool(
     )
 
 
-# AGE-59: registration validation. Bounds chosen from the live registry
-# (prices ≤ $0.01 today; $1 leaves generous headroom without letting an
-# injected tool demand meaningful money per call).
+# Registration validation. The price cap leaves generous headroom over
+# current registry prices without letting an injected tool demand
+# meaningful money per call.
 _REGISTER_NAME_RE      = re.compile(r"^[a-z][a-z0-9_]{2,39}$")
 _REGISTER_STELLAR_RE   = re.compile(r"^G[A-Z2-7]{55}$")
 _REGISTER_EVM_RE       = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -1800,11 +1762,10 @@ async def register_tool(
 ):
     """Register a new MCP tool in the marketplace.
 
-    AGE-59: this endpoint was unauthenticated and unvalidated — anyone could
-    register a tool with an arbitrary developer_address (redirecting the 85%
-    revenue split) and an arbitrary endpoint (SSRF once called). Now:
+    Registration is gated because a tool carries a developer_address (the
+    revenue-split recipient) and an endpoint the gateway will call:
       - 404 when TOOL_REGISTER_SECRET is unset (registration off — there is
-        no third-party developer flow yet; mirrors the flagship-ingest gate)
+        no third-party developer flow yet)
       - 401 unless X-Register-Secret matches (constant-time compare)
       - 422 unless name/price/addresses/endpoint validate; endpoints must be
         https and resolve only to public addresses
@@ -1812,8 +1773,8 @@ async def register_tool(
     secret = settings.TOOL_REGISTER_SECRET
     if not secret:
         raise HTTPException(status_code=404, detail="Not found")
-    # Compare bytes inside try — a non-latin-1 header must be a clean 401,
-    # not a TypeError 500 (the AGE-75 flagship-ingest lesson, applied here).
+    # Compare bytes inside try — a non-latin-1 header gets a clean 401, not
+    # a TypeError 500.
     try:
         authorized = hmac.compare_digest(
             (x_register_secret or "").encode(), secret.encode()
@@ -1843,11 +1804,10 @@ async def register_tool(
             f"[REGISTER] tool={body.name} price={body.price_usdc} "
             f"dev={body.developer_address[:10]}... endpoint={body.endpoint}"
         )
-        # AGE-71: persist so the registration survives the next restart. The
-        # tool is already live in-memory for this process, so a Supabase blip
-        # must not fail the request — but the caller is told whether it will
-        # actually outlive a redeploy via `persisted`, rather than silently
-        # believing a durable registration was made.
+        # Persist so the registration survives the next restart. The tool is
+        # already live in-memory for this process, so a Supabase blip does
+        # not fail the request; `persisted` tells the caller whether the
+        # registration will outlive a redeploy.
         persisted = await persist_tool_registration(registry.tool_to_dict(tool))
         if not persisted:
             logger.warning(

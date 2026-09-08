@@ -166,12 +166,12 @@ def budget_policy(
             try:
                 entry = input(f"  {prompt} [${suggested}]: ").strip().lstrip("$")
             except EOFError:
-                # AGE-120: a closed stdin is "stop", not "authorize the default
+                # A closed stdin is "stop", not "authorize the default
                 # cap" — same contract as Ctrl-C below.
                 print()
                 raise
             except KeyboardInterrupt:
-                # AGE-74: Ctrl-C is an explicit "stop", NOT "authorize the
+                # Ctrl-C is an explicit "stop", not "authorize the
                 # default cap". Re-raise so the agent doesn't silently proceed
                 # to spend on a budget the human never confirmed.
                 print()

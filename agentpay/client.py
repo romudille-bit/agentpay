@@ -196,8 +196,8 @@ class Session(_Session):
         if gateway_url is None:
             gateway_url = TESTNET_GATEWAY if testnet else MAINNET_GATEWAY
         # Forward the governance controls _wallet.Session supports so the public
-        # API can set per-tool caps / allowlists / rate limits too (AGE-26).
-        # fallback (AGE-118): tool substitution is opt-in — "off" (default)
+        # API can set per-tool caps / allowlists / rate limits too.
+        # fallback: tool substitution is opt-in — "off" (default)
         # raises typed errors; "auto" restores the legacy rerouting.
         super().__init__(wallet=wallet, gateway_url=gateway_url, max_spend=max_spend,
                          prefer_chain=prefer_chain, allowed_tools=allowed_tools,

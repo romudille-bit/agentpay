@@ -23,7 +23,7 @@ Design notes:
   * Runs are reconstructed by time-clustering: a gap larger than _RUN_GAP_SECONDS
     starts a new run. The flagship runs once daily in a ~40s burst, so a 30-min
     gap cleanly separates runs without ever splitting one.
-  * group_runs() is a PURE function (no I/O) so it's unit-tested directly.
+  * group_runs() is a pure function (no I/O) so it's unit-tested directly.
 """
 
 import logging
@@ -117,7 +117,7 @@ def _build_timeline(free_calls: list[dict], paid_calls: list[dict],
                     cap: Decimal) -> list[dict]:
     """Merge a run's free + paid calls into one execution-ordered sequence with
     the budget drawing down at each step — the 'how the plan ran, step by step'
-    view. PURE."""
+    view. Pure."""
     merged = []
     for c in free_calls:
         merged.append({**c, "kind": "free", "amount_usdc": "0.00"})
@@ -148,7 +148,6 @@ def _build_timeline(free_calls: list[dict], paid_calls: list[dict],
     return steps
 
 
-# AGE-75: a Stellar public key (G + 55 base32) or an EVM address (0x + 40 hex).
 # Config-sourced addresses are interpolated into a PostgREST `or=(ilike…)`
 # clause, so a stray `%`, `,`, or `(` in LEDGER_FLAGSHIP_ADDRESSES would broaden
 # the filter (and could surface unrelated wallets' rows on the public ledger).
@@ -261,7 +260,7 @@ def _parse_ts(value: str) -> datetime | None:
 def group_runs(rows: list[dict], run_cap: str = "0.25") -> dict:
     """Reconstruct flagship runs from completed payment_logs rows.
 
-    PURE — no I/O. `rows` may be in any order; only state='payment_done' rows
+    Pure — no I/O. `rows` may be in any order; only state='payment_done' rows
     are considered. Returns a dict with `totals` and a `runs` list (newest run
     first), each run carrying its free/paid calls, spend, and the cap it ran
     under.
@@ -359,7 +358,7 @@ def group_runs(rows: list[dict], run_cap: str = "0.25") -> dict:
 def attach_reasoning(runs: list[dict], metas: list[dict]) -> int:
     """Attach flagship run metadata (plan, regime, verdicts, receipt, …) to the
     grouped run whose [started, ended] window (±5 min) contains the meta's
-    run_at. PURE — mutates `runs` in place. Both lists are newest-first. Returns
+    run_at. Pure — mutates `runs` in place. Both lists are newest-first. Returns
     the number of runs enriched. Runs with no matching meta keep their on-chain
     view only (graceful degradation before the table is populated)."""
     used: set[int] = set()
@@ -406,40 +405,41 @@ def _run_view_from_breakdown(
     (timeline, paid_calls, counts, spend). Shared by reconcile_from_receipt
     and synthesize_offgateway_runs.
 
-    AGE-63: these views are rebuilt WHOLESALE from the agent-posted receipt,
-    so their tx hashes are only as trustworthy as whoever holds
-    FLAGSHIP_INGEST_SECRET. `verified_legs` is a CONSUMABLE Counter of the
-    gateway-settled legs from payment_logs, keyed on `(tx_hash_lower, amount)`.
-    Each paid leg is tagged `verification`:
-        "onchain"        — an unconsumed payment_logs leg matches BOTH this
-                           leg's tx_hash AND its amount; the match is consumed
+    These views are rebuilt wholesale from the agent-posted receipt, so their
+    tx hashes are only as trustworthy as whoever holds FLAGSHIP_INGEST_SECRET.
+    `verified_legs` is a consumable Counter of the gateway-settled legs from
+    payment_logs, keyed on `(tx_hash_lower, amount)`. Each paid leg is tagged
+    `verification`:
+        "onchain"        — an unconsumed payment_logs leg matches both this
+                           leg's tx_hash and its amount; the match is consumed
                            so one real settlement can be counted at most once
                            (a holder of the ingest secret can't reuse a single
                            real hash across many fabricated legs to inflate
                            "verified" spend).
-        "onchain_chain"  — AGE-142: not settled through the gateway, but the
-                           leg-verifier found a matching USDC transfer FROM the
+        "onchain_chain"  — not settled through the gateway, but the
+                           leg-verifier found a matching USDC transfer from the
                            run's wallet on Base in the run window (see
                            gateway/services/leg_verifier.py; `chain_legs` is
-                           {leg_index: cached row} for THIS run). We observed
-                           the settlement rather than performing it — hence the
-                           distinct label; `verification_method` says how it
-                           matched (chain:hash / chain:amount+payto / chain:amount).
-        "no_settlement_found" — AGE-142: the verifier DID check this run
-                           (marker row present) and found no USDC transfer for
-                           this leg. The SDK books spend fail-closed the moment
-                           a signed authorization is transmitted (AGE-56), so a
-                           seller that rejected the call after that still shows
-                           as spend in the receipt — this label says the money
-                           never actually left the wallet. Not verified, not
+                           {leg_index: cached row} for this run). The
+                           settlement was observed rather than performed —
+                           hence the distinct label; `verification_method` says
+                           how it matched (chain:hash / chain:amount+payto /
+                           chain:amount).
+        "no_settlement_found" — the verifier did check this run (marker row
+                           present) and found no USDC transfer for this leg.
+                           The SDK books spend fail-closed the moment a signed
+                           authorization is transmitted, so a seller that
+                           rejected the call after that still shows as spend in
+                           the receipt — this label says the money never
+                           actually left the wallet. Not verified, not
                            attested: booked-but-unsettled.
-        "agent_attested" — no matching on-chain leg and the run has NOT been
+        "agent_attested" — no matching on-chain leg and the run has not been
                            chain-checked yet (or has no Base wallet to check).
-                           Either a legitimate off-gateway leg we haven't
-                           looked for, or a fabricated entry — indistinguishable
-                           from here, so NOT presented as on-chain-verified.
-    NOTE: not pure — consumes from the passed Counter, which is shared across
-    all runs in one ledger render so matches can't be double-spent between
+                           Either a legitimate off-gateway leg not yet looked
+                           for, or a fabricated entry — indistinguishable from
+                           here, so not presented as on-chain-verified.
+    Not pure — consumes from the passed Counter, which is shared across all
+    runs in one ledger render so matches can't be double-spent between
     reconcile and synthesize. `verified_legs=None` → all paid legs attested."""
     vlegs = verified_legs if verified_legs is not None else Counter()
     clegs = chain_legs or {}
@@ -466,7 +466,7 @@ def _run_view_from_breakdown(
         if amt > 0:
             net = _norm_network(e.get("network"))
             tx = e.get("tx_hash") or None
-            # Match on (hash, amount) AND consume, so a real hash reused across
+            # Match on (hash, amount) and consume, so a real hash reused across
             # legs — or with a fabricated cost — is only credited once, for the
             # exact amount that actually settled.
             key = (tx.lower(), amt) if tx else None
@@ -478,8 +478,8 @@ def _run_view_from_breakdown(
                 verification = "onchain"
                 verified_spent += amt
             elif i in clegs and _money_to_dec(clegs[i].get("amount_usdc")) == amt:
-                # AGE-142: chain evidence for this leg (cached by the verifier).
-                # The cached amount must equal the receipt's — a mismatch means
+                # Chain evidence for this leg (cached by the verifier). The
+                # cached amount must equal the receipt's — a mismatch means
                 # the receipt changed under the cache; treat as unverified.
                 row = clegs[i]
                 verification = "onchain_chain"
@@ -525,9 +525,9 @@ def _run_view_from_breakdown(
         "spent_usdc": f"{spent:.2f}",
         "remaining_usdc": f"{(cap - spent):.2f}",
         "under_cap": spent <= cap,
-        # AGE-63: verification breakdown for this receipt-derived view.
-        # verified = gateway-settled + chain-verified (AGE-142); the chain
-        # share is broken out so a reader can tell observed from performed.
+        # Verification breakdown for this receipt-derived view.
+        # verified = gateway-settled + chain-verified; the chain share is
+        # broken out so a reader can tell observed from performed.
         "verified_spent_usdc": f"{verified_spent:.2f}",
         "chain_verified_spent_usdc": f"{chain_spent:.2f}",
         "chain_verified_paid_count": chain_count,
@@ -559,13 +559,12 @@ def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
                                run_cap: str = "0.25",
                                verified_legs: "Counter | None" = None,
                                chain_index: "dict[tuple[str, int], dict] | None" = None) -> int:
-    """Surface runs that never touched payment_logs at all. PURE — mutates
+    """Surface runs that never touched payment_logs at all. Pure — mutates
     `runs` in place (keeps newest-first order); returns the count added.
 
-    The prober's probe_sweep runs pay sellers DIRECTLY (agent→seller x402),
+    The prober's probe_sweep runs pay sellers directly (agent→seller x402),
     so group_runs — which clusters payment_logs — has nothing to cluster and
-    attach_reasoning finds no window to attach their metadata to (AGE-10,
-    found live 2026-07-10: 0 probe runs on /ledger despite stored metas).
+    attach_reasoning finds no window to attach their metadata to.
     For each probe_sweep meta whose run_at falls inside no existing run
     window, synthesize a run straight from its SDK receipt breakdown — the
     same authoritative source reconcile_from_receipt trusts for the strategy
@@ -623,9 +622,9 @@ def synthesize_offgateway_runs(runs: list[dict], metas: list[dict],
 
 
 def _run_keeps_payment_logs_view(run: dict) -> bool:
-    """True if this run will NOT be rebuilt by reconcile_from_receipt — the
-    single predicate shared by reconcile and preconsume_rendered_legs (F4)
-    so the two can never disagree about which runs are receipt-derived."""
+    """True if this run will not be rebuilt by reconcile_from_receipt — the
+    single predicate shared by reconcile and preconsume_rendered_legs so the
+    two can never disagree about which runs are receipt-derived."""
     rz = run.get("reasoning") or {}
     if (rz.get("kind") or "") != "strategy":
         return True
@@ -635,18 +634,18 @@ def _run_keeps_payment_logs_view(run: dict) -> bool:
 
 def preconsume_rendered_legs(runs: list[dict],
                              verified_legs: "Counter | None") -> int:
-    """F4 (2026-07-20): consume from `verified_legs` every settlement already
-    rendered by a run that KEEPS its payment_logs view.
+    """Consume from `verified_legs` every settlement already rendered by a run
+    that keeps its payment_logs view.
 
-    The Counter is seeded from *every* flagship payment_logs leg, but only
-    receipt-derived views (reconcile/synthesize) consumed from it — legs
-    shown in ordinary runs never did. A holder of FLAGSHIP_INGEST_SECRET
-    could therefore post a fabricated receipt whose leg reuses a real run's
-    public tx_hash + amount: it rendered verification="onchain" with an
-    explorer link, and _recompute_totals counted that one settlement as
-    verified spend twice. Consuming the ordinary runs' legs FIRST means a
+    The Counter is seeded from every flagship payment_logs leg, but only
+    receipt-derived views (reconcile/synthesize) consume from it — legs shown
+    in ordinary runs otherwise would not. A holder of FLAGSHIP_INGEST_SECRET
+    could then post a fabricated receipt whose leg reuses a real run's public
+    tx_hash + amount and have it render verification="onchain" with an
+    explorer link, with _recompute_totals counting that one settlement as
+    verified spend twice. Consuming the ordinary runs' legs first means a
     settlement already displayed on the ledger can't be re-credited to an
-    agent-posted receipt. PURE apart from mutating the Counter; returns the
+    agent-posted receipt. Pure apart from mutating the Counter; returns the
     number of legs consumed."""
     if not verified_legs:
         return 0
@@ -678,12 +677,12 @@ def reconcile_from_receipt(runs: list[dict],
                            chain_index: "dict[tuple[str, int], dict] | None" = None) -> int:
     """Rebuild a strategy run's timeline from its SDK receipt breakdown.
 
-    PURE — mutates `runs` in place; returns the count reconciled. The
-    payment_logs-derived timeline only sees calls that settle THROUGH the
+    Pure — mutates `runs` in place; returns the count reconciled. The
+    payment_logs-derived timeline only sees calls that settle through the
     gateway, so a strategy run's direct CMC x402 legs (paid agent→CMC, off
     gateway) are invisible to it — the timeline then under-reports what the
     run's own receipt records. The SDK's `spending_summary().breakdown` is the
-    authoritative per-call ledger (every call, cost, tx, chain — gateway AND
+    authoritative per-call ledger (every call, cost, tx, chain — gateway and
     off-gateway), in execution order. Rebuilding from it makes the timeline,
     paid-call list, and spend totals match the receipt by construction.
 
@@ -692,7 +691,7 @@ def reconcile_from_receipt(runs: list[dict],
     """
     reconciled = 0
     for run in runs:
-        # F4: predicate shared with preconsume_rendered_legs — keep in sync.
+        # Predicate shared with preconsume_rendered_legs — keep in sync.
         if _run_keeps_payment_logs_view(run):
             continue
         breakdown = ((run.get("reasoning") or {}).get("receipt") or {}).get("breakdown")
@@ -708,9 +707,9 @@ def reconcile_from_receipt(runs: list[dict],
 
 def _recompute_totals(data: dict) -> None:
     """Recompute top-level totals after reconciliation so /ledger.json's headline
-    numbers match the (possibly reconciled) per-run spend. PURE; mutates `data`.
+    numbers match the (possibly reconciled) per-run spend. Pure; mutates `data`.
 
-    AGE-63: also splits the headline spend into on-chain-verified vs
+    Also splits the headline spend into on-chain-verified vs
     agent-attested so a consumer can't read the total as all-verified. Runs
     with no receipt-derived view are fully on-chain (from payment_logs), so
     their spend counts as verified."""
@@ -739,15 +738,15 @@ def _recompute_totals(data: dict) -> None:
         "paid_calls": sum(int(r.get("paid_count") or 0) for r in runs),
         "free_calls": sum(int(r.get("free_count") or 0) for r in runs),
         "spent_usdc": f"{spent:.2f}",
-        # AGE-142: verified = performed (gateway) + observed (chain); both
-        # broken out so nobody reads "verified" as "all settled by us".
+        # verified = performed (gateway) + observed (chain); both are broken
+        # out so "verified" is not read as "all settled by the gateway".
         "verified_spent_usdc": f"{verified:.2f}",
         "gateway_verified_spent_usdc": f"{(verified - chain):.2f}",
         "chain_verified_spent_usdc": f"{chain:.2f}",
         "attested_spent_usdc": f"{attested:.2f}",
         "attested_paid_calls": sum(int(r.get("attested_paid_count") or 0) for r in runs),
-        # AGE-142: booked fail-closed but no transfer ever left the wallet
-        # (checked on Base). Not spend; the receipt over-counts by this sum.
+        # Booked fail-closed but no transfer ever left the wallet (checked on
+        # Base). Not spend; the receipt over-counts by this sum.
         "unsettled_spent_usdc": f"{unsettled:.2f}",
         "unsettled_paid_calls": sum(int(r.get("unsettled_paid_count") or 0) for r in runs),
         "settled_spent_usdc": f"{settled:.2f}",
@@ -763,10 +762,9 @@ async def _fetch_flagship_rows() -> list[dict]:
     addrs = _flagship_addresses()
     # Case-insensitive OR over the allowlist; PostgREST `or=(...)` syntax.
     or_clause = "(" + ",".join(f"agent_address.ilike.{a}" for a in addrs) + ")"
-    # AGE-62: order DESCending so the 2000-row cap keeps the NEWEST runs, not the
-    # oldest. With `created_at.asc + limit`, once the flagship crossed 2000 rows
-    # (~2 months at 30/day) the cap returned the oldest 2000 and new runs silently
-    # stopped appearing on /ledger. We re-sort ascending in Python below so
+    # Order descending so the 2000-row cap keeps the newest runs, not the
+    # oldest (with `created_at.asc + limit`, new runs would stop appearing once
+    # the table exceeds 2000 rows). Rows are re-sorted ascending below so
     # group_runs (which clusters in chronological order) is unaffected.
     params = {
         "select": "created_at,tool_name,network,amount_usdc,state,tx_hash,agent_address",
@@ -795,7 +793,7 @@ async def _fetch_flagship_rows() -> list[dict]:
         return []
 
 
-# AGE-72: /ledger.json is public, unauthenticated, and runs 2 Supabase queries
+# /ledger.json is public, unauthenticated, and runs 2 Supabase queries
 # + a full Python regroup on every hit — while the underlying data changes at
 # most once a day. Cache the built payload in-process for a short window so a
 # scrape (or the HTML page's per-load fetch) can't multiply Supabase load. The
@@ -826,31 +824,31 @@ async def ledger_json(request: Request):
     data = group_runs(rows, run_cap=settings.LEDGER_RUN_CAP_USDC)
     metas = await fetch_flagship_runs()
     data["runs_with_reasoning"] = attach_reasoning(data["runs"], metas)
-    # AGE-63: the authoritative, CONSUMABLE multiset of legs AgentPay actually
-    # settled through the gateway — keyed on (tx_hash_lower, amount). Receipt-
-    # derived views (reconcile/synthesize) match each paid leg against this and
-    # consume the match, so agent-posted hashes are only shown as on-chain-
-    # verified when a real settlement of that exact amount backs them, and a
-    # single real settlement can't be reused across legs to inflate "verified"
-    # spend. A holder of FLAGSHIP_INGEST_SECRET can no longer publish a
-    # fabricated (or hash-reused) leg as a "verifiable on-chain receipt".
+    # The authoritative, consumable multiset of legs AgentPay actually settled
+    # through the gateway — keyed on (tx_hash_lower, amount). Receipt-derived
+    # views (reconcile/synthesize) match each paid leg against this and consume
+    # the match, so agent-posted hashes are only shown as on-chain-verified
+    # when a real settlement of that exact amount backs them, and a single real
+    # settlement can't be reused across legs to inflate "verified" spend. A
+    # holder of FLAGSHIP_INGEST_SECRET therefore cannot publish a fabricated
+    # (or hash-reused) leg as a "verifiable on-chain receipt".
     verified_legs = Counter(
         (str(r["tx_hash"]).lower(), _money_to_dec(r.get("amount_usdc")))
         for r in rows if r.get("tx_hash")
     )
-    # F4 (2026-07-20): settlements already rendered by ordinary
-    # (non-reconciled) payment_logs runs are consumed FIRST, so a fabricated
-    # receipt reusing a real run's public tx_hash can't get that settlement
-    # credited as "onchain" verified spend a second time.
+    # Settlements already rendered by ordinary (non-reconciled) payment_logs
+    # runs are consumed first, so a fabricated receipt reusing a real run's
+    # public tx_hash can't get that settlement credited as "onchain" verified
+    # spend a second time.
     preconsume_rendered_legs(data["runs"], verified_legs)
     # Reconcile off-gateway (e.g. direct CMC x402) spend into strategy-run
     # timelines from the authoritative SDK receipt, and synthesize runs that
     # never touched payment_logs at all (the prober's probe_sweeps pay sellers
     # directly), then refresh headline totals. Same Counter flows through both
     # so a match consumed by one can't be re-counted by the other.
-    # AGE-142: chain-verification cache for receipt-derived legs (batch-
-    # written by gateway/services/leg_verifier.py; {} until the migration and
-    # first cycle land — then those legs simply stay agent_attested).
+    # chain_index is the chain-verification cache for receipt-derived legs
+    # (batch-written by gateway/services/leg_verifier.py; {} until the first
+    # cycle lands — those legs then simply stay agent_attested).
     chain_index = await fetch_leg_verifications()
     data["runs_reconciled"] = reconcile_from_receipt(data["runs"], verified_legs,
                                                      chain_index)
@@ -873,7 +871,7 @@ async def ledger_json(request: Request):
     }
     data["run_cap_usdc"] = f"{_dec(settings.LEDGER_RUN_CAP_USDC):.2f}"
     data["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
-    # AGE-72: publish to the short-lived cache and let clients/CDN cache it too.
+    # Publish to the short-lived cache and let clients/CDN cache it too.
     _ledger_json_cache["payload"] = data
     _ledger_json_cache["built_at"] = _time.monotonic()
     return JSONResponse(
@@ -883,8 +881,8 @@ async def ledger_json(request: Request):
 
 
 @router.post("/v1/flagship/run")
-@limiter.limit("10/minute")   # follow-up low 2026-07-20: the 401 path let the
-                              # ingest secret be brute-forced at line rate
+@limiter.limit("10/minute")   # keeps the 401 path from being brute-forced
+                              # at line rate to guess the ingest secret
 async def flagship_ingest(request: Request,
                           x_flagship_secret: str | None = Header(default=None)):
     """Ingest a flagship run summary (plan, regime, verdicts, receipt, note).
@@ -897,7 +895,7 @@ async def flagship_ingest(request: Request,
     if not secret:
         raise HTTPException(status_code=404, detail="Not found")
     # Compare bytes inside try/except so a non-latin-1 header is a clean 401,
-    # not a TypeError 500 (also closes the AGE-75 roll-up item for this route).
+    # not a TypeError 500.
     try:
         authorized = bool(x_flagship_secret) and hmac.compare_digest(
             x_flagship_secret.encode(), secret.encode()
@@ -912,9 +910,9 @@ async def flagship_ingest(request: Request,
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Expected a JSON object")
-    # AGE-75: run_at is the row's key AND the idempotency key. A missing or
-    # unparseable timestamp otherwise fails silently on the 202 path (and, with
-    # AGE-63, would skip the existence check). Reject at the door with a 400.
+    # run_at is the row's key and the idempotency key. A missing or
+    # unparseable timestamp would otherwise fail silently on the 202 path and
+    # skip the existence check. Reject at the door with a 400.
     run_at = payload.get("run_at_iso") or payload.get("run_at")
     if not run_at or _parse_ts(str(run_at)) is None:
         raise HTTPException(
@@ -923,14 +921,14 @@ async def flagship_ingest(request: Request,
         )
     stored = await insert_flagship_run(payload)
     if stored:
-        # AGE-72: a new run landed — drop the cached /ledger.json so it shows up
+        # A new run landed — drop the cached /ledger.json so it shows up
         # immediately instead of waiting out the TTL.
         _invalidate_ledger_cache()
     # 200 when persisted; 202 when accepted-but-not-stored (e.g. table not yet
     # created) so the agent sees a 2xx and never fails its run over the ledger.
-    # AGE-46: the 202 path was a silent black hole — the agent logged "ingest
-    # ok" while nothing landed in flagship_runs. Log it loudly here (insert_
-    # flagship_run already logs the HTTP cause) and say so in the body.
+    # The 202 path is logged and flagged in the body so a non-stored ingest is
+    # visible rather than silently reported as success by the agent
+    # (insert_flagship_run already logs the HTTP cause).
     if not stored:
         logger.warning(
             f"[FLAGSHIP] ingest ACCEPTED BUT NOT STORED "

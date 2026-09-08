@@ -32,10 +32,10 @@ def get_network_passphrase() -> str:
     return Network.PUBLIC_NETWORK_PASSPHRASE
 
 def _is_timeout_error(exc) -> bool:
-    """AGE-68: does this look like a submit timeout / transport loss (where the
-    tx may actually have been accepted) rather than a clean protocol rejection
+    """Does this look like a submit timeout / transport loss (where the tx may
+    actually have been accepted) rather than a clean protocol rejection
     (op_underfunded, tx_bad_seq, …)? Result-code-bearing stellar-sdk errors are
-    definitive rejections, never timeouts."""
+    definitive rejections, not timeouts."""
     extras = getattr(exc, "extras", None)
     if isinstance(extras, dict) and extras.get("result_codes"):
         return False
@@ -47,7 +47,7 @@ def _is_timeout_error(exc) -> bool:
 
 
 async def _await_tx_on_chain(tx_hash: str, attempts: int = 3, delay: float = 2.0) -> bool:
-    """AGE-68: poll Horizon for a specific tx hash. True once it appears as a
+    """Poll Horizon for a specific tx hash. True once it appears as a
     successful transaction; False if it never shows within the window."""
     from stellar_sdk.exceptions import NotFoundError
     server = get_server()
@@ -86,9 +86,9 @@ async def _verify_payment_horizon(
     payment_id: str = "",
 ) -> dict:
     """
-    Direct Horizon verification — the actual production path on both mainnet
-    and testnet. The OZ facilitator has returned 401 since early 2026, so
-    verify_payment() always falls through to this function.
+    Direct Horizon verification — the production path on both mainnet and
+    testnet. The OZ facilitator rejects unauthenticated requests, so
+    verify_payment() falls through to this function.
 
     Queries Horizon for the transaction and checks:
       - transaction exists and was successful
@@ -195,27 +195,27 @@ async def verify_payment(
 
     Flow:
       1. Attempt the OpenZeppelin x402 facilitator (`STELLAR_FACILITATOR_URL`).
-         Historically this would also sponsor XLM network fees, but as of
-         early 2026 the facilitator returns 401 on both mainnet and testnet
-         for all requests — the branch is kept so we pick up free sponsorship
-         again if/when auth is relaxed or we wire up credentials.
-      2. On *any* non-200 response (401, 5xx, network errors, timeouts) or
+         The facilitator can sponsor XLM network fees, but it returns 401
+         on both mainnet and testnet without credentials; the branch is
+         kept so sponsorship resumes if auth is relaxed or credentials are
+         wired up.
+      2. On any non-200 response (401, 5xx, network errors, timeouts) or
          on `isValid: false`, fall through to direct Horizon verification
          via `_verify_payment_horizon()`, which is the de facto production
-         path. Agents must therefore hold a trivial XLM balance to cover
-         the Stellar base fee on their own payment.
+         path. Agents therefore hold a trivial XLM balance to cover the
+         Stellar base fee on their own payment.
 
-    The fallback fires on ANY non-200 / exception (not just 401) so a
-    facilitator 5xx or timeout never fails a payment that is valid
+    The fallback fires on any non-200 / exception (not just 401) so a
+    facilitator 5xx or timeout does not fail a payment that is valid
     on-chain. STELLAR_FACILITATOR_ENABLED=False (the default) skips the
-    OZ POST entirely — saves ~15s of wasted timeout per verification.
+    OZ POST entirely, avoiding ~15s of timeout per verification.
 
     Returns:
         {"verified": True, "tx_hash": "..."} on success
         {"verified": False, "reason": "..."} on failure
     """
-    # Skip the OZ POST entirely when disabled — OZ has returned 401 since
-    # early 2026. The Horizon fallback runs identically either way.
+    # Skip the OZ POST entirely when disabled. The Horizon fallback runs
+    # identically either way.
     if not settings.STELLAR_FACILITATOR_ENABLED:
         if tx_hash:
             return await _verify_payment_horizon(
@@ -245,11 +245,10 @@ async def verify_payment(
                 f"{facilitator_url}/verify",
                 json=payload
             )
-            # ANY non-200: fall back immediately to Horizon. Was 401-only;
-            # broadened in #17 because the facilitator returns 5xx during
-            # outages and other transient failures, all of which previously
-            # produced spurious payment-verification failures even when the
-            # tx was valid on-chain.
+            # Any non-200 (not only 401) falls back immediately to Horizon:
+            # the facilitator returns 5xx during outages and other transient
+            # failures, and none of those should fail a tx that is valid
+            # on-chain.
             if resp.status_code != 200:
                 logger.warning(
                     f"OZ facilitator returned {resp.status_code} — falling back to Horizon verification"
@@ -266,7 +265,7 @@ async def verify_payment(
             if not data.get("isValid"):
                 reason = data.get("invalidReason", "Facilitator rejected payment")
                 logger.warning(f"Facilitator rejected: {reason}")
-                # OZ facilitator now requires auth on both mainnet and testnet (returns 401).
+                # The OZ facilitator requires auth on both mainnet and testnet.
                 # Fall back to direct Horizon verification for all networks.
                 if tx_hash:
                     logger.info(f"Falling back to direct Horizon verification for {tx_hash[:16]}...")
@@ -300,9 +299,8 @@ async def verify_payment(
 
     except Exception as e:
         # Connection errors, timeouts, malformed JSON, etc. — same fallback
-        # as a non-200 status. Without this branch (added in #17), a
-        # transient network blip on the facilitator host would fail the
-        # payment even when on-chain settlement was successful.
+        # as a non-200 status, so a transient network blip on the facilitator
+        # host does not fail a payment that settled on-chain.
         logger.warning(f"Facilitator unreachable ({e}) — falling back to Horizon verification")
         if tx_hash:
             return await _verify_payment_horizon(
@@ -337,19 +335,18 @@ async def split_payment(
     developer_share = total * Decimal(str(1 - gateway_fee_percent))
     developer_share = developer_share.quantize(Decimal("0.0000001"))
 
-    # Bounded retry-with-backoff. The split used to be a single fire-and-forget
-    # submit: any transient failure (Horizon 5xx/timeout, momentary low XLM on
-    # the gateway, a stale sequence number under concurrency) silently lost the
-    # developer their 85%. We now retry up to SPLIT_MAX_RETRIES times, rebuilding
-    # the tx each attempt so the sequence number is re-fetched. On final failure
-    # we durably stamp the payment_logs row for manual reconciliation rather
-    # than dropping the obligation on the floor.
+    # Bounded retry-with-backoff. A transient failure (Horizon 5xx/timeout,
+    # momentary low XLM on the gateway, a stale sequence number under
+    # concurrency) must not lose the developer their share, so the submit is
+    # retried up to SPLIT_MAX_RETRIES times, rebuilding the tx each attempt so
+    # the sequence number is re-fetched. On final failure the payment_logs row
+    # is durably stamped for manual reconciliation.
     max_retries = max(0, int(getattr(settings, "SPLIT_MAX_RETRIES", 3)))
     base_delay  = float(getattr(settings, "SPLIT_RETRY_BASE_DELAY", 0.5))
     last_error: str = "unknown"
 
     for attempt in range(max_retries + 1):
-        split_hash_precomputed = ""   # AGE-68: set once the tx is built+signed
+        split_hash_precomputed = ""   # set once the tx is built+signed
         try:
             # asyncio.to_thread keeps the event loop free while stellar_sdk's
             # synchronous Horizon call runs on a worker thread. Without this,
@@ -378,7 +375,7 @@ async def split_payment(
             )
 
             tx.sign(gateway_keypair)
-            # AGE-68: deterministic hash so a timed-out submit can be checked
+            # Deterministic hash so a timed-out submit can be checked
             # on-chain instead of blindly retried into a double-send.
             try:
                 split_hash_precomputed = tx.hash_hex()
@@ -396,8 +393,8 @@ async def split_payment(
 
         except Exception as e:
             last_error = str(e)[:200]
-            # AGE-68: a timed-out submit may actually have landed — poll for the
-            # precomputed hash before retrying, so we don't send the dev share
+            # A timed-out submit may actually have landed — poll for the
+            # precomputed hash before retrying, so the dev share is not sent
             # twice. If it confirmed, treat this attempt as success.
             if split_hash_precomputed and _is_timeout_error(e):
                 if await _await_tx_on_chain(split_hash_precomputed):
@@ -432,14 +429,12 @@ async def split_payment(
     try:
         logger.info(f"Split sent {developer_share} USDC to {tool_developer_address}")
 
-        # AGE-73: the old 'split_done' PATCH here was dead. split_payment runs
-        # fire-and-forget from verify_and_fulfill and takes 5-10s of Horizon
-        # round-trips, by which point the route has already written the terminal
-        # 'payment_done' — so the PATCH, guarded to expected_state='verified',
-        # never matched a row and never landed. The gateway fee is recorded on
-        # the payment_done PATCH the route awaits, so nothing is lost by dropping
-        # the dead write. (The 'split_done' state in the lifecycle doc was
-        # aspirational; the happy path is pending → verified → payment_done.)
+        # No 'split_done' PATCH here: split_payment runs fire-and-forget from
+        # verify_and_fulfill and takes 5-10s of Horizon round-trips, by which
+        # point the route has already written the terminal 'payment_done', so
+        # a PATCH guarded to expected_state='verified' would never match. The
+        # gateway fee is recorded on the payment_done PATCH the route awaits.
+        # The happy path is pending → verified → payment_done.
 
         return {
             "success": True,
@@ -544,29 +539,29 @@ async def send_refund(
         return {"success": False, "reason": reason}
 
 
-# AGE-76: how far back the on-chain idempotency check will page before it
-# gives up. 5 pages × 200 = 1000 txs of gateway history — comfortably beyond
-# any realistic per-minute tx volume, so a genuine refund is found. If the
-# memo isn't seen AND history isn't exhausted within this bound, the result
-# is UNKNOWN (never "no refund"), so a busy account can't trigger a re-send.
+# How far back the on-chain idempotency check will page before it gives up.
+# 5 pages × 200 = 1000 txs of gateway history — comfortably beyond any
+# realistic per-minute tx volume, so a genuine refund is found. If the memo
+# isn't seen and history isn't exhausted within this bound, the result is
+# unknown (not "no refund"), so a busy account can't trigger a re-send.
 _REFUND_SCAN_MAX_PAGES = 5
 
 
 async def find_refund_on_chain(payment_id: str) -> tuple[bool, str | None]:
-    """AGE-76 on-chain idempotency check: has a refund for this payment_id
-    already been submitted? Matches the deterministic memo send_refund sets
+    """On-chain idempotency check: has a refund for this payment_id already
+    been submitted? Matches the deterministic memo send_refund sets
     ('refund:<payment_id[:20]>') against the gateway account's transactions
     on Horizon (newest first), paging until found or history is exhausted.
 
     Returns:
         (True,  tx_hash) — refund found on-chain
-        (True,  None)    — Horizon history EXHAUSTED and NO refund exists —
+        (True,  None)    — Horizon history exhausted and no refund exists;
                            safe to release the row back to refund_pending
-        (False, None)    — UNKNOWN: Horizon unreachable/errored, OR the memo
+        (False, None)    — unknown: Horizon unreachable/errored, or the memo
                            wasn't found within _REFUND_SCAN_MAX_PAGES and
-                           more history remains. Callers must NOT release on
-                           this — releasing on unknown is the exact
-                           duplicate-refund path this check exists to close.
+                           more history remains. Callers do not release on
+                           this; releasing on unknown is the duplicate-refund
+                           path this check exists to close.
     """
     if not settings.GATEWAY_PUBLIC_KEY:
         return (False, None)
@@ -591,7 +586,7 @@ async def find_refund_on_chain(payment_id: str) -> tuple[bool, str | None]:
                 return (True, None)
             page = await asyncio.to_thread(page.next)
         # Ran out of page budget with full pages throughout → more history
-        # exists that we didn't scan. UNKNOWN, not "no refund".
+        # exists that wasn't scanned. Unknown, not "no refund".
         logger.warning(
             f"[REFUND] on-chain idempotency check exhausted "
             f"{_REFUND_SCAN_MAX_PAGES} pages without a verdict "
@@ -612,8 +607,8 @@ async def get_usdc_balance(public_key: str) -> str | None:
     """Return USDC balance for a Stellar address.
 
     '0' means genuinely empty (unfunded account or no USDC trustline);
-    None means the balance is UNKNOWN (Horizon unreachable/5xx) — callers
-    must not treat an infra failure as an empty wallet.
+    None means the balance is unknown (Horizon unreachable/5xx); callers
+    do not treat an infra failure as an empty wallet.
 
     Async because stellar_sdk's Server.load_account is synchronous and would
     otherwise block the event loop for 200-2000ms per call.

@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     STELLAR_FACILITATOR_URL: str = "https://channels.openzeppelin.com/x402"
     STELLAR_FACILITATOR_ENABLED: bool = False
 
-    # ── Stacks / sBTC settlement (AGE-23) ─────────────────────────────────────
+    # ── Stacks / sBTC settlement ────────────────────────────────────────────
     # Inert by default: with STACKS_ENABLED false (or no gateway address) the
     # 402 never offers a stacks option and the settle path 503s.
     STACKS_ENABLED: bool = False
@@ -78,15 +78,15 @@ class Settings(BaseSettings):
     STACKS_SUGGESTED_FEE_MICROSTX: int = 3000
     STACKS_FEE_ESTIMATE: bool = True
     STACKS_FEE_CAP_MICROSTX: int = 20_000
-    # USD→sats FX (AGE-24): live BTC/USD from CoinGecko, cached this many
+    # USD→sats FX: live BTC/USD from CoinGecko, cached this many
     # seconds. STACKS_FIXED_BTC_USD is the fallback floor when the live fetch
     # fails (and the sole source if you'd rather pin the rate manually).
     STACKS_RATE_CACHE_S: float = 60.0
     STACKS_FIXED_BTC_USD: str = ""
 
-    # AGE-77: testnet-only demo pricing. Comma list of tool:price overrides,
+    # Testnet-only demo pricing. Comma list of tool:price overrides,
     # e.g. "token_price:0.01". Applied at request time on the testnet gateway so
-    # the M1 sBTC demo has a nonzero-priced tool; UNSET on mainnet, so the
+    # the sBTC demo has a nonzero-priced tool; unset on mainnet, so the
     # free-funnel registry prices are untouched.
     TESTNET_PAID_TOOLS: str = ""
 
@@ -195,12 +195,12 @@ class Settings(BaseSettings):
     LEDGER_ENABLED: bool = True
     LEDGER_FLAGSHIP_ADDRESSES: str = ""
     LEDGER_RUN_CAP_USDC: str = "0.25"   # hard per-run cap the flagship runs under
-    # AGE-142: background chain-verification of off-gateway receipt legs
+    # Background chain-verification of off-gateway receipt legs
     # (gateway/services/leg_verifier.py). Set true to skip scheduling the loop
     # (tests, or an RPC outage) — the ledger then shows those legs as
     # agent_attested, exactly as before.
     LEG_VERIFIER_DISABLED: bool = False
-    # AGE-138: weekly self-refresh of provider_depth from the keyless x402scan
+    # Weekly self-refresh of provider_depth from the keyless x402scan
     # API (gateway/services/depth_refresh.py). Set true to skip scheduling the
     # loop (tests, or if x402scan misbehaves) — ranking then falls back to the
     # unweighted formula once the rows age past 7 days. Nothing breaks.
@@ -213,12 +213,12 @@ class Settings(BaseSettings):
     # ingest endpoint disabled (404). Must match the agent's FLAGSHIP_INGEST_SECRET.
     FLAGSHIP_INGEST_SECRET: str = ""
 
-    # AGE-59: shared secret that gates POST /tools/register. There is no
+    # Shared secret that gates POST /tools/register. There is no
     # third-party developer registration flow yet, so the endpoint is
-    # OPERATOR-ONLY: empty = registration disabled (404, mirrors the flagship
+    # operator-only: empty = registration disabled (404, mirrors the flagship
     # ingest pattern). Set a ≥128-bit random value to enable. When a real
-    # dev-onboarding flow ships (AGE-71's Supabase-backed registry), replace
-    # with per-developer API keys.
+    # dev-onboarding flow ships (Supabase-backed registry), replace with
+    # per-developer API keys.
     TOOL_REGISTER_SECRET: str = ""
 
     class Config:

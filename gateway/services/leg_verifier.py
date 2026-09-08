@@ -1,6 +1,5 @@
 """
-leg_verifier.py — chain-verify the paid legs of receipt-derived ledger runs
-(AGE-142).
+leg_verifier.py — chain-verify the paid legs of receipt-derived ledger runs.
 
 Why
 ---
@@ -8,18 +7,17 @@ Why
 gateway-settled and fully verified. Runs rebuilt from an agent-posted SDK
 receipt (the prober's probe_sweeps, the strategy run's direct CMC legs) can
 only be verified against `payment_logs` too — and their legs settle
-agent→seller, never touching our books — so every one of them rendered as
-`agent_attested`: ~79% of the flagship's lifetime spend had no on-chain
-evidence attached, on a page whose whole point is "verifiable receipts".
+agent→seller, never touching our books — so without this module every one
+of them renders as `agent_attested`, with no on-chain evidence attached, on
+a page whose whole point is "verifiable receipts".
 
 The evidence exists on Base regardless of who submitted the tx: an EIP-3009
-`transferWithAuthorization` emits a standard USDC `Transfer` event FROM our
+`transferWithAuthorization` emits a standard USDC `Transfer` event from our
 wallet. So for each receipt-derived run we pull the run wallet's outbound USDC
 transfers in the run window (public JSON-RPC `eth_getLogs`, no key — the same
-path `tools/reconcile_prober_spend.py` / AGE-88 already uses) and match them
-to the receipt's paid legs. Results are cached in `ledger_leg_verifications`
-so the ledger render never touches the chain (disk-IO rule: batch, not
-request-time).
+path `tools/reconcile_prober_spend.py` uses) and match them to the receipt's
+paid legs. Results are cached in `ledger_leg_verifications` so the ledger
+render never touches the chain: verification is batched, not request-time.
 
 Matching, strongest first (pure function, unit-tested):
   hash          leg carries a tx_hash and that tx is among the wallet's
@@ -27,9 +25,9 @@ Matching, strongest first (pure function, unit-tested):
   amount+payto  no hash; a transfer with the same amount to the seller's
                 known payTo (hint from service_probes by resource_url)
   amount        a same-amount transfer from the run wallet in the window,
-                by elimination (the wallet DID pay this amount on-chain in
+                by elimination (the wallet did pay this amount on-chain in
                 the window; attribution to this leg is positional)
-Every match CONSUMES the transfer, so one settlement backs at most one leg.
+Every match consumes the transfer, so one settlement backs at most one leg.
 Legs with no match stay agent_attested — never force-matched.
 
 The label on /ledger is three-way and never collapsed:
@@ -60,7 +58,7 @@ USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 BASE_BLOCK_SECONDS = 2
 # A prober sweep settles its legs over the ~1-2h it runs; run_at is the sweep
-# START. Strategy runs settle within minutes. Window = run_at - lead … + lag.
+# start. Strategy runs settle within minutes. Window = run_at - lead … + lag.
 WINDOW_LEAD = timedelta(minutes=15)
 WINDOW_LAG = timedelta(hours=3)
 VERIFY_INTERVAL_SECONDS = 6 * 3600
@@ -99,8 +97,8 @@ def match_legs(breakdown: Iterable[dict], transfers: Iterable[dict],
                  already filtered to the run window and the run wallet
     payto_hints: {resource_url_or_tool: payto_lower} from service_probes
 
-    Returns one row per MATCHED leg: {"leg_index", "tx_hash", "to",
-    "amount_usdc", "method"}. Transfers are consumed on match. PURE."""
+    Returns one row per matched leg: {"leg_index", "tx_hash", "to",
+    "amount_usdc", "method"}. Transfers are consumed on match. Pure."""
     pool: list[dict] = []
     for t in transfers:
         try:
@@ -189,7 +187,7 @@ async def _block_ts(client: httpx.AsyncClient, n: int, cache: dict) -> int:
 
 async def wallet_transfers(wallet: str, start: datetime, end: datetime,
                            client: Optional[httpx.AsyncClient] = None) -> list[dict]:
-    """Outbound USDC Transfer events FROM `wallet` on Base between start and
+    """Outbound USDC Transfer events from `wallet` on Base between start and
     end. Block range estimated from Base's 2s block time with a margin, then
     each log's block timestamp checked exactly. Shape matches match_legs()."""
     own = client is None

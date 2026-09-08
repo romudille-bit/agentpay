@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 async def _keepalive_loop():
     """Ping /health every 5 minutes to prevent Railway cold-start.
 
-    Pings localhost — the point is to keep THIS worker's process warm, and
+    Pings localhost — the point is to keep this worker's process warm, and
     a local ping avoids a wasteful round-trip through Railway's edge (and
     avoids local/testnet instances pinging the production URL).
     """
@@ -102,17 +102,10 @@ async def _cleanup_loop():
         await asyncio.sleep(_CLEANUP_INTERVAL_SECS)
 
 
-# How often the abandoned-pending sweep runs.
-# Was 5 min (matching the 5-min cutoff in sb.sweep_abandoned_pending).
-# Disk-IO fix #3 (2026-09-01): since disk-IO fix #2 (2f0b03b) NO code path
-# writes state='pending' any more — rows are born 'verified' /
-# 'payment_done' / 'rejected' at settle time — so the sweep's
-# `UPDATE payment_logs … WHERE state='pending'` matched 0 rows on every one
-# of its 288 daily runs per gateway (× 2 gateways on the same project),
-# each an UPDATE over a 77 MB bloated heap (idx_payment_logs_state exists
-# but the heap is ~1.2 KB/row of dead-tuple space — see
-# db/migrations/disk_io_fix3.sql). Hourly keeps it as a safety net for a
-# future writer at 1/12 of the cost.
+# How often the abandoned-pending sweep runs. No current code path writes
+# state='pending' (rows are born 'verified' / 'payment_done' / 'rejected'
+# at settle time), so the sweep normally matches nothing; it is kept
+# hourly as a cheap safety net for any future writer.
 _ABANDONED_SWEEP_INTERVAL_SECS = 3600
 
 
@@ -160,13 +153,13 @@ async def _refund_worker_loop():
     from gateway.stellar import find_refund_on_chain, send_refund
 
     async def _resolve_stale_refund_sending():
-        """AGE-76: resolve rows stuck in 'refund_sending' — a send whose
+        """Resolve rows stuck in 'refund_sending' — a send whose
         terminal PATCH failed, or a worker crash mid-send. At sweep start
-        any such row is from an EARLIER sweep (this sweep's claims happen
+        any such row is from an earlier sweep (this sweep's claims happen
         later), so each is resolved against the chain:
           - refund found on Horizon (memo match) → mark_refund_done with
-            the found tx (the send DID happen; only the bookkeeping failed)
-          - Horizon confirms NO refund → release back to refund_pending
+            the found tx (the send happened; only the bookkeeping failed)
+          - Horizon confirms no refund → release back to refund_pending
             (the attempt was already counted; next sweep retries)
           - Horizon unknown → leave in refund_sending, try again next sweep.
             Releasing on unknown would be the duplicate-refund path.
@@ -204,14 +197,14 @@ async def _refund_worker_loop():
     await asyncio.sleep(_REFUND_WORKER_INTERVAL_SECS)
     while True:
         try:
-            # AGE-76: resolve in-flight rows from earlier sweeps BEFORE
-            # claiming new ones (ordering makes every refund_sending row
-            # seen here provably stale).
+            # Resolve in-flight rows from earlier sweeps before claiming
+            # new ones; the ordering makes every refund_sending row seen
+            # here provably stale.
             await _resolve_stale_refund_sending()
-            # AGE-61 follow-up: terminal-state rows that hit the attempt cap
-            # without a completed send (worker crash mid-attempt, or repeated
-            # unconfirmed increments). They're filtered out of the claim
-            # query, so without this they'd stay refund_pending forever.
+            # Rows that hit the attempt cap without a completed send (worker
+            # crash mid-attempt, or repeated unconfirmed increments) are
+            # filtered out of the claim query, so without this they'd stay
+            # refund_pending forever.
             await sb.sweep_cap_exhausted_refunds()
             rows = await sb.claim_refund_pending(limit=20)
             for row in rows:
@@ -235,13 +228,12 @@ async def _refund_worker_loop():
                     )
                     continue
 
-                # Increment attempt count BEFORE the send so a worker
-                # crash mid-attempt still counts towards the cap.
-                # AGE-61: the send is authorized ONLY by a CONFIRMED
-                # increment. On None (read blip, missing row, failed
-                # write) skip this row for this sweep — the old code
-                # defaulted a failed read to 0, resetting the counter
-                # and letting duplicate refunds past the 5-attempt cap.
+                # Increment the attempt count before the send so a worker
+                # crash mid-attempt still counts towards the cap. The send
+                # is authorized only by a confirmed increment: on None
+                # (read blip, missing row, failed write) skip this row for
+                # this sweep. Defaulting a failed read to 0 would reset the
+                # counter and let duplicate refunds past the attempt cap.
                 this_attempt = await sb.increment_refund_attempt(payment_id)
                 if this_attempt is None:
                     logger.warning(
@@ -251,8 +243,8 @@ async def _refund_worker_loop():
                     )
                     continue
 
-                # AGE-76 two-phase claim: move the row OUT of the claimable
-                # pool before any USDC leaves. If the post-send terminal
+                # Two-phase claim: move the row out of the claimable pool
+                # before any USDC leaves. If the post-send terminal
                 # PATCH then fails, the row sits in 'refund_sending' — never
                 # blindly re-claimed — until the stale sweep resolves it
                 # against the chain. No confirmed claim → no send.
@@ -293,7 +285,7 @@ async def _refund_worker_loop():
                     )
                 else:
                     # Failed send below the cap: put the row back in the
-                    # retry pool (AGE-76 — the claim moved it out).
+                    # retry pool (the claim above moved it out).
                     await sb.release_refund_sending(payment_id)
                     logger.info(
                         f"[REFUND] payment_id={payment_id[:8]}... attempt "
@@ -465,40 +457,31 @@ async def _hydrate_tools_from_supabase() -> None:
             )
             for r in rows
         ]
-        # Merge response_example from seed registry for any tools missing it in Supabase
         # _TOOLS isn't re-exported from registry/__init__.py — import it
-        # directly from the submodule. Previously this raised ImportError
-        # on every Railway deploy and got caught by the broad except below,
-        # which logged the misleading "Supabase unavailable" warning even
-        # though Supabase had just returned 200.
+        # directly from the submodule, otherwise the ImportError is caught
+        # by the broad except below and logged as a misleading "Supabase
+        # unavailable" warning.
         from registry.registry import _TOOLS as _SEED
-        # Supabase rows can be partial (4 newer tools — yield_scanner,
-        # funding_rates, open_interest, orderbook_depth — were inserted
-        # without triggers/use_when/returns and never backfilled). Fall
-        # back to the in-memory seed for any discovery field the Supabase
-        # row left empty. This makes registry.py the source of truth for
-        # discovery hints; Supabase becomes an override layer.
-        #
-        # NOTE: this means an *intentionally* empty value in Supabase
-        # (e.g. triggers=[]) gets shadowed by the seed. We've never used
-        # Supabase to deliberately clear fields, so this is fine in
-        # practice — but worth knowing if that ever changes.
+        # Supabase rows can be partial. Fall back to the in-memory seed for
+        # any discovery field the Supabase row left empty, making
+        # registry.py the source of truth for discovery hints and Supabase
+        # an override layer. An intentionally empty value in Supabase
+        # (e.g. triggers=[]) is therefore shadowed by the seed.
         sb_names = {t.name for t in tools}
         for t in tools:
             if t.name not in _SEED:
                 continue
             seed = _SEED[t.name]
-            # Always use seed price — Supabase may be stale after a pricing change
+            # The seed price wins — Supabase may be stale after a pricing change
             t.price_usdc = seed.price_usdc
             if t.response_example is None: t.response_example = seed.response_example
             if not t.triggers:              t.triggers = seed.triggers
             if not t.use_when:              t.use_when = seed.use_when
             if not t.returns:               t.returns = seed.returns
-            # endpoint too (2026-08-06, external report by the Circadian
-            # audit agent — verified): a null/empty Supabase column blanked
-            # three tools' discovery endpoint, and it's the one field a
-            # buyer can't reconstruct (session_create proves the path shape
-            # varies — /v1/session/create, not /tools/<name>/call).
+            # The endpoint is the one discovery field a buyer can't
+            # reconstruct: path shapes vary (/v1/session/create, not
+            # /tools/<name>/call), so a blank Supabase column must not
+            # blank it.
             if not t.endpoint:              t.endpoint = seed.endpoint
         # Seed tools missing from Supabase (e.g. registry.py added a new tool
         # but Supabase hasn't been migrated yet). Registry.py is always the
@@ -507,11 +490,10 @@ async def _hydrate_tools_from_supabase() -> None:
             if name not in sb_names and seed.active:
                 tools.append(seed)
                 logger.info(f"Tool '{name}' not in Supabase — using seed value")
-        # AGE-107: discovery-contract invariant. A partial Supabase row must
-        # never leave an active tool with a blank discovery field — the seed
-        # fallback above repairs the known ones, but if anything still slips
-        # through (a new field, future comment/implementation drift), say so
-        # loudly on every boot instead of serving it silently for weeks.
+        # Discovery-contract invariant: a partial Supabase row must not
+        # leave an active tool with a blank discovery field. The seed
+        # fallback above repairs the known ones; anything that still slips
+        # through is reported on every boot instead of served silently.
         for t in tools:
             if not t.active:
                 continue
@@ -571,25 +553,18 @@ async def lifespan(app: FastAPI):
       1. Background keepalive ping (skipped if KEEPALIVE_DISABLED is set).
       2. Hydrate tool registry from Supabase (skipped if not configured).
 
-    Shutdown hooks: none yet. Background tasks (#13 cutover row 7) will
-    drain here so cleanup_expired_challenges() finishes before the worker
-    exits.
+    Shutdown hooks: a best-effort flush of the probe rollup. Background
+    tasks would drain here if any ever needed cleanup_expired_challenges()
+    to finish before the worker exits.
     """
     # ── startup ──────────────────────────────────────────────────────────────
     _validate_config()
     _log_config_banner()
 
     # Scheduling the keepalive task can be disabled (e.g. by the test suite)
-    # so the background ping doesn't fire at the production URL during
-    # local imports. Default behaviour is unchanged. Accepts the common
-    # boolean idioms — "1", "true", "yes", "on" (case-insensitive) — so
-    # nobody gets surprised by a literal-string mismatch.
-    #
-    # TODO(tier-2): the keepalive currently pings GATEWAY_URL — a hardcoded
-    # production URL — even when the gateway is running locally or on
-    # gateway-testnet, which is a wasteful round-trip through Railway's edge
-    # back to the same worker. Switch to f"http://localhost:{settings.PORT}"
-    # once we add a settings.LOCAL_KEEPALIVE flag.
+    # so the background ping doesn't fire during local imports. Accepts the
+    # common boolean idioms — "1", "true", "yes", "on" (case-insensitive) —
+    # so a literal-string mismatch doesn't silently leave it enabled.
     if os.environ.get("KEEPALIVE_DISABLED", "").lower() not in {"1", "true", "yes", "on"}:
         asyncio.create_task(_keepalive_loop())
 
@@ -604,19 +579,19 @@ async def lifespan(app: FastAPI):
         # Periodic pending → abandoned sweep on payment_logs. Distinct from
         # _cleanup_loop (different table — see _abandoned_sweep_loop docstring).
         asyncio.create_task(_abandoned_sweep_loop())
-        # Batched 402/probe telemetry flusher (disk-IO fix, 2026-08-04):
-        # bot 402s no longer write per-event rows; their counts accumulate
-        # in memory and land in payment_logs_daily_rollup once per window.
+        # Batched 402/probe telemetry flusher: bot 402s don't write
+        # per-event rows; their counts accumulate in memory and land in
+        # payment_logs_daily_rollup once per window.
         asyncio.create_task(probe_rollup.flush_loop())
-        # AGE-142: chain-verify off-gateway receipt legs for /ledger (batch,
-        # every 6h, first pass ~90s after boot). Reads flagship_runs, pulls
-        # the run wallet's USDC transfers from Base RPC, caches matches in
-        # ledger_leg_verifications. Never runs at request time.
+        # Chain-verify off-gateway receipt legs for /ledger (batch, every
+        # 6h, first pass ~90s after boot). Reads flagship_runs, pulls the
+        # run wallet's USDC transfers from Base RPC, caches matches in
+        # ledger_leg_verifications. Nothing runs at request time.
         if settings.LEDGER_ENABLED and not getattr(settings, "LEG_VERIFIER_DISABLED", False):
             asyncio.create_task(leg_verifier.verify_loop())
-        # AGE-138: provider_depth refreshes itself weekly from the keyless
-        # x402scan API (daily age check, refresh when the newest row is >5d
-        # old, ~10 min of throttled background pulls). A manual
+        # provider_depth refreshes itself weekly from the keyless x402scan
+        # API (daily age check, refresh when the newest row is >5d old,
+        # ~10 min of throttled background pulls). A manual
         # tools/payer_depth.py --write run resets the clock.
         if not getattr(settings, "DEPTH_REFRESH_DISABLED", False):
             from gateway.services import depth_refresh
@@ -659,13 +634,13 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# AGE-75: wildcard CORS is SAFE here only because auth is header/wallet-based
-# (X-Payment / PAYMENT-SIGNATURE / X-*-Secret) and there are NO cookies or
+# Wildcard CORS is safe here only because auth is header/wallet-based
+# (X-Payment / PAYMENT-SIGNATURE / X-*-Secret) and there are no cookies or
 # browser sessions — a malicious origin can't ride ambient credentials it
 # doesn't have. `allow_credentials` is intentionally left off (its default is
 # False), which also means "*" stays legal per the CORS spec. If any
-# cookie/session-based auth is ever added, this MUST become an explicit origin
-# allowlist with allow_credentials handled deliberately.
+# cookie/session-based auth is ever added, this has to become an explicit
+# origin allowlist with allow_credentials handled deliberately.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

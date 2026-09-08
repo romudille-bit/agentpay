@@ -111,9 +111,8 @@ async def _lookup_challenge(payment_id: str) -> Optional[dict]:
 
     Supabase is the authoritative store. The
     in-memory dict survives as a hot cache for two reasons:
-      1. Drain — challenges issued before the cutover deploy still only
-         live in the dict on long-running workers. Fall through covers
-         that without a fixed time window.
+      1. Drain — challenges issued with persist=False live only in the
+         dict. Falling through covers them without a fixed time window.
       2. Soft fallback — if Supabase is unreachable, the dict keeps the
          worker functional until Supabase recovers. Reads degrade
          gracefully instead of fail-closing the gateway.
@@ -165,7 +164,7 @@ class PaymentChallenge:
     issued_at: float         # Unix timestamp
     expires_at: float        # Unix timestamp
     request_data: dict       # Original request (to replay after payment)
-    stacks_sats: Optional[int] = None    # sBTC quote at issuance (AGE-95)
+    stacks_sats: Optional[int] = None    # sBTC quote at issuance
     stacks_rate: Optional[str] = None    # BTC/USD rate that quote used
 
 
@@ -182,16 +181,16 @@ def issue_payment_challenge(
     Create a payment challenge for an agent to fulfill.
     Called when an agent hits a paid endpoint without payment.
 
-    persist=False (disk-IO fix, 2026-08-04): skip the Supabase
-    `pending_challenges` INSERT and keep the challenge in-memory only.
-    Used for discovery probes (GET) and $0 tools: crawlers never retry,
-    and the free-flow retry arrives within seconds on the same worker
-    (production runs a single uvicorn worker), so the in-memory dict is
-    sufficient. Paid POST challenges keep the durable mirror — a paying
-    agent may straddle a worker restart mid-payment.
+    persist=False skips the Supabase `pending_challenges` INSERT and keeps
+    the challenge in-memory only. Used for discovery probes (GET) and $0
+    tools: crawlers don't retry, and the free-flow retry arrives within
+    seconds on the same worker (production runs a single uvicorn worker),
+    so the in-memory dict is sufficient. Paid POST challenges keep the
+    durable mirror — a paying agent may straddle a worker restart
+    mid-payment.
 
     stacks_quote=(sats, rate): the sBTC quote the 402 offers, kept on the
-    challenge so settle verifies against it after a restart (AGE-95).
+    challenge so settle verifies against it after a restart.
     """
     payment_id = str(uuid.uuid4())
     now = time.time()
@@ -212,8 +211,8 @@ def issue_payment_challenge(
     _pending_challenges[payment_id] = asdict(challenge)
     logger.info(f"Issued challenge {payment_id} for {tool_name} @ {price_usdc} USDC")
 
-    # Dual-write to Supabase (fire-and-forget). In-memory dict is still
-    # source of truth in this PR; Supabase becomes primary at #13 cutover.
+    # Dual-write to Supabase (fire-and-forget). Supabase is the primary
+    # lookup store; the in-memory dict is the fallback (see _lookup_challenge).
     if not persist:
         return challenge
     _fire_and_forget(
@@ -258,8 +257,7 @@ def parse_payment_header(header_value: str) -> Optional[dict]:
     Format: tx_hash=abc123,from=GABC...,id=uuid
 
     Both tx_hash and id must be present and non-empty for the parse to
-    succeed — empty values previously slipped through and got added to
-    _completed_payments as the empty string.
+    succeed; otherwise an empty string would end up in _completed_payments.
     """
     if not header_value:
         return None
@@ -345,25 +343,25 @@ async def verify_and_fulfill(
     # ── Atomic consume (closes the TOCTOU between _is_replay and here) ────────
     # The _is_replay() call above is only a fast pre-check. verify_payment()
     # does on-chain I/O with await boundaries, so two concurrent retries
-    # carrying the same tx_hash can BOTH pass the pre-check, then both fulfil
+    # carrying the same tx_hash can both pass the pre-check, then both fulfil
     # and both trigger split_payment — a double-spend of one on-chain payment.
     # Serialize the claim here, before authorizing:
     #
-    #   1. In-memory: a check-and-add with NO await in between is atomic
+    #   1. In-memory: a check-and-add with no await in between is atomic
     #      within this worker's event loop.
     #   2. Durable: the replay_* tables are insert-only with a PK/composite-PK,
     #      so record_*() returns False on an HTTP 409 — i.e. another worker or
-    #      a pre-restart request already consumed this payment. AGE-60: they
-    #      return None when the insert can't be confirmed (Supabase error) —
-    #      the consume now fails CLOSED, since the in-memory set dies on every
-    #      restart and can't be trusted across one. These are AWAITED — the
+    #      a pre-restart request already consumed this payment. They return
+    #      None when the insert can't be confirmed (Supabase error), and the
+    #      consume then fails closed, since the in-memory set dies on every
+    #      restart and can't be trusted across one. These are awaited — the
     #      few-ms cost buys correctness.
     if tx_hash in _completed_payments:
         return {"authorized": False, "reason": "Payment already used (replay attack)"}
     _completed_payments.add(tx_hash)
 
-    # AGE-60 (review follow-up): the two durable inserts are NOT atomic.
-    # Attempt the second only when the first is confirmed-new — otherwise an
+    # The two durable inserts are not atomic. Attempt the second only when
+    # the first is confirmed-new — otherwise an
     # infra blip between them leaves a half-consumed proof: an orphan
     # replay_tx_hashes row that makes the client's retry bounce off the PK
     # with a false "replay attack" on a payment that never fulfilled.
@@ -373,23 +371,23 @@ async def verify_and_fulfill(
         pid_recorded = await sb.record_payment_id(payment_id)
     if tx_recorded is False or pid_recorded is False:
         # Durable store already had this tx_hash / payment_id → concurrent or
-        # cross-restart replay won the race. Reject WITHOUT fulfilling or
+        # cross-restart replay won the race. Reject without fulfilling or
         # splitting. (The competing request that inserted first proceeds.)
         return {"authorized": False, "reason": "Payment already used (replay attack)"}
     if (tx_recorded is None or pid_recorded is None) and not _is_free:
-        # AGE-60 fail-closed: the durable consume could not be CONFIRMED
-        # (Supabase blip / broken table). The in-memory set is wiped on every
-        # restart, so proceeding here would let a pre-restart payment be
-        # replayed during any blip. Reject WITHOUT fulfilling — and release
-        # the in-memory claim so the client's retry with the SAME proof
+        # Fail closed: the durable consume could not be confirmed (Supabase
+        # blip / broken table). The in-memory set is wiped on every restart,
+        # so proceeding here would let a pre-restart payment be replayed
+        # during any blip. Reject without fulfilling — and release the
+        # in-memory claim so the client's retry with the same proof
         # succeeds once the store is back. Not a replay accusation.
         #
-        # $0 free proofs are exempt (fail-OPEN, matching _settle_free_v2):
+        # $0 free proofs are exempt (fail open, matching _settle_free_v2):
         # nothing of value can be replayed, and bouncing the free funnel on a
         # Supabase blip buys no security. In-memory still dedupes in-process.
         #
         # Compensate a half-consume: the tx row landed but the payment_id
-        # insert blipped — roll the tx row back so the SAME proof retries
+        # insert blipped — roll the tx row back so the same proof retries
         # cleanly instead of false-positive rejecting as a replay.
         if tx_recorded is True:
             await sb.unrecord_tx_hash(tx_hash, network_label)
@@ -413,10 +411,9 @@ async def verify_and_fulfill(
     # exist, so the split would fail every time and spam the logs.
     developer_address = challenge_data.get("developer_address") or ""
     if developer_address and developer_address != settings.GATEWAY_PUBLIC_KEY:
-        # Do NOT add a local `import asyncio` here — it shadows the module
-        # import and raises UnboundLocalError at the earlier create_task
-        # calls. This once crashed every paid call in production;
-        # tests/test_x402.py::TestVerifyAndFulfill is the regression guard.
+        # A local `import asyncio` here would shadow the module import and
+        # raise UnboundLocalError at the earlier create_task calls;
+        # tests/test_x402.py::TestVerifyAndFulfill guards against it.
         asyncio.create_task(
             split_payment(
                 tool_developer_address=developer_address,

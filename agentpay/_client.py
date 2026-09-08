@@ -3,7 +3,7 @@ _client.py — HTTP client that handles the x402 payment flow.
 
 Internal helper used by Session.call(). Not part of the public API.
 
-Failure semantics (AGE-53..56):
+Failure semantics:
   - PrePaymentError   → nothing moved, no signed auth left the process.
                         Session.call() may safely fall back to another tool.
   - PaymentFailed     → the on-chain payment itself failed (no funds moved).
@@ -57,9 +57,9 @@ class AgentPayClient:
     def _sign_base_auth(self, base_opt: dict, url: str) -> str:
         """
         Sign the gasless EIP-3009 (Mode A) authorization for a paid AgentPay
-        tool and return the header payload. OFF-CHAIN only — nothing is
+        tool and return the header payload. Off-chain only — nothing is
         transmitted here, so a failure in this step is strictly pre-payment
-        and the caller may still fall back to Stellar (AGE-56).
+        and the caller may still fall back to Stellar.
 
         `base_opt` is the `payment_options.base` block from AgentPay's native
         402.
@@ -199,7 +199,7 @@ class AgentPayClient:
 
                 if retry.status_code == 200:
                     self.wallet.note_stacks_nonce_used(built["nonce"])
-                    self.wallet.note_stacks_settled(amount_usd or 0)  # [#9]
+                    self.wallet.note_stacks_settled(amount_usd or 0)
                     return retry, built["txid"]
 
                 # ── Non-200: only a definitive broadcast rejection is safe to
@@ -444,19 +444,18 @@ class AgentPayClient:
         """
         Call a paid tool. Handles 402 automatically.
 
-        Raises BudgetExceeded (BEFORE paying or signing) if max_spend is set
-        and the amount the 402 actually demands exceeds it — this is the hard
-        cap AGE-53 requires: the 402 body's amount, not the registry quote,
-        is what gets checked.
+        Raises BudgetExceeded (before paying or signing) if max_spend is set
+        and the amount the 402 actually demands exceeds it — the hard cap is
+        checked against the 402 body's amount, not the registry quote.
 
-        Chain selection for PAID tools:
+        Chain selection for paid tools:
           - prefer_chain="base" (default) settles via the gateway's Base/EIP-3009
             (Mode A) path when the wallet has a Base key and the 402 advertises a
             Base option — this is the path that keeps AgentPay's listing live on
             Bazaar. Stellar is used as the automatic fallback otherwise.
           - prefer_chain="stellar" forces the legacy Stellar settlement.
           - prefer_chain="stacks" settles sBTC over the Stacks x402 rail
-            (sign-don't-broadcast, AGE-25). Stacks is never a silent default:
+            (sign-don't-broadcast). Stacks is never a silent default:
             it is only reached via an explicit Session(prefer_chain=) /
             call(chain=), and an unusable Stacks path raises PaymentFailed —
             never a fallback onto another chain.
@@ -471,7 +470,7 @@ class AgentPayClient:
         with httpx.Client(timeout=60.0) as client:
 
             # ── First request — no payment ─────────────────────────────────
-            # AGE-74: log param KEYS only at INFO — values may carry sensitive
+            # Log param keys only at INFO — values may carry sensitive
             # payloads (addresses, signatures, API args). Full params at DEBUG.
             logger.info(f"→ Calling: {tool_name} | param keys: {sorted(parameters.keys()) if isinstance(parameters, dict) else '…'}")
             logger.debug(f"  {tool_name} params: {parameters}")
@@ -520,9 +519,9 @@ class AgentPayClient:
 
             logger.info(f"  402 — pay {amount_usdc} USDC to {pay_to[:12]}...")
 
-            # ── Budget cap vs the amount ACTUALLY demanded (AGE-53) ─────────
+            # ── Budget cap vs the amount actually demanded ──────────────────
             # Session.call() passes max_spend = min(remaining budget,
-            # quoted_price * (1 + tolerance)). Checked BEFORE any signing or
+            # quoted_price * (1 + tolerance)). Checked before any signing or
             # broadcast, so a gateway that advertises $0.001 in the registry
             # and demands more in the 402 is refused, not paid.
             if max_spend is not None and Decimal(str(amount_usdc)) > Decimal(str(max_spend)):
@@ -532,13 +531,13 @@ class AgentPayClient:
                 )
 
             # `entry` is the call_log record for this payment. It is appended
-            # the moment value can leave the wallet (AGE-54) and flipped to
+            # the moment value can leave the wallet and flipped to
             # success=True only when the tool call completes.
             entry: dict | None = None
 
             def _record(state: str, tx_hash: str = "", amount=None) -> dict:
                 # `amount` overrides the 402 body's amount_usdc — used by the
-                # Base leg to record the amount the auth was actually SIGNED
+                # Base leg to record the amount the auth was actually signed
                 # for (the payment_options.base amount, which can differ).
                 nonlocal entry
                 entry = {
@@ -598,7 +597,7 @@ class AgentPayClient:
                     and base_opt is not None
                     and getattr(self.wallet, "base_address", None)
                 )
-                # Say WHY we're skipping an offered Base option instead of
+                # Say why we're skipping an offered Base option instead of
                 # silently degrading to Stellar (usually: missing [base]
                 # extra / venv not activated / no base_key).
                 if base_opt is not None and prefer_chain != "stellar" and not want_base:
@@ -613,15 +612,15 @@ class AgentPayClient:
 
                 retry = None
                 if want_base:
-                    # ── Phase 1: sign OFF-CHAIN (strictly pre-payment) ─────
+                    # ── Phase 1: sign off-chain (strictly pre-payment) ─────
                     sig = None
                     try:
-                        # AGE-53: the Base option can carry its own amount —
-                        # bound it by the same cap before signing anything.
-                        # Fail closed: an amount we can't parse is an amount we
+                        # The Base option can carry its own amount — bound it
+                        # by the same cap before signing anything. Fail
+                        # closed: an amount we can't parse is an amount we
                         # can't bound, so we don't sign it either (falls back
                         # to Stellar via the except below — Stellar pays the
-                        # body's amount_usdc, which IS capped).
+                        # body's amount_usdc, which is capped).
                         base_amount = self._base_opt_amount_usd(base_opt)
                         if max_spend is not None and base_amount is None:
                             raise ValueError(
@@ -652,21 +651,20 @@ class AgentPayClient:
                         sig = None
 
                     if sig is not None:
-                        # ── Phase 2: transmit the signed auth (AGE-56) ─────
+                        # ── Phase 2: transmit the signed auth ──────────────
                         # Once this POST leaves the wire the gateway holds a
                         # transferWithAuthorization it can settle within
                         # validBefore — even if it answers non-200. Record the
-                        # spend NOW and never fall back to Stellar past this
+                        # spend now and never fall back to Stellar past this
                         # point: that would be a second payment.
                         #
                         # PAYMENT-SIGNATURE only. Sending the same payload in
                         # X-PAYMENT (the x402 standard header) collides with
-                        # the gateway's legacy Stellar X-Payment header and got
-                        # every Mode A named-tool call rejected with 'Invalid
-                        # X-Payment header format'. This path only talks to
-                        # AgentPay's own gateway; external x402 URLs go through
-                        # _call_x402_url instead.
-                        # Record the amount the authorization was SIGNED for —
+                        # the gateway's legacy Stellar X-Payment header and is
+                        # rejected as 'Invalid X-Payment header format'. This
+                        # path only talks to AgentPay's own gateway; external
+                        # x402 URLs go through _call_x402_url instead.
+                        # Record the amount the authorization was signed for —
                         # the Base option's amount, not the 402 body's
                         # amount_usdc (equal on AgentPay's own gateway, but
                         # the signed amount is the one that can settle).
@@ -722,8 +720,8 @@ class AgentPayClient:
                         raise PaymentFailed(reason)
                     tx_hash = payment["tx_hash"]
                     logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
-                    # Funds have LEFT the wallet — record before the retry, so
-                    # a failed retry still burns budget (AGE-54).
+                    # Funds have left the wallet — record before the retry, so
+                    # a failed retry still burns budget.
                     _record("paid_awaiting_result", tx_hash)
                     proof_header = (
                         f"tx_hash={tx_hash},"
@@ -751,16 +749,15 @@ class AgentPayClient:
 
             if retry.status_code != 200:
                 # Gateway refund contract: on tool-failure-post-verify the
-                # gateway now returns 500 with a structured body carrying
+                # gateway returns 500 with a structured body carrying
                 # payment_status, refund_eta_seconds, payment_id, and
                 # error_reason. Surface that as a typed RefundPending so
                 # callers can branch on the failure mode instead of
                 # parsing JSON themselves.
                 #
-                # Fallback to the generic Exception if the body doesn't
+                # Fall back to the generic Exception if the body doesn't
                 # parse as JSON (e.g. Railway edge 500s, unrelated
-                # gateway errors) — preserves the previous behaviour
-                # for shapes we don't recognise.
+                # gateway errors).
                 try:
                     err_body = retry.json()
                     payment_status = err_body.get("payment_status")
@@ -771,7 +768,7 @@ class AgentPayClient:
                 if payment_status in ("refund_pending", "refund_disabled"):
                     if entry is not None:
                         # Spend stays counted against the budget until the
-                        # refund actually confirms (AGE-54).
+                        # refund actually confirms.
                         entry["state"] = "refund_pending"
                     raise RefundPending(
                         err_body.get("error_reason", ""),

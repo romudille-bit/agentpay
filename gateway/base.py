@@ -57,9 +57,8 @@ CAIP2_BASE_MAINNET = "eip155:8453"
 
 
 # Maps a CAIP-2 network id to the canonical short label that Supabase's
-# replay_tx_hashes table uses (composite PK on (tx_hash, network)). The
-# plan settled on these four constants — keep them in sync if a new chain
-# is added.
+# replay_tx_hashes table uses (composite PK on (tx_hash, network)). Keep
+# it in sync if a new chain is added.
 _CAIP2_TO_NETWORK_LABEL = {
     CAIP2_BASE_MAINNET: "base-mainnet",
     CAIP2_BASE_SEPOLIA: "base-sepolia",
@@ -152,10 +151,9 @@ def build_payment_requirements(
     the /settle request to the CDP facilitator.
 
     `description` is the human/agent-readable purpose of the paid resource.
-    Directories that read the base64 PAYMENT-REQUIRED header (x402-list.com's
-    "402 channel: header" capture, 2026-09-07) take `accepts[].description`
-    from HERE, not from the richer `resource.description` block — so a bare
-    fallback surfaced publicly as "AgentPay tool call" on every paid endpoint.
+    Directories that read the base64 PAYMENT-REQUIRED header take
+    `accepts[].description` from this field, not from the richer
+    `resource.description` block, so the bare fallback is what they list.
     Pass the tool's real description at both the challenge and the settle
     call site so the header and the /settle requirements stay identical.
     """
@@ -188,16 +186,14 @@ def build_accepts_entry(
     description: str = "",
 ) -> dict:
     """
-    Build a standard x402 `accepts[]` entry for the 402 JSON BODY.
+    Build a standard x402 `accepts[]` entry for the 402 JSON body.
 
     Generic x402 payers discover payment options by reading `accepts[]` from
     the 402 body with the standard field names (`payTo`, `maxAmountRequired`,
-    `asset`, `network`). AgentPay historically exposed the standard entry only
-    inside the base64 PAYMENT-REQUIRED header and used non-standard names
-    (`pay_to`, `amount_atomic`) in the body's `payment_options`, so generic
-    clients missed the otherwise-valid Base path (GitHub issue #1).
+    `asset`, `network`); the non-standard names in the body's
+    `payment_options` (`pay_to`, `amount_atomic`) are not enough on their own.
 
-    Carries BOTH `amount` (x402 v2 / header dialect) and `maxAmountRequired`
+    Carries both `amount` (x402 v2 / header dialect) and `maxAmountRequired`
     (v1 field name many payers still key off) — same atomic value.
     """
     entry = dict(requirements)  # shallow copy — don't mutate caller's dict
@@ -217,14 +213,11 @@ def build_resource_block(
     Build the x402 `resource` info block: {url, description, mimeType} plus
     serviceName/tags (and the canonical-URL override) from `bazaar_resource`.
 
-    AGE-123: this is the ONE shared builder for the resource block. It feeds
-    BOTH the base64 PAYMENT-REQUIRED header (build_payment_required_header)
-    AND the 402 JSON body at every challenge emission point. Trust validators
-    (x402.fuchss.app) parse the BODY — for 30 days every probe was flagged
-    `envelope:missing-resource-info` (0/793 envelope-valid → specCompliance 30
-    → grade C "avoid") because the block lived only inside the header. Third
-    bug in the header/body dialect-drift family (AGE-48, AGE-112): body and
-    header MUST come from this one function so they can't drift again.
+    This is the single shared builder for the resource block. It feeds both
+    the base64 PAYMENT-REQUIRED header (build_payment_required_header) and
+    the 402 JSON body at every challenge emission point. Trust validators
+    parse the body, so the block has to appear there as well as in the
+    header, and both come from this one function so they cannot drift.
     """
     resource_block = {
         "url":         resource_url,
@@ -240,7 +233,7 @@ def build_resource_block(
             resource_block["tags"] = bazaar_resource["tags"]
         if bazaar_resource.get("description"):
             resource_block["description"] = bazaar_resource["description"]
-        # AGE-112: a tool payable on more than one path declares ONE canonical
+        # A tool payable on more than one path declares one canonical
         # resource, so every settle refreshes the same Bazaar record.
         if bazaar_resource.get("url"):
             resource_block["url"] = bazaar_resource["url"]
@@ -248,11 +241,11 @@ def build_resource_block(
 
 
 def build_error_responses() -> list[dict]:
-    """Documented error responses for paid AgentPay resources (AGE-129).
+    """Documented error responses for paid AgentPay resources.
 
     CDP's Bazaar curation bar lists "documented error responses" as part of
     the agent-ready metadata requirement, alongside input schema and per-call
-    pricing. This is the ONE shared catalogue; it is embedded in the
+    pricing. This is the single shared catalogue; it is embedded in the
     PAYMENT-REQUIRED header's outputSchema (build_payment_required_header)
     and in each curated resource's extensions.bazaar info block, so an agent
     can branch on failures without trial calls.
@@ -314,20 +307,20 @@ def build_payment_required_header(
     If `output_schema` is provided it's embedded inside the `accepts[0]`
     entry under the `outputSchema` key.
 
-    CRITICAL for Bazaar discovery: x402 indexers validate a resource by
-    GETting its URL and reading the live 402 — they look for the
-    `extensions.bazaar` block and `resource.serviceName`/`resource.tags`
-    RIGHT HERE in the 402 payload (every indexed resource exposes them).
-    Passing `output_schema` into the settle payload alone is NOT enough; the
-    validation crawl of the live endpoint must see the extension too, or the
-    resource stays stuck in `processing` and never promotes to indexed.
+    Bazaar discovery depends on this header: x402 indexers validate a
+    resource by GETting its URL and reading the live 402, looking for the
+    `extensions.bazaar` block and `resource.serviceName`/`resource.tags` in
+    the 402 payload. Passing `output_schema` into the settle payload alone is
+    not enough; the validation crawl of the live endpoint has to see the
+    extension too, or the resource stays in `processing` and never promotes
+    to indexed.
 
       bazaar_resource  — {serviceName, tags, description} merged into `resource`.
       bazaar_extension — the {info, schema} block set under `extensions.bazaar`.
     """
     accepts_entry = dict(requirements)  # shallow copy — don't mutate caller's dict
     if output_schema is not None:
-        # AGE-129: every advertised outputSchema carries the documented error
+        # Every advertised outputSchema carries the documented error
         # responses (agent-ready curation requirement). Copy, don't mutate.
         if "errors" not in output_schema:
             output_schema = {**output_schema, "errors": build_error_responses()}
@@ -379,19 +372,18 @@ async def verify_base_tx(
     Returns same shape as settle_base_payment():
         {"success": bool, "tx_hash": str, "payer": str, "network": str, "reason": str}
 
-    AGE-64 — challenge binding: the LIVE SDK path is Mode A (sign EIP-3009, the
-    gateway settles via CDP), which is bound to this specific challenge by a
-    single-use authorization nonce (CDP rejects reuse on-chain) plus the signed
-    paymentRequirements (amount + resource) — and AGE-65 extends that nonce
-    binding to the uncertain-settle recovery scan. This Mode B path (a client
-    presenting a raw tx_hash) is legacy: a raw ERC-20 Transfer carries no
-    challenge nonce/memo, so it is bound only by (payer, pay_to, amount) plus
-    one-time tx-hash consumption. Exposure is minimal today — every paid tool is
-    the same $0.01 to the same address and each tx_hash is consumed exactly once,
-    so a payer can at most redeem one real payment for one tool call. It becomes
-    material only if per-tool pricing ever diverges; the clean fix then is to
-    route all Base payments through Mode A (nonce-bound) or add a per-challenge
-    amount salt so the exact amount binds the transfer to the challenge.
+    Challenge binding: the SDK path is Mode A (sign EIP-3009, the gateway
+    settles via CDP), which is bound to a specific challenge by a single-use
+    authorization nonce (CDP rejects reuse on-chain) plus the signed
+    paymentRequirements (amount + resource); the uncertain-settle recovery
+    scan uses the same nonce. This Mode B path (a client presenting a raw
+    tx_hash) is legacy: a raw ERC-20 Transfer carries no challenge
+    nonce/memo, so it is bound only by (payer, pay_to, amount) plus one-time
+    tx-hash consumption. While every paid tool costs the same amount to the
+    same address, a payer can at most redeem one real payment for one tool
+    call. If per-tool pricing diverges, route all Base payments through Mode
+    A (nonce-bound) or add a per-challenge amount salt so the exact amount
+    binds the transfer to the challenge.
     """
     # ERC-20 Transfer(address indexed from, address indexed to, uint256 value)
     TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -540,9 +532,9 @@ async def send_base_refund(
 
 
 # CDP error signatures that mean "the tx may have confirmed anyway" — the
-# facilitator broadcast it but gave up waiting. Seen live 2026-06-11:
-# a settle reported settle_exact_node_failure while the transfer confirmed
-# ~seconds later, leaving the payer charged but unserved.
+# facilitator broadcast it but gave up waiting. A settle can report
+# settle_exact_node_failure while the transfer confirms seconds later,
+# leaving the payer charged but unserved.
 _UNCERTAIN_SETTLE_REASONS = ("settle_exact_node_failure",)
 _UNCERTAIN_SETTLE_HINTS   = ("did not confirm in time", "context deadline exceeded")
 
@@ -550,10 +542,10 @@ _UNCERTAIN_SETTLE_HINTS   = ("did not confirm in time", "context deadline exceed
 _RECOVER_ATTEMPTS = 5
 _RECOVER_DELAY_SECS = 4.0
 
-# AGE-65: USDC emits AuthorizationUsed(address indexed authorizer, bytes32
-# indexed nonce) when a transferWithAuthorization settles. Matching recovery
-# on this event's nonce binds it to the EXACT signed authorization we sent,
-# instead of "any (payer→gateway, ≥amount) transfer in the window" — which
+# USDC emits AuthorizationUsed(address indexed authorizer, bytes32 indexed
+# nonce) when a transferWithAuthorization settles. Matching recovery on
+# this event's nonce binds it to the exact signed authorization we sent,
+# instead of "any (payer→gateway, ≥amount) transfer in the window", which
 # could grab an unrelated second payment from the same payer. Computed via
 # keccak so the topic can't drift from a hand-copied constant.
 try:
@@ -587,11 +579,11 @@ async def _recover_uncertain_settle(
 ) -> dict | None:
     """After an uncertain CDP failure, look for the confirmed transfer on-chain.
 
-    AGE-65: when the signed authorization's nonce is known, poll eth_getLogs
-    for the USDC AuthorizationUsed(authorizer=payer, nonce) event — that binds
-    recovery to the EXACT authorization we sent, so a payer's *other* transfer
+    When the signed authorization's nonce is known, poll eth_getLogs for the
+    USDC AuthorizationUsed(authorizer=payer, nonce) event. That binds
+    recovery to the exact authorization we sent, so a payer's other transfer
     to the gateway in the same window can't be grabbed and consumed against
-    this challenge. Falls back to the old amount-only Transfer scan only when
+    this challenge. Falls back to the amount-only Transfer scan only when
     the nonce is unavailable (logged). Returns a success-shaped dict if found
     and successfully consumed (replay-protected), else None.
     """
@@ -673,9 +665,9 @@ async def _recover_uncertain_settle(
                 if recorded is False:
                     return None
                 if recorded is None:
-                    # AGE-60 fail-closed: durable consume unconfirmed — don't
-                    # claim the recovered transfer. Release the in-memory hold
-                    # so a later retry can re-recover it once the store is back.
+                    # Fail closed: durable consume unconfirmed, so don't claim
+                    # the recovered transfer. Release the in-memory hold so a
+                    # later retry can re-recover it once the store is back.
                     _used_base_tx_hashes.discard(tx_hash)
                     return None
                 logger.info(
@@ -728,7 +720,7 @@ async def settle_base_payment(
         # on base-mainnet vs base-sepolia is treated as independent;
         # _used_base_tx_hashes has no network discriminator, so the
         # in-memory fallback is slightly less precise but only matters
-        # if Supabase is unreachable AND we're switching networks
+        # if Supabase is unreachable and we're switching networks
         # mid-flight, which doesn't happen in practice.
         caip2 = payment_requirements.get("network", "")
         network_label = _network_label(caip2)
@@ -757,8 +749,7 @@ async def settle_base_payment(
             #      within this worker's event loop.
             #   2. record_tx_hash() is an insert into a composite-PK table and
             #      returns False on a 409 — another worker/pod already consumed
-            #      this hash. Now AWAITED so the 409 actually gates the result
-            #      instead of being discarded by fire-and-forget.
+            #      this hash. It is awaited so the 409 gates the result.
             if tx_hash in _used_base_tx_hashes:
                 return {"success": False, "tx_hash": tx_hash, "payer": payer,
                         "network": payment_requirements.get("network", ""),
@@ -770,10 +761,10 @@ async def settle_base_payment(
                         "network": payment_requirements.get("network", ""),
                         "reason": "replay_attack"}
             if recorded is None:
-                # AGE-60 fail-closed: durable consume unconfirmed (Supabase
-                # blip / broken table). The in-memory set dies on restart, so
+                # Fail closed: durable consume unconfirmed (Supabase blip /
+                # broken table). The in-memory set dies on restart, so
                 # settling here would make pre-restart payments replayable.
-                # Reject retryably — NOT "replay_attack" — and release the
+                # Reject retryably (not "replay_attack") and release the
                 # in-memory hold so the same proof works once the store is back.
                 _used_base_tx_hashes.discard(tx_hash)
                 return {"success": False, "tx_hash": tx_hash, "payer": payer,
@@ -807,7 +798,7 @@ async def settle_base_payment(
     # ── Inject AgentPay's canonical Bazaar indexing metadata ──────────────────
     # Bazaar indexes the resource from paymentPayload.resource + .extensions.bazaar
     # at settle time. We set these server-side (authoritatively, overriding
-    # whatever the client sent for our own resource) so EVERY session_create
+    # whatever the client sent for our own resource) so every session_create
     # settlement triggers discovery indexing — not just clients that happen to
     # include the extension. resource carries serviceName + tags; extensions.bazaar
     # carries the input/output schema Bazaar needs to rank the listing.
@@ -862,7 +853,7 @@ async def settle_base_payment(
                 required_amount_atomic=int(payment_requirements.get("amount", "0") or 0),
                 rpc_url=rpc_url or "https://mainnet.base.org",
                 network_label=_network_label(caip2),
-                # AGE-65: bind recovery to this exact signed authorization.
+                # Bind recovery to this exact signed authorization.
                 auth_nonce=_extract_auth_nonce(payload),
             )
             if recovered:
@@ -879,12 +870,10 @@ async def settle_base_payment(
     logger.info(f"[BASE] Settle response: success={data.get('success')} tx={data.get('transaction','')[:20]}...")
 
     if data.get("success"):
-        # Schema-validate the CDP response before trusting it.
-        # CDP has occasionally returned {"success": True} with missing or
-        # malformed transaction/payer/network fields — silently propagating
-        # empty values produced misleading downstream receipts (paid call
-        # appears successful but the on-chain proof is unrecoverable).
-        # Validate explicit shape before declaring victory.
+        # Schema-validate the CDP response before trusting it. CDP can return
+        # {"success": True} with missing or malformed transaction/payer/network
+        # fields; propagating empty values would produce receipts whose
+        # on-chain proof is unrecoverable.
         tx      = data.get("transaction", "")
         payer   = data.get("payer", "")
         network = data.get("network", "")
@@ -928,11 +917,10 @@ async def settle_base_payment(
             required_amount_atomic=int(payment_requirements.get("amount", "0") or 0),
             rpc_url=rpc_url or "https://mainnet.base.org",
             network_label=_network_label(caip2),
-            # AGE-65: bind recovery to this exact signed authorization — must
-            # mirror the HTTP-non-200 recovery call site above. Without this the
-            # 200-body {"success": false} path fell back to the broad amount-only
-            # Transfer filter, which can bind an unrelated same-payer transfer
-            # (double-charge) — exactly what nonce-binding exists to prevent.
+            # Bind recovery to this exact signed authorization, mirroring the
+            # non-200 recovery call site above. Without the nonce this path
+            # falls back to the broad amount-only Transfer filter, which can
+            # bind an unrelated same-payer transfer (double-charge).
             auth_nonce=_extract_auth_nonce(payload),
         )
         if recovered:

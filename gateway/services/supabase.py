@@ -4,20 +4,20 @@ services/supabase.py — Supabase REST helpers.
 Wraps the Supabase REST API in raw httpx — works with the sb_secret_ key
 format that the supabase-py SDK can't handle.
 
-This grew from the original log_payment helper into the
-persisted replay-state home. Functions are grouped:
+This is the home of the gateway's persisted state. Functions are grouped:
 
     Replay protection
         record_payment_id, is_payment_id_consumed
         record_tx_hash,    is_tx_hash_consumed
+    Pending challenges
+    Faucet IP cooldown
+    payment_logs lifecycle
+    Refund worker
+    Flagship runs, ledger verification, prober tables, tool registry
 
-    Pending challenges (#13 Group 2 — pending)
-    Faucet IP cooldown (#13 Group 3 — pending)
-    payment_logs lifecycle (#13 Group 4 — pending)
-
-Dual-write phase: writes go to Supabase as a secondary store, reads
-still come from in-memory dicts. Cutover (Supabase becomes primary)
-is row 7 of the Tier 2 plan.
+Supabase is the primary store for replay protection and payment_logs;
+pending challenges and the faucet cooldown are mirrored here alongside
+the in-memory structures that remain primary for them.
 """
 
 import asyncio
@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 # we want to give Supabase a fair shot).
 _READ_TIMEOUT  = 3.0
 _WRITE_TIMEOUT = 5.0
-# AGE-122: single retry for the pending-challenge mirror write; short enough
-# that the fire-and-forget task stays well inside the 120s challenge TTL.
+# Delay before the single retry of the pending-challenge mirror write; short
+# enough that the fire-and-forget task stays well inside the 120s challenge TTL.
 _CHALLENGE_RETRY_DELAY = 0.5
 
 
@@ -57,13 +57,12 @@ def sb_enabled() -> bool:
     return bool(settings.SUPABASE_URL and settings.SUPABASE_KEY)
 
 
-# log_payment (the legacy "single INSERT at end of call_tool") was removed
-# The current pattern is:
+# payment_logs is written in two steps rather than as a single insert at the
+# end of a call:
 #   1. insert_pending_payment_log() at 402-issue time → state='pending' row
 #   2. update_payment_log_state() at each lifecycle transition (verified,
 #      split_done, payment_done, rejected, abandoned, refund_pending)
-# See routes/tools.py:call_tool for the integration site, and §5 of the
-# Tier 2 design doc for the state machine.
+# See routes/tools.py:call_tool for the integration site.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,26 +75,27 @@ def sb_enabled() -> bool:
 #                        a Stellar testnet hash can't collide with a Base
 #                        mainnet hash.
 #
-# Behaviour conventions for this group (AGE-60 — fail CLOSED):
+# Behaviour conventions for this group (fail closed):
 #   record_*()  — tri-state:
 #                   True  — newly recorded (payment may proceed)
 #                   False — row already exists (HTTP 409 → replay, reject)
 #                   None  — infra error (network, 5xx, broken table/RLS).
-#                 Supabase is now the PRIMARY replay store — the in-memory
-#                 sets are wiped on every Railway restart, so "don't block
-#                 on infrastructure errors" made a pre-restart payment
-#                 replayable during any Supabase blip. Callers MUST treat
-#                 None as "consume not confirmed" and reject WITHOUT
-#                 accusing replay (the client may retry the same proof).
+#                 Supabase is the primary replay store: the in-memory sets
+#                 are wiped on every restart, so proceeding on an
+#                 infrastructure error would make a pre-restart payment
+#                 replayable during any Supabase outage. Callers treat None
+#                 as "consume not confirmed" and reject without accusing
+#                 replay (the client may retry the same proof).
 #   is_*_consumed() — pre-checks only: True if row exists, False otherwise
 #                 (including on error, logged). They are advisory — the
 #                 authoritative, fail-closed gate is the record_*() insert
 #                 (PK/composite-PK 409), which every consume path awaits.
 
 
-# AGE-60: sustained-failure escalation. A single blip is a warning; a broken
-# table / RLS misconfiguration is silent replay-protection loss and must be
-# LOUD. Counter is shared by both record_* helpers and resets on any success.
+# Sustained-failure escalation. A single blip is a warning; a broken table or
+# RLS misconfiguration is silent loss of replay protection and is logged at
+# critical. The counter is shared by both record_* helpers and resets on any
+# success.
 _replay_store_consecutive_failures = 0
 _REPLAY_STORE_ALERT_THRESHOLD = 3
 
@@ -124,7 +124,7 @@ async def record_payment_id(payment_id: str) -> bool | None:
     Returns:
         True  — newly recorded
         False — already consumed (HTTP 409 conflict) → replay, reject
-        None  — infra error: consume NOT confirmed (AGE-60 fail-closed).
+        None  — infra error: consume not confirmed (fail closed).
                 Callers must reject without fulfilling, with a retryable
                 reason (not a replay accusation).
         (sb disabled → True: single-process in-memory dedupe is authoritative)
@@ -155,14 +155,14 @@ async def record_payment_id(payment_id: str) -> bool | None:
 
 
 async def unrecord_tx_hash(tx_hash: str, network: str) -> bool:
-    """Best-effort compensating DELETE for a HALF-consumed proof (AGE-60
-    follow-up): record_tx_hash landed but the paired record_payment_id could
-    not be confirmed, so verify_and_fulfill is rolling the consume back to
-    keep the client's proof retryable.
+    """Best-effort compensating DELETE for a half-consumed proof:
+    record_tx_hash landed but the paired record_payment_id could not be
+    confirmed, so verify_and_fulfill is rolling the consume back to keep the
+    client's proof retryable.
 
-    Returns True when the row is gone. On failure logs CRITICAL with the
+    Returns True when the row is gone. On failure logs at critical with the
     identifiers — until the row is removed, this proof will false-positive
-    as "replay attack" on retry and needs manual reconciliation.
+    as a replay on retry and needs manual reconciliation.
     """
     if not sb_enabled():
         return True
@@ -193,7 +193,7 @@ async def unrecord_tx_hash(tx_hash: str, network: str) -> bool:
 async def is_payment_id_consumed(payment_id: str) -> bool:
     """Returns True if payment_id is already in replay_payment_ids.
 
-    Used during cutover (#13 row 7) — not called in this PR.
+    Advisory pre-check; the record_* insert is the authoritative gate.
     """
     if not sb_enabled():
         return False
@@ -225,7 +225,7 @@ async def record_tx_hash(tx_hash: str, network: str) -> bool | None:
     Returns:
         True  — newly recorded
         False — already consumed (HTTP 409 conflict) → replay, reject
-        None  — infra error: consume NOT confirmed (AGE-60 fail-closed).
+        None  — infra error: consume not confirmed (fail closed).
                 Callers must reject without fulfilling, with a retryable
                 reason (not a replay accusation).
         (sb disabled → True: single-process in-memory dedupe is authoritative)
@@ -261,7 +261,7 @@ async def record_tx_hash(tx_hash: str, network: str) -> bool | None:
 async def is_tx_hash_consumed(tx_hash: str, network: str) -> bool:
     """Returns True if (tx_hash, network) is already in replay_tx_hashes.
 
-    Used during cutover (#13 row 7) — not called in this PR.
+    Advisory pre-check; the record_* insert is the authoritative gate.
     """
     if not sb_enabled():
         return False
@@ -300,14 +300,13 @@ async def is_tx_hash_consumed(tx_hash: str, network: str) -> bool:
 #
 # Behaviour conventions:
 #   store_pending_challenge() — INSERT new row. On error, log + swallow
-#       (in-memory dict is still primary in this PR).
+#       (the in-memory dict is primary).
 #   get_pending_challenge() — SELECT WHERE expires_at > now(). Returns
-#       None if not found, expired, or on error. Used during cutover.
+#       None if not found, expired, or on error.
 #   delete_pending_challenge() — DELETE by payment_id. Idempotent (no-op
 #       on missing row).
 #   cleanup_expired_challenges() — DELETE rows where expires_at < now() -
-#       interval '1 hour'. Returns count of deleted rows. Per yesterday's
-#       decision, just exposed; scheduling lands in #13 cutover (row 7).
+#       interval '1 hour'. Returns count of deleted rows.
 
 
 def _unix_to_iso(unix_ts: float) -> str:
@@ -328,13 +327,11 @@ async def store_pending_challenge(
 ) -> None:
     """INSERT into pending_challenges. Fire-and-forget, with one retry.
 
-    AGE-122: prod showed ~9 single-attempt failures/day (~4-5% of paid
-    challenges), all on the exception path (timeouts), each losing the
-    durable mirror for that challenge. The in-memory dict in gateway/x402.py
-    stays primary, so a lost mirror only matters if the worker restarts
-    inside the challenge TTL — but the fix is one cheap retry, and the
-    final-failure log is now a WARNING that states the actual blast radius
-    instead of an ERROR that reads like an incident.
+    Single-attempt writes occasionally time out. The in-memory dict in
+    gateway/x402.py stays primary, so a lost mirror only matters if the
+    worker restarts inside the challenge TTL; one cheap retry covers most
+    of those cases, and the final-failure log is a warning that states the
+    actual blast radius.
     """
     if not sb_enabled():
         return
@@ -393,7 +390,6 @@ async def get_pending_challenge(payment_id: str) -> Optional[dict]:
     """SELECT a non-expired challenge by payment_id.
 
     Returns the row as a dict, or None if not found / expired / on error.
-    Used during cutover (#13 row 7) — not called in this PR.
     """
     if not sb_enabled():
         return None
@@ -444,10 +440,10 @@ async def delete_pending_challenge(payment_id: str) -> None:
 
 
 def _count_from_content_range(resp) -> int:
-    """AGE-75: parse the affected-row count from a PostgREST Content-Range
-    header (e.g. '*/1234' or '0-19/1234') on a count=exact request — so a
-    sweep doesn't have to echo (and JSON-decode) every affected row just to
-    count them. Returns 0 when the header is absent/unparseable."""
+    """Parse the affected-row count from a PostgREST Content-Range header
+    (e.g. '*/1234' or '0-19/1234') on a count=exact request — so a sweep
+    doesn't have to echo (and JSON-decode) every affected row just to count
+    them. Returns 0 when the header is absent/unparseable."""
     cr = resp.headers.get("content-range") or resp.headers.get("Content-Range")
     if not cr or "/" not in cr:
         return 0
@@ -472,7 +468,7 @@ async def cleanup_expired_challenges() -> int:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
             resp = await client.delete(
                 f"{settings.SUPABASE_URL}/rest/v1/pending_challenges",
-                # AGE-75: count via the Content-Range header (count=exact) with
+                # Count via the Content-Range header (count=exact) with
                 # return=minimal — no body echo, so a big backlog after downtime
                 # can't return tens of thousands of rows just to be counted.
                 headers={**sb_headers(),
@@ -498,8 +494,8 @@ async def cleanup_expired_challenges() -> int:
 # functions:
 #
 #   faucet_ip_seen_recently() — read with a cooldown filter. Returns True
-#       if the IP requested a faucet wallet within the cooldown window.
-#       Used during cutover (#13 row 7) to enforce per-IP rate limit.
+#       if the IP requested a faucet wallet within the cooldown window;
+#       enforces the per-IP rate limit.
 #   record_faucet_ip() — UPSERT. Either inserts a new row or updates
 #       last_used to now() if the IP exists. Uses Postgres ON CONFLICT
 #       via the Supabase upsert preference.
@@ -575,8 +571,8 @@ async def record_faucet_ip(ip: str) -> None:
 # payment_logs lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Foundation for #14 (payment_logs lifecycle state machine). This PR exposes
-# the insert + update primitives; #14 wires them into the route handler.
+# Insert + update primitives for the payment_logs state machine; the route
+# handler in routes/tools.py drives the transitions.
 #
 #   insert_pending_payment_log() — INSERT row with state='pending'. Returns
 #       the newly inserted id (used by callers to locate the row for
@@ -585,11 +581,11 @@ async def record_faucet_ip(ip: str) -> None:
 #       payment_id. The set_updated_at_payment_logs trigger handles
 #       updated_at automatically.
 #
-# State machine (per design doc §5.3):
+# State machine:
 #   pending → verified → split_done → payment_done       (happy path)
 #   pending → abandoned                                   (TTL expired)
 #   pending → rejected                                    (replay/forged)
-#   verified → refund_pending → refund_done|refund_failed (#12 territory)
+#   verified → refund_pending → refund_done|refund_failed (refund worker)
 
 
 async def insert_pending_payment_log(
@@ -648,16 +644,16 @@ async def insert_pending_payment_log(
         "gateway_fee_usdc":  gateway_fee_usdc,
         "client_ip":         client_ip,
         "user_agent":        user_agent,
-        # Disk-IO fix #2: rejected real attempts are INSERTed complete
-        # (no pending row exists to PATCH), so the reason rides the insert.
+        # Rejected attempts are inserted complete (no pending row exists
+        # to PATCH), so the reason rides the insert.
         "error_reason":      error_reason,
     }.items():
         if val is not None:
             payload[key] = val
-    # Buyer-observability: the request params of the PAID call (which symbols
+    # Buyer-observability: the request params of the paid call (which symbols
     # pre_trade_check screens, which needs verified_route vets). Private table;
     # every public read (/ledger, /scores.json own_tools) uses an explicit
-    # column select, so this column can never leak. Size-capped so a caller
+    # column select, so this column cannot leak. Size-capped so a caller
     # can't bloat rows: oversized params are recorded as a marker, not dropped
     # silently. Migration: db/migrations/payment_logs_parameters.sql — until
     # it is applied, the 400-retry below degrades to the old shape.
@@ -680,9 +676,9 @@ async def insert_pending_payment_log(
             )
             if (resp.status_code == 400 and "parameters" in payload
                     and "parameters" in resp.text):
-                # Migration not applied yet — a missing column must degrade to
-                # the pre-observability shape, never block a payment row (the
-                # pre-402 caller FAILS CLOSED on None, so a schema gap must
+                # Migration not applied yet — a missing column degrades to the
+                # pre-observability shape rather than blocking the row (the
+                # pre-402 caller fails closed on None, so a schema gap must
                 # not turn into refused challenges).
                 logger.warning("insert_pending_payment_log: parameters column "
                                "missing (apply payment_logs_parameters.sql) — "
@@ -750,38 +746,37 @@ async def update_payment_log_state(
     Common fields callers will pass:
         agent_address, tx_hash    — when the payment header arrives
         gateway_fee_usdc          — when the split fires
-        refund_tx_hash            — when refund settles (#12)
+        refund_tx_hash            — when refund settles
         error_reason              — on failures
         client_ip, user_agent     — populate late if they weren't at insert time
 
     expected_state: optional WHERE filter — a single state or a
     tuple/list of acceptable states. When provided, the PATCH only
-    lands if the row's current state matches. This is the fix for the
+    lands if the row's current state matches. This guards against the
     race where a fire-and-forget intermediate PATCH (e.g. 'verified')
-    could arrive AFTER the awaited terminal PATCH ('payment_done') and
-    overwrite it. With expected_state='pending' on the 'verified'
+    arrives after the awaited terminal PATCH ('payment_done') and
+    overwrites it. With expected_state='pending' on the 'verified'
     PATCH, the racing-late case becomes a silent no-op (WHERE doesn't
-    match) instead of corrupting the row. F3 (2026-07-20): the
-    'rejected' PATCH is keyed on a HEADER-SUPPLIED payment id, so it
-    passes ('pending', 'verified') — otherwise anyone replaying a
-    known pid with a garbage tx_hash could flip a terminal
-    payment_done row to rejected with attacker-chosen error_reason,
-    corrupting the conversion KPIs.
+    match) instead of corrupting the row. The 'rejected' PATCH is keyed
+    on a header-supplied payment id, so it passes ('pending', 'verified')
+    — otherwise anyone replaying a known pid with a garbage tx_hash could
+    flip a terminal payment_done row to rejected with attacker-chosen
+    error_reason, corrupting the conversion KPIs.
 
-    clear_fields: columns to explicitly set to SQL NULL (AGE-73). The
-    **fields path skips None so a caller can't accidentally null a column,
-    but sometimes clearing IS the intent — e.g. a refund that failed 4×
-    then succeeded must drop its stale error_reason. Listing a column here
+    clear_fields: columns to explicitly set to SQL NULL. The **fields path
+    skips None so a caller can't accidentally null a column, but sometimes
+    clearing is the intent — e.g. a refund that failed several times then
+    succeeded must drop its stale error_reason. Listing a column here
     writes JSON null for it. `fields` wins if a name appears in both.
 
     Idempotent — calling with the same (payment_id, state) twice is safe.
 
-    Returns the number of rows the PATCH matched (disk-IO fix #2,
-    2026-08-20: unpaid 402s no longer pre-insert a pending row, so a
-    rejection PATCH can legitimately match nothing — the caller then
-    INSERTs a complete 'rejected' row instead). None = Supabase disabled
-    or the write errored (unknown outcome — callers should NOT insert on
-    None, or a transient blip could produce duplicate rows).
+    Returns the number of rows the PATCH matched. Unpaid 402s do not
+    pre-insert a pending row, so a rejection PATCH can legitimately match
+    nothing — the caller then inserts a complete 'rejected' row instead.
+    None = Supabase disabled or the write errored (unknown outcome —
+    callers should not insert on None, or a transient blip could produce
+    duplicate rows).
     """
     if not sb_enabled():
         return None
@@ -835,9 +830,9 @@ async def mark_split_failed(payment_id: str, reason: str) -> None:
     """Durably flag a payment whose revenue split could not be settled.
 
     split_payment() runs concurrently with (and usually finishes after) the
-    route's terminal 'payment_done' PATCH, so we must NOT touch the `state`
+    route's terminal 'payment_done' PATCH, so this must not touch the `state`
     column — clobbering 'payment_done' would corrupt the funnel analytics and
-    could be re-read as a non-terminal row. Instead we stamp `error_reason`
+    could be re-read as a non-terminal row. Instead it stamps `error_reason`
     only, leaving `state` untouched. A permanently-failed split is then
     reconcilable with:
 
@@ -874,7 +869,7 @@ async def mark_split_failed(payment_id: str, reason: str) -> None:
 
 # Abandoned-pending sweep window. A pending payment_logs row is considered
 # abandoned if it's been sitting in `pending` for longer than this without
-# ever transitioning to `verified`. Matches the design doc §5.4 spec.
+# ever transitioning to `verified`.
 #
 # 5 min is chosen to be 2.5× the 2-min payment_challenge TTL, so a slow
 # agent that pays right at the TTL boundary doesn't get its row swept
@@ -883,7 +878,7 @@ _ABANDONED_AFTER_SECONDS = 5 * 60
 
 
 def _pgrst_filter_safe(value: str) -> bool:
-    """AGE-75: True if `value` is safe to drop into a PostgREST `eq.` filter
+    """True if `value` is safe to drop into a PostgREST `eq.` filter
     verbatim — i.e. contains no PostgREST-reserved characters (comma, parens,
     or a double quote). Values that fail this are dropped by callers rather
     than risking a malformed filter."""
@@ -898,34 +893,28 @@ async def correlate_pending_challenge(
 ) -> Optional[str]:
     """Best-effort: link a Base/free-v2 settle back to the 402 that prompted it.
 
-    WHY THIS EXISTS. x402-v2 does not echo our UUID back through
-    PAYMENT-SIGNATURE, so a Base settle is keyed on tx_hash and writes a
-    SECOND row; the original UUID-keyed pending row is never touched and the
-    sweep marks it 'abandoned'. Every success therefore mints a phantom
-    abandonment, and no 402 can be tied to its own settlement.
+    x402-v2 does not echo the gateway's UUID back through PAYMENT-SIGNATURE,
+    so a Base settle is keyed on tx_hash and writes a second row; the
+    original UUID-keyed pending row is never touched and the sweep marks it
+    'abandoned'. Without correlation every success mints a phantom
+    abandonment, and `conversion = payment_done / (payment_done + abandoned)`
+    is systematically wrong with the error scaling with success (at a true
+    50% conversion the query reports 33%).
 
-    Two consequences, one small and one not:
-      * Inflation is currently trivial (~311 phantoms vs ~121k abandoned rows
-        = 0.26%). This is NOT why the funnel looks bad.
-      * But `conversion = payment_done / (payment_done + abandoned)` is
-        SYSTEMATICALLY WRONG, and the error scales with success: at a true 50%
-        conversion the query reports 33%. It corrupts the metric precisely when
-        the metric starts to matter. That's the reason to fix it now, cheaply,
-        rather than when there's revenue riding on the number.
-
-    Correlation is HEURISTIC and best-effort. There is no shared key, so we
-    match the most recent still-pending row on (tool_name, client_ip,
-    user_agent) inside the sweep window. Caveats, stated plainly:
-      * client_ip is near-useless as a discriminator — Railway's edge puts
-        almost everything on 100.64.0.x (CGNAT). It's kept as a weak filter,
-        not a identity.
+    Correlation is heuristic and best-effort. There is no shared key, so
+    the most recent still-pending row is matched on (tool_name, client_ip,
+    user_agent) inside the sweep window. Caveats:
+      * client_ip is a weak discriminator — the hosting edge puts most
+        traffic behind CGNAT addresses. It is kept as a weak filter, not
+        an identity.
       * UA is not unique either: many distinct clients share bare 'node'.
-      * So under concurrency this CAN attribute a settle to the wrong client's
-        challenge. That is acceptable ONLY because this column is analytics,
-        never money: nothing about verification, replay, or the split reads it.
+      * So under concurrency this can attribute a settle to the wrong
+        client's challenge. That is acceptable only because this column is
+        analytics, never money: nothing about verification, replay, or the
+        split reads it.
 
-    Failure degrades to exactly today's behaviour (row → 'abandoned' via the
-    sweep), so this is safe to run fire-and-forget off the hot path.
+    Failure degrades to the uncorrelated behaviour (row → 'abandoned' via
+    the sweep), so this is safe to run fire-and-forget off the hot path.
 
     Returns the correlated payment_id, or None if nothing matched.
     """
@@ -946,11 +935,11 @@ async def correlate_pending_challenge(
         }
         # Weak filters — only applied when present, so a UA-less client still
         # correlates on (tool_name, window) rather than not at all.
-        # AGE-75: the User-Agent is client-controlled and goes into a PostgREST
-        # `eq.` filter. `eq.` treats the value literally (no working break was
-        # found), but a UA containing PostgREST-reserved chars (,()") is dropped
-        # defensively — correlation then degrades to (tool_name, window), which
-        # this function already tolerates, rather than risking a malformed filter.
+        # The User-Agent is client-controlled and goes into a PostgREST `eq.`
+        # filter. `eq.` treats the value literally, but a UA containing
+        # PostgREST-reserved chars (,()") is dropped defensively — correlation
+        # then degrades to (tool_name, window), which this function already
+        # tolerates, rather than risking a malformed filter.
         if client_ip and _pgrst_filter_safe(client_ip):
             params["client_ip"] = f"eq.{client_ip}"
         if user_agent and _pgrst_filter_safe(user_agent):
@@ -975,8 +964,8 @@ async def correlate_pending_challenge(
             if not pid:
                 return None
 
-            # 'superseded' — the challenge WAS answered; the outcome lives on
-            # the tx-keyed row. Deliberately NOT 'payment_done': that would
+            # 'superseded' — the challenge was answered; the outcome lives on
+            # the tx-keyed row. Deliberately not 'payment_done': that would
             # double-count successes in the very query this exists to fix.
             # Deliberately not a DELETE either: the row's created_at is the
             # 402-issue time, so keeping it gives time-to-pay for free.
@@ -1016,27 +1005,21 @@ async def sweep_abandoned_pending() -> int:
     Unlike cleanup_expired_challenges (which DELETEs from the transient
     pending_challenges lookup table), this PATCHes payment_logs in
     place — the abandoned row stays as a permanent analytics record.
-    The conversion-by-tool query in §5.5 of the design doc relies on
-    counting abandoned vs. payment_done rows per tool.
+    The conversion-by-tool query relies on counting abandoned vs.
+    payment_done rows per tool.
 
-    IMPORTANT (2026-07-17): 'abandoned' means "we issued a 402 and NOTHING
-    came back" — it does NOT mean "tried and failed". A client that answers
-    with a bad payload is 'rejected' with an error_reason; a client whose
-    answer settled on Base is 'superseded' via correlate_pending_challenge.
-    Historically neither had ever fired: 0 'rejected' rows and 0 non-null
-    error_reason in the entire table, i.e. no client has ever sent a payload
-    we refused. Abandonment here is silence, not failure — don't read it as a
-    payments bug.
+    'abandoned' means a 402 was issued and nothing came back — not "tried
+    and failed". A client that answers with a bad payload is 'rejected'
+    with an error_reason; a client whose answer settled on Base is
+    'superseded' via correlate_pending_challenge. Abandonment is silence,
+    not failure.
 
-    Because a Base settle is keyed on tx_hash (x402-v2 doesn't echo our UUID),
-    the §5.5 conversion query MUST exclude 'superseded' from the denominator
-    or it double-counts every success as an abandonment too:
+    Because a Base settle is keyed on tx_hash (x402-v2 doesn't echo the
+    UUID), the conversion query excludes 'superseded' from the denominator,
+    or it would double-count every success as an abandonment too:
 
         conversion = payment_done / (payment_done + abandoned)
-          -- 'superseded' rows are answered challenges; excluding them is the
-          -- whole point. Before correlate_pending_challenge existed they were
-          -- silently mixed into 'abandoned' and the ratio was wrong by
-          -- construction, with the error scaling as success grew.
+          -- 'superseded' rows are answered challenges and are excluded.
     """
     if not sb_enabled():
         return 0
@@ -1048,9 +1031,9 @@ async def sweep_abandoned_pending() -> int:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
             resp = await client.patch(
                 f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
-                # AGE-75: count via Content-Range (count=exact) + return=minimal
-                # — a backlog of tens of thousands of stale rows after downtime
-                # is counted from a header, not echoed back as a giant JSON body.
+                # Count via Content-Range (count=exact) + return=minimal — a
+                # backlog of tens of thousands of stale rows after downtime is
+                # counted from a header, not echoed back as a giant JSON body.
                 headers={**sb_headers(),
                          "Prefer": "return=minimal,count=exact"},
                 params={
@@ -1097,7 +1080,7 @@ async def sweep_abandoned_pending() -> int:
 #   mark_refund_done() — write, terminal state transition with the refund
 #       tx_hash. State-guarded against double-write.
 #   mark_refund_failed() — write, terminal state for retry exhaustion.
-#       Accepts both 'refund_pending' AND 'refund_failed' as expected
+#       Accepts both 'refund_pending' and 'refund_failed' as expected
 #       state so a retry of the terminal write is a no-op rather than
 #       a 0-row update that the caller can't distinguish from a bug.
 
@@ -1112,11 +1095,10 @@ async def claim_refund_pending(limit: int = 20) -> list[dict]:
     Supabase error / disabled — the worker treats that as "nothing to
     do this tick" and waits for the next sweep.
 
-    No locking. Multi-pod deploys would re-claim the same rows; we run
-    single-pod on Railway today and Stellar's submit_transaction is
-    idempotent enough that a double-send is a survivable duplicate
-    transfer (the agent receives twice — manual reconciliation, but
-    no funds lost).
+    No locking. Multi-pod deploys would re-claim the same rows; the
+    gateway runs single-pod, and a double-send is a survivable duplicate
+    transfer (the agent receives twice — manual reconciliation, but no
+    funds lost).
     """
     if not sb_enabled():
         return []
@@ -1146,13 +1128,12 @@ async def claim_refund_pending(limit: int = 20) -> list[dict]:
 
 
 async def sweep_cap_exhausted_refunds() -> int:
-    """Terminal-state a leaked row class (AGE-61 follow-up): rows sitting in
-    state='refund_pending' with refund_attempts >= cap. They fall outside
-    claim_refund_pending's `refund_attempts < cap` filter, so without this
-    sweep they stay pending forever, invisible to the worker AND to failure
-    analytics. Reachable two ways: a worker crash between increment and
-    mark_*, or (new with the confirmed-increment contract) repeated blips
-    that burn attempts without a send.
+    """Terminal-state rows sitting in state='refund_pending' with
+    refund_attempts >= cap. They fall outside claim_refund_pending's
+    `refund_attempts < cap` filter, so without this sweep they stay pending
+    forever, invisible to the worker and to failure analytics. Reachable
+    two ways: a worker crash between increment and mark_*, or repeated
+    blips that burn attempts without a send.
 
     PATCHes them to refund_failed with error_reason='cap_exhausted_no_send'.
     Returns the number of rows transitioned (0 on error/disabled).
@@ -1192,33 +1173,30 @@ async def sweep_cap_exhausted_refunds() -> int:
 async def increment_refund_attempt(payment_id: str) -> int | None:
     """PATCH refund_attempts = refund_attempts + 1 (read-modify-write).
 
-    PostgREST doesn't expose SQL-side arithmetic in a PATCH body
-    directly — but we can hit a SQL function via /rpc, or read-modify-
-    write. We use read-modify-write here for simplicity: the row's
-    state filter (state=refund_pending) plus the single-worker
-    invariant means the increment is effectively serial. If we ever
-    scale to multiple workers, switch to an `inc_refund_attempt`
-    Postgres function exposed via /rpc.
+    PostgREST doesn't expose SQL-side arithmetic in a PATCH body, so this
+    is a read-modify-write: the single-worker invariant means the
+    increment is effectively serial. Scaling to multiple workers would
+    call for an `inc_refund_attempt` Postgres function exposed via /rpc.
 
-    Called BEFORE the on-chain send so a worker crash mid-attempt
-    still counts against the cap — bias towards "don't retry forever"
-    over "don't waste an attempt".
+    Called before the on-chain send so a worker crash mid-attempt still
+    counts against the cap — bias towards "don't retry forever" over
+    "don't waste an attempt".
 
-    Returns (AGE-61):
-        int  — the NEW attempt count, confirmed written.
-        None — the increment could NOT be confirmed (read failed, row
-               missing, or write failed). Callers MUST NOT send a refund
-               on None: the old behaviour defaulted a failed read to
-               current=0, so a single read blip reset refund_attempts
-               from e.g. 4 back to 1 and let the worker blow past the
-               5-attempt cap — and every attempt is a real USDC send.
+    Returns:
+        int  — the new attempt count, confirmed written.
+        None — the increment could not be confirmed (read failed, row
+               missing, or write failed). Callers must not send a refund
+               on None: defaulting a failed read to current=0 would let a
+               single read blip reset refund_attempts and carry the
+               worker past the attempt cap — and every attempt is a real
+               USDC send.
     """
     if not sb_enabled():
         return None
     try:
         async with httpx.AsyncClient(timeout=_WRITE_TIMEOUT) as client:
             # Read current count — a failed or empty read is a hard stop,
-            # never "assume 0" (AGE-61).
+            # never "assume 0".
             r = await client.get(
                 f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
                 headers=sb_headers(),
@@ -1235,7 +1213,6 @@ async def increment_refund_attempt(payment_id: str) -> int | None:
                 )
                 return None
             current = int(r.json()[0].get("refund_attempts", 0) or 0)
-            # Write +1
             resp = await client.patch(
                 f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
                 headers=sb_headers(),
@@ -1258,17 +1235,17 @@ async def increment_refund_attempt(payment_id: str) -> int | None:
 
 
 async def claim_refund_sending(payment_id: str) -> bool:
-    """AGE-76 two-phase claim: refund_pending → refund_sending, CONFIRMED.
+    """Two-phase claim: refund_pending → refund_sending, confirmed.
 
-    The USDC send is authorized ONLY by a confirmed claim: with the row in
+    The USDC send is authorized only by a confirmed claim: with the row in
     'refund_sending', claim_refund_pending can never re-claim it blind, so a
     send whose terminal PATCH later fails cannot be silently re-sent. Stale
     'refund_sending' rows are resolved by the worker's stale sweep via the
     on-chain memo idempotency check.
 
     Returns True only when exactly this transition landed (1 row). False on
-    any error, or when the row was not in refund_pending — the caller MUST
-    NOT send on False.
+    any error, or when the row was not in refund_pending — the caller must
+    not send on False.
     """
     if not sb_enabled():
         return False
@@ -1296,7 +1273,7 @@ async def claim_refund_sending(payment_id: str) -> bool:
 
 
 async def release_refund_sending(payment_id: str) -> None:
-    """AGE-76: after a FAILED send, put the row back in the retry pool
+    """After a failed send, put the row back in the retry pool
     (refund_sending → refund_pending; the attempt was already counted).
     Best-effort — if this PATCH fails the row stays in refund_sending and
     the stale sweep resolves it via the on-chain check."""
@@ -1308,7 +1285,7 @@ async def release_refund_sending(payment_id: str) -> None:
 
 
 async def list_refund_sending() -> list[dict]:
-    """AGE-76 stale sweep input: every row currently in 'refund_sending'.
+    """Stale sweep input: every row currently in 'refund_sending'.
     The worker resolves each via the on-chain memo idempotency check —
     at sweep start, any such row is from a crashed/blipped earlier sweep
     (this sweep's claims happen after)."""
@@ -1335,16 +1312,16 @@ async def list_refund_sending() -> list[dict]:
 
 async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
     """Terminal happy-path transition. PATCH state='refund_done',
-    refund_tx_hash=$1, guarded to the in-flight states so we don't
-    accidentally overwrite a refund_failed (which would happen if a
-    stale worker comes back after we'd already given up).
+    refund_tx_hash=$1, guarded to the in-flight states so it doesn't
+    overwrite a refund_failed (which would happen if a stale worker
+    comes back after the cap was already exhausted).
 
-    AGE-76: the row is in 'refund_sending' when a send just completed
-    (two-phase claim); 'refund_pending' is kept in the guard for
-    backward compatibility with rows written before the deploy.
+    The row is in 'refund_sending' when a send just completed (two-phase
+    claim); 'refund_pending' is kept in the guard for rows written before
+    the two-phase claim existed.
 
-    AGE-73: clears error_reason (JSON null) — a refund that failed a few
-    times then succeeded must not keep a stale failure reason on the
+    Clears error_reason (JSON null) — a refund that failed a few times
+    then succeeded must not keep a stale failure reason on the
     now-successful row.
     """
     if not sb_enabled():
@@ -1376,7 +1353,7 @@ async def mark_refund_done(payment_id: str, refund_tx_hash: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # The flagship analyst agent POSTs a full run summary after each daily run
-# (POST /v1/flagship/run). It is stored here so /ledger can render WHY each call
+# (POST /v1/flagship/run). It is stored here so /ledger can render why each call
 # happened — the plan estimate, regime read, per-verdict factor breakdown, and
 # the spending receipt — not just the on-chain payment_logs rows. One row per run.
 #
@@ -1394,19 +1371,20 @@ async def insert_flagship_run(run: dict) -> bool:
 
     `run` is the agent's posted payload; only known columns are forwarded.
 
-    AGE-63: run_at is the idempotency key. The analyst cron posts once per run,
-    but a retried/duplicated POST used to INSERT a second row → the same run
-    appeared twice on /ledger and double-counted headline totals. We now skip
-    the insert when a row for this run_at already exists (first-write-wins), so
-    a retry of the same run is a no-op on the totals and returns success.
+    run_at is the idempotency key. The analyst cron posts once per run, but a
+    retried or duplicated POST would otherwise insert a second row and the
+    same run would appear twice on /ledger and double-count headline totals.
+    The insert is skipped when a row for this run_at already exists
+    (first-write-wins), so a retry of the same run is a no-op on the totals
+    and returns success.
 
-    Chosen over delete-then-insert deliberately: a delete that succeeds before
-    a failing insert would LOSE an already-stored run, whereas check-then-skip
-    has no data-loss window. Schema-agnostic — keys on the run_at column, needs
-    no UNIQUE constraint (a Postgres UNIQUE(run_at) + native upsert is the tidy
-    long-term form, and would additionally let a corrected re-post replace).
-    Rows with no run_at skip the existence check (can't idempotency-key them)
-    and insert as before.
+    Check-then-skip is chosen over delete-then-insert: a delete that
+    succeeds before a failing insert would lose an already-stored run,
+    whereas check-then-skip has no data-loss window. It keys on the run_at
+    column and needs no UNIQUE constraint (a Postgres UNIQUE(run_at) plus
+    native upsert would be the tidier long-term form, and would also let a
+    corrected re-post replace). Rows with no run_at skip the existence check
+    (they can't be idempotency-keyed) and insert as before.
     """
     if not sb_enabled():
         return False
@@ -1443,8 +1421,8 @@ async def insert_flagship_run(run: dict) -> bool:
                     )
                     return True
                 # A failed existence check is non-fatal: fall through and insert
-                # (worst case reverts to the pre-AGE-63 possible-duplicate, never
-                # a lost or blocked run).
+                # (worst case is a possible duplicate, never a lost or blocked
+                # run).
             resp = await client.post(
                 f"{settings.SUPABASE_URL}/rest/v1/flagship_runs",
                 headers=sb_headers(),
@@ -1490,7 +1468,7 @@ async def fetch_flagship_runs(limit: int = 200) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Ledger chain verification — ledger_leg_verifications (AGE-142)
+# Ledger chain verification — ledger_leg_verifications
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LEG_VERIFICATION_COLUMNS = (
@@ -1503,7 +1481,7 @@ async def fetch_leg_verifications(limit: int = 5000) -> dict[tuple[str, int], di
     """All cached chain-verification rows, keyed on (run_key(run_at),
     leg_index) — the key the verifier and the ledger view both use. {} when
     disabled / table missing / error (the ledger then renders the legs as
-    agent_attested, exactly as before AGE-142)."""
+    agent_attested)."""
     if not sb_enabled():
         return {}
     from gateway.services.leg_verifier import run_key
@@ -1578,21 +1556,21 @@ async def fetch_payto_hints(limit: int = 5000) -> dict[str, str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Active Prober — service_probes / service_scores (AGE-6)
+# Active Prober — service_probes / service_scores
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Tables: db/migrations/service_probes.sql. Raw probes are PRIVATE (evidence
-# for negative flags: tx hash + error snapshot); scores are PUBLIC-read.
+# Tables: db/migrations/service_probes.sql. Raw probes are private (evidence
+# for negative flags: tx hash + error snapshot); scores are public-read.
 # Written by the gateway on POST /v1/prober/run (the prober itself is a
 # credential-free HTTP customer, same pattern as the flagship ingest).
 #
 # Behaviour: best-effort. A missing table or Supabase blip logs + returns
 # False/[] so a prober ingest never hard-fails over storage.
 
-# ── AGE-138: provider_map (entity) + provider_depth (on-chain payer shape) ───
-# Both are BATCH tables (db/migrations/provider_map.sql). provider_depth is
+# ── provider_map (entity) + provider_depth (on-chain payer shape) ────────────
+# Both are batch tables (db/migrations/provider_map.sql). provider_depth is
 # written by tools/payer_depth.py (weekly, from a laptop; keyless x402scan
-# source) and only READ here — cached in-process because it changes weekly
+# source) and only read here — cached in-process because it changes weekly
 # and verified_route/discovery would otherwise hit PostgREST per request.
 # provider_map is upserted by the prober ingest (once per sweep) and by the
 # rollup flush (verified_route discoveries held in memory) — merged in Python
@@ -1710,7 +1688,7 @@ async def fetch_provider_map(limit: int = 5000) -> dict[tuple[str, str], dict]:
 
 def merge_provider_rows(existing: Optional[dict], new: dict, now_iso: str) -> dict:
     """Pure merge of a new sweep-derived row into the stored one: URLs and
-    sources union, categories counts ADD, first_seen preserved, last_seen =
+    sources union, categories counts add, first_seen preserved, last_seen =
     now, evidence = newest values with flags union, claim columns untouched."""
     if not existing:
         return {**new, "first_seen": now_iso, "last_seen": now_iso,
@@ -1750,7 +1728,7 @@ def merge_provider_rows(existing: Optional[dict], new: dict, now_iso: str) -> di
 
 async def upsert_provider_map(rows: list[dict]) -> int:
     """Merge sweep-derived provider rows into provider_map: read the stored
-    rows for these keys, merge in Python (see merge_provider_rows), ONE upsert.
+    rows for these keys, merge in Python (see merge_provider_rows), one upsert.
     Returns rows written (0 on failure/disabled). Batch-only by design."""
     rows = [r for r in (rows or []) if isinstance(r, dict) and r.get("pay_to") and r.get("network")]
     if not rows or not sb_enabled():
@@ -1785,11 +1763,11 @@ async def upsert_provider_map(rows: list[dict]) -> int:
 
 # Columns forwarded to service_probes — anything else in a posted row is
 # dropped (the runner also carries name/skipped fields the table doesn't).
-# AGE-86/87 probe-row additions, deployable ahead of the hand-applied SQL
-# migration (same rationale as _SCORE_COLUMNS_OPTIONAL below):
+# Probe-row columns deployable ahead of the hand-applied SQL migration (same
+# rationale as _SCORE_COLUMNS_OPTIONAL below):
 #   skipped      — unscoreable row kept as raw evidence; score() excludes it
 #                  from every metric
-#   outcome      — WHY: settled | payment_rejected | unreachable |
+#   outcome      — why: settled | payment_rejected | unreachable |
 #                  settle_failed | unsupported_chain | unfilled_path_template |
 #                  cap_reached
 #   param_source — advertised | advertised_empty | need_guess | none — makes a
@@ -1805,15 +1783,15 @@ _PROBE_COLUMNS = (
     *_PROBE_COLUMNS_OPTIONAL,
 )
 
-# AGE-83 additions. The gateway deploys from git; service_probes.sql is applied
-# BY HAND in the Supabase SQL editor, so there is always a window where the code
-# knows a column the table doesn't. PostgREST answers an unknown column with a
-# 400 for the WHOLE request — which would blank /scores.json and freeze every
-# score row until someone noticed. So these are listed separately and dropped on
-# a 400, degrading to the pre-AGE-83 shape instead of to nothing.
+# The gateway deploys from git; service_probes.sql is applied by hand in the
+# Supabase SQL editor, so there is always a window where the code knows a
+# column the table doesn't. PostgREST answers an unknown column with a 400 for
+# the whole request — which would blank /scores.json and freeze every score
+# row until someone noticed. So these are listed separately and dropped on a
+# 400, degrading to the older shape instead of to nothing.
 _SCORE_COLUMNS_OPTIONAL = ("confidence", "no_delivery_probes",
-                           # AGE-86: probes where our payment did not settle —
-                           # never delivery evidence, published as its own count
+                           # probes where the payment did not settle — never
+                           # delivery evidence, published as its own count
                            "settle_failures")
 
 _SCORE_COLUMNS = (
@@ -1831,13 +1809,12 @@ def _without_optional(cols, optional=None) -> tuple:
 
 async def insert_service_probes(rows: list[dict]) -> bool:
     """Bulk-INSERT raw probe rows (including skipped/unscoreable evidence
-    rows — AGE-87). Returns True on success.
+    rows). Returns True on success.
 
-    Pre-migration fallback: if the table lacks the AGE-86/87 columns, retry
-    with the legacy column set AND drop skipped rows — a skipped row stored
+    Pre-migration fallback: if the table lacks the optional columns, retry
+    with the legacy column set and drop skipped rows — a skipped row stored
     without its `skipped` flag would be indistinguishable from a real failed
-    probe and poison every future window rescore (the exact bug class AGE-86
-    exists to kill)."""
+    probe and poison every future window rescore."""
     if not rows:
         return True          # nothing to write = vacuous success
     if not sb_enabled():
@@ -1946,7 +1923,7 @@ async def upsert_service_scores(rows: list[dict]) -> bool:
             if resp.status_code == 400 and any(
                     c in resp.text for c in _SCORE_COLUMNS_OPTIONAL):
                 # Migration not applied yet — write the columns the table does
-                # have rather than losing the whole rescore (AGE-83).
+                # have rather than losing the whole rescore.
                 logger.warning("upsert_service_scores: service_probes.sql not "
                                "applied (missing %s) — writing without them",
                                ", ".join(_SCORE_COLUMNS_OPTIONAL))
@@ -1963,16 +1940,16 @@ async def upsert_service_scores(rows: list[dict]) -> bool:
 
 def _group_paid_receipts(rows: list[dict]) -> list[dict]:
     """Pure: group payment_logs rows into per-tool paid-call evidence,
-    keeping ONLY genuinely paid rows (Decimal(amount) > 0).
+    keeping only genuinely paid rows (Decimal(amount) > 0).
 
-    amount_usdc is written to Supabase as a *string* (see record_payment),
-    so a PostgREST `amount_usdc=gt.0` filter compares TEXT — "0.000000" >
-    "0" lexicographically — and lets every $0 free-flow receipt through
-    (free tools traverse the full x402 lifecycle into payment_logs by
-    design). The authoritative paid/free split therefore happens HERE, in
-    Python, with a real Decimal comparison. Unparseable amounts are
-    treated as unpaid (excluded). Rows are expected newest-first; the
-    first row seen per tool provides last_paid_at. AGE-38."""
+    amount_usdc is written to Supabase as a string, so a PostgREST
+    `amount_usdc=gt.0` filter compares text — "0.000000" > "0"
+    lexicographically — and lets every $0 free-flow receipt through (free
+    tools traverse the full x402 lifecycle into payment_logs by design).
+    The authoritative paid/free split therefore happens here, in Python,
+    with a real Decimal comparison. Unparseable amounts are treated as
+    unpaid (excluded). Rows are expected newest-first; the first row seen
+    per tool provides last_paid_at."""
     from decimal import Decimal, InvalidOperation
     by_tool: dict[str, dict] = {}
     for r in rows:
@@ -1999,19 +1976,19 @@ def _receipts_cache_clear() -> None:
 
 
 async def fetch_own_tool_receipts() -> list[dict]:
-    """Per-tool receipt evidence for AgentPay's own PAID tools, from
+    """Per-tool receipt evidence for AgentPay's own paid tools, from
     payment_logs (state=payment_done, amount > 0). Powers the /probes
-    self-section: our delivery proof is real customers' on-chain receipts,
+    self-section: delivery proof is real customers' on-chain receipts,
     never self-probes. [] on error/disabled.
 
-    NOTE: the server-side `amount_usdc=gt.0` filter is best-effort only
-    (text column — see _group_paid_receipts); it never drops a paid row
-    but does NOT reliably drop free ones. _group_paid_receipts is the
-    authoritative filter.
+    The server-side `amount_usdc=gt.0` filter is best-effort only (text
+    column — see _group_paid_receipts); it never drops a paid row but does
+    not reliably drop free ones. _group_paid_receipts is the authoritative
+    filter.
 
-    Cached 10 min (disk-IO fix #3, 2026-09-01): /scores.json is a public,
-    crawler-hit route and this query is a filtered scan of payment_logs
-    (no index on state) — one scan per 10 min instead of one per hit."""
+    Cached 10 min: /scores.json is a public, crawler-hit route and this
+    query is a filtered scan of payment_logs (no index on state) — one scan
+    per 10 min instead of one per hit."""
     if not sb_enabled():
         return []
     import time as _time
@@ -2044,7 +2021,7 @@ async def fetch_own_tool_receipts() -> list[dict]:
 
 async def fetch_service_scores() -> dict[str, dict]:
     """SELECT all score rows keyed by resource_url — the input dict decide()
-    joins on (AGE-7). {} on error/disabled/missing (decide() then treats every
+    joins on. {} on error/disabled/missing (decide() then treats every
     service as unprobed = neutral factor 1.0)."""
     if not sb_enabled():
         return {}
@@ -2075,8 +2052,8 @@ async def mark_refund_failed(payment_id: str, error_reason: str) -> None:
     expected_state IN ('refund_pending', 'refund_sending', 'refund_failed')
     so a retry of this terminal write is idempotent — second call lands as
     a no-op rather than a 0-rows update that callers can't distinguish
-    from a bug. ('refund_sending' added with AGE-76's two-phase claim: the
-    cap-exhaustion write now happens while the row is claimed.)
+    from a bug. ('refund_sending' is included because the cap-exhaustion
+    write happens while the row is claimed by the two-phase claim.)
 
     PostgREST 'in.(...)' syntax for the state filter.
     """
@@ -2106,22 +2083,20 @@ async def mark_refund_failed(payment_id: str, error_reason: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tool registry persistence (AGE-71)
+# Tool registry persistence
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Runtime tool registrations (POST /tools/register) previously lived ONLY in the
-# in-memory `_TOOLS` dict. Every Railway restart re-seeded from registry.py and
-# silently dropped any developer-registered tool — its payout `developer_address`
-# and `endpoint` gone, nothing detecting the loss. `_hydrate_tools_from_supabase`
-# (main.py) already MERGES the `tools` table onto the seed at startup, so the
-# only missing half was the WRITE: push a new registration to Supabase so the
-# next boot hydrates it back.
+# Runtime tool registrations (POST /tools/register) live in the in-memory
+# `_TOOLS` dict, which is re-seeded from registry.py on every restart.
+# `_hydrate_tools_from_supabase` (main.py) merges the `tools` table onto the
+# seed at startup, so a registration pushed here survives the next boot with
+# its payout `developer_address` and `endpoint` intact.
 #
 # Upsert (merge-duplicates on the `name` PK) rather than a bare INSERT: the
-# register route rejects in-memory duplicates before we get here, but a row can
-# already exist in Supabase from a prior deploy whose process died before the
-# next hydrate — upsert makes re-registration converge instead of 409-ing on the
-# DB side. Best-effort: a persistence failure does NOT fail the registration
+# register route rejects in-memory duplicates before this is reached, but a row
+# can already exist in Supabase from a prior deploy whose process died before
+# the next hydrate — upsert makes re-registration converge instead of 409-ing on
+# the DB side. Best-effort: a persistence failure does not fail the registration
 # (the tool is already live in-memory for this process); the caller is told via
 # the returned bool so the response can flag `persisted: false`.
 

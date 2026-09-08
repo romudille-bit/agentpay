@@ -4,7 +4,7 @@ routes/session.py — Session creation endpoint.
   POST /v1/session/create — Register a budget-capped agent session.
                             Priced at $0.01 USDC via x402 (Base = standard
                             x402 `exact`; Stellar = classic payment + memo
-                            via the AgentPay SDK — see AGE-128).
+                            via the AgentPay SDK).
                             Returns session_id + budget config.
                             Indexed on Base Bazaar via CDP Facilitator.
 
@@ -91,7 +91,7 @@ _SESSION_OUTPUT_SCHEMA = {
 # ── Bazaar indexing metadata (injected server-side into every CDP settle) ─────
 # Bazaar reads paymentPayload.resource + .extensions.bazaar at settle time to
 # auto-index this resource in discovery. We set these on the gateway so indexing
-# fires on EVERY session_create payment, not just clients that include them.
+# fires on every session_create payment, not just clients that include them.
 # serviceName <= 32 chars; tags <= 5 entries, each <= 32 chars.
 _SESSION_BAZAAR_RESOURCE = {
     "url":         SESSION_RESOURCE_URL,
@@ -99,7 +99,7 @@ _SESSION_BAZAAR_RESOURCE = {
     "mimeType":    "application/json",
     "serviceName": "AgentPay Spend Cap & Receipts",
     # ≤5 tags, ≤32 chars each — own the governance category, not the data-API
-    # commodity. Bazaar matches EXACT tags, so plain words ("budget",
+    # commodity. Bazaar matches exact tags, so plain words ("budget",
     # "receipts", "session") catch real queries the hyphenated compounds miss.
     "tags":        ["budget", "receipts", "session", "spend-control", "agent-commerce"],
 }
@@ -161,9 +161,9 @@ _SESSION_BAZAAR_EXTENSION = {
     },
 }
 
-# AGE-129: documented error responses (agent-ready curation requirement) —
-# same shared catalogue as the tools map (gateway.base.build_error_responses),
-# carried on the live 402's extensions.bazaar AND the settle payload.
+# Documented error responses — same shared catalogue as the tools map
+# (gateway.base.build_error_responses), carried on the live 402's
+# extensions.bazaar and the settle payload.
 _SESSION_BAZAAR_EXTENSION["info"]["errors"] = base_pay.build_error_responses()
 
 
@@ -183,7 +183,7 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
 
     Pure — no DB writes. Used both by the POST no-payment branch (which also
     persists a pending row) and by the GET discovery probe (which does not).
-    Always advertises the Base option + PAYMENT-REQUIRED header when Base is
+    Advertises the Base option + PAYMENT-REQUIRED header whenever Base is
     configured, so x402 indexers (Bazaar) can validate the resource on a plain
     GET the same way they would on a POST.
     """
@@ -218,9 +218,9 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
             resource_url=resource_url,
             tool_description=_SESSION_DESCRIPTION,
             output_schema=_SESSION_OUTPUT_SCHEMA,
-            # Expose the Bazaar extension + serviceName/tags on the LIVE 402 so
-            # discovery crawlers can validate the resource (settle-only metadata
-            # left it stuck in 'processing'). Mirrors indexed competitors.
+            # Expose the Bazaar extension + serviceName/tags on the live 402 so
+            # discovery crawlers can validate the resource; settle-only metadata
+            # leaves a listing stuck in 'processing'.
             bazaar_resource=_SESSION_BAZAAR_RESOURCE,
             bazaar_extension=_SESSION_BAZAAR_EXTENSION,
         )
@@ -235,11 +235,11 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
         headers["PAYMENT-REQUIRED"] = payment_required_header
 
     # Stellar option (always available as a fallback / secondary chain).
-    # AGE-128: named + noted honestly — this is a classic Stellar payment
-    # with a text memo verified via Horizon, NOT the standard @x402/stellar
-    # Soroban scheme (null-account template + signed auth entries +
-    # facilitator settlement). A standard @x402/stellar client cannot pay
-    # this option; the AgentPay SDK and manual payments can.
+    # The scheme name and note are deliberately explicit: this is a classic
+    # Stellar payment with a text memo verified via Horizon, not the standard
+    # @x402/stellar Soroban scheme (null-account template + signed auth
+    # entries + facilitator settlement). A standard @x402/stellar client
+    # cannot pay this option; the AgentPay SDK and manual payments can.
     stellar_option = {
         "scheme":      "agentpay-classic-memo",
         "payment_id":  challenge.payment_id,
@@ -264,23 +264,23 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
     content = {
         "error":       "Payment required",
         "x402Version": 2,
-        # AGE-123: resource-info block mirrored into the BODY (trust validators
-        # parse the body, not the base64 header — header-only scored
-        # `envelope:missing-resource-info` on 793/793 fuchss probes). Shared
-        # builder with the header; present even when Base isn't configured.
+        # Resource-info block mirrored into the body: trust validators parse
+        # the body, not the base64 header, and score a header-only envelope as
+        # missing resource info. Shared builder with the header; present even
+        # when Base isn't configured.
         "resource":    base_pay.build_resource_block(
             resource_url, _SESSION_DESCRIPTION, _SESSION_BAZAAR_RESOURCE,
         ),
-        # Standard x402 accepts[] in the BODY (not just the PAYMENT-REQUIRED
-        # header) so generic payers find the Base path — GitHub issue #1.
+        # Standard x402 accepts[] in the body (not just the PAYMENT-REQUIRED
+        # header) so generic payers find the Base path.
         "accepts":     [accepts_entry] if accepts_entry else [],
-        # AGE-123: extensions.bazaar mirrored for body/header parity (additive).
+        # extensions.bazaar mirrored for body/header parity (additive).
         "extensions":  {"bazaar": _SESSION_BAZAAR_EXTENSION},
     }
 
     if base_option:
         # ── Lead with Base (canonical paid chain; CDP/Bazaar-native). ──────────
-        # Generic x402 clients read the TOP-LEVEL network/pay_to/instructions as
+        # Generic x402 clients read the top-level network/pay_to/instructions as
         # the default offer, so those must advertise Base to match the
         # PAYMENT-REQUIRED header and the "Base is the canonical paid chain"
         # strategy. Stellar stays available as the secondary payment_option.
@@ -318,9 +318,9 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
 # ── Discovery probe: GET returns the 402 challenge (no DB row) ────────────────
 # x402 indexers (Bazaar) validate a resource by GETting its URL and expecting a
 # 402 with payment requirements. The paid flow is POST-only, so without this a
-# crawler GET hit 405 and the listing could never be validated → stuck in
-# 'processing'. This handler advertises the same challenge for discovery without
-# persisting a pending payment row.
+# crawler GET would hit 405 and the listing could never be validated (stuck in
+# 'processing'). This handler advertises the same challenge for discovery
+# without persisting a pending payment row.
 @router.api_route("/v1/session/create", methods=["GET", "HEAD"])
 @limiter.limit("60/minute")
 async def session_create_probe(request: Request):
@@ -331,18 +331,17 @@ async def session_create_probe(request: Request):
         request_data={"max_spend": "0.10"},
         persist=False,   # a crawler never comes back to pay
     )
-    # Disk-IO fix #2: count the probe in the rollup (parity with the tools
-    # route — session_create 402 volume was previously invisible there).
+    # Count the probe in the rollup (parity with the tools route).
     probe_rollup.record_402(
         tool_name=SESSION_TOOL_NAME,
         user_agent=request.headers.get("user-agent"),
         kind="probe_get",
     )
     content, headers = _session_402_payload(challenge)
-    # AGE-134: FastAPI does NOT auto-answer HEAD for GET routes, so HEAD was a
-    # 405 — a free "does not return 402" mark for any external prober. HEAD now
-    # mirrors the GET probe: same 402 status + headers (incl. PAYMENT-REQUIRED
-    # with the bazaar extension), empty body per HEAD semantics.
+    # FastAPI does not auto-answer HEAD for GET routes, and a 405 on HEAD reads
+    # to an external prober as "does not return 402". HEAD mirrors the GET
+    # probe: same 402 status + headers (incl. PAYMENT-REQUIRED with the bazaar
+    # extension), empty body per HEAD semantics.
     if request.method == "HEAD":
         return Response(status_code=402, headers=headers)
     return JSONResponse(status_code=402, content=content, headers=headers)
@@ -352,7 +351,7 @@ async def session_create_probe(request: Request):
 
 @router.post(
     "/v1/session/create",
-    # Body is read manually inside the handler (AGE-134) — keep the schema
+    # Body is read manually inside the handler — keep the schema
     # visible in OpenAPI/docs since FastAPI can no longer infer it.
     openapi_extra={"requestBody": {
         "required": False,
@@ -392,9 +391,9 @@ async def create_session(
                                       parse_body_after_payment_gate)
     x_payment, payment_signature = normalize_payment_headers(x_payment, payment_signature)
 
-    # AGE-134: parse the body AFTER the payment-gate decision. Unpaid →
-    # lenient (any body shape still gets the 402 below); paid → strict 422
-    # BEFORE settlement so a malformed paid call never burns the payment.
+    # Parse the body after the payment-gate decision. Unpaid → lenient (any
+    # body shape still gets the 402 below); paid → strict 422 before
+    # settlement so a malformed paid call never burns the payment.
     unpaid = not x_payment and not payment_signature
     body, body_err = await parse_body_after_payment_gate(
         request, SessionCreateRequest, strict=not unpaid,
@@ -414,19 +413,17 @@ async def create_session(
             price_usdc=SESSION_PRICE_USDC,
             developer_address=settings.GATEWAY_PUBLIC_KEY,
             request_data={"max_spend": body.max_spend},
-            # Disk-IO fix #4: durable mirror only for an identified payer
-            # (same rule as the tools route); monitors POST anonymously.
+            # Durable mirror only for an identified payer (same rule as the
+            # tools route); monitors POST anonymously.
             persist=bool(agent_address),
         )
 
-        # Disk-IO fix #2 (2026-08-20): NO pre-402 payment_logs INSERT — same
-        # as the tools route. The row is created at settle time instead
-        # (state='verified' below, or 'rejected' via _record_rejected_attempt),
-        # so payment_logs only contains real payment attempts; unpaid 402
-        # volume (monitors/scanners) is counted in the probe rollup. This
-        # also removes the awaited Supabase write and the 503-on-blip from
-        # the 402 path — the exact latency/availability external probers
-        # score session_create on.
+        # No pre-402 payment_logs INSERT — same as the tools route. The row is
+        # created at settle time instead (state='verified' below, or 'rejected'
+        # via _record_rejected_attempt), so payment_logs only contains real
+        # payment attempts; unpaid 402 volume (monitors/scanners) is counted in
+        # the probe rollup. This also keeps the awaited Supabase write, and a
+        # 503 on a Supabase blip, off the 402 path.
         probe_rollup.record_402(
             tool_name=SESSION_TOOL_NAME,
             user_agent=request.headers.get("user-agent"),
@@ -454,10 +451,10 @@ async def create_session(
             parsed = parse_payment_header(x_payment) or {}
             rejected_pid = parsed.get("id")
             if rejected_pid:
-                # Disk-IO fix #2: no pending row to PATCH — the shared helper
-                # updates a legacy row when one exists (F3 guard intact) and
-                # otherwise INSERTs a complete 'rejected' row, skipping
-                # scanner noise (unknown payment_id / unparseable header).
+                # No pending row to PATCH — the shared helper updates a legacy
+                # row when one exists and otherwise INSERTs a complete
+                # 'rejected' row, skipping scanner noise (unknown payment_id /
+                # unparseable header).
                 from gateway.routes.tools import _record_rejected_attempt
                 await _record_rejected_attempt(
                     rejected_pid, auth["reason"],
@@ -472,9 +469,8 @@ async def create_session(
             )
         logger.info(f"[SESSION] agent={agent_short}... stellar OK tx={auth.get('tx_hash','')[:16]}")
 
-        # Disk-IO fix #2: the fire-and-forget 'verified' PATCH is gone — no
-        # pending row exists; the state='verified' row is INSERTed below
-        # (Step 3) for every settle, Stellar included.
+        # No 'verified' PATCH here — no pending row exists; the state='verified'
+        # row is INSERTed below (Step 3) for every settle, Stellar included.
 
     # ── Step 2b: Base/EVM payment ─────────────────────────────────────────────
     elif payment_signature:
@@ -509,11 +505,11 @@ async def create_session(
             "payer":      result["payer"],
             "network":    result["network"],
         }
-        # The settle result's payer is VERIFIED (Mode A: CDP-attested EIP-3009
+        # The settle result's payer is verified (Mode A: CDP-attested EIP-3009
         # signer; Mode B: bound to the Transfer log's from-topic). The body/
-        # header-declared agent_address is NOT — real buyers were logged as
-        # docs-example addresses (0x742d35Cc…, 0x0000…0) they'd copy-pasted
-        # into the request body. Verified payer wins; declared is fallback.
+        # header-declared agent_address is not — buyers often copy-paste a
+        # docs-example address into the request body. Verified payer wins;
+        # declared is the fallback.
         agent_address = result["payer"] or agent_address
 
     # ── Step 3: Payment verified → create session ─────────────────────────────
@@ -528,24 +524,19 @@ async def create_session(
     receipt_network = auth.get("network") or f"stellar-{settings.STELLAR_NETWORK}"
     tx_hash         = auth.get("tx_hash", "")
 
-    # Base path: insert a tx_hash-keyed row so the terminal PATCH below has
-    # somewhere to land (same pattern as the tools route).
+    # Insert the settled row so the terminal PATCH below has somewhere to land
+    # (same pattern as the tools route). Both paths insert here — payment_id is
+    # the challenge UUID on Stellar, the tx_hash on Base.
     #
-    # client_ip/user_agent were MISSING here until 2026-07-17, so every settled
-    # session_create row carried user_agent=NULL while the same client's
-    # /tools/…/call rows carried its real UA. That's not cosmetic: session_create
-    # IS the KPI, so a UA-based filter could never classify the one row that
-    # counts. Live case — 0xEB3d1b… books as a "paying customer" on a NULL-UA
-    # session_create row while its pre_trade_check row reads
-    # 'TrustprobeBot/1.0 (deep-probe)': a peer trust-prober paying $0.01 to check
-    # we deliver, i.e. exactly what our own Prober does to other services. Not demand.
-    # AGE-58: keep the task handle and await it before the terminal PATCH.
-    # Fire-and-forget raced the PATCH: the PATCH could run first, no-op on
-    # the missing row, then the insert landed 'verified' and never advanced —
-    # stranding session_create rows (the KPI) in 'verified'.
-    # Disk-IO fix #2: the Stellar path inserts here too (its pre-402 pending
-    # row no longer exists) — payment_id is the challenge UUID on Stellar,
-    # the tx_hash on Base. Same transition note as routes/tools.py.
+    # client_ip/user_agent are recorded so a UA-based filter can classify
+    # session_create rows (the KPI) the same way it classifies the same
+    # client's /tools/…/call rows — e.g. a trust-prober paying $0.01 to check
+    # delivery is not demand.
+    #
+    # The task handle is kept and awaited before the terminal PATCH. If the
+    # insert were fire-and-forget, the PATCH could run first, no-op on the
+    # missing row, and the row would then land as 'verified' and never
+    # advance.
     insert_task = None
     if sb_enabled():
         settle_ip = request.client.host if request.client else None
@@ -582,9 +573,9 @@ async def create_session(
         gateway_fee = None
 
     # Terminal PATCH — awaited so analytics are consistent at response time.
-    # AGE-58: barrier first — the PATCH must land on the inserted row. Insert
-    # failures are logged, not raised: the payment already settled on-chain,
-    # so bookkeeping must never fail the session-create response.
+    # The insert is awaited first so the PATCH lands on the inserted row.
+    # Insert failures are logged, not raised: the payment already settled
+    # on-chain, so bookkeeping never fails the session-create response.
     if insert_task is not None:
         try:
             await insert_task

@@ -52,7 +52,7 @@ def _settlement_from_headers(headers) -> dict | None:
     {"success": true, "transaction": "0x…", "network": "eip155:8453",
      "payer": "0x…"}. Some servers spell the hash txHash / tx_hash /
     transactionHash. Returns {"tx_hash", "network", "payer", "success"} or
-    None when absent/undecodable. Never raises — a bad header must not turn
+    None when absent/undecodable. Does not raise: a bad header must not turn
     a successful paid call into a failure (the spend is already booked)."""
     if not headers:
         return None
@@ -101,8 +101,8 @@ class ToolNotFound(Exception):
     """Raised when the requested tool name does not exist on the gateway.
 
     A typo'd or unknown tool is an input error, not a budget problem — it is
-    never substituted with another tool and never raises BudgetExceeded
-    (AGE-118). Check the name against GET {gateway_url}/tools.
+    never substituted with another tool and never raises BudgetExceeded.
+    Check the name against GET {gateway_url}/tools.
     """
     pass
 
@@ -113,31 +113,30 @@ class PaymentFailed(Exception):
     wallet not initialized, network error, etc.).
 
     The message is a short, human-readable reason like
-    'stellar:op_underfunded' or 'stellar:tx_insufficient_fee' — NOT a raw
-    XDR dump. Catch this in routine code to gracefully SKIP on payment
-    errors without flooding logs.
+    'stellar:op_underfunded' or 'stellar:tx_insufficient_fee', not a raw
+    XDR dump. Catch this in routine code to skip on payment errors without
+    flooding logs.
     """
     pass
 
 
 class UnsupportedChainPayment(PaymentFailed):
     """
-    Raised when a 402's ONLY payment options are on chains this wallet cannot
+    Raised when a 402's only payment options are on chains this wallet cannot
     settle — e.g. a Base/Stellar wallet meeting an Avalanche-only
     (eip155:43114) or Arbitrum-only (eip155:42161) seller.
 
-    This is NOT a settlement failure: no signature is produced and no value can
-    move, so the seller must never be scored as a delivery failure. It
+    This is not a settlement failure: no signature is produced and no value can
+    move, so the seller should not be scored as a delivery failure. It
     subclasses PaymentFailed so existing ``except PaymentFailed`` handlers keep
-    catching it, but carries the offered CAIP-2 networks so a caller (the
-    Active Prober) can record the unserved-chain demand — a discovery signal,
-    not a fault. (AGE-80)
+    catching it, but carries the offered CAIP-2 networks so a caller can
+    record the unserved-chain demand as a discovery signal rather than a fault.
 
     Attributes:
-        offered_networks: CAIP-2 networks the 402 advertised that we can't
-                          settle (authoritative — read from the live 402, not
-                          from stale discovery metadata).
-        settleable:       the chains this wallet CAN pay on.
+        offered_networks: CAIP-2 networks the 402 advertised that this wallet
+                          can't settle (read from the live 402, not from
+                          discovery metadata).
+        settleable:       the chains this wallet can pay on.
     """
     def __init__(self, message: str, offered_networks=None, settleable=None):
         super().__init__(message)
@@ -147,16 +146,16 @@ class UnsupportedChainPayment(PaymentFailed):
 
 class SettlementUncertain(PaymentFailed):
     """
-    Raised when a signed payment WAS transmitted but the gateway could not
+    Raised when a signed payment was transmitted but the gateway could not
     confirm settlement within the request window. The transaction may be — and
     on the Stacks rail usually is — live on-chain, confirming asynchronously
     (Stacks testnet blocks take minutes; the gateway can't hold an open HTTP
     connection that long). Distinct from PaymentFailed (nothing settled) and
     RefundPending (settled, then the tool failed).
 
-    The spend is recorded; DO NOT retry the call (a retry would double-pay).
+    The spend is recorded; do not retry the call (a retry would double-pay).
     On the Stacks rail, ``Session.redeem(exc)`` / ``AgentPayClient.redeem(exc)``
-    waits for the transaction to confirm and re-presents the SAME signed
+    waits for the transaction to confirm and re-presents the same signed
     payment, which the gateway honours exactly once. Subclasses PaymentFailed
     so existing ``except PaymentFailed`` handlers still catch it.
 
@@ -175,14 +174,14 @@ class SettlementUncertain(PaymentFailed):
 
 class PrePaymentError(Exception):
     """
-    Raised when a tool call fails BEFORE any funds move and BEFORE any
+    Raised when a tool call fails before any funds move and before any
     signed payment authorization leaves the process — e.g. the initial
     request errored, the 402 couldn't be parsed, or the gateway returned
     an unexpected status on the un-paid probe.
 
-    This is the ONLY failure class Session.call() will fall back on:
+    This is the only failure class Session.call() will fall back on:
     anything else is treated as potentially-paid (fail closed) so a
-    fallback can never turn into a second payment (AGE-55/AGE-56).
+    fallback can never turn into a second payment.
     """
     pass
 
@@ -215,7 +214,7 @@ class RefundPending(Exception):
         refund_eta_seconds: gateway's estimate for when the refund tx
                     will appear on-chain. None when the gateway's
                     REFUND_ENABLED flag is False (dark-launch mode);
-                    in that case the agent SHOULD treat it as
+                    in that case the agent should treat it as
                     "lost until manually reconciled" and may want to
                     escalate.
         error_reason: short string describing what went wrong upstream,
@@ -243,12 +242,12 @@ class RefundPending(Exception):
 
 
 def _is_timeout_error(exc) -> bool:
-    """AGE-68: does this exception look like a submit timeout / transport loss
+    """Does this exception look like a submit timeout / transport loss
     (as opposed to a clean protocol rejection like op_underfunded)? On these
     the tx may actually have been accepted, so the caller should poll for the
     precomputed hash before declaring failure."""
     # A stellar-sdk error carrying result_codes is a definitive on-chain
-    # rejection — NOT a timeout — so never poll on those.
+    # rejection, not a timeout, so polling is skipped for those.
     extras = getattr(exc, "extras", None)
     if isinstance(extras, dict) and extras.get("result_codes"):
         return False
@@ -333,8 +332,8 @@ class AgentWallet:
         if secret_key is None:
             self.keypair = Keypair.random()
         else:
-            # AGE-74: wrap key parsing so a malformed secret raises a CONSTANT
-            # message — a raw stellar_sdk error can echo fragments of the key
+            # Key parsing is wrapped so a malformed secret raises a constant
+            # message: a raw stellar_sdk error can echo fragments of the key
             # into logs/tracebacks.
             try:
                 self.keypair = Keypair.from_secret(secret_key)
@@ -354,7 +353,7 @@ class AgentWallet:
         self._total_spent = Decimal("0")
 
         # ── Base/EVM wallet (optional) ────────────────────────────────────────
-        # base_disabled_reason records WHY Base is unavailable so payment
+        # base_disabled_reason records why Base is unavailable so payment
         # errors can say so instead of silently degrading to Stellar.
         self.base_disabled_reason: str | None = None
         _base_key = base_key or os.environ.get("BASE_AGENT_KEY")
@@ -373,8 +372,8 @@ class AgentWallet:
                 self._evm_account = None
                 self.base_address = None
             except Exception:
-                # AGE-74: CONSTANT message — never echo the exception text,
-                # which can contain fragments of the private key.
+                # Constant message — never echo the exception text, which can
+                # contain fragments of the private key.
                 self.base_disabled_reason = (
                     "Base key rejected: not a valid EVM private key (0x + 64 hex)"
                 )
@@ -459,11 +458,11 @@ class AgentWallet:
             {"success": True, "tx_hash": "..."}
             {"success": False, "reason": "..."}
 
-        AGE-68: a submit that TIMES OUT is not a clean failure — Horizon may
-        have accepted the transaction while the HTTP response was lost. The tx
+        A submit that times out is not a clean failure — Horizon may have
+        accepted the transaction while the HTTP response was lost. The tx
         hash is deterministic (computed from the signed envelope before submit),
-        so on a timeout-class error we poll Horizon for that exact hash before
-        declaring failure. If it landed, we return success with the real hash
+        so on a timeout-class error Horizon is polled for that exact hash before
+        declaring failure. If it landed, success is returned with the real hash
         instead of reporting a failure the caller would retry into a double-pay.
         """
         if getattr(self, "stellar_ephemeral", False):
@@ -506,8 +505,8 @@ class AgentWallet:
 
         except Exception as e:
             reason = _extract_stellar_reason(e)
-            # AGE-68: on a timeout/transport-class error, the tx may have landed.
-            # Poll Horizon for the precomputed hash before calling it a failure.
+            # On a timeout/transport-class error the tx may have landed. Poll
+            # Horizon for the precomputed hash before calling it a failure.
             if tx_hash_precomputed and _is_timeout_error(e):
                 landed = self._await_tx_on_chain(tx_hash_precomputed)
                 if landed:
@@ -616,15 +615,15 @@ class AgentWallet:
 
     def build_base_payment_signature(self, accept: dict, resource_url: str) -> str:
         """
-        Sign an EIP-3009 transferWithAuthorization OFF-CHAIN for an x402 Base
+        Sign an EIP-3009 transferWithAuthorization off-chain for an x402 Base
         payment option and return the base64 X-PAYMENT payload.
 
-        Crucially, NOTHING is broadcast here. The signed authorization is
-        settled server-side by the resource server's facilitator ONLY if the
-        request is accepted — so a rejected retry costs nothing. This is the
-        gasless x402 v2 flow (the same one the gateway's session_create uses),
-        and it fixes the "paid on-chain then rejected" loss that a raw ERC-20
-        transfer + tx_hash proof produced against CDP-facilitator tools.
+        Nothing is broadcast here. The signed authorization is settled
+        server-side by the resource server's facilitator only if the request
+        is accepted, so a rejected retry costs nothing. This is the gasless
+        x402 v2 flow (the same one the gateway's session_create uses); a raw
+        ERC-20 transfer + tx_hash proof would pay on-chain first and lose the
+        funds when a CDP-facilitator tool then rejects the request.
 
         Args:
             accept:        One entry from the 402 response 'accepts' list
@@ -651,8 +650,7 @@ class AgentWallet:
         _atomic = _x402_amount_atomic(accept)
         if _atomic is None:
             # Standard x402 uses maxAmountRequired; AgentPay uses amount. If a
-            # 402 carries neither, it's malformed — a clear error beats the old
-            # bare KeyError('amount').
+            # 402 carries neither it is malformed, so raise a clear error.
             raise KeyError("x402 payment requirements missing amount / maxAmountRequired")
         amount  = str(_atomic)
         asset   = accept.get("asset") or self.BASE_USDC
@@ -668,7 +666,7 @@ class AgentWallet:
             # the facilitator can't settle (Avalanche eip155:43114, Arbitrum
             # eip155:42161, …). Selection already filters these; if one still
             # reaches here, refuse cleanly instead of transmitting a doomed auth
-            # that spends but never confirms. (AGE-80)
+            # that spends but never confirms.
             raise UnsupportedChainPayment(
                 f"cannot settle a Base payment on {network!r} "
                 f"(settleable: {sorted(_BASE_SETTLEABLE_CAIP2)})",
@@ -676,10 +674,10 @@ class AgentWallet:
                 settleable=sorted(_BASE_SETTLEABLE_CAIP2),
             )
         scheme_name = accept.get("scheme", "exact")
-        # AGE-67/AGE-56: maxTimeoutSeconds comes from the SERVER'S 402 and
-        # becomes the signed authorization's validBefore window. Clamp it so a
-        # hostile 402 can't request a year-long validity and hold a settleable
-        # authorization long after the session/budget is gone.
+        # maxTimeoutSeconds comes from the server's 402 and becomes the signed
+        # authorization's validBefore window. Clamp it so a hostile 402 can't
+        # request a year-long validity and hold a settleable authorization
+        # long after the session/budget is gone.
         timeout = min(int(accept.get("maxTimeoutSeconds", 300)), MAX_AUTH_VALIDITY_SECONDS)
         extra   = accept.get("extra") or {
             "name": "USD Coin", "version": "2", "assetTransferMethod": "eip3009",
@@ -693,19 +691,13 @@ class AgentWallet:
         )
         payload_dict = scheme.create_payment_payload(requirements)
 
-        # AGE-90: `accepted` ECHOES the seller's chosen accepts entry VERBATIM.
-        # We used to reconstruct it — normalized network, stringified amount,
-        # clamped timeout, plus injected `resource`/`mimeType` keys. Strict v2
-        # middlewares deep-compare `accepted` against their own advertised
-        # entry, and the injected keys alone produced "No matching payment
-        # requirements" → a fresh 402 {} — the 7-seller rejection cluster that
-        # capped two prober sweeps. Root-caused live 2026-07-28: removing the
-        # two injected keys flips ApiToll/Otto from matcher rejection straight
-        # through to signature verification. Tolerant matchers (5-field subset,
-        # like x402's own Python server) accept the echo just the same, since
-        # it is by definition exactly what the seller advertised. All
-        # normalization (CAIP-2 network, amount key, timeout clamp) still
-        # applies to the SIGNED authorization above — only the declarative
+        # `accepted` echoes the seller's chosen accepts entry verbatim. Strict
+        # v2 middlewares deep-compare it against their own advertised entry, so
+        # a reconstructed copy (normalized network, stringified amount, clamped
+        # timeout, injected `resource`/`mimeType`) is rejected with "No matching
+        # payment requirements". Tolerant matchers accept the echo just the
+        # same. All normalization (CAIP-2 network, amount key, timeout clamp)
+        # still applies to the signed authorization above; only the declarative
         # echo is verbatim.
         payment_payload = {
             "x402Version": 2,
@@ -808,7 +800,7 @@ class AgentWallet:
             "scheme": stacks_opt.get("scheme", "exact"),
             "network": expected_caip2,
             # The gateway binds verification to this challenge id: it looks up
-            # the pending challenge, then requires the memo INSIDE the signed
+            # the pending challenge, then requires the memo inside the signed
             # tx to match it (the memo is the cryptographic binding; this
             # field is the lookup key). docs/stacks-adapter.md §Wire contract.
             "payment_id": payment_id,
@@ -853,20 +845,20 @@ class AgentWallet:
 
 # ── Budget-Aware Session ──────────────────────────────────────────────────────
 
-# Default settlement chain for PAID calls when the caller hasn't pinned one.
+# Default settlement chain for paid calls when the caller hasn't pinned one.
 # Base/EIP-3009 (Mode A) is preferred because it settles through the CDP
 # facilitator that keeps AgentPay discoverable on Bazaar; Stellar is the
 # automatic fallback when no Base wallet/option is available.
 DEFAULT_PAID_CHAIN = "base"
 
-# AGE-53: how much the 402-demanded amount may exceed the registry-quoted
-# price before the SDK refuses to pay/sign. Covers rounding/format drift
+# How much the 402-demanded amount may exceed the registry-quoted price
+# before the SDK refuses to pay/sign. Covers rounding/format drift
 # ("0.001" vs "0.0010") plus small legitimate repricing; anything larger is
 # treated as a hostile or misconfigured gateway and hard-fails pre-payment.
 OVERPAY_TOLERANCE = Decimal("0.05")   # 5% relative
 
-# AGE-67/AGE-56: ceiling for the server-controlled maxTimeoutSeconds that
-# becomes the EIP-3009 validBefore window. 10 minutes is generous for any
+# Ceiling for the server-controlled maxTimeoutSeconds that becomes the
+# EIP-3009 validBefore window. 10 minutes is generous for any
 # legitimate settlement; without a clamp a hostile 402 could request a
 # year-long window and settle the signed authorization long after the
 # session is gone.
@@ -876,14 +868,12 @@ MAX_AUTH_VALIDITY_SECONDS = 600
 def _x402_amount_atomic(entry: dict):
     """Atomic amount from an x402 payment-requirements ('accepts') entry.
 
-    Tolerates BOTH AgentPay's native `amount` key and the STANDARD x402 v2
-    `maxAmountRequired`. Standard-compliant sellers (a growing share of the
-    ecosystem) send only `maxAmountRequired`; reading `amount` alone priced
-    those options at $0 — so they won the "cheapest" selection — and then
-    raised KeyError('amount') at signing. That is the prober's 2026-07-23
-    systemic failure, and it hit any agent paying such a URL, not just the
-    prober. An explicit `amount` of 0 is honoured (a real free option); only
-    a missing/blank `amount` falls through to `maxAmountRequired`.
+    Tolerates both AgentPay's native `amount` key and the standard x402 v2
+    `maxAmountRequired`. Standard-compliant sellers send only
+    `maxAmountRequired`; reading `amount` alone would price those options at
+    $0 (so they win the "cheapest" selection) and then fail at signing. An
+    explicit `amount` of 0 is honoured (a real free option); only a
+    missing/blank `amount` falls through to `maxAmountRequired`.
 
     Returns the atomic int, or None when neither key is present/parseable
     (callers skip such an option rather than mis-pricing it at $0).
@@ -900,10 +890,9 @@ def _x402_amount_atomic(entry: dict):
 
 
 # Friendly EVM network names → CAIP-2. The x402 signing lib requires CAIP-2
-# (eip155:CHAIN_ID); standard x402 uses it too, but many LIVE services
-# advertise a friendly name ("base"), which raised
-# "Unsupported network format: base (expected eip155:CHAIN_ID)" at signing —
-# the prober's 2026-07-23 failure #2, revealed once the amount bug was fixed.
+# (eip155:CHAIN_ID); standard x402 uses it too, but many live services
+# advertise a friendly name ("base"), which the signing lib rejects with
+# "Unsupported network format".
 _EVM_NETWORK_CAIP2 = {
     "base": "eip155:8453",
     "base-mainnet": "eip155:8453",
@@ -924,13 +913,12 @@ def _normalize_evm_network(net) -> str:
     return _EVM_NETWORK_CAIP2.get(n, n)
 
 
-# Base chains this wallet can actually SETTLE on (Base mainnet + sepolia). The
+# Base chains this wallet can actually settle on (Base mainnet + sepolia). The
 # Base signer builds an EIP-3009 USDC authorization the CDP facilitator settles
-# on Base; it cannot settle any other eip155 chain. _chain_kind() historically
-# treated ANY eip155:* as Base, so an Avalanche- (eip155:43114) or Arbitrum-
-# only (eip155:42161) seller was mistaken for Base: a doomed auth was signed +
-# transmitted (real spend, never confirmed) and the seller was mis-scored as a
-# delivery failure. (AGE-80)
+# on Base; it cannot settle any other eip155 chain. Treating any eip155:* as
+# Base would mistake an Avalanche- (eip155:43114) or Arbitrum-only
+# (eip155:42161) seller for Base and sign + transmit a doomed auth (real
+# spend, never confirmed).
 _BASE_SETTLEABLE_CAIP2 = frozenset({"eip155:8453", "eip155:84532"})
 
 
@@ -956,7 +944,7 @@ class ToolResult(dict):
     """
     The value returned by `Session.call()`.
 
-    It IS the gateway envelope dict (``{"tool", "result", "payment"}``), so all
+    It is the gateway envelope dict (``{"tool", "result", "payment"}``), so all
     existing code keeps working unchanged::
 
         r = s.call("token_price", {"symbol": "ETH"})
@@ -1005,12 +993,9 @@ def _with_query(url: str, params: dict | None) -> str:
     """Merge `params` into `url`'s query string — for GET-served x402 resources.
 
     A GET resource takes its arguments in the URL, so a POST-shaped params dict
-    has nowhere else to go. Before AGE-83 the SDK simply dropped them
-    (`client.get(url, headers=...)`), so every GET-served seller was called
-    with no arguments at all — it took the payment, then answered with an
-    error or an empty body, and looked like a non-deliverer. Live evidence:
-    x402.shizu.me/pdf (GET ?url=) scored 0.0 across three paid prober probes
-    while being a working service.
+    has nowhere else to go; dropping them would call the seller with no
+    arguments at all — it takes the payment, then answers with an error or an
+    empty body.
 
     Caller-supplied query params in `url` win over `params` (the caller was
     explicit). Non-scalar values are JSON-encoded; None values are dropped.
@@ -1068,15 +1053,15 @@ class Session:
     Budget-aware session for multi-tool agent tasks.
 
     Enforces a hard spend cap across all tool calls. Tool substitution is
-    OPT-IN (AGE-118): by default (fallback="off") a call either runs the tool
+    opt-in: by default (fallback="off") a call either runs the tool
     you named or raises a typed exception — ToolNotFound for an unknown name,
     BudgetExceeded when it doesn't fit. Pass fallback="auto" to restore
     automatic rerouting to the next-cheapest tool in the same category when
     the budget is tight or the named tool fails before any payment moved.
 
     Cap semantics under substitution (fallback="auto"): allowed_tools and
-    max_per_tool are enforced against the tool ACTUALLY called (the resolved
-    target). A max_per_tool cap keyed to the requested name does NOT transfer
+    max_per_tool are enforced against the tool actually called (the resolved
+    target). A max_per_tool cap keyed to the requested name does not transfer
     to a substitute — if you cap a tool, cap its plausible substitutes by
     name too, or leave fallback off.
 
@@ -1105,14 +1090,14 @@ class Session:
         # Default settlement chain for tools that offer several (e.g. "base",
         # "stellar", or "stacks"). Overridable per-call via call(..., chain=).
         # "stacks" is never a silent default — it only settles when explicitly
-        # preferred here or per-call (AGE-25).
+        # preferred here or per-call.
         self._prefer_chain = prefer_chain.lower() if prefer_chain else None
-        # Coerce through str() so a float cap is EXACT: Decimal(0.10) drifts to
+        # Coerce through str() so a float cap is exact: Decimal(0.10) drifts to
         # 0.1000000000000000055…, but Decimal(str(0.10)) == Decimal("0.10").
         # Accepts "0.10", 0.10, or Decimal("0.10") — all do the right thing.
         self.max_spend = Decimal(str(max_spend))
         self._spent = Decimal("0")
-        # AGE-66: guard the budget check→reserve→spend sequence so two threads
+        # Guards the budget check→reserve→spend sequence so two threads
         # calling call() concurrently can't both read the full remaining budget
         # over seconds of network I/O and both pay. `_reserved` is the sum of
         # in-flight (broadcast not yet accounted) holds; remaining/would_exceed
@@ -1130,9 +1115,9 @@ class Session:
         }
         self._rate_limit: int | None = rate_limit   # max calls per minute
         self._rate_window: list[float] = []          # timestamps of recent calls
-        # AGE-118: tool substitution is OPT-IN. "off" (default) = the tool you
-        # named or a typed exception; "auto" = legacy behaviour (reroute to the
-        # cheapest same-category tool on budget breach or pre-payment failure).
+        # Tool substitution is opt-in. "off" (default) = the tool you named or
+        # a typed exception; "auto" = reroute to the cheapest same-category
+        # tool on budget breach or pre-payment failure.
         if fallback not in ("auto", "off"):
             raise ValueError(f'fallback must be "auto" or "off", got {fallback!r}')
         self._fallback = fallback
@@ -1159,20 +1144,20 @@ class Session:
         return "unknown"
 
     def remaining(self) -> str:
-        """Remaining budget as a formatted DISPLAY string, e.g. '$0.097'.
+        """Remaining budget as a formatted display string, e.g. '$0.097'.
         For comparisons use remaining_usd() (a Decimal) — comparing the
         '$'-prefixed strings is a foot-gun."""
         return _fmt(self.remaining_usd())
 
     def remaining_usd(self) -> Decimal:
         """Remaining budget as a Decimal — use this for math/comparisons.
-        Counts in-flight reservations (AGE-66) so a concurrent call sees money
+        Counts in-flight reservations so a concurrent call sees money
         already committed by another thread's in-progress payment."""
         with self._lock:
             return max(self.max_spend - self._spent - self._reserved, Decimal("0"))
 
     def spent(self) -> str:
-        """Total spent so far as a formatted DISPLAY string."""
+        """Total spent so far as a formatted display string."""
         return _fmt(self._spent)
 
     def spent_usd(self) -> Decimal:
@@ -1182,12 +1167,12 @@ class Session:
     def would_exceed(self, amount_usdc) -> bool:
         """True if adding this cost would exceed the budget. The recommended
         way to ask "does this fit?" — accepts a str, float, or Decimal.
-        Counts in-flight reservations (AGE-66)."""
+        Counts in-flight reservations."""
         with self._lock:
             return (self._spent + self._reserved + Decimal(str(amount_usdc))) > self.max_spend
 
     def _reserve(self, amount) -> bool:
-        """AGE-66: atomically check budget and place a hold. True if the hold
+        """Atomically check budget and place a hold. True if the hold
         was placed (call may proceed); False if it wouldn't fit. Paired with
         _absorb_and_release() in a finally after the payment attempt."""
         amt = Decimal(str(amount))
@@ -1198,19 +1183,17 @@ class Session:
             return True
 
     def _cap_excluding_hold(self, quote, held) -> str:
-        """F1 (2026-07-20): client-side max_spend ceiling for a call whose own
-        budget hold is already placed. remaining_usd() subtracts _reserved
-        INCLUDING this call's hold, so the old cap double-counted it —
-        cap = min(remaining_before − price, 1.05·price) — falsely rejecting
-        any call with remaining < 2× price (exact-fit budgets failed; every
-        session stranded its last call). Add the hold back, under a single
-        lock acquisition so the snapshot is internally consistent.
+        """Client-side max_spend ceiling for a call whose own budget hold is
+        already placed. remaining_usd() subtracts _reserved including this
+        call's hold, so a cap based on it would double-count the hold and
+        falsely reject any call with remaining < 2× price (exact-fit budgets
+        would fail). The hold is added back under a single lock acquisition so
+        the snapshot is internally consistent.
 
-        Computed AFTER the hold lands, this is race-free w.r.t. this call's
-        own hold (the actual bug). Its residual staleness toward holds placed
-        after the computation is the one any pre-computed ceiling has —
-        bounded by the overpay-tolerance arm and enforced anyway by
-        reserve + absorb."""
+        Computed after the hold lands, this is race-free with respect to this
+        call's own hold. Holds placed after the computation can make it stale,
+        as with any pre-computed ceiling; that is bounded by the
+        overpay-tolerance arm and enforced anyway by reserve + absorb."""
         q = Decimal(str(quote))
         with self._lock:
             remaining_excl = max(
@@ -1220,10 +1203,10 @@ class Session:
         return str(min(remaining_excl, q * (Decimal("1") + OVERPAY_TOLERANCE)))
 
     def _would_exceed_excluding_hold(self, amount_usdc, held) -> bool:
-        """F1 (2026-07-20): like would_exceed(), but ignores `held` — the hold
-        THIS call already placed. Used for the fallback fit check, which runs
-        while the original hold is still reserved; counting it falsely
-        rejected tight-budget fallbacks."""
+        """Like would_exceed(), but ignores `held`, the hold this call already
+        placed. Used for the fallback fit check, which runs while the original
+        hold is still reserved; counting it would falsely reject tight-budget
+        fallbacks."""
         with self._lock:
             return (
                 self._spent
@@ -1240,9 +1223,9 @@ class Session:
 
     def tool_cost(self, tool_name: str) -> str:
         """
-        Return the cost of a tool as a formatted DISPLAY string, e.g. '$0.005'
+        Return the cost of a tool as a formatted display string, e.g. '$0.005'
         (or 'unknown'). For deciding whether to call it, use would_exceed()
-        or tool_cost_usd() — do NOT compare the '$' strings directly.
+        or tool_cost_usd(); do not compare the '$' strings directly.
 
         Example (correct):
             if session.would_exceed(session.tool_cost_usd('dune_query')):
@@ -1283,7 +1266,7 @@ class Session:
         return None
 
     def estimate_plan(self, steps, budget=None) -> dict:
-        """Price a multi-step plan BEFORE spending anything.
+        """Price a multi-step plan before spending anything.
 
         Calls the gateway's free POST /v1/plan/estimate — no payment, no
         funded wallet needed. `steps` accepts tool names, (tool, params)
@@ -1345,9 +1328,8 @@ class Session:
                     "cost":     _fmt(e["amount_usdc"]),
                     "tx_hash":  e.get("tx_hash", ""),
                     "network":  e.get("network", "") or "",   # settlement chain
-                    # AGE-54: failed/uncertain spends now legitimately appear in
-                    # the ledger — receipt consumers must be able to tell them
-                    # from settled legs.
+                    # Failed/uncertain spends appear in the ledger too, so
+                    # receipt consumers need to tell them from settled legs.
                     "success":  e.get("success", True),
                     **({"state": e["state"]} if e.get("state") else {}),
                     **({"fallback_for": e["fallback_for"]} if "fallback_for" in e else {}),
@@ -1421,7 +1403,7 @@ class Session:
                         amount_raw = _x402_amount_atomic(a)
                         if amount_raw is None:
                             continue   # no readable price — skip, don't price at $0
-                        # AGE-74: Decimal, not binary float, for USDC money.
+                        # Decimal, not binary float, for USDC money.
                         price_usd = Decimal(amount_raw) / Decimal("1000000")
                         options.append({
                             "price_usd":  price_usd,
@@ -1501,9 +1483,9 @@ class Session:
         Currently supports Stellar mainnet and testnet.
         Base/Solana support: add EVM wallet to AgentWallet (roadmap).
 
-        NOTE: policy checks (allowed_tools, max_per_tool, rate_limit) are
-        enforced by call() BEFORE routing here (AGE-57) — call() is the only
-        entry point, so URL targets can no longer bypass the allowlist.
+        Policy checks (allowed_tools, max_per_tool, rate_limit) are enforced
+        by call() before routing here; call() is the only entry point, so URL
+        targets cannot bypass the allowlist.
         """
         with httpx.Client(timeout=60.0) as client:
             # ── First request — probe for 402 ─────────────────────────────────
@@ -1514,7 +1496,7 @@ class Session:
                 resp = client.post(url, json=params)
                 if resp.status_code == 405:
                     # GET-only server: params belong in the query string, not a
-                    # discarded body (AGE-83).
+                    # discarded body.
                     resp = client.get(_with_query(url, params))
             except Exception as e:
                 raise PrePaymentError(f"External x402 call failed: {e}")
@@ -1532,9 +1514,8 @@ class Session:
                 data = resp.json()
             except Exception:
                 data = None
-            # x402 v2: requirements also (or ONLY) ride the PAYMENT-REQUIRED
-            # header as base64 JSON — many sellers send an empty/minimal body
-            # (first prober sweep 2026-07-10: 10/15 live 402s were header-only).
+            # x402 v2: requirements also (or only) ride the PAYMENT-REQUIRED
+            # header as base64 JSON — many sellers send an empty/minimal body.
             # Non-empty body keys win over the header's.
             hdr_payload = _decode_payment_required_header(resp.headers)
             if not isinstance(data, dict):
@@ -1543,7 +1524,7 @@ class Session:
                 data = hdr_payload
             elif hdr_payload and not (data.get("accepts") or []):
                 data = {**hdr_payload, **{k: v for k, v in data.items() if v}}
-            # The signed payment's `resource` MUST match what the server declared
+            # The signed payment's `resource` must match what the server declared
             # in its 402, not our request URL. Servers like CMC declare the bare
             # path (…/dex/search) while we request with query params (…?q=BNB) —
             # signing the request URL → "resource ... does not match" rejection.
@@ -1575,9 +1556,9 @@ class Session:
             # ── Normalise into payable candidates, tagged by chain ────────────
             def _chain_kind(net) -> str | None:
                 n = str(net or "").lower()
-                # Base is settleable ONLY on Base chain-ids (8453 / 84532), not
+                # Base is settleable only on Base chain-ids (8453 / 84532), not
                 # every eip155:* — an Avalanche/Arbitrum-only seller must not be
-                # mistaken for Base. (AGE-80)
+                # mistaken for Base.
                 if _is_base_settleable(n):
                     return "base"
                 if "stellar" in n:
@@ -1595,7 +1576,7 @@ class Session:
                 can = bool(self.wallet.base_address) if kind_ == "base" else True  # any Stellar wallet can pay
                 candidates.append({
                     "kind": kind_, "network": a.get("network", ""), "pay_to": a.get("payTo"),
-                    # AGE-74: Decimal, not float, for the USDC amount string.
+                    # Decimal, not float, for the USDC amount string.
                     "amount_atomic": atomic,
                     "amount_usdc": f"{Decimal(atomic) / Decimal('1000000'):.6f}",
                     "scheme": a.get("scheme", "exact"), "accept": a, "payable": can,
@@ -1629,9 +1610,9 @@ class Session:
                 if not candidates:
                     # No advertised option is on a chain AgentPay can settle at
                     # all (distinct from a missing-key case). Unmet demand on an
-                    # unsupported chain, NOT a settlement failure — surface the
-                    # offered networks structurally so the prober records the
-                    # chain instead of scoring the seller as a failure. (AGE-80)
+                    # unsupported chain, not a settlement failure — surface the
+                    # offered networks structurally so callers can record the
+                    # chain instead of scoring the seller as a failure.
                     unsettleable = sorted({str(a.get("network", "?")) for a in accepts})
                     raise UnsupportedChainPayment(
                         f"{url} requires payment on {unsettleable}, none of which "
@@ -1653,7 +1634,7 @@ class Session:
             pay_network = chosen["network"]
             pay_scheme  = chosen["scheme"]
 
-            # ── Budget check + atomic reservation (AGE-66) ────────────────────
+            # ── Budget check + atomic reservation ─────────────────────────────
             if not self._reserve(amount_usdc):
                 raise BudgetExceeded(
                     f"Tool costs ${float(amount_usdc):.4f} but only "
@@ -1662,9 +1643,9 @@ class Session:
             _url_reserved = Decimal(str(amount_usdc))
 
             # ── Pay on the selected network and retry ─────────────────────────
-            # AGE-54/AGE-56: spend is recorded the moment value can leave the
-            # wallet — at Stellar broadcast, or at Base auth transmission — NOT
-            # when the call returns 200. A pay-then-fail loop must burn budget.
+            # Spend is recorded the moment value can leave the wallet — at
+            # Stellar broadcast, or at Base auth transmission — not when the
+            # call returns 200. A pay-then-fail loop must burn budget.
             tx_hash = ""
             entry = {
                 "tool":        url,
@@ -1676,7 +1657,7 @@ class Session:
             }
 
             def _record_spend(state: str):
-                # AGE-66: book the spend and drop the hold atomically.
+                # Book the spend and drop the hold atomically.
                 entry["state"] = state
                 with self._lock:
                     self._spent += Decimal(amount_usdc)
@@ -1684,18 +1665,18 @@ class Session:
                     self._call_log.append(entry)
 
             if kind == "base":
-                # Base: sign EIP-3009 OFF-CHAIN — nothing is broadcast here. The
+                # Base: sign EIP-3009 off-chain — nothing is broadcast here. The
                 # resource server's facilitator settles the authorization if it
                 # accepts the request. Signing failures are pre-payment; but the
                 # moment the POST carrying the auth leaves the wire, the server
-                # holds a signature it CAN settle within validBefore — so any
-                # failure after transmission is treated as potentially spent
-                # (AGE-56), never as "no payment settled".
+                # holds a signature it can settle within validBefore, so any
+                # failure after transmission is treated as potentially spent,
+                # never as "no payment settled".
                 logger.info(f"  402 — signing {amount_usdc} USDC auth for {pay_to[:10]}... (Base, off-chain)")
                 try:
                     x_payment = self.wallet.build_base_payment_signature(base_accept, resource_for_payment)
                 except Exception as e:
-                    self._release(_url_reserved)   # AGE-66: pre-payment, no funds moved
+                    self._release(_url_reserved)   # pre-payment, no funds moved
                     raise PaymentFailed(f"evm:could not sign x402 payment: {str(e)[:160]}")
                 payer_address = self.wallet.base_address
 
@@ -1704,11 +1685,11 @@ class Session:
                     "PAYMENT-SIGNATURE": x_payment,   # alias some gateways use
                     "X-Agent-Address":   payer_address,
                 }
-                # Recorded BEFORE transmission: if the request itself times out,
+                # Recorded before transmission: if the request itself times out,
                 # the auth may still have reached the server.
                 _record_spend("signed_auth_transmitted")
                 try:
-                    # GET: arguments ride the query string (AGE-83). The signed
+                    # GET: arguments ride the query string. The signed
                     # `resource` is resource_for_payment (query-stripped), so
                     # adding params here can't break the signature match.
                     retry = (client.get(_with_query(url, params), headers=_headers)
@@ -1721,7 +1702,7 @@ class Session:
                         f"was transmitted — settlement uncertain, spend recorded: {e}"
                     )
                 if retry.status_code != 200:
-                    # The server rejected the call but STILL holds a valid signed
+                    # The server rejected the call but still holds a valid signed
                     # authorization it could settle within validBefore. Count the
                     # spend (fail closed) instead of claiming nothing was paid.
                     entry["state"] = "uncertain_settlement"
@@ -1733,12 +1714,12 @@ class Session:
                 result = retry.json()
                 if isinstance(result, dict):
                     tx_hash = ((result.get("payment") or {}).get("tx_hash")) or ""
-                # AGE-142: third-party sellers don't wrap the settlement in our
+                # Third-party sellers don't wrap the settlement in the AgentPay
                 # JSON envelope — the x402 standard puts it in the
                 # PAYMENT-RESPONSE (v2) / X-PAYMENT-RESPONSE (v1) header as
                 # base64 JSON {success, transaction, network, payer}. Without
-                # this every off-gateway leg carried tx_hash="" and could never
-                # be verified on /ledger (0 of 106 settled prober legs had one).
+                # it an off-gateway leg carries tx_hash="" and can't be
+                # verified on /ledger.
                 if not tx_hash:
                     settled = _settlement_from_headers(retry.headers)
                     if settled:
@@ -1749,24 +1730,24 @@ class Session:
                 entry["tx_hash"] = tx_hash
             else:
                 # Stellar: broadcast the payment, then prove it with the tx_hash.
-                # AGE-74: bind the memo to this call (resource + fresh nonce)
-                # instead of a constant "agentpay-x402" — makes the on-chain
-                # record attributable to the specific request and non-replayable
-                # as a generic marker. Stellar text memos are ≤28 bytes.
+                # The memo carries a fresh nonce instead of a constant marker,
+                # so the on-chain record is attributable to the specific request
+                # and not replayable as a generic proof. Stellar text memos are
+                # ≤28 bytes.
                 _memo = f"ap:{secrets.token_hex(8)}"[:28]
                 logger.info(f"  402 — paying {amount_usdc} USDC to {pay_to[:10]}... (Stellar, memo={_memo})")
                 payment = self.wallet.pay(
                     destination=pay_to, amount_usdc=amount_usdc, memo=_memo,
                 )
                 if not payment["success"]:
-                    self._release(_url_reserved)   # AGE-66: pre-payment, no funds moved
+                    self._release(_url_reserved)   # pre-payment, no funds moved
                     raise PaymentFailed(payment["reason"])
                 tx_hash = payment["tx_hash"]
                 entry["tx_hash"] = tx_hash
                 payer_address = self.wallet.public_key
                 logger.info(f"  ✓ Payment sent | tx: {tx_hash[:16]}...")
-                # Funds have LEFT the wallet — record now, regardless of what
-                # the retry returns (AGE-54).
+                # Funds have left the wallet — record now, regardless of what
+                # the retry returns.
                 _record_spend("paid_awaiting_result")
 
                 proof_payload = {
@@ -1825,16 +1806,15 @@ class Session:
 
         For external URLs, payment goes directly to the tool provider.
         AgentPay tracks the spend locally and enforces the budget cap.
-        NOTE: an external URL has no registry quote, so a URL call is bounded
-        only by the remaining session budget (its 402 IS the quote). To bound
+        An external URL has no registry quote, so a URL call is bounded
+        only by the remaining session budget (its 402 is the quote). To bound
         spend on a specific URL, use max_per_tool={"https://…": cap}.
 
         - Pre-checks the price against remaining budget.
         - Raises ToolNotFound for an unknown registry tool name (never
-          substituted — a typo is an input error, not a budget problem;
-          AGE-118).
+          substituted — a typo is an input error, not a budget problem).
         - With Session(fallback="auto") only: if budget would be exceeded, or
-          the tool fails BEFORE any payment moved, reroutes to the
+          the tool fails before any payment moved, reroutes to the
           next-cheapest tool in the same category that fits. Failures after
           funds moved (or after a signed authorization was transmitted) are
           never retried with a second payment. With the default
@@ -1848,8 +1828,8 @@ class Session:
 
         params = params or {}
 
-        # ── Policy gate (AGE-57): allowlist, rate limit, per-tool cap apply to
-        # BOTH registry tools and external x402 URLs, BEFORE any routing.
+        # ── Policy gate: allowlist, rate limit, per-tool cap apply to both
+        # registry tools and external x402 URLs, before any routing.
         self._check_call_policies(tool_name)
 
         # ── External x402 URL: route directly, skip AgentPay registry ─────────
@@ -1864,11 +1844,11 @@ class Session:
         _prefer_chain = (chain or self._prefer_chain or DEFAULT_PAID_CHAIN).lower()
 
         # ── Resolve which tool to actually call ───────────────────────────────
-        # AGE-118: an unknown tool name is an input error, full stop. It is
-        # never substituted (even with fallback="auto" — there is no category
-        # to substitute within; the old behaviour silently billed an unrelated
-        # category="data" tool for a typo) and it is not a budget problem, so
-        # it raises the typed ToolNotFound rather than BudgetExceeded.
+        # An unknown tool name is an input error. It is never substituted
+        # (even with fallback="auto" there is no category to substitute
+        # within, and substituting would silently bill an unrelated tool for a
+        # typo) and it is not a budget problem, so it raises the typed
+        # ToolNotFound rather than BudgetExceeded.
         tool_info = self._fetch_tool_info(tool_name)
         if tool_info is None:
             raise ToolNotFound(
@@ -1880,7 +1860,7 @@ class Session:
         target = tool_name
 
         if self.would_exceed(price):
-            # AGE-118: budget-breach rerouting is opt-in (fallback="auto").
+            # Budget-breach rerouting is opt-in (fallback="auto").
             # Default "off" keeps budget semantics predictable: the tool you
             # named either fits or the call raises BudgetExceeded.
             fallback = None
@@ -1902,22 +1882,19 @@ class Session:
                 )
 
         # ── Execute via x402 flow ─────────────────────────────────────────────
-        # AGE-53: the cap handed to the client binds the amount ACTUALLY
-        # demanded by the 402, not just the registry-advertised price: never
-        # more than the remaining session budget, and never more than the
-        # quoted price plus a small overpay tolerance. The client hard-fails
-        # BEFORE paying or signing if the 402 demands more.
-        # F1 (2026-07-20): the cap is computed AFTER this call's own hold is
-        # placed, so it must ADD THE HOLD BACK — see _cap_excluding_hold.
-        # (The old remaining_usd()-based cap double-counted the hold: cap =
-        # min(remaining_before − price, 1.05·price), so exact-fit budgets
-        # failed and every session silently stranded its last call.)
+        # The cap handed to the client binds the amount actually demanded by
+        # the 402, not just the registry-advertised price: never more than the
+        # remaining session budget, and never more than the quoted price plus
+        # a small overpay tolerance. The client hard-fails before paying or
+        # signing if the 402 demands more. The cap is computed after this
+        # call's own hold is placed, so it adds the hold back — see
+        # _cap_excluding_hold.
 
-        # AGE-74: per-tool cap as a would-EXCEED check on the RESOLVED target,
-        # not the floor check in _check_call_policies (which only blocks the
-        # NEXT call once already-spent ≥ cap, letting the call that crosses the
-        # cap through, and is keyed on the requested name so a fallback escapes
-        # it). Here we know the real target + price.
+        # Per-tool cap as a would-exceed check on the resolved target. The
+        # floor check in _check_call_policies only blocks the next call once
+        # already-spent ≥ cap (letting the call that crosses the cap through)
+        # and is keyed on the requested name, so a fallback escapes it. Here
+        # the real target and price are known.
         if target in self._max_per_tool:
             already = sum(
                 Decimal(e["amount_usdc"]) for e in self._call_log if e["tool"] == target
@@ -1929,7 +1906,7 @@ class Session:
                     f"{_fmt(self._max_per_tool[target])} cap"
                 )
 
-        # AGE-66: place an atomic budget hold before any funds can move. Even
+        # Place an atomic budget hold before any funds can move. Even
         # if two threads both cleared would_exceed above, only one gets the
         # reservation; the loser fails closed rather than double-paying.
         if not self._reserve(price):
@@ -1956,24 +1933,23 @@ class Session:
                 # exceptions so callers can branch on them explicitly.
                 raise
             except PrePaymentError as exc:
-                # AGE-55: fall back ONLY when no funds moved and no signed
+                # Fall back only when no funds moved and no signed
                 # authorization left the process. Any other exception (e.g.
                 # "Tool call failed after payment", transport errors during the
                 # paid retry) is treated as potentially-paid and re-raised —
                 # a fallback there would be a second payment.
                 if target != tool_name:
                     raise
-                # AGE-118: pre-payment-failure rerouting is the same class of
-                # silent substitution — gated on the same opt-in switch.
+                # Pre-payment-failure rerouting is the same class of silent
+                # substitution — gated on the same opt-in switch.
                 if self._fallback != "auto":
                     raise
                 category = tool_info.get("category", "data")
                 fallback = self._find_fallback(category=category, exclude=target)
-                # F1 (2026-07-20): the fit check runs while THIS call's
-                # original hold is still reserved, so it must exclude it —
-                # would_exceed() counts the hold and falsely rejected
-                # tight-budget fallbacks. The _reserve below stays the
-                # authoritative (fail-closed) check.
+                # The fit check runs while this call's original hold is still
+                # reserved, so it must exclude it — would_exceed() counts the
+                # hold and would falsely reject tight-budget fallbacks. The
+                # _reserve below stays the authoritative (fail-closed) check.
                 if not (
                     fallback
                     and not self._would_exceed_excluding_hold(
@@ -1988,15 +1964,15 @@ class Session:
                 # before the client is replaced — full session visibility.
                 self._absorb_client_log(client, requested=tool_name, target=target)
                 # ...and clear the absorbed entries so the `finally` can't fold
-                # them in a second time if the re-reserve below raises (dup
-                # $0 receipt rows — follow-up review low, 2026-07-20).
+                # them in a second time (duplicate $0 receipt rows) if the
+                # re-reserve below raises.
                 client.call_log.clear()
-                # Re-point the hold at the fallback price (AGE-66). Zero
-                # reserved_amt the instant the release lands: if the re-reserve
-                # below raises BudgetExceeded, the `finally` must NOT release the
-                # original hold a second time. A double-release drives _reserved
-                # negative and, under concurrent Session.call, lets the budget be
-                # overspent by a leg price (adversarial review finding, 2026-07).
+                # Re-point the hold at the fallback price. Zero reserved_amt
+                # the instant the release lands: if the re-reserve below raises
+                # BudgetExceeded, the `finally` must not release the original
+                # hold a second time. A double-release drives _reserved
+                # negative and, under concurrent Session.call, lets the budget
+                # be overspent by a leg price.
                 self._release(reserved_amt)
                 reserved_amt = Decimal("0")
                 if not self._reserve(fallback["price_usdc"]):
@@ -2005,7 +1981,7 @@ class Session:
                         f"remaining budget ({self.remaining()} left)"
                     )
                 reserved_amt = Decimal(str(fallback["price_usdc"]))
-                # Set target BEFORE the call so a fallback leg that pays and
+                # Set target before the call so a fallback leg that pays and
                 # then fails still gets its fallback_for tag in the finally.
                 target = fallback["name"]
                 client = AgentPayClient(wallet=self.wallet, gateway_url=self.gateway_url)
@@ -2017,14 +1993,14 @@ class Session:
                     prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
                 )
         finally:
-            # AGE-54 + AGE-66 + F2 (2026-07-20): fold EVERY payment the client
-            # made into the session (success or failure — a broadcast payment
-            # whose tool call then failed still burned budget) AND drop this
-            # call's hold, in ONE locked section. The previous two-step
-            # release-then-absorb left a window where _reserved was already
-            # decremented but _spent not yet incremented, so a concurrent
-            # _reserve saw inflated remaining and could over-commit the budget
-            # by up to one leg price. Mirrors the URL path's _record_spend.
+            # Fold every payment the client made into the session (success or
+            # failure — a broadcast payment whose tool call then failed still
+            # burned budget) and drop this call's hold, in one locked section.
+            # A two-step release-then-absorb would leave a window where
+            # _reserved is already decremented but _spent not yet incremented,
+            # letting a concurrent _reserve see inflated remaining and
+            # over-commit the budget by up to one leg price. Mirrors the URL
+            # path's _record_spend.
             self._absorb_and_release(
                 client, requested=tool_name, target=target, held=reserved_amt
             )
@@ -2039,12 +2015,11 @@ class Session:
         return _wrap_result(result)
 
     def _check_call_policies(self, name_or_url: str) -> None:
-        """Pre-payment policy gate shared by registry tools AND external x402
-        URLs (AGE-57): allowed_tools allowlist, rate limit, per-tool cap.
-        call() is the single entry point, so URL targets can no longer bypass
-        the allowlist by skipping the registry path. AGE-66: rate-window and
-        per-tool-cap reads run under the session lock so concurrent calls
-        can't both slip past the same limit."""
+        """Pre-payment policy gate shared by registry tools and external x402
+        URLs: allowed_tools allowlist, rate limit, per-tool cap. call() is
+        the single entry point, so URL targets cannot bypass the allowlist by
+        skipping the registry path. Rate-window reads run under the session
+        lock so concurrent calls can't both slip past the same limit."""
         import time as _time
 
         if self._allowed_tools is not None and name_or_url not in self._allowed_tools:
@@ -2078,26 +2053,26 @@ class Session:
 
     def _absorb_client_log(self, client, requested: str, target: str) -> None:
         """Fold an AgentPayClient's call_log into the session ledger and
-        budget. Runs on success AND failure paths (AGE-54): the client records
-        an entry the moment value can leave the wallet, so every broadcast
+        budget. Runs on success and failure paths: the client records an
+        entry the moment value can leave the wallet, so every broadcast
         payment counts against the cap even when the tool call then failed.
-        AGE-66: _spent/_call_log mutations run under the session lock."""
+        _spent/_call_log mutations run under the session lock."""
         with self._lock:
             self._absorb_client_log_locked(client, requested, target)
 
     def _absorb_and_release(self, client, requested: str, target: str, held) -> None:
-        """F2 (2026-07-20): book the client's spend AND drop this call's
-        budget hold in ONE locked section — mirroring the URL path's
-        _record_spend. Absorb-before-release inside the same lock means no
-        observer can ever see the hold gone while the spend is unbooked
-        (the overspend direction); the momentary spent+held double-count is
-        impossible too, since both mutations commit atomically."""
+        """Book the client's spend and drop this call's budget hold in one
+        locked section, mirroring the URL path's _record_spend.
+        Absorb-before-release inside the same lock means no observer can see
+        the hold gone while the spend is unbooked (the overspend direction);
+        the momentary spent+held double-count is impossible too, since both
+        mutations commit atomically."""
         with self._lock:
             self._absorb_client_log_locked(client, requested, target)
             self._reserved = max(self._reserved - Decimal(str(held)), Decimal("0"))
 
     def _absorb_client_log_locked(self, client, requested: str, target: str) -> None:
-        """Core of _absorb_client_log — caller MUST hold self._lock."""
+        """Core of _absorb_client_log — the caller holds self._lock."""
         for e in client.call_log:
             cost = Decimal(str(e.get("amount_usdc", "0")))
             self._spent += cost
@@ -2189,7 +2164,7 @@ class Session:
         Find the cheapest available tool in `category` within remaining budget,
         excluding `exclude`. Returns tool dict or None.
 
-        Policy-aware (AGE-57): a fallback must satisfy the same session
+        Policy-aware: a fallback must satisfy the same session
         policies as a named tool — the SDK picking it instead of the caller
         does not exempt it from the allowed_tools allowlist or a per-tool cap.
         """
