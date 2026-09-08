@@ -62,7 +62,7 @@ __all__ = [
 # In-memory fast guard for txid consumption (mirrors _used_base_tx_hashes in
 # gateway/base.py — single-process guard when Supabase is disabled/unreachable).
 # Insertion-ordered so it can be bounded: Supabase is the durable store, this
-# only has to cover a restart-free window. AGE-96 unifies the three guards.
+# only has to cover a restart-free window.
 _used_stacks_txids: dict[str, None] = {}
 _USED_TXIDS_MAX = 50_000
 
@@ -72,7 +72,7 @@ def _remember_txid(txid: str) -> None:
     while len(_used_stacks_txids) > _USED_TXIDS_MAX:
         _used_stacks_txids.pop(next(iter(_used_stacks_txids)))
 
-# Node rejection reasons that are DEFINITIVE — the tx was refused at
+# Node rejection reasons that are definitive — the tx was refused at
 # broadcast, is in no mempool, and can never settle. Only these may produce
 # state "rejected" from a broadcast attempt. (Hiro /v2/transactions error
 # body: {"error": "transaction rejected", "reason": "<one of these>", ...})
@@ -92,9 +92,8 @@ _DEFINITIVE_REJECTIONS = (
 )
 
 # Overpay flag threshold, mirroring stellar.py's `overpaid` flag: accept but
-# flag anything >2x the quote. Small under-tolerance absorbs FX drift between
-# the 402 quote and verification (AGE-24 owns the real FX; with the M1 fixed
-# rate the two are identical, so this only matters once live rates land).
+# flag anything >2x the quote. The small under-tolerance absorbs FX drift
+# between the 402 quote and verification.
 _OVERPAY_FLAG_FACTOR = Decimal("2")
 _UNDERPAY_TOLERANCE = Decimal("0.98")
 
@@ -153,29 +152,23 @@ def _sbtc_contract() -> str:
     return SBTC_CONTRACT_MAINNET if _network() == "mainnet" else SBTC_CONTRACT_TESTNET
 
 
-# ── USD→sats FX (AGE-24) ──────────────────────────────────────────────────────
-# sBTC is BTC-denominated (sats, 8 decimals), so a "$0.01 tool" needs a
-# USD→BTC rate at 402-issuance. Rate source: CoinGecko /simple/price (the same
-# feed token_price uses — keyless, no new dependency), cached briefly, with
-# STACKS_FIXED_BTC_USD as the fallback floor so a CoinGecko blip never hard-
-# fails 402 issuance (it degrades to the configured rate, or omits the option).
-#
-# The rounding rule (ceil to the sat — never quote fewer sats than the USD
-# price) lives in agentpay._stacks_tx.sats_from_usd, shared by both sides.
+# ── USD→sats FX ──────────────────────────────────────────────────────────────
+# sBTC is BTC-denominated, so a "$0.01 tool" needs a USD→BTC rate at
+# 402-issuance. Source: CoinGecko /simple/price (the feed token_price already
+# uses), cached briefly, with STACKS_FIXED_BTC_USD as the fallback so a
+# CoinGecko blip degrades to the configured rate or omits the option rather
+# than failing the 402. Rounding (ceil to the sat) lives in
+# agentpay._stacks_tx.sats_from_usd, shared by both sides.
 
 _rate_cache: dict = {"rate": None, "at": 0.0}   # {"rate": Decimal|None, "at": monotonic}
 
-# AGE-135: single-flight guard for the background rate refresh. The 402 path
-# must never block on CoinGecko when ANY cached rate exists — see _btc_usd_rate.
+# Single-flight guard for the background refresh: the 402 path never waits
+# on CoinGecko when any cached rate exists (see _btc_usd_rate).
 _rate_refresh_task: Optional[asyncio.Task] = None
 
-# Bounded fetch: the old 10s timeout sat INSIDE the 402 challenge path and,
-# with probes arriving less often than the 60s cache TTL, every external
-# prober hit a cold cache → paid-tool 402s carried a live CoinGecko
-# round-trip. fuchss's 90d histories read pre_trade_check at 97.94%
-# trailing-30d availability (timeout-class failures), vs 99.36% for
-# session_create whose 402 has no stacks leg. 3s is generous for CoinGecko's
-# p99 and keeps the worst-case cold-boot 402 well under prober timeouts.
+# The fetch sits inside the 402 path on a cold cache, and external uptime
+# probers arrive less often than the cache TTL, so this bound is what they
+# measure.
 _RATE_FETCH_TIMEOUT_S = 3.0
 
 
@@ -201,16 +194,13 @@ async def _fetch_btc_usd_live() -> Optional[Decimal]:
 
 
 async def _btc_usd_rate() -> Optional[Decimal]:
-    """BTC/USD for quoting, without ever blocking a 402 on CoinGecko (AGE-135).
+    """BTC/USD for quoting, without blocking a 402 on CoinGecko.
 
-    Fresh cache (< STACKS_RATE_CACHE_S) → serve it.
-    Stale cache → serve the stale value IMMEDIATELY and refresh in the
-      background (single-flight). Staleness is safe: the quote binds at
-      402-issuance and settle verifies against the quote stored on the
-      challenge, so a stale rate only drifts the sats price slightly — it
-      can never fail a settle.
-    Empty cache (cold boot) → one bounded (3s) blocking fetch, then
-      STACKS_FIXED_BTC_USD, then None (the 402 omits the stacks option).
+    Fresh cache → serve it. Stale cache → serve it and refresh in the
+    background (single-flight); a stale rate only drifts the sats price,
+    it cannot fail a settle because the settle verifies against the quote
+    stored on the challenge. Empty cache → one bounded fetch, then
+    STACKS_FIXED_BTC_USD, then None (the 402 omits the stacks option).
     """
     global _rate_refresh_task
     now = time.monotonic()
@@ -361,8 +351,8 @@ def stacks_offerable(price_usdc) -> bool:
 async def build_stacks_402_option(price_usdc, resource_url: str = "") -> Optional[dict]:
     """Quote + option in one step. None when Stacks isn't configured or
     quotable — the 402 then omits the option entirely. The route quotes
-    first and stores the quote on the challenge (AGE-95); this wrapper is
-    for callers without a challenge."""
+    first and stores the quote on the challenge; this wrapper is for
+    callers without a challenge."""
     if not stacks_offerable(price_usdc):
         return None
     offer = await stacks_offer(price_usdc)
@@ -574,8 +564,8 @@ async def verify_stacks_payment(
     origin signature are all checked from the bytes. Same result contract
     shape as stellar/base verify:
     {"authorized", "reason", "txid", "sender", "amount_sats", "overpaid"}.
-    The txid is RECOMPUTED from the signed bytes — the header's copy is
-    never trusted (wire contract).
+    The txid is recomputed from the signed bytes; the header's copy is
+    never trusted.
     """
     payload, err = decode_payment_signature(payment_header)
     if err:
@@ -623,7 +613,7 @@ async def verify_stacks_payment(
     if tx["memo"] != payment_id.encode("utf-8")[:34]:
         return _fail("memo_payment_id_mismatch")
 
-    # ── amount (AGE-24 owns the FX; small drift tolerance only) ──────────────
+    # ── amount (small drift tolerance only) ───────────────────────────────────
     floor_sats = int(Decimal(expected_amount_sats) * _UNDERPAY_TOLERANCE)
     if tx["amount"] < max(floor_sats, 1):
         return _fail(
@@ -705,7 +695,7 @@ async def poll_confirmation(txid: str, *, max_polls: Optional[int] = None) -> di
                 return {"status": "rejected", "reason": status}
             # dropped_* (mempool eviction) is not definitive: the signed
             # bytes are still valid and can be re-broadcast, so keep polling
-            # and let the caller end in "uncertain" (AGE-152).
+            # and let the caller end in "uncertain".
             # "pending" (or unknown) → keep polling
     return {"status": "timeout", "reason": "confirmation_timeout"}
 
@@ -720,13 +710,9 @@ async def _broadcast_direct(signed_tx: bytes, txid: str) -> dict:
     A same-txid re-broadcast is node-level idempotent: "already in mempool"
     counts as accepted.
 
-    Body is JSON hex rather than application/octet-stream. As of 2026-08-15 the
-    Hiro testnet API corrupts binary bodies: bytes >= 0x80 arrive as U+FFFD
-    (ef bf bd), so the node reads 0xbd where the auth flags belong and rejects
-    with "unrecognized auth flags 189". It rejects Hiro's own previously-mined
-    faucet transaction identically, so this is not specific to transactions we
-    build. JSON carries the same bytes as ASCII hex, survives the transcoding,
-    and is equally supported by the node.
+    The body is JSON hex, not application/octet-stream: Hiro's API mangles
+    binary bodies (bytes >= 0x80 arrive as U+FFFD), and the node accepts
+    both forms.
     """
     url = f"{_hiro_api()}/v2/transactions"
     try:
@@ -828,7 +814,7 @@ async def settle_stacks_payment(
     """
     label = _network_label()
 
-    # ── consume the txid before broadcast — a replay must die here ────────
+    # ── consume the txid before broadcast ─────────────────────────────────
     if txid in _used_stacks_txids:
         return {"ok": False, "state": "rejected", "txid": txid,
                 "reason": "replay_attack"}
@@ -843,17 +829,17 @@ async def settle_stacks_payment(
             # payment replayable after a restart, so nothing is broadcast.
             # The proof cannot be retried as-is (its payment_id is already
             # consumed upstream), so answer "rejected": the SDK confirms on
-            # Hiro that the tx is absent (AGE-152), zeroes the leg, and signs
-            # again against a fresh 402.
+            # Hiro that the tx is absent, zeroes the leg, and signs again
+            # against a fresh 402.
             _used_stacks_txids.pop(txid, None)
             return {"ok": False, "state": "rejected", "txid": txid,
                     "reason": ("replay_store_unavailable: nothing was broadcast "
                                "— request a fresh 402 and sign again")}
 
-    # ── 2.-5. under one wall-clock deadline (AGE-150): Cloudflare cuts the
-    # request at 100s with no body, which would strip txid/payment_status
-    # from the SDK's reply. Cutting to "uncertain" ourselves keeps the
-    # structured reply, and AGE-147's redemption finishes the call later.
+    # ── steps 2–5 under one wall-clock deadline: the edge cuts the request
+    # at 100s with no body, which would strip txid/payment_status from the
+    # SDK's reply. Cutting to "uncertain" ourselves keeps the structured
+    # reply, and redemption finishes the call later.
     try:
         return await asyncio.wait_for(
             _broadcast_and_confirm(signed_tx, txid, payment_payload, requirements),
@@ -899,7 +885,7 @@ async def _broadcast_and_confirm(
         if fac["outcome"] == "uncertain":
             broadcast_attempted = True
             # The facilitator may have broadcast before failing — check the
-            # chain BEFORE re-broadcasting (the ok_recovered lesson).
+            # chain before re-broadcasting.
             confirm = await poll_confirmation(
                 txid, max_polls=max(settings.STACKS_CONFIRM_MAX_POLLS // 2, 2)
             )
@@ -919,7 +905,7 @@ async def _broadcast_and_confirm(
     if direct["outcome"] == "rejected":
         if broadcast_attempted:
             # A rejected re-broadcast after an ambiguous facilitator attempt
-            # can mean the FIRST broadcast is live (e.g. our own tx now holds
+            # can mean the first broadcast is live (e.g. our own tx now holds
             # the nonce in the mempool) — poll once more before answering.
             confirm = await poll_confirmation(txid)
             if confirm["status"] == "success":

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 HORIZON_TESTNET = "https://horizon-testnet.stellar.org"
 HORIZON_MAINNET = "https://horizon.stellar.org"
 
-# ── Stacks (sBTC) settlement (AGE-25) ────────────────────────────────────────
+# ── Stacks (sBTC) settlement ─────────────────────────────────────────────────
 STACKS_API_TESTNET = "https://api.testnet.hiro.so"
 STACKS_API_MAINNET = "https://api.hiro.so"
 # STX network fee when neither the 402's stacks option nor STACKS_FEE_MICROSTX
@@ -385,19 +385,18 @@ class AgentWallet:
             self._evm_account = None
             self.base_address = None
 
-        # ── Stacks/sBTC wallet (optional, AGE-25) ─────────────────────────────
+        # ── Stacks/sBTC wallet (optional) ────────────────────────────────────
         # sign-don't-broadcast: the SDK signs a complete sBTC transfer and
         # hands it to the gateway, which broadcasts (gateway/stacks.py).
-        # stacks_disabled_reason records WHY Stacks is unavailable so payment
+        # stacks_disabled_reason records why Stacks is unavailable so payment
         # errors can say so instead of failing bare.
         self.stacks_disabled_reason: str | None = None
         self._stacks_keypair = None
         self.stacks_address: str | None = None
         # Serializes the whole sign→transmit→response leg: Stacks nonces are
-        # sequential, so there is ONE in-flight signed tx per wallet
-        # (docs/stacks-adapter.md). _stacks_next_nonce tracks our local
-        # successor so back-to-back legs don't reuse a nonce the chain read
-        # hasn't caught up to yet.
+        # sequential, so there is one in-flight signed tx per wallet.
+        # _stacks_next_nonce tracks our local successor so back-to-back legs
+        # don't reuse a nonce the chain read hasn't caught up to yet.
         self._stacks_lock = threading.Lock()
         self._stacks_next_nonce: int | None = None
         _stacks_key = stacks_key or os.environ.get("STACKS_AGENT_KEY")
@@ -416,8 +415,8 @@ class AgentWallet:
                 )
                 logger.warning(f"Stacks wallet init failed: {self.stacks_disabled_reason}")
             except Exception:
-                # [CHECKLIST #8]: CONSTANT message — never echo the exception
-                # text, which can contain fragments of the private key.
+                # Constant message — never echo the exception text, which can
+                # contain fragments of the private key.
                 self.stacks_disabled_reason = (
                     "Stacks key rejected: not a valid Stacks private key "
                     "(64 hex, or 66 hex ending in 01)"
@@ -716,7 +715,7 @@ class AgentWallet:
         }
         return base64.b64encode(json.dumps(payment_payload).encode()).decode()
 
-    # ── Stacks/sBTC payment path (AGE-25) ─────────────────────────────────────
+    # ── Stacks/sBTC payment path ──────────────────────────────────────────────
 
     @property
     def _stacks_api_base(self) -> str:
@@ -734,26 +733,15 @@ class AgentWallet:
         return int(resp.json()["nonce"])
 
     def build_stacks_payment(self, stacks_opt: dict, payment_id: str, resource_url: str) -> dict:
-        """Sign — but DO NOT broadcast — an sBTC transfer for a 402 stacks
+        """Sign, but do not broadcast, an sBTC transfer for a 402 stacks
         option, and build the lowercase `payment-signature` header payload.
 
-        Sign-don't-broadcast semantics: the return value is a complete signed
-        transaction the GATEWAY will broadcast (facilitator /settle, or direct
-        Hiro). Once the header leaves the process the tx is live — the caller
-        records the spend at transmission, not at HTTP 200 ([CHECKLIST #2]).
-
-        The caller MUST hold self._stacks_lock across sign→transmit→response:
-        Stacks nonces are sequential, so exactly one signed tx may be in
-        flight per wallet. Nonce = max(chain's next nonce, our local
-        successor) — the local successor covers mempool lag right after a
-        prior leg settled.
-
-        `stacks_opt` is the `payment_options.stacks` block of AgentPay's 402:
-        {amount_sats, amount_usdc, pay_to, network (CAIP-2), fee_microstx?,
-        scheme?}. Budget cap math stays in USD (amount_usdc); amount_sats is
-        what gets signed. [CHECKLIST #7]'s validity-window clamp has no Stacks
-        analog (a signed tx never expires) — the mitigation is this
-        serialization plus the gateway's pre-settle replay consume on txid.
+        The gateway broadcasts; once the header leaves the process the tx is
+        live, so the caller records the spend at transmission. The caller
+        holds self._stacks_lock across sign→transmit→response (nonces are
+        sequential: one signed tx in flight per wallet); the nonce is
+        max(chain's next nonce, our local successor). Budget cap math stays
+        in USD; amount_sats is what gets signed.
 
         Returns {"header", "txid", "nonce", "amount_sats", "amount_usd"}.
         """
@@ -808,7 +796,7 @@ class AgentWallet:
             sender=self._stacks_keypair,
             recipient=pay_to,
             amount_sats=amount_sats,
-            payment_id=payment_id,   # [CHECKLIST #5] memo = challenge binding
+            payment_id=payment_id,   # memo = challenge binding
             nonce=nonce,
             fee_microstx=fee,
             network=network,
@@ -855,8 +843,8 @@ class AgentWallet:
         self._stacks_next_nonce = None
 
     def note_stacks_settled(self, amount_usd) -> None:
-        """[CHECKLIST #9]: wallet-level spend counter must move for
-        sign-don't-broadcast settles too, not only for local broadcasts."""
+        """The wallet-level spend counter moves for sign-don't-broadcast
+        settles too, not only for local broadcasts."""
         try:
             self._total_spent += Decimal(str(amount_usd))
         except (ArithmeticError, ValueError) as e:

@@ -1,38 +1,17 @@
 # Stacks sBTC Adapter — Design & Build Checklist
 
-**Status:**
-- signing lib IMPLEMENTED (AGE-22, 2026-07-20) — `agentpay/_stacks_tx.py`,
-  fixture-validated byte-for-byte against @stacks/transactions v7 (92 tests,
-  `tests/test_stacks_tx.py`; generator `tools/gen_stacks_fixtures.mjs`), plus
-  live-validated against the Hiro testnet node (full deserialize, node txid ==
-  pre-broadcast `txid_of()`).
-- SDK payment path IMPLEMENTED (AGE-25, 2026-07-21) — `chain="stacks"` /
-  `Session(prefer_chain="stacks")` in `_client.py`/`_wallet.py`:
-  sign-don't-broadcast, one-in-flight nonce serialization, stale-nonce
-  re-sign-once, lowercase dialect (19 tests, `tests/test_stacks_sdk.py`).
-  The client side is live but inert until the gateway offers a
-  `payment_options.stacks` block.
-- gateway settlement adapter IMPLEMENTED (AGE-23, 2026-07-21) —
-  `gateway/stacks.py` (verify: full SIP-005 decode + memo binding + mandatory
-  post-condition; settle: atomic pre-broadcast txid consume, facilitator →
-  direct-Hiro degradation, ok_recovered polling) wired into
-  `routes/tools.py` behind `STACKS_ENABLED` (default false — inert).
-  43 tests in `tests/test_stacks_gateway.py`.
-- USD→sats pricing IMPLEMENTED (AGE-24, 2026-07-22) — live BTC/USD from
-  CoinGecko `/simple/price` (the feed `token_price` uses; keyless), cached
-  `STACKS_RATE_CACHE_S` (60s), falling back to `STACKS_FIXED_BTC_USD` then a
-  stale cached value then omitting the option. The sats quoted at
-  402-**issuance** are stored per `payment_id` and settle verifies against
-  THAT quote (not a re-quote), so a BTC move between issue and settle can't
-  fail the amount check; the challenge's own expiry is the quote's validity
-  window. Rate + sats surfaced on the 402 option (`btc_usd_rate`) and the
-  settle receipt. Ceil-to-sat rounding is `_stacks_tx.sats_from_usd`.
+Implemented and live on mainnet: the signing library (`agentpay/_stacks_tx.py`,
+fixture-validated byte-for-byte against @stacks/transactions), the SDK payment
+path (`chain="stacks"` / `Session(prefer_chain="stacks")`), the gateway
+settlement adapter (`gateway/stacks.py`, behind `STACKS_ENABLED`), and
+USD→sats pricing quoted at 402-issuance and stored on the challenge. History
+and per-release detail are in `CHANGELOG.md`; mainnet operation is in
+`stacks-mainnet.md`.
 
-## Wire contract (defined by AGE-25, consumed by AGE-23/24)
+## Wire contract
 
 **402 offer** — the gateway advertises Stacks in AgentPay's native 402 body as
-`payment_options.stacks` (AGE-24 computes amount_sats/amount_usdc at
-402-issuance):
+`payment_options.stacks` (amount_sats/amount_usdc computed at 402-issuance):
 
 ```json
 {
@@ -41,7 +20,7 @@
       "network": "stacks:2147483648",     // CAIP-2; stacks:1 on mainnet
       "amount_sats": 1030,                 // what gets signed (sBTC, sats)
       "amount_usdc": "0.001",              // USD-at-quote — budget/cap math
-      "btc_usd_rate": "97000",             // AGE-24: rate this quote used
+      "btc_usd_rate": "97000",             // rate this quote used
       "pay_to": "ST…",                     // gateway c32 address
       "fee_microstx": 500                  // suggested STX network fee (optional)
   }}
@@ -94,12 +73,10 @@ can never double-fulfil one challenge.
 
 ## Why this document exists
 
-The 2026-07 gateway/SDK code review (fixes shipped in `agentpay-x402` 0.3.0
-and 0.3.1 — see CHANGELOG) surfaced the exact defect classes a third
+The gateway/SDK review before 0.3.0 surfaced the defect classes a third
 settlement path would otherwise copy. This document distills them into a
-12-point checklist to be read **before writing any payment code in this
-adapter**. Reference (fixed) implementations live in `agentpay/_wallet.py`
-and `gateway/base.py`.
+12-point checklist for anyone touching payment code in this adapter.
+Reference implementations live in `agentpay/_wallet.py` and `gateway/base.py`.
 
 ## The third settlement model
 
@@ -109,13 +86,12 @@ and `gateway/base.py`.
 | Payment artifact | on-chain tx (done) | off-chain EIP-3009 auth | **fully signed, unbroadcast tx** |
 | Gateway's job | verify | verify+settle via CDP | **broadcast + confirm + recover** |
 | Challenge binding | memo = payment_id | tx hash consumption | **memo arg of `sbtc-token::transfer` = payment_id** |
-| Replay key | tx hash (post-hoc) | tx hash | **txid — deterministic PRE-broadcast** |
+| Replay key | tx hash (post-hoc) | tx hash | **txid — deterministic before broadcast** |
 | Facilitator dies | n/a | Mode A unavailable | **degrade to direct `POST /v2/transactions` on Hiro** |
 
 Key consequence: every failure mode between broadcast and confirmation lands
-on the gateway. The settle-timeout → poll-by-txid → `ok_recovered` pattern
-(learned in production on the Base path) is designed in from day one, not
-patched in later.
+on the gateway, so settle-timeout → poll-by-txid → `ok_recovered` is part of
+the design rather than a later patch.
 
 ## Header dialect (the third one — keep them straight)
 
@@ -126,10 +102,7 @@ patched in later.
   `stacks:2147483648` (testnet).** Parse case-insensitively; emit the dialect
   each rail expects.
 
-## The 12-point build checklist (do NOT copy the pre-fix patterns)
-
-Each item is anchored in the skeletons as `[CHECKLIST #N]` at the exact place
-it must be enforced.
+## The 12-point build checklist
 
 1. Bound the signed amount by remaining budget; reject a 402 amount above the
    quote **before signing**.
@@ -146,11 +119,11 @@ it must be enforced.
 9. Update the wallet-level spend counter for sign-don't-broadcast settles.
 10. `await` the receipt insert before the terminal state PATCH.
 11. **Cap math must exclude the call's own hold**: compute the client ceiling
-    as `min(remaining + own_hold, quote × 1.05)` AFTER the hold lands, under
-    one lock. Reference: `_wallet.py::_cap_excluding_hold` (0.3.1).
-12. **Book spend and release the hold in ONE locked section** —
+    as `min(remaining + own_hold, quote × 1.05)` after the hold lands, under
+    one lock. Reference: `_wallet.py::_cap_excluding_hold`.
+12. **Book spend and release the hold in one locked section** —
     absorb-before-release; two lock acquisitions re-open the TOCTOU.
-    Reference: `_wallet.py::_absorb_and_release` (0.3.1).
+    Reference: `_wallet.py::_absorb_and_release`.
 
 ## Module map
 
@@ -164,14 +137,14 @@ it must be enforced.
 - `gateway/stacks.py` — settlement adapter: facilitator verify/settle,
   direct-Hiro fallback, `ok_recovered` poll path, atomic pre-settle txid
   consume, Clarity contract-call decode for verification.
-- Pricing (AGE-24) — live BTC/USD (CoinGecko, cached, fixed fallback);
+- Pricing — live BTC/USD (CoinGecko, cached, fixed fallback);
   the quote (sats + rate) is stored on the challenge — in memory and in the
   `pending_challenges` row (`stacks_sats`, `stacks_rate`) — and read back at
   settle, so it survives a gateway restart; rate + sats on the 402 option and
   the settle receipt. USDCx deferred (see below).
-- Testnet: at least one nonzero-priced tool on the testnet registry (the
-  free-funnel pricing left testnet with no payable tool), so the capped
-  session, real payment, and over-cap rejection are all demonstrable.
+- Testnet: `TESTNET_PAID_TOOLS` gives the testnet registry at least one
+  priced tool, so the capped session, real payment, and over-cap rejection
+  are all demonstrable there.
 
 ## Known limitations & dependencies
 
@@ -183,12 +156,10 @@ it must be enforced.
   the sponsored-transaction flag is supported in the wire format from day
   one, relay integration itself comes later.
 - sBTC is BTC-denominated: dollar prices require FX at issuance.
-- **USDCx DEFERRED (AGE-24 decision, 2026-07-22).** USDCx (Circle
-  xReserve-backed USDC on Stacks) would sidestep FX, but the grant milestones
-  require the **sBTC** path specifically, and x402 dollar-stablecoin demand on
-  Stacks is ~nil today (see the x402-demand-reality note). It's additive, not
-  a blocker — revisit post-M1 if a concrete USDCx buyer appears. The FX path
-  above makes the sBTC quote dollar-accurate in the meantime.
+- **USDCx deferred.** USDCx (Circle xReserve-backed USDC on Stacks) would
+  sidestep FX, but the grant milestones require the sBTC path and x402
+  dollar-stablecoin demand on Stacks is negligible today. Additive, not a
+  blocker; the FX path keeps the sBTC quote dollar-accurate meanwhile.
 - The issuance quote lives on the challenge, so a settle on another worker
   or after a restart reads it from `pending_challenges`. The row is written
   only when the 402 request identifies a payer (`agent_address` in the body

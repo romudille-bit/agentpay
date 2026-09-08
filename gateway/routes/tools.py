@@ -820,40 +820,15 @@ async def _issue_402(
     receipt. The SDK skips on-chain settlement for $0 and verify_and_fulfill
     authorizes $0 challenges without requiring a tx.
 
-    log_pending=False (F6, 2026-07-20): discovery probes (GET) skip the
-    fail-closed pending INSERT, mirroring session_create_probe. Crawler
-    health checks (x402scout every 15 min) were minting perpetual phantom
-    pending→abandoned rows per paid tool — the same pollution class the
-    AGE-52 conversion diagnosis spent weeks separating from real demand —
-    and a Supabase blip turned crawler probes into 503s.
-
-    Disk-IO fix (2026-08-04): $0 tools skip BOTH per-event writes here —
-    no pending_challenges mirror (persist=False; the free retry lands
-    within seconds on the same single-worker process) and no pending
-    payment_logs row (a settled free call INSERTs one complete
-    'payment_done' row in _execute_and_log instead). 99.5% of
-    payment_logs was abandoned bot probes of free tools. The demand
-    signal those rows carried moves to probe_rollup — every 402 issued
-    (GET probe, free POST, paid POST) is counted per (day, tool, UA)
-    and batch-flushed, so crawler/market telemetry survives without the
-    write churn.
-
-    Disk-IO fix #2 (2026-08-20): unpaid POST 402s on PAID tools no longer
-    write a pending payment_logs row either. New external monitors
-    (CarbonMonitor, mako-pulse) POST the paid tools around the clock and
-    never pay — each such 402 was an INSERT plus a later abandoned-sweep
-    PATCH, re-depleting the Supabase Disk IO budget within two weeks of
-    fix #1. The payment_logs row is now created at SETTLE time (a real
-    payment header arrived): _execute_and_log INSERTs state='verified'
-    for every paid settle (both rails), and rejected real attempts get a
-    complete 'rejected' row via _record_rejected_attempt. Net effect:
-    payment_logs contains only real payment attempts; 402 volume lives in
-    probe_rollup. The pending_challenges mirror (persist=True) is KEPT
-    for paid POSTs — it is what lets a paying agent straddle a worker
-    restart mid-payment, it's a single small fire-and-forget INSERT, and
-    the table self-cleans. Bonus: issuing a 402 no longer awaits a
-    Supabase write round-trip and can no longer 503 on a Supabase blip —
-    the two failure modes external availability probers actually score.
+    Issuing a 402 writes nothing to payment_logs: the row is created at
+    settle time ('verified' in _execute_and_log, or 'rejected' via
+    _record_rejected_attempt), so the table only holds real payment
+    attempts and a Supabase blip cannot 503 a challenge. 402 volume —
+    overwhelmingly monitors and scanners that never pay — is counted in
+    probe_rollup. The pending_challenges mirror is written only for a paid
+    POST from an identified payer (persist=); it is what lets a paying agent
+    straddle a worker restart. log_pending=False marks a GET discovery
+    probe, which never persists anything.
     """
     agent_short = (agent_address or "unknown")[:8]
     logger.info(f"[CALL] tool={tool_name} agent={agent_short}... status=402_challenge")
@@ -863,8 +838,9 @@ async def _issue_402(
     except Exception:
         is_free = False
 
-    # Stacks quote first so it rides on the challenge (durable, AGE-95).
-    # Bounded: the option is optional, a slow quote must never slow the 402.
+    # Stacks quote first so it rides on the challenge (durable across a
+    # restart). Bounded: the option is optional, a slow quote must not slow
+    # the 402.
     stacks_offer = None
     if stacks_pay.stacks_offerable(tool.price_usdc):
         try:
@@ -876,11 +852,10 @@ async def _issue_402(
                            "402 issued without the stacks option")
     stacks_quote = stacks_offer[:2] if stacks_offer else None
 
-    # Disk-IO fix #4 (2026-09-07): the durable mirror exists so a PAYING
-    # agent can straddle a restart. Payers identify themselves on the first
-    # POST (the SDK and the npm client send agent_address); monitors that
-    # never pay send bare parameters — ~117 rows/hour of INSERT+DELETE
-    # churn for nothing. Anonymous callers keep the in-memory challenge.
+    # The durable mirror exists so a paying agent can straddle a restart.
+    # Payers identify themselves on the first POST (the SDK and the npm
+    # client send agent_address); monitors that never pay send bare
+    # parameters. Anonymous callers keep the in-memory challenge.
     challenge = issue_payment_challenge(
         tool_name=tool_name,
         price_usdc=tool.price_usdc,
@@ -890,8 +865,8 @@ async def _issue_402(
         stacks_quote=stacks_quote,
     )
 
-    # Aggregate telemetry for EVERY 402 issued — this is the durable record
-    # of probe/demand volume now that bot 402s no longer write per-event rows.
+    # Aggregate telemetry for every 402 issued — the durable record of
+    # probe/demand volume, since bot 402s write no per-event rows.
     probe_rollup.record_402(
         tool_name=resolved,
         user_agent=request.headers.get("user-agent"),
@@ -899,15 +874,8 @@ async def _issue_402(
               else ("free_402" if is_free else "paid_402")),
     )
 
-    # Disk-IO fix #2 (2026-08-20): NO pre-402 payment_logs INSERT — for any
-    # tool. The row is created at settle time instead (state='verified' in
-    # _execute_and_log, or 'rejected' via _record_rejected_attempt), so
-    # payment_logs only ever contains real payment attempts. Unpaid 402
-    # volume — overwhelmingly monitors/scanners that never pay — is counted
-    # in probe_rollup above. This also removes the awaited Supabase write
-    # (latency) and the fail-closed 503 (availability) from the 402 path;
-    # the financial fail-closed guarantee lives where the money is: the
-    # replay-store consume in verify_and_fulfill (AGE-60).
+    # No pre-402 payment_logs insert (see the docstring); the fail-closed
+    # guarantee lives where the money is, in the replay-store consume.
 
     base_option, payment_required_header, accepts_entry = _base_402_option(tool, resource_url)
 
@@ -921,12 +889,10 @@ async def _issue_402(
     if payment_required_header:
         headers["PAYMENT-REQUIRED"] = payment_required_header
 
-    # AGE-123: mirror the resource-info block into the 402 JSON BODY. Trust
-    # validators (x402.fuchss.app) parse the body, not the base64 header —
-    # header-only left every probe flagged `envelope:missing-resource-info`
-    # (specCompliance 30 → grade C "avoid"). Shared builder = can't drift from
-    # the header; built independently of Base config so Stellar-only 402s are
-    # envelope-compliant too.
+    # Mirror the resource-info block into the 402 JSON body: trust validators
+    # parse the body, not the base64 header. Same builder as the header so
+    # the two cannot drift; independent of Base config so Stellar-only 402s
+    # carry it too.
     bz = _bazaar_for(tool.name)
     resource_block = base_pay.build_resource_block(
         resource_url, tool.description, bz.get("resource"),
@@ -1194,17 +1160,16 @@ async def _settle_stacks_path(
     tool, tool_name: str, payment_signature: str, payload: dict,
     parameters: Optional[dict] = None,
 ) -> Union[dict, JSONResponse]:
-    """Stacks payment-signature payload → verify, consume, broadcast, confirm
-    (AGE-23). `payload` is the already-decoded payment-signature JSON (the
-    dispatcher decoded it to route on network="stacks:…").
+    """Stacks payment-signature payload → verify, consume, broadcast, confirm.
+    `payload` is the already-decoded payment-signature JSON (the dispatcher
+    decoded it to route on network="stacks:…").
 
-    Returns the auth dict on success, or a JSONResponse on failure. The
-    response bodies carry the payment_status the SDK's retry logic keys on
-    (docs/stacks-adapter.md §Wire contract):
-      - "rejected"  → nothing broadcast/settleable; SDK zeroes the leg and
-        re-signs ONCE on a nonce conflict.
-      - "uncertain" → the tx may be live; SDK keeps the spend recorded and
-        can redeem by re-presenting the same header once it confirms.
+    Returns the auth dict on success, or a JSONResponse on failure whose
+    body carries the payment_status the SDK keys on (docs/stacks-adapter.md
+    §Wire contract): "rejected" → nothing broadcast or settleable, the SDK
+    zeroes the leg (re-signing once on a nonce conflict); "uncertain" → the
+    tx may be live, the spend stays recorded and the same header redeems it
+    once confirmed.
     """
     if not stacks_pay.stacks_configured():
         raise HTTPException(status_code=503,
@@ -1238,7 +1203,7 @@ async def _settle_stacks_path(
     # Verify against the quote recorded on the challenge at issuance, not a
     # fresh re-quote: a BTC move between issue and settle must not fail the
     # amount check. Re-quote only when the challenge carries no quote
-    # (issued before AGE-95 or without a Stacks option).
+    # (issued without a Stacks option).
     if challenge.get("stacks_sats"):
         expected_sats = int(challenge["stacks_sats"])
         quote_rate = str(challenge.get("stacks_rate") or "")
@@ -1272,7 +1237,7 @@ async def _settle_stacks_path(
         )
         return _reject(auth["reason"])
 
-    # ── consume the CHALLENGE before broadcast (fail closed): a second tx
+    # ── consume the challenge before broadcast (fail closed): a second tx
     # against the same payment_id must never double-fulfil. The txid consume
     # inside settle_stacks_payment guards the tx itself.
     if sb_enabled():
@@ -1284,7 +1249,7 @@ async def _settle_stacks_path(
             return _reject("payment_id_already_used_replay")
         if pid_recorded is None:
             # Nothing broadcast, nothing consumed: the SDK confirms the tx is
-            # absent on Hiro (AGE-152), zeroes the leg and signs again.
+            # absent on Hiro, zeroes the leg and signs again.
             return _reject("replay_store_unavailable: nothing was broadcast "
                            "— request a fresh 402 and sign again")
 
@@ -1459,11 +1424,8 @@ async def _execute_and_log(
     user_agent_str  = request.headers.get("user-agent")
     tx_hash         = auth.get("tx_hash", "")
 
-    # Disk-IO fix (2026-08-04): free calls have NO pre-402 pending row
-    # (_issue_402 skips it for $0 tools), so the terminal write below is a
-    # single complete INSERT instead of a PATCH — one round trip carrying
-    # the whole lifecycle. Paid tools keep the pending→verified→payment_done
-    # trail untouched.
+    # Free calls have no pre-402 row, so their terminal write below is one
+    # complete insert carrying the whole lifecycle.
     try:
         is_free_call = Decimal(str(tool.price_usdc or "0")) == 0
     except Exception:
@@ -1479,22 +1441,12 @@ async def _execute_and_log(
     # Resolved name so legacy aliases credit the canonical tool.
     registry.increment_call_count(resolved)
 
-    # Disk-IO fix #2 (2026-08-20): NO settle path has a pre-402 pending row
-    # anymore (Base never did — x402-v2 doesn't echo the UUID back; Stellar
-    # lost it when unpaid 402s stopped writing per-event rows). EVERY paid
-    # settle therefore INSERTs its own 'verified' row here — payment_id is
+    # Every paid settle inserts its own 'verified' row here — payment_id is
     # the challenge UUID on Stellar and the tx_hash on Base/Stacks — and the
-    # terminal PATCH lands on it. Transition note: a Stellar challenge issued
-    # by a pre-fix deploy still has a legacy pending row; for ≤120s after
-    # deploy the terminal PATCH may then update two rows (no unique
-    # constraint on payment_id) — cosmetic, bounded by the challenge TTL.
-    #
-    # AGE-58: the insert runs CONCURRENTLY with tool execution (create_task —
-    # no latency added to the hot path), but the task handle is kept and
-    # awaited before ANY terminal state write. Fire-and-forget raced the
-    # terminal PATCH: the PATCH could run first, no-op on the missing row,
-    # then the insert landed 'verified' — and the row never advanced
-    # (the "stuck in verified / phantom-abandon" class, AGE-52).
+    # terminal PATCH lands on it. The insert runs concurrently with tool
+    # execution, but its task handle is awaited before any terminal state
+    # write: a fire-and-forget insert once raced the terminal PATCH, which
+    # no-op'd on the missing row and left it stuck in 'verified'.
     insert_task: Optional[asyncio.Task] = None
     if sb_enabled() and not is_free_call and not auth.get("redeemed"):
         insert_task = asyncio.create_task(insert_pending_payment_log(
@@ -1738,7 +1690,7 @@ async def call_tool(
             _is_free_tool = Decimal(str(tool.price_usdc or "0")) == 0
         except Exception:
             _is_free_tool = False
-        # ── Stacks dispatch (AGE-23): HTTP headers are case-insensitive, so
+        # ── Stacks dispatch: HTTP headers are case-insensitive, so
         # the lowercase dialect can't be routed on casing — route on the
         # payload's CAIP-2 network instead. Priced tools only: a stacks
         # payload on a $0 tool falls through to _settle_free_v2 (free proofs

@@ -8,14 +8,14 @@ Failure semantics (AGE-53..56):
                         Session.call() may safely fall back to another tool.
   - PaymentFailed     → the on-chain payment itself failed (no funds moved).
   - BudgetExceeded    → the 402 demanded more than the caller's cap; refused
-                        BEFORE paying or signing.
+                        before paying or signing.
   - RefundPending     → paid, tool failed, gateway queued a refund. The spend
                         is recorded in call_log and counts against the budget
                         until the refund confirms.
   - Exception ("Tool call failed after payment…") → funds moved (or a signed
                         authorization was transmitted) and the call then
                         failed. The spend is recorded in call_log. Callers
-                        MUST NOT retry with a second payment.
+                        must not retry with a second payment.
 
 call_log entries are appended the moment value can leave the wallet — at
 Stellar broadcast or Base auth transmission — not when the call returns 200,
@@ -92,33 +92,18 @@ class AgentPayClient:
 
     def _settle_stacks(self, client, url: str, payload: dict, data: dict,
                        tool_name: str, *, max_spend, record):
-        """
-        The Stacks leg of call_tool (AGE-25): sign-don't-broadcast sBTC
-        settlement over the Stacks x402 rail.
+        """The Stacks leg of call_tool: sign-don't-broadcast sBTC settlement.
 
-        Checklist anchors (docs/stacks-adapter.md):
-          [#1] the option's USD amount is bounded by the cap BEFORE signing
-               (fail closed on an unparseable amount);
-          [#2] spend is recorded the moment the signed tx is TRANSMITTED —
-               once the gateway holds it, it can broadcast it;
-          [#3] after transmission there is no fallback to another chain —
-               every failure is surfaced with the spend recorded, except a
-               DEFINITIVE broadcast rejection (nothing in any mempool), which
-               zeroes the leg;
-          [#7] has no Stacks analog (a signed tx never expires): mitigation is
-               the wallet's one-in-flight nonce serialization + the gateway's
-               pre-settle replay consume on txid;
-          [#9] the wallet-level spend counter moves on confirmed settle.
-
-        Stale-nonce retry (the one safe re-sign): if the gateway reports the
-        broadcast was REJECTED for a nonce conflict, the signed tx was refused
-        by the node — it is in no mempool and can never settle. Re-fetch the
-        nonce and re-sign ONCE. Any non-rejected failure keeps the spend
-        recorded and is never re-signed (that could double-pay).
+        The cap bounds the option's USD amount before signing; the spend is
+        recorded the moment the signed tx is transmitted (the gateway can
+        broadcast it from then on); after transmission there is no fallback
+        to another chain. Only a definitive broadcast rejection, confirmed
+        absent on Hiro, zeroes the leg — and a nonce conflict is the one
+        case that re-signs, once, against a fresh 402.
 
         Returns (retry_response, txid). Raises PaymentFailed / BudgetExceeded
-        pre-transmission; post-transmission failures raise the generic
-        "after payment" Exception via the shared non-200 handling upstream.
+        pre-transmission; post-transmission failures go through the shared
+        non-200 handling upstream.
         """
         stacks_opt = (data.get("payment_options") or {}).get("stacks")
         if stacks_opt is None:
@@ -135,7 +120,7 @@ class AgentPayClient:
                 f"chain='stacks' requested for '{tool_name}' but {why}"
             )
 
-        # ── [CHECKLIST #1] bound by cap BEFORE signing; fail closed ─────────
+        # ── bound by the cap before signing; fail closed ─────────────────────
         amount_usd = None
         try:
             usd = stacks_opt.get("amount_usdc")
@@ -177,8 +162,8 @@ class AgentPayClient:
             attempt = 0
             while True:
                 attempt += 1
-                # ── [CHECKLIST #2] the signed tx is about to LEAVE the
-                # process — record the spend NOW, not at HTTP 200.
+                # The signed tx is about to leave the process — record the
+                # spend now, not at HTTP 200.
                 entry = record(
                     "signed_tx_transmitted",
                     built["txid"],
@@ -194,16 +179,15 @@ class AgentPayClient:
                             "payment-signature": built["header"],
                             "x-agent-address":   self.wallet.stacks_address,
                         },
-                        # AGE-26: the gateway broadcasts + polls confirmation
-                        # server-side (STACKS_CONFIRM_MAX_POLLS × POLL_S). Give
-                        # the client well over that window so it RECEIVES the
-                        # reply (with the txid) rather than blind-timing-out at
-                        # the shared 60s and losing the tx id.
+                        # The gateway broadcasts and polls confirmation
+                        # server-side; give the client well over that window
+                        # so it receives the reply (with the txid) rather than
+                        # timing out and losing it.
                         timeout=180.0,
                     )
                 except Exception as e:
-                    # ── [CHECKLIST #3] transmitted → the gateway may hold a
-                    # broadcastable tx. Settlement uncertain; never fall back.
+                    # Transmitted → the gateway may hold a broadcastable tx.
+                    # Settlement uncertain; never fall back.
                     self.wallet.note_stacks_nonce_used(built["nonce"])
                     entry["state"] = "uncertain_settlement"
                     raise SettlementUncertain(
@@ -218,7 +202,7 @@ class AgentPayClient:
                     self.wallet.note_stacks_settled(amount_usd or 0)  # [#9]
                     return retry, built["txid"]
 
-                # ── Non-200: only a DEFINITIVE broadcast rejection is safe to
+                # ── Non-200: only a definitive broadcast rejection is safe to
                 # act on here; everything else goes to the shared handling
                 # with the spend intact.
                 try:
@@ -234,12 +218,11 @@ class AgentPayClient:
                 rejected = str((body or {}).get("payment_status") or "") in (
                     "rejected", "not_settled"
                 )
-                # AGE-152: "rejected" is the gateway's word. The SDK points at
-                # arbitrary gateways, and a gateway that broadcast and then
-                # said "rejected" would leave real spend unrecorded — the one
-                # failure a cap must never have. Ask the chain before zeroing
-                # the leg; when the chain cannot rule the tx out, keep the
-                # spend and treat the outcome as uncertain.
+                # "rejected" is the gateway's word, and the SDK points at
+                # arbitrary gateways: one that broadcast and then said
+                # "rejected" would leave real spend unrecorded. Ask the chain
+                # before zeroing the leg; when it cannot rule the tx out,
+                # keep the spend and treat the outcome as uncertain.
                 if rejected and not self._stacks_tx_absent(client, built["txid"]):
                     logger.warning(
                         f"  gateway said rejected but Hiro does not confirm the tx "
@@ -602,7 +585,7 @@ class AgentPayClient:
                         f"free tool '{tool_name}' retry failed: {e}"
                     )
             elif prefer_chain == "stacks":
-                # ── Paid tool, chain="stacks": sign-don't-broadcast (AGE-25) ──
+                # ── Paid tool, chain="stacks": sign-don't-broadcast ──────────
                 retry, tx_hash = self._settle_stacks(
                     client, url, payload, data, tool_name,
                     max_spend=max_spend, record=_record,

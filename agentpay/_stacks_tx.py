@@ -43,7 +43,7 @@ STACKS_TESTNET_CAIP2 = "stacks:2147483648"
 
 # SIP-010 sBTC token contracts (principal.contract-name).
 SBTC_CONTRACT_MAINNET = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token"
-SBTC_CONTRACT_TESTNET = "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token"  # PoX-5 official deployment (Aug 2026 reset)
+SBTC_CONTRACT_TESTNET = "SN3VMHXEN64ZZF71JQ5VESXDWTR301XTTXGF4J8F1.sbtc-token"  # official PoX-5 testnet deployment
 
 # SIP-010 asset name of the sBTC fungible token (used in post-conditions).
 SBTC_ASSET_NAME = "sbtc-token"
@@ -642,9 +642,9 @@ def txid_of(signed_tx: bytes) -> str:
 
 
 def sats_from_usd(amount_usd: Decimal, btc_usd_rate: Decimal) -> int:
-    """USD→sats for 402 quoting (AGE-24 owns rate sourcing + tolerance;
-    this is only the rounding-rule single source of truth: ceil to the sat —
-    never quote fewer sats than the USD price)."""
+    """USD→sats for 402 quoting: ceil to the sat, so a quote never asks for
+    fewer sats than the USD price. Rate sourcing and tolerance live with the
+    callers; this is the one rounding rule both sides share."""
     if btc_usd_rate <= 0:
         raise ValueError("btc_usd_rate must be positive")
     if amount_usd < 0:
@@ -678,7 +678,7 @@ def assert_sats_within_cap(amount_sats: int, amount_usd, btc_usd_rate=None,
     usd = Decimal(str(amount_usd))
     if usd < 0:
         raise ValueError("amount_usd must be non-negative")
-    # Tighten-only: env may raise the floor, never lower it (AGE-119).
+    # Tighten-only: env may raise the floor, never lower it.
     default = _MIN_BTC_USD_DEFAULT.get(network, _MIN_BTC_USD_DEFAULT["testnet"])
     floor = max(Decimal(os.environ.get("STACKS_MIN_BTC_USD", str(default))), default)
     max_sats = sats_from_usd(usd, floor)          # cheapest BTC => most sats/$
@@ -692,7 +692,7 @@ def assert_sats_within_cap(amount_sats: int, amount_usd, btc_usd_rate=None,
         if rate <= 0:
             raise ValueError(f"402 quotes a non-positive BTC/USD rate ({rate})")
         expected = sats_from_usd(usd, rate)
-        # Tighten-only: env may shrink the tolerance, never widen it (AGE-119).
+        # Tighten-only: env may shrink the tolerance, never widen it.
         tol = min(Decimal(os.environ.get("STACKS_SATS_TOLERANCE", "0.02")), Decimal("0.02"))
         slack = max(Decimal(expected) * tol, Decimal(2))
         if abs(Decimal(amount_sats) - Decimal(expected)) > slack:
