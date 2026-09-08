@@ -690,8 +690,11 @@ async def poll_confirmation(txid: str, *, max_polls: Optional[int] = None) -> di
                 continue
             if status == "success":
                 return {"status": "success", "reason": "ok"}
-            if status.startswith("abort_") or status.startswith("dropped_"):
+            if status.startswith("abort_"):
                 return {"status": "rejected", "reason": status}
+            # dropped_* (mempool eviction) is not definitive: the signed
+            # bytes are still valid and can be re-broadcast, so keep polling
+            # and let the caller end in "uncertain" (AGE-152).
             # "pending" (or unknown) → keep polling
     return {"status": "timeout", "reason": "confirmation_timeout"}
 
@@ -841,7 +844,27 @@ async def settle_stacks_payment(
                     "reason": ("replay_check_unavailable: durable replay store "
                                "unreachable — retry the same proof")}
 
-    # ── 2./3. broadcast: facilitator first, direct Hiro as the fallback ──────
+    # ── 2.-5. under one wall-clock deadline (AGE-150): Cloudflare cuts the
+    # request at 100s with no body, which would strip txid/payment_status
+    # from the SDK's reply. Cutting to "uncertain" ourselves keeps the
+    # structured reply, and AGE-147's redemption finishes the call later.
+    try:
+        return await asyncio.wait_for(
+            _broadcast_and_confirm(signed_tx, txid, payment_payload, requirements),
+            timeout=settings.STACKS_SETTLE_DEADLINE_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"[STACKS] settle deadline ({settings.STACKS_SETTLE_DEADLINE_S:.0f}s) "
+                       f"hit for {txid[:20]}… — answering uncertain")
+        return {"ok": False, "state": "uncertain", "txid": txid,
+                "reason": "settle_deadline_pending_confirmation"}
+
+
+async def _broadcast_and_confirm(
+    signed_tx: bytes, txid: str,
+    payment_payload: Optional[dict], requirements: Optional[dict],
+) -> dict:
+    """Steps 2.-5. of settle_stacks_payment; the caller bounds the wall time."""
     broadcast_attempted = False
     if settings.STACKS_FACILITATOR_URL and payment_payload is not None:
         fac = await _settle_via_facilitator(payment_payload, requirements or {})

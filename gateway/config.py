@@ -64,9 +64,13 @@ class Settings(BaseSettings):
     STACKS_FACILITATOR_URL: str = ""         # empty ⇒ direct-broadcast mode only
     STACKS_GATEWAY_ADDRESS: str = ""         # c32 payee (SP…/ST…); receives only, never signs, needs no STX
     STACKS_SBTC_CONTRACT: str = ""           # default derived from STACKS_NETWORK
-    STACKS_SETTLE_TIMEOUT_S: float = 30.0
+    STACKS_SETTLE_TIMEOUT_S: float = 30.0    # one broadcast attempt (facilitator or Hiro)
     STACKS_CONFIRM_POLL_S: float = 3.0
     STACKS_CONFIRM_MAX_POLLS: int = 20
+    # Whole settle (broadcast + confirm) wall-clock bound; past it the reply
+    # is "uncertain" and the SDK redeems later. Keep well under Cloudflare's
+    # 100s edge timeout, which would return an empty 524 instead.
+    STACKS_SETTLE_DEADLINE_S: float = 75.0
     # Fee the 402 suggests to the payer (µSTX). With STACKS_FEE_ESTIMATE the
     # gateway asks Hiro /v2/fees/transaction for the fast tier and offers
     # max(estimate, SUGGESTED) capped at FEE_CAP; without an estimate
