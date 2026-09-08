@@ -423,6 +423,34 @@ class TestSettle:
         assert res["state"] == "uncertain"
         assert res["reason"] == "broadcast_accepted_pending_confirmation"
 
+    async def test_settle_deadline_answers_uncertain(self, monkeypatch):
+        # AGE-150: the whole broadcast+confirm is bounded; past the deadline
+        # the reply is a structured "uncertain", never an empty edge 524.
+        monkeypatch.setattr(settings, "STACKS_SETTLE_DEADLINE_S", 0.05)
+        monkeypatch.setattr(settings, "STACKS_CONFIRM_POLL_S", 0.5)
+        tx = _signed_tx()
+        with respx.mock:
+            _hiro_broadcast_ok()
+            _hiro_status("pending", "pending", "pending")
+            res = await stacks_pay.settle_stacks_payment(
+                tx, txid_of(tx), payment_id=PAYMENT_ID)
+        assert res["state"] == "uncertain"
+        assert res["reason"] == "settle_deadline_pending_confirmation"
+        assert res["txid"] == txid_of(tx)
+        assert txid_of(tx) in stacks_pay._used_stacks_txids   # consume stands
+
+    async def test_dropped_is_not_definitive(self):
+        # AGE-152 (adjacent): dropped_* bytes are still valid; keep polling
+        # and end uncertain rather than telling the SDK to zero the leg.
+        tx = _signed_tx()
+        with respx.mock:
+            _hiro_broadcast_ok()
+            _hiro_status("dropped_replace_by_fee", "dropped_replace_by_fee")
+            res = await stacks_pay.settle_stacks_payment(
+                tx, txid_of(tx), payment_id=PAYMENT_ID)
+        assert res["state"] == "uncertain"
+        assert res["reason"] == "broadcast_accepted_pending_confirmation"
+
     async def test_abort_by_post_condition_is_rejected(self):
         tx = _signed_tx()
         with respx.mock:

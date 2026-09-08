@@ -43,6 +43,7 @@ def _stacks_wallet():
     w.stacks_address = "ST1FAKEAGENT0000000000000000000000000000"
     w.stacks_disabled_reason = None
     w._stacks_lock = threading.Lock()
+    w._stacks_api_base = "https://api.testnet.hiro.so"
     seen = []
 
     def _build(stacks_opt, payment_id, url):
@@ -63,6 +64,10 @@ def _stacks_wallet():
 def test_stale_nonce_requests_fresh_402_then_new_payment_id():
     wallet = _stacks_wallet()
     with respx.mock:
+        # AGE-152: the SDK asks Hiro before trusting "rejected"; the honest
+        # case is a txid the chain has never seen.
+        respx.get(url__regex=r".*/extended/v1/tx/0x.*").mock(
+            return_value=httpx.Response(404))
         respx.post(TOOL_URL).mock(side_effect=[
             httpx.Response(402, json=_402("pid-A")),                 # initial 402
             httpx.Response(409, json={"payment_status": "rejected",  # settle #1: stale nonce
@@ -89,6 +94,10 @@ def test_overcap_requote_refused():
     overcap["amount_usdc"] = "0.50"
     overcap["payment_options"]["stacks"]["amount_usdc"] = "0.50"
     with respx.mock:
+        # AGE-152: the SDK asks Hiro before trusting "rejected"; the honest
+        # case is a txid the chain has never seen.
+        respx.get(url__regex=r".*/extended/v1/tx/0x.*").mock(
+            return_value=httpx.Response(404))
         respx.post(TOOL_URL).mock(side_effect=[
             httpx.Response(402, json=_402("pid-A")),
             httpx.Response(409, json={"payment_status": "rejected",

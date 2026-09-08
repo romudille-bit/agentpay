@@ -234,6 +234,18 @@ class AgentPayClient:
                 rejected = str((body or {}).get("payment_status") or "") in (
                     "rejected", "not_settled"
                 )
+                # AGE-152: "rejected" is the gateway's word. The SDK points at
+                # arbitrary gateways, and a gateway that broadcast and then
+                # said "rejected" would leave real spend unrecorded — the one
+                # failure a cap must never have. Ask the chain before zeroing
+                # the leg; when the chain cannot rule the tx out, keep the
+                # spend and treat the outcome as uncertain.
+                if rejected and not self._stacks_tx_absent(client, built["txid"]):
+                    logger.warning(
+                        f"  gateway said rejected but Hiro does not confirm the tx "
+                        f"is absent — keeping the spend as uncertain"
+                    )
+                    rejected = False
                 nonce_conflict = bool(
                     re.search(r"(?i)(bad|conflicting|stale)[ _-]{0,3}nonce", reason)
                 )
@@ -312,6 +324,27 @@ class AgentPayClient:
                 self.wallet.note_stacks_nonce_used(built["nonce"])
                 self._stacks_redeem_ctx = self._redeem_ctx(url, payload, built, tool_name)
                 return retry, built["txid"]
+
+    def _stacks_tx_absent(self, client, txid: str) -> bool:
+        """True only when Hiro shows the tx cannot settle: not known (404)
+        or mined-and-aborted. Pending, success, dropped, or any error keeps
+        the leg — conservative on failure."""
+        try:
+            r = client.get(
+                f"{self.wallet._stacks_api_base}/extended/v1/tx/0x{txid}",
+                timeout=10.0, follow_redirects=True,
+            )
+        except Exception:
+            return False
+        if r.status_code == 404:
+            return True
+        if r.status_code != 200:
+            return False
+        try:
+            status = str(r.json().get("tx_status") or "")
+        except Exception:
+            return False
+        return status.startswith("abort_")
 
     @staticmethod
     def _redeem_ctx(url: str, payload: dict, built: dict, tool_name: str) -> dict:
@@ -735,7 +768,7 @@ class AgentPayClient:
 
             if retry.status_code != 200:
                 # Gateway refund contract: on tool-failure-post-verify the
-                # gateway now returns 502 with a structured body carrying
+                # gateway now returns 500 with a structured body carrying
                 # payment_status, refund_eta_seconds, payment_id, and
                 # error_reason. Surface that as a typed RefundPending so
                 # callers can branch on the failure mode instead of

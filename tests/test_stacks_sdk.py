@@ -97,6 +97,14 @@ def _decode_ps_header(header_value: str):
     return payload, tx, nonce
 
 
+HIRO_TX_ANY = r"https://api\.testnet\.hiro\.so/extended/v1/tx/0x[0-9a-f]+"
+
+
+def _mock_tx_absent():
+    """AGE-152: the honest-gateway case — Hiro has never seen the txid."""
+    return respx.get(url__regex=HIRO_TX_ANY).mock(return_value=httpx.Response(404))
+
+
 def _mock_nonce(value=7):
     return respx.get(url__regex=HIRO_ACCOUNTS).mock(
         return_value=httpx.Response(200, json={"nonce": value, "balance": "0x0"})
@@ -345,6 +353,7 @@ class TestNonceSerialization:
 
         with respx.mock:
             respx.get(url__regex=HIRO_ACCOUNTS).mock(side_effect=nonce_responder)
+            _mock_tx_absent()
             route = respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=_stacks_402()),
                 httpx.Response(502, json={
@@ -385,6 +394,7 @@ class TestNonceSerialization:
         })
         with respx.mock:
             _mock_nonce(4)
+            _mock_tx_absent()
             respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=_stacks_402()),
                 rejection,
@@ -451,6 +461,7 @@ class TestSpendRecordedNoFallback:
         client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)
         with respx.mock:
             _mock_nonce(1)
+            _mock_tx_absent()
             respx.post(TOOL_URL).mock(side_effect=[
                 httpx.Response(402, json=_stacks_402()),
                 httpx.Response(502, json={
@@ -465,6 +476,61 @@ class TestSpendRecordedNoFallback:
                 )
         assert client.call_log[-1]["amount_usdc"] == "0"
         assert client.call_log[-1]["state"] == "rejected"
+
+    def _rejected_by_gateway(self, client):
+        respx.post(TOOL_URL).mock(side_effect=[
+            httpx.Response(402, json=_stacks_402()),
+            httpx.Response(402, json={"payment_status": "rejected",
+                                      "error_reason": "broadcast rejected: NotEnoughFunds"}),
+        ])
+        with pytest.raises(SettlementUncertain) as exc:
+            client.call_tool("verified_route", {}, max_spend="0.0011",
+                             prefer_chain="stacks", chain_is_explicit=True)
+        assert exc.value.redeem_ctx is not None      # can still be finished later
+        return client.call_log[-1]
+
+    @pytest.mark.parametrize("hiro", [
+        httpx.Response(200, json={"tx_status": "pending"}),
+        httpx.Response(200, json={"tx_status": "success"}),
+        httpx.Response(200, json={"tx_status": "dropped_replace_by_fee"}),
+        httpx.Response(503),
+    ])
+    def test_rejected_but_chain_disagrees_keeps_spend(self, hiro):
+        # AGE-152: a gateway that broadcast and then said "rejected" must
+        # not produce unrecorded spend. Anything but 404/abort_* on Hiro
+        # keeps the leg at its amount.
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            respx.get(url__regex=HIRO_TX_ANY).mock(return_value=hiro)
+            leg = self._rejected_by_gateway(client)
+        assert leg["amount_usdc"] == "0.001"
+        assert leg["state"] == "uncertain_settlement"
+
+    def test_rejected_and_hiro_unreachable_keeps_spend(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            respx.get(url__regex=HIRO_TX_ANY).mock(side_effect=httpx.ConnectError("down"))
+            leg = self._rejected_by_gateway(client)
+        assert leg["amount_usdc"] == "0.001"
+
+    def test_rejected_and_aborted_on_chain_zeroes(self):
+        client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(1)
+            respx.get(url__regex=HIRO_TX_ANY).mock(
+                return_value=httpx.Response(200, json={"tx_status": "abort_by_post_condition"}))
+            respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=_stacks_402()),
+                httpx.Response(402, json={"payment_status": "rejected",
+                                          "error_reason": "abort_by_post_condition"}),
+            ])
+            with pytest.raises(PaymentFailed, match="rejected"):
+                client.call_tool("verified_route", {}, max_spend="0.0011",
+                                 prefer_chain="stacks", chain_is_explicit=True)
+        leg = client.call_log[-1]
+        assert leg["amount_usdc"] == "0" and leg["state"] == "rejected"
 
 
 # ── Wallet key handling ──────────────────────────────────────────────────────
