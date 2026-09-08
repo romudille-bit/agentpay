@@ -19,6 +19,7 @@ Specs: SIP-005, SIP-010. Design doc: docs/stacks-adapter.md.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
 
@@ -654,24 +655,32 @@ def sats_from_usd(amount_usd: Decimal, btc_usd_rate: Decimal) -> int:
     return int(sats)
 
 
-def assert_sats_within_cap(amount_sats: int, amount_usd, btc_usd_rate=None) -> None:
+_MIN_BTC_USD_DEFAULT = {"mainnet": Decimal("20000"), "testnet": Decimal("10000")}
+
+
+def assert_sats_within_cap(amount_sats: int, amount_usd, btc_usd_rate=None,
+                           *, network: str = "testnet") -> None:
     """Refuse to sign a sats amount the USD cap doesn't bound.
 
     The cap is enforced in USD, but amount_sats is what leaves the wallet.
-    Two guards, no I/O: a floor-rate ceiling (STACKS_MIN_BTC_USD ≥ $10k; env
-    can only raise it) that holds even without a quoted rate, and a tolerance
-    check against btc_usd_rate when present (STACKS_SATS_TOLERANCE ≤ 2%, min
-    2 sats; env can only shrink it).
+    Two guards, no I/O: a floor-rate ceiling (STACKS_MIN_BTC_USD; env can
+    only raise it above the network default — $20k on mainnet, $10k on
+    testnet) that holds even without a quoted rate, and a tolerance check
+    against btc_usd_rate when present (STACKS_SATS_TOLERANCE ≤ 2%, min 2
+    sats; env can only shrink it). The floor is the whole client-side bound
+    against a gateway that quotes a low rate to inflate sats: at $20k it
+    caps the overcharge at spot/20k. Raise it via env when spot is far
+    above the default.
     Raises ValueError otherwise.
     """
-    import os
     if amount_usd is None:
         raise ValueError("no amount_usdc to bound amount_sats against")
     usd = Decimal(str(amount_usd))
     if usd < 0:
         raise ValueError("amount_usd must be non-negative")
     # Tighten-only: env may raise the floor, never lower it (AGE-119).
-    floor = max(Decimal(os.environ.get("STACKS_MIN_BTC_USD", "10000")), Decimal("10000"))
+    default = _MIN_BTC_USD_DEFAULT.get(network, _MIN_BTC_USD_DEFAULT["testnet"])
+    floor = max(Decimal(os.environ.get("STACKS_MIN_BTC_USD", str(default))), default)
     max_sats = sats_from_usd(usd, floor)          # cheapest BTC => most sats/$
     if amount_sats > max_sats:
         raise ValueError(

@@ -866,8 +866,8 @@ class TestFeeClamp:
         assert self._fee(self._built(monkeypatch, 4000)) == 4000
 
     def test_hostile_fee_is_capped(self, monkeypatch):
-        assert self._fee(self._built(monkeypatch, 10**12)) == 100_000
+        assert self._fee(self._built(monkeypatch, 10**12)) == 50_000
 
     def test_env_can_lower_but_not_raise_the_cap(self, monkeypatch):
         assert self._fee(self._built(monkeypatch, 50_000, env=10_000)) == 10_000
-        assert self._fee(self._built(monkeypatch, 10**9, env=10**9)) == 100_000
+        assert self._fee(self._built(monkeypatch, 10**9, env=10**9)) == 50_000

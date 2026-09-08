@@ -167,11 +167,13 @@ or the milestone — it removes a convenience layer, not the settlement itself.
 **The enforced bound is on signed sats, not gateway-asserted USD.** Budget
 checks compare against the USD amount the gateway asserts in the `402`. What the
 client enforces regardless of gateway honesty is a bound on the transaction it
-signs: `signed_sats ≤ cap_usd` converted at a BTC/USD floor rate of $10,000
-(`STACKS_MIN_BTC_USD`), plus a small tolerance. A gateway lying about the
-exchange rate can therefore overcharge at most `cap_usd / 10,000` in BTC — at
-the demo's $0.05 cap, ~500 sats worst case (roughly 12x at current BTC prices),
-bounded and known before signing. No quoted rate can extract more than that.
+signs: `signed_sats ≤ cap_usd` converted at a BTC/USD floor rate
+(`STACKS_MIN_BTC_USD`: $10,000 on testnet, $20,000 on mainnet; env can only
+raise it), plus a small tolerance. A gateway lying about the exchange rate can
+therefore overcharge at most `cap_usd / floor` in BTC — at the demo's $0.05
+cap, ~500 sats worst case on testnet, ~250 on mainnet — bounded and known
+before signing. No quoted rate can extract more than that. Set the floor near
+half of spot for a tighter bound.
 
 **STX is required for fees.** The payer must hold testnet STX to cover the
 transaction fee, in addition to the sBTC being transferred. A sponsored-relay
@@ -266,7 +268,8 @@ Confirmed budget-capped sBTC settlements on Stacks testnet — both
 - The cap binds the **signed** amount, not only the quoted USD:
   `build_stacks_payment` refuses to sign an `amount_sats` inconsistent with the
   quoted USD at the 402's BTC/USD rate, and bounds the implied rate with a
-  configurable floor (`STACKS_MIN_BTC_USD`, default $10,000).
+  configurable floor (`STACKS_MIN_BTC_USD`, default $10,000 testnet /
+  $20,000 mainnet, raise-only).
 - `SettlementUncertain` subclasses `PaymentFailed`, so existing error handling
   still catches it; check `.tx_hash` to verify on-chain rather than retrying (a
   retry would double-pay).

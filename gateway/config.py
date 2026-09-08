@@ -72,12 +72,12 @@ class Settings(BaseSettings):
     # 100s edge timeout, which would return an empty 524 instead.
     STACKS_SETTLE_DEADLINE_S: float = 75.0
     # Fee the 402 suggests to the payer (µSTX). With STACKS_FEE_ESTIMATE the
-    # gateway asks Hiro /v2/fees/transaction for the fast tier and offers
+    # gateway asks Hiro /v2/fees/transaction for the medium tier and offers
     # max(estimate, SUGGESTED) capped at FEE_CAP; without an estimate
     # (testnet has none) SUGGESTED is offered as-is.
     STACKS_SUGGESTED_FEE_MICROSTX: int = 3000
     STACKS_FEE_ESTIMATE: bool = True
-    STACKS_FEE_CAP_MICROSTX: int = 100_000
+    STACKS_FEE_CAP_MICROSTX: int = 20_000
     # USD→sats FX (AGE-24): live BTC/USD from CoinGecko, cached this many
     # seconds. STACKS_FIXED_BTC_USD is the fallback floor when the live fetch
     # fails (and the sole source if you'd rather pin the rate manually).

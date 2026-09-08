@@ -57,8 +57,16 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - The STX fee a 402 suggests is clamped to `STACKS_MAX_FEE_MICROSTX`
-  (0.1 STX; env can only lower it) before signing — a gateway cannot name
+  (0.05 STX; env can only lower it) before signing — a gateway cannot name
   the payer's fee freely.
+- **Review lows (AGE-153):** the memo must equal the challenge id cut to 34
+  bytes (a prefix rule let a 1-byte memo bind any id); the client floor
+  rate is $20,000 on mainnet ($10,000 testnet, raise-only); the gateway
+  quotes Hiro's medium fee tier capped at 20,000 µSTX; a replay-store
+  outage before broadcast answers `rejected` with a re-sign hint (the SDK
+  verifies absence on Hiro first) instead of an unfulfillable "retry the
+  same proof"; the in-memory txid guard is bounded; `import os` moved to
+  module scope.
 
 ## [0.4.0] — 2026-08-22
 

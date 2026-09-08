@@ -53,10 +53,12 @@ Every priced tool's 402 gains a `payment_options.stacks` block:
 `amount_sats` is the USD price converted at issuance (ceil to the sat) and is
 stored on the challenge, so the settle verifies against that quote even if
 BTC moves or the gateway restarts in between. `fee_microstx` is the STX fee
-the gateway suggests: the fast tier of Hiro's `/v2/fees/transaction` for an
-sBTC transfer, never below `STACKS_SUGGESTED_FEE_MICROSTX` and never above
-`STACKS_FEE_CAP_MICROSTX`. The SDK clamps whatever a gateway suggests to
-0.1 STX (`STACKS_MAX_FEE_MICROSTX`, lower-only).
+the gateway suggests: the medium tier of Hiro's `/v2/fees/transaction` for
+an sBTC transfer, never below `STACKS_SUGGESTED_FEE_MICROSTX` (3,000) and
+never above `STACKS_FEE_CAP_MICROSTX` (20,000). The fast tier was tried
+first and swung between 759 and 100,000+ µSTX within a day. The SDK clamps
+whatever a gateway suggests to 0.05 STX (`STACKS_MAX_FEE_MICROSTX`,
+lower-only).
 
 ## Paying from the SDK
 

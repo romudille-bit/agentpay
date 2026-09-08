@@ -61,7 +61,16 @@ __all__ = [
 
 # In-memory fast guard for txid consumption (mirrors _used_base_tx_hashes in
 # gateway/base.py — single-process guard when Supabase is disabled/unreachable).
-_used_stacks_txids: set[str] = set()
+# Insertion-ordered so it can be bounded: Supabase is the durable store, this
+# only has to cover a restart-free window. AGE-96 unifies the three guards.
+_used_stacks_txids: dict[str, None] = {}
+_USED_TXIDS_MAX = 50_000
+
+
+def _remember_txid(txid: str) -> None:
+    _used_stacks_txids[txid] = None
+    while len(_used_stacks_txids) > _USED_TXIDS_MAX:
+        _used_stacks_txids.pop(next(iter(_used_stacks_txids)))
 
 # Node rejection reasons that are DEFINITIVE — the tx was refused at
 # broadcast, is in no mempool, and can never settle. Only these may produce
@@ -265,7 +274,11 @@ def _fee_template_payload() -> bytes:
 
 
 async def _fetch_fee_live() -> Optional[int]:
-    """Fast-tier estimate from Hiro, or None (testnet returns NoEstimateAvailable)."""
+    """Medium-tier estimate from Hiro, or None (testnet returns NoEstimateAvailable).
+
+    Hiro returns three tiers. The fast tier swung 759 → 100,000+ µSTX within a
+    day on mainnet (receipts 1 and 3 paid 100,000 and 50,850 for a $0.01
+    call); the middle tier tracks what confirms in a block or two."""
     try:
         async with httpx.AsyncClient(timeout=_FEE_FETCH_TIMEOUT_S) as client:
             resp = await client.post(
@@ -276,7 +289,8 @@ async def _fetch_fee_live() -> Optional[int]:
         if resp.status_code != 200:
             return None
         tiers = resp.json().get("estimations") or []
-        fee = int(max(int(t["fee"]) for t in tiers))
+        fees = sorted(int(t["fee"]) for t in tiers)
+        fee = fees[len(fees) // 2] if fees else 0
         if fee <= 0:
             return None
         _fee_cache["fee"] = fee
@@ -288,7 +302,7 @@ async def _fetch_fee_live() -> Optional[int]:
 
 
 async def suggested_fee_microstx() -> int:
-    """Fee to put on the 402: max(fast-tier estimate, STACKS_SUGGESTED_FEE_MICROSTX),
+    """Fee to put on the 402: max(medium-tier estimate, STACKS_SUGGESTED_FEE_MICROSTX),
     capped at STACKS_FEE_CAP_MICROSTX. Stale-while-revalidate; never blocks
     a 402 when any estimate is cached; falls back to the configured fee."""
     global _fee_refresh_task
@@ -601,15 +615,12 @@ async def verify_stacks_payment(
         return _fail("wrong_recipient")
 
     # ── memo → payment_id binding ─────────────────────────────
-    # The memo carries payment_id[:34] (the SIP-010 buff cap truncates UUIDs);
-    # prefix rule both ways, mirroring the Stellar memo match.
+    # The memo is payment_id encoded and cut to the (buff 34) cap — exactly
+    # what the SDK puts there. A looser prefix rule would let a 1-byte memo
+    # bind to any challenge id starting with that byte.
     if not tx["memo"]:
         return _fail("missing_memo_binding")
-    try:
-        memo_str = tx["memo"].decode("utf-8")
-    except Exception:
-        return _fail("undecodable_memo")
-    if not (payment_id.startswith(memo_str) or memo_str.startswith(payment_id)):
+    if tx["memo"] != payment_id.encode("utf-8")[:34]:
         return _fail("memo_payment_id_mismatch")
 
     # ── amount (AGE-24 owns the FX; small drift tolerance only) ──────────────
@@ -804,19 +815,13 @@ async def settle_stacks_payment(
     payment_payload: Optional[dict] = None,
     requirements: Optional[dict] = None,
 ) -> dict:
-    """Broadcast + confirm. The order is the security model:
+    """Consume the txid, then broadcast + confirm under one deadline.
 
-      1. Consume `txid` (in-memory check-and-add + awaited Supabase insert,
-         fail-closed on infra error) before any broadcast — a replayed txid
-         dies here. `txid` is recomputed server-side from `signed_tx` by the
-         caller, never taken from the header.
-      2. Facilitator /settle when STACKS_FACILITATOR_URL is set.
-      3. Facilitator down/5xx/unreachable → direct Hiro broadcast.
-      4. Ambiguous outcome after any broadcast → poll_confirmation; confirmed ⇒
-         "ok_recovered" (never charge-for-nothing; same-txid re-broadcast is
-         node-idempotent).
-      5. Definitive node rejection ⇒ "rejected" (the consume stays; the SDK
-         re-signs with a fresh nonce, producing a new txid).
+    Step 1 here: consume `txid` (in-memory check-and-add + awaited Supabase
+    insert, fail-closed on infra error) before any broadcast — a replayed
+    txid dies here. `txid` is recomputed server-side from `signed_tx` by the
+    caller, never taken from the header.
+    Steps 2–5 in `_broadcast_and_confirm`, bounded by STACKS_SETTLE_DEADLINE_S.
 
     Returns {"ok", "state": "ok"|"ok_recovered"|"rejected"|"uncertain",
              "txid", "reason"}.
@@ -827,22 +832,23 @@ async def settle_stacks_payment(
     if txid in _used_stacks_txids:
         return {"ok": False, "state": "rejected", "txid": txid,
                 "reason": "replay_attack"}
-    _used_stacks_txids.add(txid)
+    _remember_txid(txid)
     if sb.sb_enabled():
         recorded = await sb.record_tx_hash(txid, label)
         if recorded is False:
             return {"ok": False, "state": "rejected", "txid": txid,
                     "reason": "replay_attack"}
         if recorded is None:
-            # Durable consume unconfirmed (AGE-60 pattern): broadcasting now
-            # would make this payment replayable after a restart. Release the
-            # in-memory hold so the SAME proof can retry once the store is
-            # back. Retryable — deliberately NOT "rejected" (nothing was
-            # refused by a node; the SDK must keep the leg intact).
-            _used_stacks_txids.discard(txid)
-            return {"ok": False, "state": "uncertain", "txid": txid,
-                    "reason": ("replay_check_unavailable: durable replay store "
-                               "unreachable — retry the same proof")}
+            # Durable consume unconfirmed: broadcasting now would make this
+            # payment replayable after a restart, so nothing is broadcast.
+            # The proof cannot be retried as-is (its payment_id is already
+            # consumed upstream), so answer "rejected": the SDK confirms on
+            # Hiro that the tx is absent (AGE-152), zeroes the leg, and signs
+            # again against a fresh 402.
+            _used_stacks_txids.pop(txid, None)
+            return {"ok": False, "state": "rejected", "txid": txid,
+                    "reason": ("replay_store_unavailable: nothing was broadcast "
+                               "— request a fresh 402 and sign again")}
 
     # ── 2.-5. under one wall-clock deadline (AGE-150): Cloudflare cuts the
     # request at 100s with no body, which would strip txid/payment_status
@@ -864,7 +870,15 @@ async def _broadcast_and_confirm(
     signed_tx: bytes, txid: str,
     payment_payload: Optional[dict], requirements: Optional[dict],
 ) -> dict:
-    """Steps 2.-5. of settle_stacks_payment; the caller bounds the wall time."""
+    """Steps 2–5 of the settle; the caller bounds the wall time.
+
+      2. Facilitator /settle when STACKS_FACILITATOR_URL is set.
+      3. Facilitator down/5xx/unreachable → direct Hiro broadcast.
+      4. Ambiguous outcome after any broadcast → poll_confirmation; confirmed ⇒
+         "ok_recovered" (same-txid re-broadcast is node-idempotent).
+      5. Definitive node rejection ⇒ "rejected" (the consume stays; the SDK
+         re-signs with a fresh nonce, producing a new txid).
+    """
     broadcast_attempted = False
     if settings.STACKS_FACILITATOR_URL and payment_payload is not None:
         fac = await _settle_via_facilitator(payment_payload, requirements or {})

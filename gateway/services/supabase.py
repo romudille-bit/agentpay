@@ -218,8 +218,8 @@ async def is_payment_id_consumed(payment_id: str) -> bool:
 async def record_tx_hash(tx_hash: str, network: str) -> bool | None:
     """Insert (tx_hash, network) into replay_tx_hashes.
 
-    network must be one of: 'stellar-mainnet', 'stellar-testnet',
-    'base-mainnet', 'base-sepolia'. Composite PK means the same hash can
+    network is one of 'stellar-mainnet', 'stellar-testnet', 'base-mainnet',
+    'base-sepolia', 'stacks-mainnet', 'stacks-testnet'. Composite PK means the same hash can
     exist across networks (extremely unlikely, but defensive).
 
     Returns:

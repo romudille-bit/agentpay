@@ -194,13 +194,23 @@ class TestVerify:
         assert auth["reason"] == "memo_payment_id_mismatch"
 
     async def test_memo_truncation_prefix_rule(self):
-        # UUIDs are 36 chars; the (buff 34) memo truncates to 34 — the prefix
-        # rule must still bind.
+        # UUIDs are 36 chars; the (buff 34) memo truncates to 34 — the
+        # truncated form must still bind.
         long_pid = "c0ffee00-1111-2222-3333-444455556666"  # 36 chars
         tx = _signed_tx(payment_id=long_pid)
         auth = await _verify(_header_for(tx, payment_id=long_pid),
                              payment_id=long_pid)
         assert auth["authorized"], auth["reason"]
+
+    async def test_short_memo_does_not_bind_a_longer_id(self):
+        # AGE-153: a 1-byte memo used to satisfy the prefix rule for any
+        # challenge id starting with that byte. Exact match on the
+        # truncated id now.
+        tx = _signed_tx(payment_id="c")
+        auth = await _verify(_header_for(tx, payment_id="c0ffee00-1111"),
+                             payment_id="c0ffee00-1111")
+        assert not auth["authorized"]
+        assert auth["reason"] == "memo_payment_id_mismatch"
 
     async def test_wrong_recipient_rejected(self):
         other = StacksKeypair.from_secret(
@@ -369,9 +379,10 @@ class TestSettle:
                 tx, txid_of(tx), payment_id=PAYMENT_ID)
         assert res["state"] == "rejected" and res["reason"] == "replay_attack"
 
-    async def test_durable_consume_outage_fails_closed_retryable(self, monkeypatch):
-        """AGE-60 pattern: infra outage → refuse to broadcast, release the
-        in-memory hold, report UNCERTAIN (retryable) — never 'rejected'."""
+    async def test_durable_consume_outage_fails_closed_as_rejected(self, monkeypatch):
+        """Infra outage → refuse to broadcast, release the in-memory hold,
+        report "rejected" with a re-sign hint (AGE-153): nothing reached a
+        node, and the SDK confirms that on Hiro before zeroing the leg."""
         monkeypatch.setattr(sb, "sb_enabled", lambda: True)
         async def _outage(txh, net):
             return None
@@ -380,8 +391,8 @@ class TestSettle:
         with respx.mock:  # no broadcast route: broadcasting would error
             res = await stacks_pay.settle_stacks_payment(
                 tx, txid_of(tx), payment_id=PAYMENT_ID)
-        assert res["state"] == "uncertain"
-        assert "replay_check_unavailable" in res["reason"]
+        assert res["state"] == "rejected"
+        assert res["reason"].startswith("replay_store_unavailable")
         assert txid_of(tx) not in stacks_pay._used_stacks_txids  # released
 
     async def test_definitive_rejection_bad_nonce(self):
@@ -880,10 +891,11 @@ def _hiro_fees(*fees):
 
 
 class TestFeeSuggestion:
-    async def test_offers_fast_tier_when_above_floor(self):
+    async def test_offers_medium_tier_when_above_floor(self):
+        # AGE-153: the middle of Hiro's three tiers, not the fast one.
         with respx.mock:
             _mock_coingecko(100000)
-            _hiro_fees(300, 481, 7590)
+            _hiro_fees(300, 7590, 50850)
             opt = await stacks_pay.build_stacks_402_option("0.01")
         assert opt["fee_microstx"] == 7590
 
@@ -897,9 +909,9 @@ class TestFeeSuggestion:
     async def test_cap_bounds_a_spiking_estimate(self):
         with respx.mock:
             _mock_coingecko(100000)
-            _hiro_fees(1, 2, 5_000_000)
+            _hiro_fees(1, 5_000_000, 5_000_000)
             opt = await stacks_pay.build_stacks_402_option("0.01")
-        assert opt["fee_microstx"] == settings.STACKS_FEE_CAP_MICROSTX
+        assert opt["fee_microstx"] == settings.STACKS_FEE_CAP_MICROSTX == 20_000
 
     async def test_no_estimate_falls_back_to_floor(self):
         with respx.mock:

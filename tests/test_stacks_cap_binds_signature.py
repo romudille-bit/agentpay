@@ -64,3 +64,18 @@ def test_env_cannot_widen_tolerance(monkeypatch):
     expected = _consistent("0.01")
     with pytest.raises(ValueError):
         assert_sats_within_cap(expected * 3, "0.01", RATE)
+
+
+def test_mainnet_floor_is_tighter():
+    # AGE-153: $20k default on mainnet (spot/20k bounds a low-rate gateway),
+    # $10k stays on testnet. $0.01 at $20k = 50 sats.
+    assert_sats_within_cap(50, "0.01", None, network="mainnet")
+    with pytest.raises(ValueError):
+        assert_sats_within_cap(51, "0.01", None, network="mainnet")
+    assert_sats_within_cap(100, "0.01", None, network="testnet")
+
+
+def test_env_cannot_soften_mainnet_floor(monkeypatch):
+    monkeypatch.setenv("STACKS_MIN_BTC_USD", "10000")
+    with pytest.raises(ValueError):
+        assert_sats_within_cap(51, "0.01", None, network="mainnet")

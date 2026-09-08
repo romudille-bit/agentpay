@@ -8,6 +8,7 @@ Two main classes:
 
 import base64
 import json
+import os
 import httpx
 import logging
 import secrets
@@ -35,7 +36,7 @@ STACKS_API_MAINNET = "https://api.hiro.so"
 # (env can only lower it): the fee leaves the payer's STX balance, so a
 # gateway must not be able to name it freely.
 DEFAULT_STACKS_FEE_MICROSTX = 3000
-MAX_STACKS_FEE_MICROSTX = 100_000
+MAX_STACKS_FEE_MICROSTX = 50_000
 USDC_ISSUER_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
 USDC_ISSUER_MAINNET = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
 
@@ -322,7 +323,6 @@ class AgentWallet:
 
     def __init__(self, secret_key: str = None, network: str = "testnet", *,
                  base_key: str = None, stacks_key: str = None):
-        import os
         # secret_key is optional: a Stacks/Base-only payer can omit it. An
         # ephemeral Stellar keypair is generated so the wallet keeps a working
         # in-process identity (public_key, request signing), and the Stellar
@@ -720,7 +720,6 @@ class AgentWallet:
 
     @property
     def _stacks_api_base(self) -> str:
-        import os
         return os.environ.get("STACKS_API_URL") or (
             STACKS_API_MAINNET if self.network == "mainnet" else STACKS_API_TESTNET
         )
@@ -758,7 +757,6 @@ class AgentWallet:
 
         Returns {"header", "txid", "nonce", "amount_sats", "amount_usd"}.
         """
-        import os
         from agentpay import _stacks_tx
         if self._stacks_keypair is None:
             raise RuntimeError(
@@ -782,6 +780,7 @@ class AgentWallet:
             amount_sats,
             stacks_opt.get("amount_usdc"),
             stacks_opt.get("btc_usd_rate"),
+            network=network,
         )
         pay_to = stacks_opt.get("pay_to") or stacks_opt.get("payTo")
         if not pay_to:

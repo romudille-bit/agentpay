@@ -1283,12 +1283,10 @@ async def _settle_stacks_path(
                 return redeemed
             return _reject("payment_id_already_used_replay")
         if pid_recorded is None:
-            return JSONResponse(status_code=503, content={
-                "error": "Stacks settlement deferred",
-                "payment_status": "uncertain",
-                "error_reason": ("replay_check_unavailable: durable store "
-                                 "unreachable — retry the same proof"),
-            })
+            # Nothing broadcast, nothing consumed: the SDK confirms the tx is
+            # absent on Hiro (AGE-152), zeroes the leg and signs again.
+            return _reject("replay_store_unavailable: nothing was broadcast "
+                           "— request a fresh 402 and sign again")
 
     settle = await stacks_pay.settle_stacks_payment(
         signed_tx, auth["txid"], payment_id=payment_id,
