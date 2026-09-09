@@ -867,7 +867,8 @@ async def ledger_json(request: Request):
     )
     data["wallets"] = {
         "base": next((a for a in addrs if a.startswith("0x")), None),
-        "stellar": next((a for a in addrs if not a.startswith("0x")), None),
+        "stellar": next((a for a in addrs if a.startswith("G")), None),
+        "stacks": next((a for a in addrs if a[:2] in ("SP", "ST")), None),
     }
     data["run_cap_usdc"] = f"{_dec(settings.LEDGER_RUN_CAP_USDC):.2f}"
     data["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
@@ -1312,8 +1313,10 @@ async function run(){
     const d = await r.json();
     const t = d.totals||{};
     const baseW=(d.wallets&&d.wallets.base)||"";
+    const stacksW=(d.wallets&&d.wallets.stacks)||"";
     sub.innerHTML = `Agent: <b style="color:#c4d0dc">${esc(d.agent||"flagship analyst")}</b>`
-      + (baseW? ` &middot; payer <code>${esc(shortHash(baseW))}</code>`:"")
+      + (baseW? ` &middot; payer <code>${esc(shortHash(baseW))}</code> (Base)`:"")
+      + (stacksW? ` &middot; payer <code>${esc(shortHash(stacksW))}</code> (Stacks)`:"")
       + ` &middot; cap <code>${money(d.run_cap_usdc)}</code>/run`;
     kpis.innerHTML = `
       <div class="kpi"><div class="n">${t.runs||0}</div><div class="l">runs</div></div>

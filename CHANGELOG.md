@@ -35,6 +35,12 @@ project uses [Semantic Versioning](https://semver.org/).
   both encodings are fixture-tested byte-for-byte against stacks.js.
 
 ### Added
+- **Flagship analyst on the Stacks rail** — `FLAGSHIP_STACKS_KEY` puts the
+  daily cron's gateway-paid calls on sBTC (`FLAGSHIP_RAIL` pins `stacks`,
+  `base`, or alternates by day); an uncertain settle is redeemed once the
+  transaction confirms instead of being dropped; the Bazaar keepalive and
+  external x402 sellers stay on Base. `/ledger.json` names the Stacks payer
+  under `wallets.stacks`.
 - `agentpay._stacks_tx.verify_origin_signature(signed_tx)` — pure check that
   a signed transaction's origin signature recovers to its signer; the
   gateway runs it before consuming replay state or broadcasting.

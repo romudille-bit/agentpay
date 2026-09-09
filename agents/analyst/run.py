@@ -20,6 +20,12 @@ Identity & config (env):
   FLAGSHIP_BASE_KEY        — persistent Base/EVM key (0x..; fund this with USDC)
   FLAGSHIP_MAX_SPEND       — hard cap per run in USDC (default "0.25")
   FLAGSHIP_SYMBOLS         — comma list for paid verdicts (default "BTC,ETH")
+  FLAGSHIP_STACKS_KEY      — optional Stacks key (64/66 hex; fund with sBTC + a
+                             little STX for fees). Enables the Stacks rail.
+  FLAGSHIP_RAIL            — which rail settles gateway calls: "base" or
+                             "stacks" (hard pin), or "alternate" (odd days on
+                             Stacks, even days on Base). Default: "stacks"
+                             when FLAGSHIP_STACKS_KEY is set, else "base".
   AGENTPAY_GATEWAY_URL     — override gateway (default https://agentpay.tools)
   LISTING_KEEPALIVE        — "off" disables the AGE-113 Bazaar listing keepalive
                              (default on; free check, $0.01 only on a real miss)
@@ -48,6 +54,16 @@ except ModuleNotFoundError:
 
 # strategy.py is a sibling module. Works both as a script (its dir is on path)
 # and as a package import (tests do `from agents.analyst import strategy`).
+# The Stacks rail's uncertain-settle exception exists from agentpay-x402 0.4.
+# An older SDK never raises it; a stand-in keeps the handlers importable.
+try:
+    from agentpay import SettlementUncertain
+except ImportError:  # pragma: no cover
+    from agentpay import PaymentFailed as _PaymentFailed
+
+    class SettlementUncertain(_PaymentFailed):  # type: ignore[no-redef]
+        tx_hash = ""
+
 try:
     from agents.analyst import strategy, backtest, listing_keepalive
 except ModuleNotFoundError:
@@ -434,6 +450,54 @@ def select_goal(day_ordinal: int, force: str = "",
     return spec
 
 
+RAILS = ("base", "stacks")
+
+
+def select_rail(day_ordinal: int, rail_env: str = "", has_stacks_key: bool = False) -> str:
+    """Which rail settles this run's gateway-paid calls. PURE.
+
+    `rail_env` (FLAGSHIP_RAIL) pins "base" or "stacks", or "alternate" puts
+    odd days on Stacks and even days on Base. Unset, the rail follows the
+    keys on hand: Stacks when a Stacks key is configured, Base otherwise.
+    Stacks is never chosen without a key — the run would fail on the first
+    paid call.
+    """
+    r = (rail_env or "").strip().lower()
+    if r == "alternate":
+        r = "stacks" if day_ordinal % 2 else "base"
+    elif r not in RAILS:
+        r = "stacks" if has_stacks_key else "base"
+    if r == "stacks" and not has_stacks_key:
+        return "base"
+    return r
+
+
+def payer_address(wallet, rail: str) -> str:
+    """The address that pays this run on `rail` — what the ledger keys the
+    run on (a c32 address on Stacks, the EVM address on Base)."""
+    if rail == "stacks":
+        return getattr(wallet, "stacks_address", None) or ""
+    return getattr(wallet, "base_address", None) or ""
+
+
+def _redeem_uncertain(s, exc, log_fn=log, *, wait_s: float = 300.0):
+    """A Stacks payment that was broadcast but not confirmed inside the
+    gateway's settle window raises SettlementUncertain. The spend is already
+    recorded against the cap; redeeming re-presents the same signed tx once
+    it confirms, so the verdict is not lost. Returns the tool data, or None
+    when still unconfirmed / refused (the leg stays on the receipt as
+    uncertain either way)."""
+    from agentpay import PaymentFailed
+    txid = getattr(exc, "tx_hash", None)
+    log_fn(f"settlement uncertain (tx {txid}) — waiting for confirmation to redeem")
+    try:
+        out = s.redeem(exc, wait_s=wait_s, poll_s=10)
+    except PaymentFailed as e:          # SettlementUncertain is a PaymentFailed
+        log_fn(f"redeem did not complete: {type(e).__name__}: {str(e)[:160]}")
+        return None
+    return (out or {}).get("result") if isinstance(out, dict) else out
+
+
 def _funding_bias(funding: dict | None) -> str | None:
     """AGE-85: same vote-share rule as the regime line — a bias needs
     ≥1/3 of rated venues behind it, not a plurality of the non-neutral few.
@@ -530,11 +594,25 @@ def main() -> int:
     objective = dict(spec["objective"])
     objective["cap_usdc"] = str(max_spend)
 
-    wallet = AgentWallet(secret_key=stellar_secret, network="mainnet", base_key=base_key)
-    s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend)
+    # Rail: gateway-paid calls settle on Base (USDC) or, with a Stacks key,
+    # on Stacks (sBTC). The cap is the same USD figure either way.
+    stacks_key = os.environ.get("FLAGSHIP_STACKS_KEY", "").strip()
+    rail = select_rail(day_ordinal, os.environ.get("FLAGSHIP_RAIL", ""), bool(stacks_key))
+    wallet_kw = {"secret_key": stellar_secret, "network": "mainnet", "base_key": base_key}
+    if stacks_key:
+        wallet_kw["stacks_key"] = stacks_key
+    wallet = AgentWallet(**wallet_kw)
+    if rail == "stacks" and not getattr(wallet, "stacks_address", None):
+        log(f"FATAL: FLAGSHIP_STACKS_KEY set but the Stacks wallet did not load: "
+            f"{getattr(wallet, 'stacks_disabled_reason', 'unknown')}")
+        return 1
+    session_kw = {"prefer_chain": "stacks"} if rail == "stacks" else {}
+    s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend, **session_kw)
+    payer = payer_address(wallet, rail)
+    objective["rail"] = rail
     run_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     run_at_iso = datetime.now(tz=timezone.utc).isoformat()
-    log(f"run start {run_at} | goal {spec['name']} | wallet {wallet.base_address} | cap ${max_spend}")
+    log(f"run start {run_at} | goal {spec['name']} | rail {rail} | wallet {payer} | cap ${max_spend}")
     log(f"goal: {spec['goal_text']}")
 
     paid_symbols = list(spec["paid_symbols"])
@@ -587,11 +665,11 @@ def main() -> int:
     # verified_route vetting + CMC consume → backtestable strategy spec.
     if spec["kind"] == "strategy":
         return run_strategy(s, spec, intel_calls, run_at, run_at_iso,
-                            wallet, max_spend, objective, plan)
+                            payer, max_spend, objective, plan)
 
     if spec["kind"] == "vetting":
         return run_vetting(s, spec, intel_calls, run_at, run_at_iso,
-                           wallet, max_spend, objective, plan)
+                           payer, max_spend, objective, plan)
 
     # Paid verdicts (only on pre_trade goals) — stop the moment the cap says stop
     verdicts: dict[str, dict] = {}
@@ -606,11 +684,20 @@ def main() -> int:
                        {"symbol": sym, "size_usd": TRADE_SIZE_USD, "side": "long"})
             verdicts[sym] = r.data
             log(f"bought verdict {sym}: {r.data.get('verdict')} | tx {r.tx}")
+        except SettlementUncertain as e:
+            # Stacks: broadcast, not yet confirmed. The spend is booked; the
+            # verdict is redeemed once the tx confirms.
+            data = _redeem_uncertain(s, e)
+            if data is not None:
+                verdicts[sym] = data
+                log(f"redeemed verdict {sym}: {(data or {}).get('verdict') if isinstance(data, dict) else data} | tx {e.tx_hash}")
+            else:
+                skipped[sym] = "settlement uncertain"
         except (PaymentFailed, RefundPending) as e:
             log(f"paid verdict {sym} failed: {e}")
             skipped[sym] = "payment failed"
         except Exception as e:
-            # 2026-08-07: one unexpected paid-call error killed the whole run.
+            # One unexpected paid-call error must not kill the whole run.
             log(f"paid verdict {sym} error: {type(e).__name__}: {e}")
             skipped[sym] = f"error: {type(e).__name__}"
 
@@ -638,7 +725,7 @@ def main() -> int:
         "note": note,
         "verdicts": {k: v.get("verdict") for k, v in verdicts.items()},
         "receipt": receipt,
-        "wallet": wallet.base_address,
+        "wallet": payer,
     }), flush=True)
     log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
         f"across {receipt['calls']} calls")
@@ -649,7 +736,7 @@ def main() -> int:
     publish_run({
         "run_at": run_at,
         "run_at_iso": run_at_iso,
-        "wallet": wallet.base_address,
+        "wallet": payer,
         "max_spend": str(max_spend),
         "objective": objective,
         "plan": plan,
@@ -670,7 +757,7 @@ def main() -> int:
     return 0
 
 
-def run_vetting(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, objective, plan):
+def run_vetting(s, spec, intel_calls, run_at, run_at_iso, payer, max_spend, objective, plan):
     """Daily buyer-side trust path (verified_route goal).
 
     Free regime intel for context, then settle ONE paid verified_route ($0.01)
@@ -697,6 +784,10 @@ def run_vetting(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, obj
             rec = (vetting or {}).get("recommendation") or {}
             log(f"verified_route: {(vetting or {}).get('vetting')} | "
                 f"rec {rec.get('name')} ({rec.get('payers30d')} payers) | tx {getattr(vr, 'tx', None)}")
+        except SettlementUncertain as e:
+            vetting = _redeem_uncertain(s, e)
+            if vetting is None:
+                log("verified_route: settlement uncertain, verdict not redeemed")
         except (PaymentFailed, RefundPending) as e:
             log(f"verified_route failed: {e}")
         except Exception as e:
@@ -716,13 +807,13 @@ def run_vetting(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, obj
     print("\n" + note + "\n", flush=True)
     print("FLAGSHIP_VETTING " + json.dumps({
         "run_at": run_at, "goal": spec["name"], "note": note,
-        "vetting": vetting, "receipt": receipt, "wallet": wallet.base_address,
+        "vetting": vetting, "receipt": receipt, "wallet": payer,
     }), flush=True)
     log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
         f"across {receipt['calls']} calls")
 
     publish_run({
-        "run_at": run_at, "run_at_iso": run_at_iso, "wallet": wallet.base_address,
+        "run_at": run_at, "run_at_iso": run_at_iso, "wallet": payer,
         "max_spend": str(max_spend), "objective": objective, "plan": plan,
         "regime": regime_text, "context": "",
         "findings": {"vetting": vetting},
@@ -731,7 +822,7 @@ def run_vetting(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, obj
     return 0
 
 
-def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, objective, plan):
+def run_strategy(s, spec, intel_calls, run_at, run_at_iso, payer, max_spend, objective, plan):
     """Flagship v2 paid path (hackathon strategy goal).
 
     Vet the marketplace (verified_route) → consume CMC DEX data (the one leg with
@@ -764,6 +855,10 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
             rec = (vetting or {}).get("recommendation") or {}
             log(f"verified_route: {(vetting or {}).get('vetting')} | "
                 f"rec {rec.get('name')} ({rec.get('payers30d')} payers) | tx {getattr(vr, 'tx', None)}")
+        except SettlementUncertain as e:
+            vetting = _redeem_uncertain(s, e)
+            if vetting is None:
+                log("verified_route: settlement uncertain, verdict not redeemed")
         except (PaymentFailed, RefundPending) as e:
             log(f"verified_route failed: {e}")
         except Exception as e:
@@ -778,7 +873,8 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
     cmc_calls: list[dict] = []
     if not s.would_exceed(PRICE):
         try:
-            r = s.call(strategy.cmc_url("dex_search", {"q": target}))
+            # External x402 seller: settles on Base regardless of the run's rail.
+            r = s.call(strategy.cmc_url("dex_search", {"q": target}), chain="base")
             matches = strategy.parse_dex_search(r.data)
             cmc_calls.append({"endpoint": "dex_search", "matches": len(matches),
                               "tx": getattr(r, "tx", None)})
@@ -821,13 +917,13 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, wallet, max_spend, ob
     print("FLAGSHIP_STRATEGY " + json.dumps({
         "run_at": run_at, "goal": spec["name"], "note": note,
         "strategy_spec": spec_out, "vetting": vetting_pub, "cmc_calls": cmc_calls,
-        "receipt": receipt, "wallet": wallet.base_address,
+        "receipt": receipt, "wallet": payer,
     }), flush=True)
     log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
         f"across {receipt['calls']} calls")
 
     publish_run({
-        "run_at": run_at, "run_at_iso": run_at_iso, "wallet": wallet.base_address,
+        "run_at": run_at, "run_at_iso": run_at_iso, "wallet": payer,
         "max_spend": str(max_spend), "objective": objective, "plan": plan,
         "regime": regime_text, "context": "",
         "findings": {"strategy_spec": spec_out, "vetting": vetting_pub},

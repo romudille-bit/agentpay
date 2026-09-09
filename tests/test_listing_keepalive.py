@@ -38,8 +38,9 @@ class _Session:
     def would_exceed(self, _amount):
         return self.over_cap
 
-    def call(self, tool, params=None):
+    def call(self, tool, params=None, *, chain=None):
         self.calls.append((tool, params))
+        self.chains = getattr(self, "chains", []) + [chain]
         if self.exc:
             raise self.exc
         return type("R", (), {"tx": "0xdeadbeef", "data": {"ok": True}})()
@@ -93,6 +94,7 @@ def test_missing_listing_is_refreshed():
     assert r["settled"] is True and r["indexed"] is False
     assert r["tx"] == "0xdeadbeef"
     assert s.calls == [("session_create", ka.KEEPALIVE_PARAMS)]
+    assert s.chains == ["base"], "the keepalive must settle on Base (the Bazaar indexes CDP settlements)"
     assert any("MISSING" in m for m in out)
 
 

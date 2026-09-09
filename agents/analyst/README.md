@@ -58,7 +58,8 @@ render when the run's reasoning is persisted. That needs:
    - Cron schedule: `0 13 * * *` (daily 13:00 UTC; pick your hour)
    - Variables: `FLAGSHIP_STELLAR_SECRET`, `FLAGSHIP_BASE_KEY`,
      optional `FLAGSHIP_MAX_SPEND` (default `0.25`),
-     `FLAGSHIP_SYMBOLS` (default `BTC,ETH`)
+     `FLAGSHIP_SYMBOLS` (default `BTC,ETH`), and for sBTC settlement
+     `FLAGSHIP_STACKS_KEY` / `FLAGSHIP_RAIL` (see *Stacks rail* below)
 
 4. **Dry-run locally** before scheduling:
 
@@ -66,6 +67,42 @@ render when the run's reasoning is persisted. That needs:
    cd agents/analyst && pip install -r requirements.txt
    FLAGSHIP_STELLAR_SECRET=S... FLAGSHIP_BASE_KEY=0x... python run.py
    ```
+
+## Stacks rail (sBTC)
+
+The same agent can settle its gateway-paid calls in sBTC on Stacks instead of
+USDC on Base. Nothing else changes: same goals, same cap in USD, same
+`/ledger` (Stacks receipts link to the Hiro explorer). Requires the gateway to
+accept sBTC (`STACKS_ENABLED=true` on production) and an SDK release that
+carries the Stacks path (`agentpay-x402>=0.4`).
+
+- **`FLAGSHIP_STACKS_KEY`** — the payer's Stacks private key (64 hex, or 66 hex
+  ending in `01`). From a Leather seed phrase, derive it without the words ever
+  touching a shell history:
+
+  ```bash
+  python tools/stacks_derive_key.py --address SP... --print-key   # hidden prompt for the 24 words
+  ```
+
+  Fund that address with sBTC (a verdict is ~13 sats at $0.01; 2,000 sats
+  covers ~150 calls) plus a little STX for network fees (the SDK refuses any
+  fee above 50,000 µSTX; the gateway quotes the medium tier, capped at
+  20,000 µSTX, so 1 STX lasts for weeks).
+- **`FLAGSHIP_RAIL`** — `stacks` or `base` pins the rail; `alternate` puts odd
+  days on Stacks and even days on Base. Unset, the run is on Stacks whenever
+  `FLAGSHIP_STACKS_KEY` is set and on Base otherwise. Stacks is never chosen
+  without a key.
+- The Bazaar listing keepalive and any external x402 seller (the strategy
+  goal's CMC legs) stay on Base regardless — the Bazaar indexes CDP-settled
+  payments, and outside sellers don't take sBTC.
+- A Stacks payment that outlives the gateway's settle window (`75 s`) comes
+  back as `SettlementUncertain`; the run waits up to five minutes for the
+  confirmation and redeems the same signed transaction, so the verdict is
+  bought once and delivered once. The spend is booked against the cap at
+  transmission either way.
+- Add the Stacks address to the gateway's `LEDGER_FLAGSHIP_ADDRESSES` so its
+  receipts are attributed to the flagship on `/ledger`; the run reports it as
+  the `wallet` of the persisted reasoning row.
 
 ## Instrumentation
 

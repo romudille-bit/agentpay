@@ -750,3 +750,23 @@ def test_flagship_allowlist_accepts_stacks_addresses(monkeypatch):
     addrs = ledger._flagship_addresses()
     assert addrs == ["SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",
                      "ST1JAHE8GEHB0MCBGR8J6W0AA7TJEE1XKFSD2Q80H", "0x" + "e" * 40]
+
+
+def test_ledger_json_names_the_stacks_payer(monkeypatch):
+    """/ledger.json exposes each rail's payer separately; a c32 address never
+    lands in the `stellar` slot."""
+    ledger._invalidate_ledger_cache()
+    monkeypatch.setattr(ledger.settings, "LEDGER_FLAGSHIP_ADDRESSES",
+                        "0x" + "e" * 40 + ",SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5,"
+                        "GAACF3K43CEWDO2BMOGT3K3GSETBINQFXZ3EQFJUWFLYNTCRHRAA3KVD")
+    async def _fake_rows():
+        return RUN_A + RUN_B
+    monkeypatch.setattr(ledger, "_fetch_flagship_rows", _fake_rows)
+    from gateway.main import app
+    d = TestClient(app).get("/ledger.json").json()
+    assert d["wallets"] == {
+        "base": "0x" + "e" * 40,
+        "stellar": "GAACF3K43CEWDO2BMOGT3K3GSETBINQFXZ3EQFJUWFLYNTCRHRAA3KVD",
+        "stacks": "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",
+    }
+    ledger._invalidate_ledger_cache()

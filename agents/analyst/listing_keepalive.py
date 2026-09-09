@@ -132,7 +132,9 @@ def keepalive(session, log, *, search=_search, query: str = PROBE_QUERY,
                 "reason": "budget cap reached"}
 
     try:
-        r = session.call("session_create", dict(KEEPALIVE_PARAMS))
+        # The Bazaar indexes CDP-settled (Base) payments, so the keepalive
+        # settles on Base whatever rail the run itself is on.
+        r = session.call("session_create", dict(KEEPALIVE_PARAMS), chain="base")
     except Exception as e:
         # Same lesson as 2026-08-07: a paid-call failure degrades, never kills.
         log(f"keepalive: settle failed ({type(e).__name__}: {e})")

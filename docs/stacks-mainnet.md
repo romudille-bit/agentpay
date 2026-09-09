@@ -150,6 +150,18 @@ run's wallet when known. Such legs render as **chain-verified** on
 `LEDGER_FLAGSHIP_ADDRESSES`; add the Stacks payer (`SP…`) there for its
 receipts to appear.
 
+## The pilot agent
+
+The flagship analyst — the daily cron that buys `pre_trade_check` verdicts
+under a `$0.25` cap and publishes its reasoning to the ledger — runs on the
+Stacks rail when its Railway service carries `FLAGSHIP_STACKS_KEY` (and,
+optionally, `FLAGSHIP_RAIL=stacks|base|alternate`). Every gateway-paid leg
+of such a run is an sBTC transfer from the pilot wallet, chain-verified on
+`/ledger` like any other Stacks receipt; the reasoning row names the Stacks
+address as the payer. `agents/analyst/README.md` covers funding and the
+uncertain-settle path (the run waits for the confirmation and redeems the
+same signed transaction rather than dropping the verdict).
+
 ## Reproducing
 
 ```bash
