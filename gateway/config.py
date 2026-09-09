@@ -46,12 +46,10 @@ class Settings(BaseSettings):
     # X-Agent-Address (IP fallback). Runs alongside the per-IP limit.
     WALLET_RATE_LIMIT: str = "60/minute"
 
-    # OpenZeppelin x402 Facilitator (covers XLM gas fees — agents only need USDC)
-    # Disabled by default since early 2026 — the OZ x402 channel returns 401
-    # in production for all requests until credentials are wired up. With #18
-    # the gateway no longer wastes a 15-second POST → 401 round-trip on every
-    # verification and goes straight to Horizon. Set to True once OZ auth is
-    # configured (or if testing the facilitator flow specifically).
+    # OpenZeppelin x402 facilitator (covers XLM gas fees; agents only need USDC).
+    # Off by default: the OZ channel returns 401 until credentials are
+    # configured, so verification goes straight to Horizon. Set True once OZ
+    # auth is wired up, or to test the facilitator flow specifically.
     STELLAR_FACILITATOR_URL: str = "https://channels.openzeppelin.com/x402"
     STELLAR_FACILITATOR_ENABLED: bool = False
 

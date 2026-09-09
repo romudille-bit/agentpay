@@ -1940,7 +1940,7 @@ async def upsert_service_scores(rows: list[dict]) -> bool:
 
 def _group_paid_receipts(rows: list[dict]) -> list[dict]:
     """Pure: group payment_logs rows into per-tool paid-call evidence,
-    keeping only genuinely paid rows (Decimal(amount) > 0).
+    keeping only rows with a positive amount (Decimal(amount) > 0).
 
     amount_usdc is written to Supabase as a string, so a PostgREST
     `amount_usdc=gt.0` filter compares text — "0.000000" > "0"

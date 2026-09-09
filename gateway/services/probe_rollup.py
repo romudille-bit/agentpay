@@ -1,21 +1,17 @@
 """
 probe_rollup.py — aggregate 402/probe telemetry without per-event DB writes.
 
-Context (disk-IO fix, 2026-08-04): the Supabase Disk IO budget was being
-drained by write churn — every 402 issued (including every crawler GET probe
-and scanner POST) cost 2-3 PostgREST round-trips (pending_challenges INSERT,
-payment_logs pending INSERT, later sweep UPDATE). 99.5% of payment_logs rows
-were 'abandoned' bot probes. Those per-event writes are gone; THIS module is
-what preserves the market signal they carried.
+Issuing a 402 writes nothing per event: nearly all 402s are crawler and
+scanner probes that never pay, and per-event rows were pure write churn.
+This module keeps the market signal those rows carried.
 
 Every 402 issuance is counted in an in-memory Counter keyed
-(utc_day, tool_name, user_agent, kind) and flushed as a batch INSERT into
-`payment_logs_daily_rollup` every ROLLUP_FLUSH_INTERVAL_SECONDS (hourly since
-disk-IO fix #3) — one write per window regardless of probe volume, and one
-row per live key per window. Rows are ADDITIVE events: consumers
-SUM(n) GROUP BY day/tool/user_agent, so no server-side upsert/increment is
-needed. New crawlers, UA changes, and volume trends all remain visible in
-the rollup (the "who monitors AgentPay" feed for the weekly market review).
+(utc_day, tool_name, user_agent, kind) and flushed as one batch insert into
+`payment_logs_daily_rollup` every ROLLUP_FLUSH_INTERVAL_SECONDS — one write
+per window regardless of probe volume, one row per live key per window.
+Rows are additive events: consumers SUM(n) GROUP BY day/tool/user_agent, so
+no server-side upsert is needed. New crawlers, UA changes and volume trends
+stay visible in the rollup.
 
 kind (stored in the rollup's `state` column, disjoint from payment_logs
 lifecycle states):
@@ -43,19 +39,14 @@ from gateway.services import supabase as sb
 
 logger = logging.getLogger(__name__)
 
-# Loop tick. provider_map (AGE-138) still flushes every tick so verified_route
-# discoveries land within minutes; the ROLLUP itself flushes once an hour.
+# Loop tick. provider_map still flushes every tick so verified_route
+# discoveries land within minutes; the rollup itself flushes less often.
 FLUSH_INTERVAL_SECONDS = 300
 
-# Disk-IO fix #3 (2026-09-01): rows are additive EVENTS, so every flush
-# appends one row per live (day, tool, UA, kind) key. At a 5-min cadence
-# with ~30 keys alive per window that was ~8,400 rows/day (139,848 rows by
-# 09-01; 3rd "Disk IO budget" email on 08-29) — the rollup had become the
-# write churn it was built to remove. Hourly: ~700 rows/day. A crash now
-# loses ≤1h of probe telemetry instead of ≤5min; payments are never
-# tracked here, so that is the whole cost. Consumers still SUM(n) GROUP BY.
-# Fix #4 (2026-09-07): hourly still appended ~2,400 rows/day (about 100 live
-# keys per window, not 30). Every 6 hours: ≤4 rows per key per day.
+# Rows are additive events, so every flush appends one row per live
+# (day, tool, UA, kind) key — about 100 keys per window. Six hours bounds
+# that to four rows per key per day; a crash loses at most six hours of
+# probe telemetry, and payments are never tracked here.
 ROLLUP_FLUSH_INTERVAL_SECONDS = 6 * 3600
 
 # Bound memory: (day × tool × UA × kind) keys. 5k keys ≈ a very hostile UA
@@ -137,8 +128,8 @@ async def flush_loop() -> None:
                     logger.info(f"[ROLLUP] flushed {n} probe-count rows")
             except Exception as e:  # pragma: no cover
                 logger.error(f"probe rollup loop error: {e}")
-        # AGE-138: provider rows discovered by verified_route since the last
-        # window — same batch vehicle, same one-write-per-window rule.
+        # Provider rows discovered by verified_route since the last window:
+        # same batch vehicle, same one-write-per-window rule.
         try:
             from gateway.services import provider_map
             await provider_map.flush()

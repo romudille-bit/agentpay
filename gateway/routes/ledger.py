@@ -1125,7 +1125,7 @@ function planStep(rz, run){
 function execStep(run){
   const items=(run.timeline||[]).map(s=>{
     const cost = s.kind==="paid"? money(s.cost_usdc) : "free";
-    // AGE-63: only an on-chain-verified leg gets the explorer link; an
+    // Only an on-chain-verified leg gets the explorer link; an
     // agent-attested leg (off-gateway or unverifiable) is labelled as such
     // instead of being dressed up as a checked on-chain receipt.
     let mark = "";

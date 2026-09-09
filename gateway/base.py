@@ -740,7 +740,7 @@ async def settle_base_payment(
             rpc_url              = rpc_url,
         )
         if result["success"]:
-            # ── Atomic consume (closes the TOCTOU on the replay pre-check) ──
+            # Atomic consume: closes the TOCTOU on the replay pre-check.
             # The is_replay check above is a fast pre-check, but verify_base_tx
             # does JSON-RPC I/O with await boundaries — two concurrent retries
             # with the same tx_hash can both pass it and both settle. Serialize
