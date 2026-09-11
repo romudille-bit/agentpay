@@ -349,11 +349,12 @@ async def well_known_agentpay():
         "name": "AgentPay",
         "version": "1.0",
         "tagline": "The economic-intelligence layer for AI agents — spend control, not just a wallet.",
-        "description": "The economic-intelligence layer for AI agents — hard budget caps at the payment layer, cost-aware routing before every call, and a verifiable receipt after. 17 tools free to start. USDC on Base (standard x402) or Stellar (via the AgentPay SDK), no keys.",
+        "description": "The economic-intelligence layer for AI agents — hard budget caps at the payment layer, cost-aware routing before every call, and a verifiable receipt after. 17 tools free to start. USDC on Base (standard x402) or Stellar, or sBTC on Stacks (via the AgentPay SDK), no keys.",
         "url": GATEWAY_URL,
         "payment_protocol": "x402",
         "payment_network": stellar_caip2(),
         "payment_asset": "USDC",
+        "payment_networks": _payment_networks(),
         "pricing_model": "per-call",
         "budget_aware": True,
         "faucet": f"{GATEWAY_URL}/faucet",
@@ -682,6 +683,19 @@ async def mcp_server_card():
         "homepage": GATEWAY_URL,
         "registry": "https://www.npmjs.com/package/@romudille/agentpay-mcp",
     }, headers={"Cache-Control": "public, max-age=3600"})
+
+
+def _payment_networks() -> list[dict]:
+    """Every rail a paid call can settle on, as CAIP-2 + asset, for the
+    manifest. Stacks appears only where sBTC settlement is configured."""
+    from gateway import base as _base, stacks as _stacks
+    out = [
+        {"network": stellar_caip2(), "asset": "USDC", "via": "agentpay-sdk"},
+        {"network": _base.get_chain_config(settings.BASE_NETWORK)[0], "asset": "USDC", "via": "x402-exact"},
+    ]
+    if _stacks.stacks_configured():
+        out.append({"network": _stacks._caip2(), "asset": "sBTC", "via": "agentpay-sdk"})
+    return out
 
 
 def _stacks_networks() -> list[str]:
