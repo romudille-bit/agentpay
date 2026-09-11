@@ -32,8 +32,9 @@ The result is an agent that doesn't just have a budget. It knows how to use one.
 ## Install
 
 ```bash
-pip install agentpay-x402            # core (Stellar)
+pip install agentpay-x402            # core (Stellar + Stacks/sBTC)
 pip install "agentpay-x402[base]"    # + pay tools that settle on Base
+pip install "agentpay-x402[stacks]"  # same as core, spelled out — pay in sBTC on Stacks
 ```
 
 ---
@@ -146,7 +147,7 @@ with Session(wallet,
              allowed_tools=["token_price", "gas_tracker", "web_search"],
              max_per_tool={"dune_query": 0.02},
              rate_limit=10,                # max 10 calls/min
-             prefer_chain="base") as session:   # Base is the default; pass "stellar" to override
+             prefer_chain="base") as session:   # Base is the default; "stellar" or "stacks" to override
     ...
 ```
 
@@ -365,15 +366,25 @@ gateway (FastAPI on Railway)
 
 ## Stacks sBTC settlement
 
-AgentPay settles x402 micropayments in **sBTC on Stacks** — budget-capped, signed
-sign-don't-broadcast, broadcast by the gateway. Testnet (Milestone 1 of the Stacks
-Endowment grant) is demonstrated live; mainnet settles against `agentpay.tools`:
+AgentPay settles x402 micropayments in **sBTC on Stacks mainnet** — budget-capped,
+signed client-side and never broadcast by the client (the gateway broadcasts the
+signed transaction, so a hostile gateway can settle at most the signed amount).
+Live on `agentpay.tools` since `agentpay-x402` 0.5.0:
 
-- **Mainnet guide:** [`docs/stacks-mainnet.md`](docs/stacks-mainnet.md) — config, the one-liner, redeeming an uncertain settle, ledger verification.
+```python
+from agentpay import quickstart
+
+s = quickstart(stacks_key="<64-hex>", prefer_chain="stacks", max_spend="0.05")
+r = s.call("pre_trade_check", {"symbol": "BTC", "size_usd": 25000, "side": "long"})
+print(r.data["verdict"], r.tx)      # verdict + the sbtc-token::transfer txid
+```
+
+- **Mainnet guide:** [`docs/stacks-mainnet.md`](docs/stacks-mainnet.md) — config, the one-liner, redeeming an uncertain settle, ledger verification, the pilot agent.
 - **Testnet guide:** [`docs/stacks-m1.md`](docs/stacks-m1.md) — setup, known limitations, dependencies.
 - **Runnable demo:** [`examples/stacks_m1_demo.py`](examples/stacks_m1_demo.py) — capped session → sBTC payment → receipt → over-cap rejection (`STACKS_NETWORK=mainnet` for mainnet).
 - **Demo video:** [YouTube (~40s)](https://www.youtube.com/watch?v=rGb07rwyG1I)
-- **On-chain proof:** [`0xa5351bad…`](https://explorer.hiro.so/txid/0xa5351bad31ed6bbcb57c0f9fcbcd997cc203b7011d62666176452edaed2d8c87?chain=testnet) — `sbtc-token::transfer`, payer → gateway, status `success` (PoX-5 testnet, block 82215).
+- **Mainnet receipts:** [`0x30689b5e…`](https://explorer.hiro.so/txid/0x30689b5ee9f779fe571f0b7797e2453b21cf7d220cadf4f1881586757347387f?chain=mainnet), [`0xd1de1a79…`](https://explorer.hiro.so/txid/0xd1de1a792e2a23f5a0b22651eec4f3f00a49f3e9ca15c70c2a19fc8fb474dd8e?chain=mainnet), [`0x59ce7014…`](https://explorer.hiro.so/txid/0x59ce70146da57ffd8c71cd67eea9169373ad11b7298e77a88e5f946a0064e325?chain=mainnet) — `sbtc-token::transfer` payer → gateway, each from a `$0.05`-capped session, chain-verified on [agentpay.tools/ledger](https://agentpay.tools/ledger).
+- **Testnet proof:** [`0xa5351bad…`](https://explorer.hiro.so/txid/0xa5351bad31ed6bbcb57c0f9fcbcd997cc203b7011d62666176452edaed2d8c87?chain=testnet) — PoX-5 testnet, block 82215.
 
 ---
 

@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentpay-x402"
-version = "0.4.0"
-description = "Economic intelligence for AI agents — quickstart() in one line, 17 free tools, hard budget caps, session receipts, x402 on Stellar or Base"
+version = "0.5.0"
+description = "Economic intelligence for AI agents — quickstart() in one line, 17 free tools, hard budget caps, session receipts, x402 on Base, Stellar, or Stacks (sBTC)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "romudille", email = "velvetvau@gmail.com" }]
 requires-python = ">=3.10"
-keywords = ["x402", "stellar", "ai-agents", "crypto", "micropayments", "mcp"]
+keywords = ["x402", "stellar", "base", "stacks", "sbtc", "ai-agents", "crypto", "micropayments", "mcp"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -39,6 +39,12 @@ dependencies = [
 base = [
     "eth-account>=0.11.0",
     "x402[evm]>=0.1.0",
+]
+# Stacks/sBTC needs nothing beyond the core install; the extra exists so
+# `pip install "agentpay-x402[stacks]"` reads like the Base one and keeps
+# working if the Stacks path ever grows a dependency of its own.
+stacks = [
+    "eth-keys>=0.4.0",
 ]
 
 [project.urls]

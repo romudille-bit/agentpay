@@ -1,7 +1,7 @@
 """
 agentpay — Pay-per-call crypto data for AI agents.
 
-x402 micropayments on Stellar or Base. No API keys. No subscriptions.
+x402 micropayments on Base, Stellar, or Stacks (sBTC). No API keys. No subscriptions.
 14 live tools: token prices, funding rates, open interest, whale activity,
 orderbook depth, DeFi TVL, gas tracker, Fear & Greed, and more.
 
@@ -24,6 +24,13 @@ Quickstart (mainnet):
     with Session(wallet, max_spend="0.10") as s:
         r = s.call("funding_rates", {"asset": "ETH"})
         print(r["result"]["rates"])
+
+Pay in sBTC on Stacks (sign-don't-broadcast; the gateway broadcasts):
+---------------------------------------------------------------------
+    from agentpay import quickstart
+
+    s = quickstart(stacks_key="<64-hex>", prefer_chain="stacks", max_spend="0.05")
+    print(s.call("pre_trade_check", {"symbol": "BTC", "size_usd": 25000}).data)
 
 Gateway URLs:
     Mainnet: https://agentpay.tools
@@ -49,10 +56,9 @@ from agentpay.client import (
 from agentpay.budget_policy import budget_policy, BudgetDecision
 
 # Kept in lockstep with pyproject.toml [project].version — enforced by
-# tests/test_agentpay_sdk.py::test_version_matches_pyproject (F7, 2026-07-20:
-# the 0.3.0 wheel shipped self-reporting 0.2.7 because only pyproject was
-# bumped). Bump BOTH, or the pre-publish test fails.
-__version__ = "0.4.0"
+# tests/test_agentpay_sdk.py::test_version_matches_pyproject. Bump both, or
+# the pre-publish test fails.
+__version__ = "0.5.0"
 __all__ = [
     "AgentWallet",
     "Session",

@@ -349,6 +349,25 @@ class TestQuickstartEvmMint:
         assert s.base_public_key == own.address
         assert s.base_secret_key is None  # brought, not minted — never echoed
 
+    def test_quickstart_stacks_key_skips_registration(self):
+        """The Stacks one-liner: a Stacks-only key needs no Stellar secret and
+        never touches /v1/agent/register; the session is pinned to Stacks."""
+        from agentpay.client import quickstart
+
+        with respx.mock(assert_all_called=False) as m:
+            reg = m.post(f"{GATEWAY}/v1/agent/register").mock(
+                return_value=httpx.Response(500, json={"detail": "must not be called"})
+            )
+            s = quickstart(
+                gateway_url=GATEWAY, quiet=True, max_spend="0.05",
+                stacks_key="2f" * 32, prefer_chain="stacks",
+            )
+        assert not reg.called
+        assert s.stacks_public_key and s.stacks_public_key.startswith("S")
+        assert s._prefer_chain == "stacks"
+        assert str(s.max_spend) == "0.05"
+        assert s.session_token is None and s.free_tools == []
+
 
 # ── Balance check: empty vs unreachable (Phase 2.3) ──────────────────────────
 

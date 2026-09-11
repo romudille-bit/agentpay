@@ -74,7 +74,7 @@ The same agent can settle its gateway-paid calls in sBTC on Stacks instead of
 USDC on Base. Nothing else changes: same goals, same cap in USD, same
 `/ledger` (Stacks receipts link to the Hiro explorer). Requires the gateway to
 accept sBTC (`STACKS_ENABLED=true` on production) and an SDK release that
-carries the Stacks path (`agentpay-x402>=0.4`).
+carries the mainnet Stacks path (`agentpay-x402>=0.5.0`, the pin in `requirements.txt`).
 
 - **`FLAGSHIP_STACKS_KEY`** — the payer's Stacks private key (64 hex, or 66 hex
   ending in `01`). From a Leather seed phrase, derive it without the words ever

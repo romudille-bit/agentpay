@@ -59,6 +59,7 @@ def quickstart(
     *,
     secret_key: str = None,
     base_key: str = None,
+    stacks_key: str = None,
     network: str = "mainnet",
     testnet: bool = False,
     gateway_url: str = None,
@@ -84,6 +85,11 @@ def quickstart(
 
         s = quickstart(secret_key="S...", base_key="0x...", max_spend="0.50")
 
+    Pay in sBTC on Stacks (a Stacks-only wallet is fine — no Stellar secret
+    needed; the SDK signs, the gateway broadcasts):
+
+        s = quickstart(stacks_key="<64-hex>", prefer_chain="stacks", max_spend="0.05")
+
     The returned Session also carries:
         s.session_token       — server session id
         s.free_tools          — list of tools callable for $0
@@ -93,6 +99,10 @@ def quickstart(
         max_spend:   hard budget cap for the session (string USDC, e.g. "0.10").
         secret_key:  bring-your-own Stellar secret; if given, skips registration.
         base_key:    optional Base/EVM key (0x...) to pay tools that settle on Base.
+        stacks_key:  optional Stacks key (64 hex, or 66 hex ending in 01) to pay
+                     tools in sBTC; on its own it skips registration too.
+        prefer_chain: pin the settlement chain for paid calls ("base",
+                     "stellar", or "stacks"); a hard requirement, not a hint.
         network:     "mainnet" (default) or "testnet".
         testnet:     shorthand for network="testnet" + testnet gateway.
         gateway_url: override the gateway (defaults to mainnet/testnet URL).
@@ -106,17 +116,17 @@ def quickstart(
     net = "testnet" if testnet else network
 
     # ── Bring-your-own-wallet: skip registration ──────────────────────────────
-    if secret_key:
-        try:
-            wallet = AgentWallet(secret_key=secret_key, network=net, base_key=base_key)
-        except TypeError:                       # older build without base_key kwarg
-            wallet = AgentWallet(secret_key=secret_key, network=net)
+    if secret_key or stacks_key:
+        wallet = AgentWallet(secret_key=secret_key, network=net, base_key=base_key,
+                             stacks_key=stacks_key)
         s = Session(wallet, max_spend=max_spend, gateway_url=gw, prefer_chain=prefer_chain)
         s.session_token, s.free_tools, s.wallet_public_key = None, [], wallet.public_key
         s.base_public_key = getattr(wallet, "base_address", None)
+        s.stacks_public_key = getattr(wallet, "stacks_address", None)
         s.base_secret_key = None
         if not quiet:
-            print(f"✓ AgentPay ready — your wallet {wallet.public_key[:10]}…, budget ${max_spend}.")
+            shown = wallet.public_key or s.stacks_public_key or s.base_public_key or ""
+            print(f"✓ AgentPay ready — your wallet {shown[:10]}…, budget ${max_spend}.")
         return s
 
     # ── Mint a fresh wallet via the free, zero-human register endpoint ─────────
@@ -163,6 +173,7 @@ def quickstart(
     s.free_tools        = data.get("free_tools", [])
     s.wallet_public_key = w.get("public_key")
     s.base_public_key   = getattr(wallet, "base_address", None)
+    s.stacks_public_key = getattr(wallet, "stacks_address", None)
     s.base_secret_key   = minted_base_secret    # None unless minted here — save it to reuse the wallet
     if not quiet:
         print(f"✓ AgentPay ready — minted wallet {s.wallet_public_key[:10] if s.wallet_public_key else ''}…, "

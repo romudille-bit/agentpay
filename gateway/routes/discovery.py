@@ -400,7 +400,7 @@ async def well_known_agent():
         "onboarding": {
             "register":         f"{GATEWAY_URL}/v1/agent/register",
             "register_cost":    "0",
-            "register_network": "stellar (free-tier identity; pay with your own funded wallet on Base — standard x402 — or Stellar via the AgentPay SDK)",
+            "register_network": "stellar (free-tier identity; pay with your own funded wallet on Base — standard x402 — or Stellar / Stacks sBTC via the AgentPay SDK)",
             "discover_tools":   f"{GATEWAY_URL}/tools",
             "call_tool":        f"{GATEWAY_URL}/tools/{{name}}/call",
             "paid_session":     f"{GATEWAY_URL}/v1/session/create",
@@ -413,7 +413,7 @@ async def well_known_agent():
             "budget_sessions": True,
             "session_receipts": True,
             "payments":        "x402-v2",
-            "networks":        ["stellar-mainnet", "base-mainnet"],
+            "networks":        ["stellar-mainnet", "base-mainnet"] + _stacks_networks(),
             "free_tools":      len(free_tools),
             "paid_tools":      len(paid_tools),
         },
@@ -684,6 +684,21 @@ async def mcp_server_card():
     }, headers={"Cache-Control": "public, max-age=3600"})
 
 
+def _stacks_networks() -> list[str]:
+    """The Stacks network label when sBTC settlement is switched on."""
+    from gateway import stacks as _stacks
+    return [_stacks._network_label()] if _stacks.stacks_configured() else []
+
+
+def _stacks_llms_note() -> str:
+    """Suffix for the llms.txt chains line: names the live Stacks network, or
+    says the rail is off on this deployment."""
+    from gateway import stacks as _stacks
+    if _stacks.stacks_configured():
+        return f" — live: {_stacks._network_label()}"
+    return " — not enabled on this deployment"
+
+
 def build_llms_txt() -> str:
     """LLM/agent-readable service description in markdown.
 
@@ -707,7 +722,7 @@ def build_llms_txt() -> str:
 
 > The economic intelligence layer for agent spend. An agent reasons about cost — prices a plan before spending and routes to the cheapest tool that works — under a hard budget cap enforced before a dollar moves. 17 free tools to start: no API keys, no USDC, no wallet setup. Every call is session-tracked with a full receipt.
 
-AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well. An agent can onboard with zero humans and zero funding in three calls: register, discover, call. Free tools cost $0 and need no funded wallet, yet every call still produces a receipt. Paid tools (and metered inference, coming) use x402: a 402 challenge, USDC settlement, retry with proof, verified on-chain. USDC on Base (standard x402 `exact` scheme — any standard client can pay) or Stellar (classic payment + memo via the AgentPay SDK — not the standard @x402/stellar Soroban scheme); Circle CCTP bridges 1:1 between them.
+AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well. An agent can onboard with zero humans and zero funding in three calls: register, discover, call. Free tools cost $0 and need no funded wallet, yet every call still produces a receipt. Paid tools (and metered inference, coming) use x402: a 402 challenge, USDC settlement, retry with proof, verified on-chain. USDC on Base (standard x402 `exact` scheme — any standard client can pay), Stellar (classic payment + memo via the AgentPay SDK — not the standard @x402/stellar Soroban scheme; Circle CCTP bridges 1:1 to Base), or sBTC on Stacks (SIP-005 transfer signed by the agent and broadcast by the gateway, via the AgentPay SDK).
 
 ## Onboarding (zero human, zero funding)
 
@@ -721,10 +736,10 @@ Price any multi-tool plan BEFORE spending: POST /v1/plan/estimate (free, no wall
 ## Gateway
 
 - Production: {GATEWAY_URL}
-- Chains: USDC on Base (canonical paid chain; standard x402 `exact` scheme) or Stellar (classic payment + memo via the AgentPay SDK — not the standard @x402/stellar Soroban scheme; CCTP-bridged 1:1)
+- Chains: USDC on Base (canonical paid chain; standard x402 `exact` scheme), Stellar (classic payment + memo via the AgentPay SDK — not the standard @x402/stellar Soroban scheme; CCTP-bridged 1:1), or sBTC on Stacks mainnet (AgentPay SDK, sign-don't-broadcast){_stacks_llms_note()}
 - Tools: {len(tools)} ({len([t for t in tools if float(t.price_usdc) == 0])} free)
 - Protocol: x402-v2 (HTTP 402 → pay → retry)
-- SDK: pip install agentpay-x402 — one-liner: `from agentpay import quickstart; s = quickstart(); print(s.call('token_price', {{'symbol':'ETH'}}).data['price_usd'])`  (Base support: `pip install "agentpay-x402[base]"`)
+- SDK: pip install agentpay-x402 — one-liner: `from agentpay import quickstart; s = quickstart(); print(s.call('token_price', {{'symbol':'ETH'}}).data['price_usd'])`  (Base support: `pip install "agentpay-x402[base]"`; sBTC: `pip install "agentpay-x402[stacks]"` then `quickstart(stacks_key="…", prefer_chain="stacks")`)
 
 ## Tools
 
@@ -733,7 +748,7 @@ Price any multi-tool plan BEFORE spending: POST /v1/plan/estimate (free, no wall
 ## Integration
 
 POST /tools/{{name}}/call with {{parameters, agent_address}}
-On 402: free tools ($0.000) authorize without an on-chain tx; paid tools settle USDC on Base (standard x402, PAYMENT-SIGNATURE header) or Stellar (AgentPay SDK / manual classic payment + memo, X-Payment header).
+On 402: free tools ($0.000) authorize without an on-chain tx; paid tools settle USDC on Base (standard x402, PAYMENT-SIGNATURE header), Stellar (AgentPay SDK / manual classic payment + memo, X-Payment header), or sBTC on Stacks (AgentPay SDK: signed `sbtc-token::transfer` with the challenge id as memo, X-Payment header; the gateway broadcasts and confirms).
 Response: data is in result["result"]
 
 ## Docs

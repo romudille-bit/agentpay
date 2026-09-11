@@ -62,6 +62,19 @@ lower-only).
 
 ## Paying from the SDK
 
+```bash
+pip install "agentpay-x402[stacks]"     # 0.5.0 or later
+```
+
+```python
+from agentpay import quickstart
+
+s = quickstart(stacks_key=os.environ["STACKS_AGENT_KEY"], prefer_chain="stacks", max_spend="0.05")
+result = s.call("pre_trade_check", {"symbol": "BTC"})
+```
+
+The same session, spelled out:
+
 ```python
 from agentpay import AgentWallet, Session
 

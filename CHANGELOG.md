@@ -6,6 +6,16 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-11
+
+**Stacks sBTC on mainnet.** `pip install "agentpay-x402[stacks]"` and the
+one-liner `quickstart(stacks_key="…", prefer_chain="stacks")` pay tools in
+sBTC against `agentpay.tools` — sign-don't-broadcast, hard USD cap, receipts
+chain-verified on the public ledger. Three mainnet receipts settled before
+release (`30689b5e…`, `d1de1a79…`, `59ce7014…`); the daily flagship agent
+runs on the same rail. Everything below is the M2 hardening that went in
+between 0.4.0 (testnet) and this release.
+
 ### Fixed
 - **Stacks confirmation never seen** — the gateway polled Hiro at
   `/extended/v1/tx/<txid>` without `0x`; Hiro answers that with a 302 the
@@ -35,6 +45,11 @@ project uses [Semantic Versioning](https://semver.org/).
   both encodings are fixture-tested byte-for-byte against stacks.js.
 
 ### Added
+- **`pip install "agentpay-x402[stacks]"`** — the Stacks extra (the core
+  install already carries the signing dependency; the extra mirrors `[base]`).
+- **`quickstart(stacks_key=…, prefer_chain="stacks")`** — a Stacks-only
+  wallet skips registration and needs no Stellar secret; the session exposes
+  `stacks_public_key`.
 - **Flagship analyst on the Stacks rail** — `FLAGSHIP_STACKS_KEY` puts the
   daily cron's gateway-paid calls on sBTC (`FLAGSHIP_RAIL` pins `stacks`,
   `base`, or alternates by day); an uncertain settle is redeemed once the
