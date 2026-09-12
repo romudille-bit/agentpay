@@ -10,6 +10,8 @@ import base64
 import hashlib
 import json
 import os
+import re
+
 import httpx
 import logging
 import secrets
@@ -691,7 +693,6 @@ class AgentWallet:
             # 402 carries neither it is malformed, so raise a clear error.
             raise KeyError("x402 payment requirements missing amount / maxAmountRequired")
         amount  = str(_atomic)
-        asset   = accept.get("asset") or self.BASE_USDC
         # payTo is standard x402; tolerate a pay_to alias, clear error if neither.
         pay_to  = accept.get("payTo") or accept.get("pay_to")
         if not pay_to:
@@ -708,6 +709,19 @@ class AgentWallet:
             raise UnsupportedChainPayment(
                 f"cannot settle a Base payment on {network!r} "
                 f"(settleable: {sorted(_BASE_SETTLEABLE_CAIP2)})",
+                offered_networks=[network],
+                settleable=sorted(_BASE_SETTLEABLE_CAIP2),
+            )
+        # Pin the asset to this chain's USDC instead of signing for whatever the
+        # 402 names. The amount is interpreted as 6-decimal USDC everywhere the
+        # budget is checked, so a different token would mean signing for an
+        # amount the caller never saw.
+        asset = _BASE_USDC_BY_CAIP2[_normalize_evm_network(network)]
+        offered_asset = accept.get("asset")
+        if offered_asset and offered_asset.lower() != asset.lower():
+            raise UnsupportedChainPayment(
+                f"402 asks to pay asset {offered_asset} on {network}, but this "
+                f"wallet settles only USDC ({asset}) — refusing to sign",
                 offered_networks=[network],
                 settleable=sorted(_BASE_SETTLEABLE_CAIP2),
             )
@@ -1002,6 +1016,19 @@ def _normalize_evm_network(net) -> str:
 # spend, never confirmed).
 _BASE_SETTLEABLE_CAIP2 = frozenset({"eip155:8453", "eip155:84532"})
 
+# An EVM address, for the one comparison where case must not matter.
+_EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+
+# Every USD bound in this module — max_spend, max_per_call, approve_above, the
+# session cap — divides the atomic amount by 1e6, which is only true for USDC.
+# So the asset is pinned per chain rather than taken from the 402: an
+# EIP-3009-capable token with 8 decimals would be signed for 100x what the
+# caller was shown and approved.
+_BASE_USDC_BY_CAIP2 = {
+    "eip155:8453":  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+}
+
 
 def _is_base_settleable(net) -> bool:
     """True iff `net` is a Base chain this wallet can settle on — Base mainnet
@@ -1010,8 +1037,8 @@ def _is_base_settleable(net) -> bool:
     n = str(net or "").strip().lower()
     if not n:
         return False
-    if n.startswith("base"):
-        return True
+    # A friendly alias counts only if it resolves to a chain we can settle on:
+    # "basecamp" starts with "base" and is not Base.
     return _normalize_evm_network(n) in _BASE_SETTLEABLE_CAIP2
 
 
@@ -1208,13 +1235,22 @@ class Session:
         self._rate_window: list[float] = []          # timestamps of recent calls
         # Spending rules beyond the cap. They are checked against the 402 —
         # the recipient and amount the call would actually sign for — before
-        # anything is signed, on every rail (Base, Stellar, Stacks). Recipient
-        # comparison is exact on the address string, so a Stacks c32 address,
-        # an EVM address and a Stellar G-address all work the same way.
+        # anything is signed, on every rail (Base, Stellar, Stacks).
+        #
+        # Recipient comparison is exact for Stellar G-addresses and Stacks c32,
+        # where case is significant and two spellings are two addresses. EVM is
+        # the exception: EIP-55 checksum casing is cosmetic, so 0xAbC… and
+        # 0xabc… are one recipient, and comparing those exactly would reject
+        # every call for a user who allowlisted the spelling their explorer
+        # showed them.
         self._allowed_recipients: set[str] | None = (
             {str(a).strip() for a in allowed_recipients if str(a).strip()}
             if allowed_recipients is not None else None
         )
+        self._allowed_recipients_evm: set[str] = {
+            a.lower() for a in (self._allowed_recipients or ())
+            if _EVM_ADDRESS_RE.match(a)
+        }
         self._max_per_call: Decimal | None = (
             Decimal(str(max_per_call)) if max_per_call is not None else None
         )
@@ -1302,14 +1338,22 @@ class Session:
         Computed after the hold lands, this is race-free with respect to this
         call's own hold. Holds placed after the computation can make it stale,
         as with any pre-computed ceiling; that is bounded by the
-        overpay-tolerance arm and enforced anyway by reserve + absorb."""
+        overpay-tolerance arm and enforced anyway by reserve + absorb.
+
+        Other calls' holds are counted at what they are *allowed* to spend, not
+        at their quote: each one may legitimately accept a 402 up to its own
+        tolerance, and assuming otherwise let two concurrent calls each take a
+        within-tolerance 402 and together exceed max_spend. This call's own hold
+        is added back at face value, so an exact-fit budget still passes."""
         q = Decimal(str(quote))
+        tol = Decimal("1") + OVERPAY_TOLERANCE
         with self._lock:
+            others_held = max(self._reserved - Decimal(str(held)), Decimal("0"))
             remaining_excl = max(
-                self.max_spend - self._spent - self._reserved + Decimal(str(held)),
+                self.max_spend - self._spent - others_held * tol,
                 Decimal("0"),
             )
-        return str(min(remaining_excl, q * (Decimal("1") + OVERPAY_TOLERANCE)))
+        return str(min(remaining_excl, q * tol))
 
     def _would_exceed_excluding_hold(self, amount_usdc, held) -> bool:
         """Like would_exceed(), but ignores `held`, the hold this call already
@@ -1506,6 +1550,13 @@ class Session:
                             "detail": f"'{e.get('tool')}' booked a spend but the call failed"})
         return out
 
+    def _recipient_allowed(self, pay_to: str) -> bool:
+        """Exact match, except that an EVM address compares case-insensitively."""
+        if pay_to in self._allowed_recipients:
+            return True
+        return bool(_EVM_ADDRESS_RE.match(pay_to)
+                    and pay_to.lower() in self._allowed_recipients_evm)
+
     def _pre_pay_check(self, *, tool: str, chain: str, pay_to: str, amount_usd) -> None:
         """The spending rules, evaluated against what a 402 actually asks for.
         Called by the client after the payment option is chosen and before
@@ -1518,7 +1569,7 @@ class Session:
         if amt is not None and amt <= 0:
             return
         pay_to = str(pay_to or "")
-        if self._allowed_recipients is not None and pay_to not in self._allowed_recipients:
+        if self._allowed_recipients is not None and not self._recipient_allowed(pay_to):
             self._note_policy("allowed_recipients", tool, chain, pay_to, amt)
             raise PolicyRejected(
                 f"'{tool}' would pay {pay_to or '<unknown>'} on {chain}, which is not "
@@ -1535,23 +1586,28 @@ class Session:
                 rule="max_per_call", chain=chain, pay_to=pay_to,
                 amount=_num(amt) if amt is not None else "",
             )
-        if self._approve_above is not None and amt is not None and amt > self._approve_above:
+        # Fails closed on an unparseable amount, like max_per_call above: a gate
+        # that waves through an amount it could not read is not a gate.
+        if self._approve_above is not None and (amt is None or amt > self._approve_above):
             approved = False
             if self._approver is not None:
                 try:
                     approved = bool(self._approver({
                         "tool": tool, "chain": chain, "pay_to": pay_to,
-                        "amount_usd": _num(amt), "threshold": _num(self._approve_above),
+                        "amount_usd": _num(amt) if amt is not None else "",
+                        "threshold": _num(self._approve_above),
                     }))
                 except Exception:
                     approved = False
             if not approved:
                 self._note_policy("approve_above", tool, chain, pay_to, amt)
                 raise ApprovalRequired(
-                    f"'{tool}' asks {_fmt(amt)} USD, above the session's approve_above "
-                    f"threshold of {_fmt(self._approve_above)} and not approved — "
-                    f"refusing to sign",
-                    chain=chain, pay_to=pay_to, amount=_num(amt),
+                    f"'{tool}' asks "
+                    f"{_fmt(amt) if amt is not None else 'an unparseable amount'} "
+                    f"USD, above the session's approve_above threshold of "
+                    f"{_fmt(self._approve_above)} and not approved — refusing to sign",
+                    chain=chain, pay_to=pay_to,
+                    amount=_num(amt) if amt is not None else "",
                 )
 
     def _note_policy(self, rule: str, tool: str, chain: str, pay_to: str, amt) -> None:
@@ -1785,7 +1841,15 @@ class Session:
                 if _is_base_settleable(n):
                     return "base"
                 if "stellar" in n:
-                    return "stellar"
+                    # The wallet's issuer and Horizon are fixed at construction,
+                    # so a mainnet wallet paying a "stellar-testnet" option would
+                    # send real USDC to an address expecting testnet — the seller
+                    # never sees it and it cannot be recovered. A bare "stellar"
+                    # means this wallet's own network.
+                    wants_test = "test" in n
+                    if wants_test == (self.wallet.network == "testnet") or n == "stellar":
+                        return "stellar"
+                    return None
                 return None
 
             candidates = []
@@ -1796,9 +1860,15 @@ class Session:
                 atomic = _x402_amount_atomic(a)
                 if atomic is None:
                     continue
+                # No recipient, nothing to pay: without this the option is
+                # selected, the hold is placed, and the first use of pay_to
+                # raises before anything can release it.
+                if not (a.get("payTo") or a.get("pay_to")):
+                    continue
                 can = bool(self.wallet.base_address) if kind_ == "base" else True  # any Stellar wallet can pay
                 candidates.append({
-                    "kind": kind_, "network": a.get("network", ""), "pay_to": a.get("payTo"),
+                    "kind": kind_, "network": a.get("network", ""),
+                    "pay_to": a.get("payTo") or a.get("pay_to"),
                     # Decimal, not float, for the USDC amount string.
                     "amount_atomic": atomic,
                     "amount_usdc": f"{Decimal(atomic) / Decimal('1000000'):.6f}",
@@ -1860,6 +1930,18 @@ class Session:
             # Spending rules against the option actually chosen, before the
             # hold and before any signing.
             self._pre_pay_check(tool=url, chain=kind, pay_to=pay_to, amount_usd=amount_usdc)
+
+            # A URL has no registry quote, so max_per_tool is checked here
+            # against what the 402 actually asks for. The floor check in
+            # _check_call_policies only blocks the call *after* the one that
+            # crosses the cap, which is no use when the crossing call is the
+            # 490x one.
+            _tool_cap = self._max_per_tool.get(url)
+            if _tool_cap is not None and Decimal(str(amount_usdc)) > _tool_cap:
+                raise BudgetExceeded(
+                    f"{url} asks ${float(amount_usdc):.4f}, over its max_per_tool "
+                    f"cap of {_fmt(_tool_cap)} — refusing to pay"
+                )
 
             # ── Budget check + atomic reservation ─────────────────────────────
             if not self._reserve(amount_usdc):
@@ -2148,6 +2230,7 @@ class Session:
         # Place an atomic budget hold before any funds can move. Even
         # if two threads both cleared would_exceed above, only one gets the
         # reservation; the loser fails closed rather than double-paying.
+        #
         if not self._reserve(price):
             raise BudgetExceeded(
                 f"'{target}' costs {_fmt(price)} but the remaining budget was "

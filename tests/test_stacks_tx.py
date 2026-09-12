@@ -463,3 +463,19 @@ class TestSatsFromUsd:
             sats_from_usd(Decimal("1"), Decimal("0"))
         with pytest.raises(ValueError):
             sats_from_usd(Decimal("-1"), Decimal("100000"))
+
+
+def test_keypair_repr_does_not_print_the_key():
+    """The keypair is a local in the signing frames, so anything that renders
+    locals — a crash reporter, a rich traceback, pytest --showlocals — would
+    otherwise ship the private key with the stack."""
+    from agentpay._stacks_tx import StacksKeypair
+
+    secret = "edf9aee84d9b7abc145504dde6726c64f369d37ee34ded868fabd876c26570bc01"
+    kp = StacksKeypair.from_secret(secret)
+
+    for text in (repr(kp), str(kp), f"{kp}", "{}".format(kp)):
+        assert secret[:16] not in text
+        assert kp.private_key.hex()[:16] not in text
+        assert "private_key" not in text
+    assert "compressed" in repr(kp)

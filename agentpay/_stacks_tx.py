@@ -266,14 +266,20 @@ def c32_decode(address: str) -> tuple[int, bytes]:
 # --- keys -------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class StacksKeypair:
     """secp256k1 keypair with the Stacks (c32) address derivations.
 
     `from_secret` must catch every underlying parse error and re-raise
     ValueError(_INVALID_KEY_MSG) — the secret never appears in any exception
-    text or log.
+    text or log. repr is written out for the same reason: a dataclass would
+    generate one that prints private_key, and this object is a local in the
+    signing frames, so anything that renders locals — a crash reporter, a rich
+    traceback, pytest --showlocals — would ship the key.
     """
+
+    def __repr__(self) -> str:
+        return f"StacksKeypair(compressed={self.compressed})"
 
     private_key: bytes  # 32 bytes
     compressed: bool = True  # Stacks convention: 64-hex raw → uncompressed,

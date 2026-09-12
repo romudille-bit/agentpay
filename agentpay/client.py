@@ -47,7 +47,12 @@ def faucet_wallet() -> AgentWallet:
 
     secret = data.get("secret_key") or data.get("secret")
     if not secret:
-        raise ValueError(f"Faucet returned unexpected response: {data}")
+        # The key names only: this response is the one that carries the wallet
+        # secret, and it reaches here precisely when the secret is under a name
+        # we didn't expect — so interpolating the body would print the key.
+        raise ValueError(
+            f"Faucet returned no recognised wallet secret (keys: {sorted(data)})"
+        )
 
     balance = data.get("usdc_balance", data.get("balance", "?"))
     print(f"✓ Testnet wallet funded: {balance} USDC")
@@ -146,7 +151,10 @@ def quickstart(
     w = data.get("wallet", {}) or {}
     minted_secret = w.get("secret_key")
     if not minted_secret:
-        raise ValueError(f"register returned no wallet secret: {data}")
+        # Key names only — see faucet_wallet: the body holds the secret.
+        raise ValueError(
+            f"register returned no wallet secret (wallet keys: {sorted(w)})"
+        )
 
     # Mint a Base/EVM key locally too (the default paid chain is Base, so a
     # Stellar-only minted wallet dead-ends at the first paid call). Client-side

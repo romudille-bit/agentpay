@@ -539,7 +539,12 @@ class AgentPayClient:
             try:
                 data = resp.json()
                 payment_id  = data["payment_id"]
-                amount_usdc = data["amount_usdc"]
+                # Coerced here, not at first use: every downstream comparison
+                # is Decimal arithmetic, and an unreadable amount raising
+                # InvalidOperation from the middle of the flow lands outside the
+                # module's PrePaymentError / PaymentFailed / BudgetExceeded
+                # taxonomy, so a caller's except clause misses it.
+                amount_usdc = Decimal(str(data["amount_usdc"]))
                 pay_to      = data["pay_to"]
             except Exception as e:
                 raise PrePaymentError(

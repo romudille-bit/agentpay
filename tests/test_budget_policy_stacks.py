@@ -302,3 +302,66 @@ class TestRulesAreRailAgnostic:
         assert ei.value.rule == "max_per_call"
         # $0 never gates, whatever the recipient.
         s._pre_pay_check(tool="t", chain="base", pay_to="0x" + "f" * 40, amount_usd="0")
+
+
+class TestAllowlistAddressForms:
+    """Exact where case is meaningful, case-insensitive where it is not.
+
+    Stellar G-addresses and Stacks c32 are base32/c32: two spellings are two
+    addresses. EVM is the exception — EIP-55 checksum casing is cosmetic, so
+    0xAbC… and 0xabc… are one recipient, and comparing them exactly rejected
+    every call for anyone who allowlisted the spelling their explorer showed.
+    """
+
+    EVM_LOWER = "0x" + "a" * 40
+    EVM_MIXED = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+    def test_checksummed_allowlist_accepts_a_lowercase_payee(self):
+        s = Session(_wallet(), GATEWAY, max_spend="0.05",
+                    allowed_recipients=[self.EVM_MIXED])
+        s._pre_pay_check(tool="t", chain="base", pay_to=self.EVM_LOWER,
+                         amount_usd="0.01")
+
+    def test_lowercase_allowlist_accepts_a_checksummed_payee(self):
+        s = Session(_wallet(), GATEWAY, max_spend="0.05",
+                    allowed_recipients=[self.EVM_LOWER])
+        s._pre_pay_check(tool="t", chain="base", pay_to=self.EVM_MIXED,
+                         amount_usd="0.01")
+
+    def test_a_different_evm_address_is_still_refused(self):
+        s = Session(_wallet(), GATEWAY, max_spend="0.05",
+                    allowed_recipients=[self.EVM_MIXED])
+        with pytest.raises(PolicyRejected):
+            s._pre_pay_check(tool="t", chain="base", pay_to="0x" + "b" * 40,
+                             amount_usd="0.01")
+
+    def test_case_insensitivity_does_not_leak_to_c32(self):
+        s = Session(_wallet(), GATEWAY, max_spend="0.05",
+                    allowed_recipients=[PAYEE])
+        with pytest.raises(PolicyRejected):
+            s._pre_pay_check(tool="t", chain="stacks", pay_to=PAYEE.lower(),
+                             amount_usd="0.01")
+
+
+class TestApprovalGateFailsClosed:
+
+    def test_unparseable_amount_needs_approval(self):
+        """A gate that waves through an amount it could not read is not a gate.
+        max_per_call already fails closed here; approve_above did not."""
+        asked = []
+
+        def approver(request):
+            asked.append(request)
+            return False
+
+        s = Session(_wallet(), GATEWAY, max_spend="0.05",
+                    approve_above="0.005", approver=approver)
+        with pytest.raises(ApprovalRequired):
+            s._pre_pay_check(tool="t", chain="stellar", pay_to="G" + "A" * 55,
+                             amount_usd="not a number")
+
+    def test_a_readable_amount_under_the_threshold_still_passes(self):
+        s = Session(_wallet(), GATEWAY, max_spend="0.05",
+                    approve_above="0.005", approver=lambda r: False)
+        s._pre_pay_check(tool="t", chain="stellar", pay_to="G" + "A" * 55,
+                         amount_usd="0.004")

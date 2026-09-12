@@ -462,6 +462,7 @@ from agentpay._wallet import (
     BudgetExceeded,
     PrePaymentError,
     Session,
+    UnsupportedChainPayment,
 )
 
 
@@ -746,9 +747,11 @@ class TestExternalUrlSpendRecording:
 
     URL = "https://ext.example/tool"
 
-    def _stellar_accepts(self):
+    def _stellar_accepts(self, network="stellar:testnet"):
+        # The stub wallet is testnet; its issuer and Horizon are fixed at
+        # construction, so the seller's network has to agree.
         return {"accepts": [{
-            "network": "stellar:pubnet", "amount": "1000",
+            "network": network, "amount": "1000",
             "payTo": "GEXTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "scheme": "exact",
         }]}
@@ -772,6 +775,59 @@ class TestExternalUrlSpendRecording:
         assert w.pay.call_count == 1
         assert s.spent_usd() == Decimal("0.001000")
         assert s.summary()["breakdown"][0]["state"] == "paid_no_result"
+
+    def test_stellar_option_on_another_network_is_not_paid(self):
+        """A wallet pays on its own network or not at all.
+
+        wallet.pay() broadcasts with the issuer and Horizon fixed when the
+        wallet was built, so a testnet wallet "paying" a pubnet seller sends
+        real value the seller never sees — unrecoverable, and booked as a spend.
+        """
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            respx.post(self.URL).mock(side_effect=[
+                httpx.Response(402, json=self._stellar_accepts("stellar:pubnet")),
+            ])
+            with pytest.raises(UnsupportedChainPayment):
+                s.call(self.URL, {"q": "x"})
+        assert w.pay.call_count == 0
+        assert s.spent_usd() == Decimal("0")
+        assert s.remaining_usd() == Decimal("1.00")
+
+    def test_per_tool_cap_binds_the_amount_the_402_asks_for(self):
+        """A URL has no registry quote, so the cap has to be checked against the
+        402 itself — the floor check alone only blocks the call after the one
+        that blew through it."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="5.00",
+                    max_per_tool={self.URL: "0.0005"})
+        with respx.mock:
+            respx.post(self.URL).mock(side_effect=[
+                httpx.Response(402, json=self._stellar_accepts()),
+            ])
+            with pytest.raises(BudgetExceeded):
+                s.call(self.URL, {"q": "x"})
+        assert w.pay.call_count == 0
+        assert s.spent_usd() == Decimal("0")
+        assert s.remaining_usd() == Decimal("5.00")
+
+    def test_option_without_a_recipient_leaks_no_budget(self):
+        """An option with no payTo is skipped at selection. It used to be
+        chosen, hold the budget, and then raise on the first use of pay_to —
+        with no release, so the headroom was gone for the session's life."""
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        no_recipient = {"accepts": [{"network": "stellar:testnet",
+                                     "amount": "1000", "scheme": "exact"}]}
+        with respx.mock:
+            respx.post(self.URL).mock(side_effect=[
+                httpx.Response(402, json=no_recipient),
+            ])
+            with pytest.raises(UnsupportedChainPayment):
+                s.call(self.URL, {"q": "x"})
+        assert w.pay.call_count == 0
+        assert s.remaining_usd() == Decimal("1.00")
 
     def test_external_base_rejection_still_counts_spend(self):
         w = _session_wallet()
@@ -1382,3 +1438,58 @@ class TestFallbackOptIn:
         w = _session_wallet()
         with pytest.raises(ValueError, match="fallback"):
             Session(w, gateway_url=GATEWAY, max_spend="1.00", fallback="on")
+
+
+class TestBaseAssetIsPinned:
+    """The Base leg signs for USDC or refuses.
+
+    Every USD bound in the SDK divides the atomic amount by 1e6, which is only
+    true for USDC. An EIP-3009-capable token with different decimals would be
+    signed for an amount the caller never saw and never approved.
+    """
+
+    BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+
+    def _wallet(self):
+        from stellar_sdk import Keypair as _KP
+
+        from agentpay._wallet import AgentWallet
+        w = AgentWallet(secret_key=_KP.random().secret, network="testnet",
+                        base_key="0x" + "11" * 32)
+        assert w.base_address, "the test needs a usable Base key"
+        return w
+
+    def _accept(self, asset=None, network="eip155:8453"):
+        a = {"amount": "1000", "payTo": "0x" + "c" * 40, "network": network,
+             "scheme": "exact"}
+        if asset is not None:
+            a["asset"] = asset
+        return a
+
+    def test_a_non_usdc_asset_is_refused(self):
+        w = self._wallet()
+        with pytest.raises(UnsupportedChainPayment) as ei:
+            w.build_base_payment_signature(
+                self._accept(asset="0x" + "d" * 40), "https://x.test/t")
+        assert "USDC" in str(ei.value)
+
+    def test_a_checksum_variant_of_usdc_is_accepted(self):
+        w = self._wallet()
+        # Signing succeeds, which is enough: the asset check sits before it.
+        header = w.build_base_payment_signature(
+            self._accept(asset=self.BASE_USDC.lower()), "https://x.test/t")
+        assert header
+
+    def test_the_pin_is_per_chain(self):
+        """Mainnet USDC is not sepolia USDC: the asset is pinned to the chain
+        being settled on, not to one global address."""
+        w = self._wallet()
+        with pytest.raises(UnsupportedChainPayment):
+            w.build_base_payment_signature(
+                self._accept(asset=self.BASE_USDC, network="eip155:84532"),
+                "https://x.test/t")
+        # ...and the chain's own USDC signs fine.
+        assert w.build_base_payment_signature(
+            self._accept(asset=self.BASE_SEPOLIA_USDC, network="eip155:84532"),
+            "https://x.test/t")
