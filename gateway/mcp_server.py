@@ -10,6 +10,7 @@ When Claude (or any MCP client) calls a tool, this server:
   4. Returns the data result
 
 Usage:
+    pip install -r gateway/requirements-mcp.txt
     python gateway/mcp_server.py
 
 Required env vars:
@@ -29,6 +30,15 @@ from stellar_sdk import Keypair, Server as StellarServer, Network, Asset, Transa
 import mcp.types as types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+
+# This server is written against the mcp 1.x decorator API (`Server.list_tools`
+# / `Server.call_tool`); the 2.x SDK replaced it. Fail with the fix rather
+# than an AttributeError at the first decorator.
+if not hasattr(Server, "list_tools"):
+    sys.exit(
+        "gateway/mcp_server.py needs the mcp 1.x SDK: "
+        "pip install -r gateway/requirements-mcp.txt  (mcp>=1.0,<2)"
+    )
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
