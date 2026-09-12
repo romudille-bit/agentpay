@@ -194,7 +194,10 @@ def probe_paid(session, cand: dict) -> dict:
     except ImportError:                       # older SDK without the typed class
         UnsupportedChainPayment = ()
 
-    price = cand.get("price_usd") or Decimal("0.01")
+    # An unknown catalogue price is assumed to be the ceiling, not a penny:
+    # guessing low here is what let an unpriced listing through the selection
+    # ceiling and into a paid probe.
+    price = cand.get("price_usd") or probe.DEFAULT_MAX_PROBE_USD
     if session.would_exceed(price):
         return _probe_row(cand, "paid", error="skipped: cap reached",
                           skipped=True, outcome="cap_reached")
@@ -392,7 +395,13 @@ def main() -> int:
         log(f"FATAL: Base wallet unavailable ({wallet.base_disabled_reason}) — "
             "PROBER_BASE_KEY must be the 0x… PRIVATE key (66 chars), not the address")
         return 1
-    s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend)
+    # max_per_call binds the amount the 402 actually demands, which is the only
+    # bound an external-URL leg has: there is no registry quote, so the ceiling
+    # checked at selection is a check against the *catalogue* price, and a
+    # candidate whose listed price didn't parse is checked against nothing at
+    # all. Without this one probe can answer its 402 with the whole run cap.
+    s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend,
+                max_per_call=str(max_probe))
     run_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     run_at_iso = datetime.now(timezone.utc).isoformat()
     log(f"run start {run_at} | wallet {wallet.base_address} | cap ${max_spend} | "

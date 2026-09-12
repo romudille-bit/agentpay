@@ -9,6 +9,7 @@ settle window is redeemed rather than dropped.
 
 import types
 
+import httpx
 import pytest
 
 from agentpay import PaymentFailed, RefundPending, SettlementUncertain
@@ -85,6 +86,13 @@ class TestRedeemUncertain:
     @pytest.mark.parametrize("exc", [
         SettlementUncertain("still unconfirmed", tx_hash="ab" * 32),
         PaymentFailed("aborted on-chain"),
+        # Redeem re-presents the tx over HTTP, so a transport error is an
+        # ordinary outcome. It runs inside `except SettlementUncertain`, where
+        # the loop's other handlers no longer apply — anything escaping kills
+        # the run after the money is spent.
+        httpx.ReadTimeout("redeem timed out"),
+        httpx.ConnectError("gateway unreachable"),
+        RuntimeError("something unforeseen"),
     ])
     def test_unfinished_or_refused_redeem_is_none_not_a_crash(self, exc):
         logs = []

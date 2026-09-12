@@ -543,6 +543,9 @@ class TestPaidCoverage:
         assert len(sel["t0"]) == 2      # still gets the free liveness check
 
     def test_unpriced_candidate_is_not_ceiling_blocked(self):
+        # It still earns a paid probe — the catalogue price is unknown, not
+        # known-expensive. What the 402 may then demand is bounded by the
+        # session's max_per_call, not by this selection step.
         ranked = {"n": [cand(url="https://x.com/t", pay_to="0x1")]}
         ranked["n"][0]["price_usd"] = None
         sel = probe.select_candidates(ranked, max_probe_usd=Decimal("0.05"))
@@ -871,6 +874,31 @@ class TestProbePaidClassification:
         assert row["skipped"] is True
         assert row["outcome"] == "unfilled_path_template"
         assert not hasattr(s, "called_url")      # no money was risked
+
+    def test_unknown_price_is_assumed_to_be_the_ceiling(self):
+        """An unpriced listing is charged against the budget at the ceiling.
+
+        Assuming a penny is what let an unpriced candidate clear both the
+        selection ceiling and the budget gate, and an external-URL 402 can then
+        ask for anything the session still has.
+        """
+        from decimal import Decimal as D
+        from agents.prober import run as prober_run
+        from agents.prober import probe as probe_mod
+
+        asked = []
+
+        class _Budget(self._Session):
+            def would_exceed(self, price):
+                asked.append(price)
+                return True
+
+        c = self._cand()
+        c["price_usd"] = None
+        row = prober_run.probe_paid(_Budget(result={"x": 1}), c)
+        assert asked == [probe_mod.DEFAULT_MAX_PROBE_USD]
+        assert asked[0] > D("0.01")
+        assert row["outcome"] == "cap_reached"
 
     def test_known_path_template_is_filled_before_paying(self):
         from agents.prober import run as prober_run

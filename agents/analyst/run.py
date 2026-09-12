@@ -495,6 +495,14 @@ def _redeem_uncertain(s, exc, log_fn=log, *, wait_s: float = 300.0):
     except PaymentFailed as e:          # SettlementUncertain is a PaymentFailed
         log_fn(f"redeem did not complete: {type(e).__name__}: {str(e)[:160]}")
         return None
+    except Exception as e:
+        # Redeem re-presents the tx over HTTP, so a transport error is a normal
+        # outcome here. This runs inside the caller's `except
+        # SettlementUncertain`, where the sibling handlers no longer apply — so
+        # anything escaping kills the run after the money is spent, losing the
+        # note, the receipt and every verdict already bought.
+        log_fn(f"redeem did not complete: {type(e).__name__}: {str(e)[:160]}")
+        return None
     return (out or {}).get("result") if isinstance(out, dict) else out
 
 
@@ -602,12 +610,27 @@ def main() -> int:
     if stacks_key:
         wallet_kw["stacks_key"] = stacks_key
     wallet = AgentWallet(**wallet_kw)
+    if not getattr(wallet, "base_address", None):
+        # Needed on both rails: keepalive and the CMC leg always settle on Base.
+        # Without this the run proceeds with an empty payer, every paid leg
+        # fails, and a free-only goal still exits 0 — so the cron reports
+        # success while the ledger records a run with no wallet.
+        log(f"FATAL: FLAGSHIP_BASE_KEY did not load a Base wallet "
+            f"({getattr(wallet, 'base_disabled_reason', 'unknown')}) — it must "
+            f"be the 0x… private key, not the address")
+        return 1
     if rail == "stacks" and not getattr(wallet, "stacks_address", None):
         log(f"FATAL: FLAGSHIP_STACKS_KEY set but the Stacks wallet did not load: "
             f"{getattr(wallet, 'stacks_disabled_reason', 'unknown')}")
         return 1
     session_kw = {"prefer_chain": "stacks"} if rail == "stacks" else {}
-    s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend, **session_kw)
+    # A per-leg ceiling, not just a run cap. Gateway legs are quoted from the
+    # registry, but the CMC leg is an external URL with no quote — it is gated
+    # here against a hardcoded price and would otherwise sign whatever its 402
+    # demands, up to everything left in the run cap.
+    max_per_leg = os.environ.get("FLAGSHIP_MAX_PER_LEG", "0.02")
+    s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend,
+                max_per_call=max_per_leg, **session_kw)
     payer = payer_address(wallet, rail)
     objective["rail"] = rail
     run_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

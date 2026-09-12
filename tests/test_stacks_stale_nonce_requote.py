@@ -111,3 +111,81 @@ def test_overcap_requote_refused():
                              chain_is_explicit=True)
     # Only the first quote was ever signed.
     assert wallet._seen == ["pid-A"]
+
+
+def test_requote_to_another_recipient_is_refused_by_the_rules():
+    """The spending rules bind the retry quote too, not only the cap.
+
+    A fresh 402 is a different offer: it can name another recipient and sit on
+    the other side of the approval threshold. One fabricated "bad nonce" reply
+    is all it takes to ask for one, so the rules run again before signing.
+    """
+    import pytest
+    from agentpay._wallet import Session, PolicyRejected
+
+    wallet = _stacks_wallet()
+    elsewhere = _402("pid-B")
+    elsewhere["pay_to"] = "ST2ELSEWHERE00000000000000000000000000000"
+    elsewhere["payment_options"]["stacks"]["pay_to"] = (
+        "ST2ELSEWHERE00000000000000000000000000000")
+
+    session = Session(wallet=wallet, gateway_url=GATEWAY, max_spend="1.00",
+                      allowed_recipients=[PAY_TO], prefer_chain="stacks")
+
+    with respx.mock:
+        respx.get(url__regex=r".*/extended/v1/tx/0x.*").mock(
+            return_value=httpx.Response(404))
+        respx.post(TOOL_URL).mock(side_effect=[
+            httpx.Response(402, json=_402("pid-A")),
+            httpx.Response(409, json={"payment_status": "rejected",
+                                      "error_reason": "broadcast rejected: bad nonce"}),
+            httpx.Response(402, json=elsewhere),
+        ])
+        client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)
+        with pytest.raises(PolicyRejected):
+            client.call_tool("token_price", {"symbol": "BTC"},
+                             max_spend="0.05", prefer_chain="stacks",
+                             chain_is_explicit=True,
+                             pre_pay_check=session._pre_pay_check)
+
+    # The allowlisted quote was signed; the substituted one never was.
+    assert wallet._seen == ["pid-A"]
+
+
+def test_requote_above_the_approval_threshold_asks_again():
+    """An amount over approve_above needs approval on the retry quote as well."""
+    import pytest
+    from agentpay._wallet import Session, ApprovalRequired
+
+    wallet = _stacks_wallet()
+    dearer = _402("pid-B")
+    dearer["amount_usdc"] = "0.02"
+    dearer["payment_options"]["stacks"]["amount_usdc"] = "0.02"
+    asked = []
+
+    def approver(request):
+        asked.append(request)
+        return False
+
+    session = Session(wallet=wallet, gateway_url=GATEWAY, max_spend="1.00",
+                      approve_above="0.015", approver=approver,
+                      prefer_chain="stacks")
+
+    with respx.mock:
+        respx.get(url__regex=r".*/extended/v1/tx/0x.*").mock(
+            return_value=httpx.Response(404))
+        respx.post(TOOL_URL).mock(side_effect=[
+            httpx.Response(402, json=_402("pid-A")),
+            httpx.Response(409, json={"payment_status": "rejected",
+                                      "error_reason": "broadcast rejected: bad nonce"}),
+            httpx.Response(402, json=dearer),
+        ])
+        client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)
+        with pytest.raises(ApprovalRequired):
+            client.call_tool("token_price", {"symbol": "BTC"},
+                             max_spend="0.05", prefer_chain="stacks",
+                             chain_is_explicit=True,
+                             pre_pay_check=session._pre_pay_check)
+
+    assert wallet._seen == ["pid-A"]
+    assert asked, "the approver was never consulted on the re-quote"

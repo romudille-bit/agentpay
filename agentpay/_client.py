@@ -287,6 +287,19 @@ class AgentPayClient:
                                     f"over the cap for this call ({max_spend} USD) "
                                     f"— refusing to sign"
                                 )
+                        # Re-run the spending rules against the new quote, not
+                        # just the cap. The fresh 402 is a different offer: it
+                        # can name another recipient and sit on the other side
+                        # of the approval threshold, and one "bad nonce" reply
+                        # is all it takes to ask for one.
+                        if pre_pay_check is not None:
+                            pre_pay_check(
+                                tool=tool_name,
+                                chain="stacks",
+                                pay_to=str(nstacks.get("pay_to")
+                                           or nstacks.get("payTo") or ""),
+                                amount_usd=amount_usd,
+                            )
                         built = self.wallet.build_stacks_payment(
                             stacks_opt, payment_id, url
                         )
