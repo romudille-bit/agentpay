@@ -106,6 +106,9 @@ async function fetchTools() {
   });
   if (!resp.ok) throw new Error(`GET /tools → ${resp.status}`);
   const data = await resp.json();
+  // Throw rather than cache a payload with no tools array: _tools is memoised
+  // for the process, so a bad response would otherwise poison every later list.
+  if (!Array.isArray(data.tools)) throw new Error('GET /tools returned no tools array');
   return data.tools;
 }
 
@@ -114,10 +117,27 @@ async function getTools() {
   return _tools;
 }
 
+/** The gateway's own `reason`, or nothing — never its raw body.
+ *
+ * A 5xx body can carry framework internals, and this text is returned to the
+ * MCP client. The full body goes to stderr instead, where the operator can see
+ * it and the model cannot.
+ */
+async function failureReason(resp) {
+  let text = '';
+  try { text = await resp.text(); } catch { /* body already consumed */ }
+  if (text) log(`AgentPay MCP: gateway ${resp.status} body: ${text.slice(0, 1000)}`);
+  try {
+    const reason = JSON.parse(text).reason;
+    if (typeof reason === 'string' && reason) return `: ${reason}`;
+  } catch { /* non-JSON body */ }
+  return '';
+}
+
 // ── x402 free-flow ────────────────────────────────────────────────────────────
 
 async function callTool(toolName, params) {
-  const url = `${GATEWAY_URL}/tools/${toolName}/call`;
+  const url = `${GATEWAY_URL}/tools/${encodeURIComponent(toolName)}/call`;
   const body = JSON.stringify({ parameters: params, agent_address: AGENT_ADDRESS });
   const baseHeaders = {
     'Content-Type': 'application/json',
@@ -139,8 +159,7 @@ async function callTool(toolName, params) {
   }
 
   if (r1.status !== 402) {
-    const text = await r1.text();
-    throw new Error(`Unexpected status ${r1.status}: ${text.slice(0, 300)}`);
+    throw new Error(`Unexpected status ${r1.status}${await failureReason(r1)}`);
   }
 
   const challenge = await r1.json();
@@ -178,8 +197,8 @@ async function callTool(toolName, params) {
   });
 
   if (!r2.ok) {
-    const text = await r2.text();
-    throw new Error(`Tool call failed after free proof: ${r2.status} ${text.slice(0, 300)}`);
+    throw new Error(
+      `Tool call failed after free proof: ${r2.status}${await failureReason(r2)}`);
   }
 
   const result = await r2.json();
@@ -192,11 +211,41 @@ async function callTool(toolName, params) {
 // off-chain, retry with PAYMENT-SIGNATURE ONLY (sending the same payload in
 // X-PAYMENT collides with the gateway's legacy Stellar X-Payment header and
 // gets rejected with 'Invalid X-Payment header format'). Nothing is broadcast
-// client-side — a rejected retry moves no USDC.
+// client-side, but the signed authorization is settleable by whoever receives
+// it for as long as it is valid, so the cap is charged before it is sent.
 
 async function settlePaid(toolName, url, body, baseHeaders, challenge) {
   const amountUsdc = challenge.amount_usdc;
-  const amountMicro = Math.round(parseFloat(amountUsdc) * 1_000_000);
+
+  const baseOpt = (challenge.payment_options || {}).base;
+  if (!baseOpt) {
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      `'${toolName}' offered no Base payment option — the MCP wallet settles on Base only. ` +
+      `Use the agentpay-x402 Python SDK for Stellar settlement.`,
+    );
+  }
+
+  // Charge the cap for the amount that will actually be signed. The headline
+  // amount_usdc is advisory; the Base option's atomic amount is what goes into
+  // the authorization, and AGENTPAY_GATEWAY_URL is overridable, so the two
+  // disagreeing is untrusted input rather than a rounding quirk.
+  const amountMicro = Number(baseOpt.amount_atomic ?? baseOpt.amount);
+  if (!Number.isFinite(amountMicro) || amountMicro <= 0) {
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      `'${toolName}' quoted an unreadable Base amount (${String(baseOpt.amount_atomic ?? baseOpt.amount)}) ` +
+      `— refusing to sign.`,
+    );
+  }
+  const headlineMicro = Math.round(parseFloat(amountUsdc) * 1_000_000);
+  if (!Number.isFinite(headlineMicro) || headlineMicro !== amountMicro) {
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      `'${toolName}' asks $${amountUsdc} but its Base option would sign for ` +
+      `${amountMicro} atomic units ($${(amountMicro / 1e6).toFixed(6)}) — refusing to sign.`,
+    );
+  }
 
   // Budget guard — refuse BEFORE signing anything.
   if (spentMicro + amountMicro > MAX_SPEND_MICRO) {
@@ -208,17 +257,14 @@ async function settlePaid(toolName, url, body, baseHeaders, challenge) {
     );
   }
 
-  const baseOpt = (challenge.payment_options || {}).base;
-  if (!baseOpt) {
-    throw new McpError(
-      ErrorCode.InvalidRequest,
-      `'${toolName}' offered no Base payment option — the MCP wallet settles on Base only. ` +
-      `Use the agentpay-x402 Python SDK for Stellar settlement.`,
-    );
-  }
-
   log(`AgentPay MCP: settling '${toolName}' on Base (EIP-3009, gasless) — $${amountUsdc} USDC`);
   const { header } = buildPaymentSignature(baseOpt, url, WALLET.key, WALLET.address);
+
+  // Book the spend at transmission, not on success: once the authorization
+  // leaves, the gateway's facilitator can settle it within validBefore whatever
+  // this request answers, so a timed-out or 5xx retry that went unbooked would
+  // let the cap be spent many times over.
+  spentMicro += amountMicro;
 
   const r2 = await fetch(url, {
     method: 'POST',
@@ -235,12 +281,15 @@ async function settlePaid(toolName, url, body, baseHeaders, challenge) {
     let reason = '';
     try { reason = (await r2.json()).reason || ''; } catch { /* non-JSON body */ }
     let msg = `Paid settle failed for '${toolName}' (${r2.status}${reason ? `: ${reason}` : ''}).`;
+    // The authorization was already transmitted, so the amount stays booked and
+    // the caller needs to know the cap moved without a result.
+    msg += ` $${(amountMicro / 1e6).toFixed(6).replace(/\.?0+$/, '')} stays counted against the ` +
+           `$${MAX_SPEND_USD} cap: the signed authorization is settleable until it expires.`;
     // Underfunded errors name the fundable address (matches the SDK's copy).
     msg += ` If the wallet is underfunded: ${fundingHint()}`;
     throw new Error(msg);
   }
 
-  spentMicro += amountMicro;
   const result = await r2.json();
   const tx = (result.payment || {}).tx_hash || r2.headers.get('x-tx-hash') || '';
   log(`AgentPay MCP: '${toolName}' settled${tx ? ` | tx ${tx.slice(0, 18)}…` : ''} | ` +
@@ -250,7 +299,8 @@ async function settlePaid(toolName, url, body, baseHeaders, challenge) {
 
 // ── Route tool — buyer-side x402 routing (MCP-2) ─────────────────────────────
 
-const BAZAAR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402/discovery/search';
+const BAZAAR_URL = (process.env.AGENTPAY_BAZAAR_URL
+  || 'https://api.cdp.coinbase.com/platform/v2/x402/discovery/search').replace(/\/$/, '');
 const DEFAULT_BUDGET = 0.01;
 
 // Known stub-factory payTo addresses (from 2026-06-03 competitor scan).
@@ -285,8 +335,16 @@ function discover(data) {
 
     const accepts = r.accepts || rd.accepts || [{}];
     const a = accepts[0] || {};
-    const amountRaw = parseInt(a.amount || '0', 10);
-    const priceUsd = isNaN(amountRaw) ? null : amountRaw / 1_000_000;
+    // Listings advertise either atomic units or an already-decimal USD figure.
+    // parseInt read "0.01" as 0, which priced a real paid tool at free and then
+    // ranked it first on the price tiebreak.
+    const amountRaw = Number(a.amount);
+    let priceUsd = null;
+    if (Number.isFinite(amountRaw) && amountRaw > 0) {
+      priceUsd = (Number.isInteger(amountRaw) && amountRaw >= 100)
+        ? amountRaw / 1_000_000
+        : amountRaw;
+    }
 
     const ext = ((r.extensions || rd.extensions || {}).bazaar) || {};
     const outSchema = a.outputSchema || ext?.info?.output || ext?.schema;
@@ -652,7 +710,18 @@ async function estimatePlanTool(steps, budget) {
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const tools = await getTools();
+  // An unreachable gateway must not take the three local tools with it:
+  // verified_route and route need only Bazaar, and estimate_plan degrades on its
+  // own. Returning an error here would leave the client with no tools at all.
+  let tools;
+  try {
+    tools = await getTools();
+  } catch (err) {
+    log(`AgentPay MCP: /tools unavailable (${err.message}) — listing the keyless tools only`);
+    return {
+      tools: [VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF],
+    };
+  }
 
   // Drop the gateway's PAID verified_route — it's superseded by the keyless
   // VERIFIED_ROUTE_TOOL_DEF preview below (otherwise the list has a duplicate
@@ -750,6 +819,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{ type: 'text', text: `AgentPay route error: ${err.message}` }],
         isError: true,
       };
+    }
+  }
+
+  // Resolve the name against the registry before it reaches a URL: an unknown
+  // name is a protocol error, not an AgentPay tool failure, and a name carrying
+  // path segments would be normalised into a POST at a different gateway path.
+  try {
+    const known = await getTools();
+    if (!known.some((t) => t.name === name)) {
+      throw new McpError(ErrorCode.MethodNotFound, `Unknown tool '${name}'`);
+    }
+  } catch (err) {
+    if (err instanceof McpError) throw err;
+    // The registry is unreachable; a well-formed name may still be callable.
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      throw new McpError(ErrorCode.MethodNotFound, `Unknown tool '${name}'`);
     }
   }
 
