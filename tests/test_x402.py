@@ -334,6 +334,8 @@ class TestVerifyAndFulfill:
             f"id={challenge.payment_id}"
         )
         result = await verify_and_fulfill(
+            expected_tools=("token_price", "tool"),
+            expected_price_usdc="0.001",
             payment_header=proof,
             agent_address="GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGEN",
         )
@@ -387,6 +389,8 @@ class TestVerifyAndFulfill:
             f"id={challenge.payment_id}"
         )
         result = await verify_and_fulfill(
+            expected_tools=("token_price", "tool"),
+            expected_price_usdc="0.001",
             payment_header=proof,
             agent_address="GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGEN",
         )
@@ -427,6 +431,8 @@ class TestVerifyAndFulfill:
             f"id={challenge.payment_id}"
         )
         result = await verify_and_fulfill(
+            expected_tools=("token_price", "tool"),
+            expected_price_usdc="0.000",
             payment_header=proof,
             agent_address="GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGEN",
         )
@@ -453,6 +459,8 @@ class TestVerifyAndFulfill:
             f"id={challenge.payment_id}"
         )
         result = await verify_and_fulfill(
+            expected_tools=("token_price", "tool"),
+            expected_price_usdc="0.001",
             payment_header=proof,
             agent_address="GAGENT",
         )
@@ -508,7 +516,8 @@ class TestVerifyAndFulfill:
 
         proof = f"tx_hash=hash_from_supabase,from=GAGENT,id={payment_id}"
         result = await verify_and_fulfill(
-            payment_header=proof, agent_address="GAGENT"
+            payment_header=proof, agent_address="GAGENT",
+            expected_tools=("token_price",), expected_price_usdc="0.001",
         )
         assert result["authorized"] is True
         assert result["challenge"]["tool_name"] == "token_price"
@@ -538,7 +547,8 @@ class TestVerifyAndFulfill:
 
         proof = f"tx_hash=fallbackhash,from=GAGENT,id={challenge.payment_id}"
         result = await verify_and_fulfill(
-            payment_header=proof, agent_address="GAGENT"
+            payment_header=proof, agent_address="GAGENT",
+            expected_tools=("token_price",), expected_price_usdc="0.001",
         )
         assert result["authorized"] is True
         # Confirms the fallback path served the request
@@ -571,7 +581,8 @@ class TestVerifyAndFulfill:
 
         proof = f"tx_hash=brandnew_hash,from=GAGENT,id={challenge.payment_id}"
         result = await verify_and_fulfill(
-            payment_header=proof, agent_address="GAGENT"
+            payment_header=proof, agent_address="GAGENT",
+            expected_tools=("token_price",), expected_price_usdc="0.001",
         )
         assert result["authorized"] is False
         assert "replay" in result["reason"].lower()
@@ -600,6 +611,8 @@ class TestVerifyAndFulfill:
             f"id={challenge.payment_id}"
         )
         result = await verify_and_fulfill(
+            expected_tools=("token_price", "tool"),
+            expected_price_usdc="0.001",
             payment_header=proof,
             agent_address="GAGENT",
         )
@@ -638,7 +651,9 @@ class TestVerifyAndFulfill:
         proof = f"tx_hash=blip123,from={agent},id={challenge.payment_id}"
 
         # Attempt 1: store blip → rejected, retryable reason, NOT "replay".
-        r1 = await verify_and_fulfill(payment_header=proof, agent_address=agent)
+        r1 = await verify_and_fulfill(payment_header=proof, agent_address=agent,
+                                      expected_tools=("token_price", "tool"),
+                                      expected_price_usdc="0.001")
         assert r1["authorized"] is False
         assert "replay_check_unavailable" in r1["reason"]
         assert "replay attack" not in r1["reason"]
@@ -646,7 +661,9 @@ class TestVerifyAndFulfill:
         # Attempt 2 with the SAME proof: store back → authorized. This is
         # the release-the-in-memory-claim half: without the discard, the
         # retry would bounce off _completed_payments forever.
-        r2 = await verify_and_fulfill(payment_header=proof, agent_address=agent)
+        r2 = await verify_and_fulfill(payment_header=proof, agent_address=agent,
+                                      expected_tools=("token_price", "tool"),
+                                      expected_price_usdc="0.001")
         assert r2["authorized"] is True
         assert r2["tx_hash"] == "blip123"
 
@@ -691,11 +708,117 @@ class TestVerifyAndFulfill:
         agent = "GAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGENTAGEN"
         proof = f"tx_hash=halfhash1,from={agent},id={challenge.payment_id}"
 
-        r1 = await verify_and_fulfill(payment_header=proof, agent_address=agent)
+        r1 = await verify_and_fulfill(payment_header=proof, agent_address=agent,
+                                      expected_tools=("token_price", "tool"),
+                                      expected_price_usdc="0.001")
         assert r1["authorized"] is False
         assert "replay_check_unavailable" in r1["reason"]
         assert durable_tx == set()          # the half-consume was rolled back
 
-        r2 = await verify_and_fulfill(payment_header=proof, agent_address=agent)
+        r2 = await verify_and_fulfill(payment_header=proof, agent_address=agent,
+                                      expected_tools=("token_price", "tool"),
+                                      expected_price_usdc="0.001")
         assert r2["authorized"] is True     # same proof, clean retry
         assert r2["tx_hash"] == "halfhash1"
+
+
+class TestChallengeResourceBinding:
+    """A challenge authorizes the resource it was issued for, and nothing else.
+
+    The challenge is looked up by the id the caller hands over, and the amount
+    verified on-chain is the amount recorded on that challenge. So without a
+    binding to the resource being called, a cheap challenge buys an expensive
+    tool — and a $0 challenge, which skips on-chain verification entirely, buys
+    any tool for nothing. The Stacks settle enforces the same two invariants.
+    """
+
+    @pytest.fixture
+    def no_onchain(self, monkeypatch, mock_settings):
+        """verify_payment must not be reached; calling it fails the test."""
+        import gateway.x402 as x402_mod
+        calls = {"verify_payment": 0}
+
+        async def fake_verify_payment(**kwargs):
+            calls["verify_payment"] += 1
+            return {"verified": True, "reason": "ok"}
+
+        async def ok(*a, **k):
+            return True
+
+        async def noop(*a, **k):
+            return None
+
+        monkeypatch.setattr(x402_mod, "verify_payment", fake_verify_payment)
+        monkeypatch.setattr(x402_mod, "split_payment", ok)
+        monkeypatch.setattr(x402_mod.sb, "record_payment_id", ok)
+        monkeypatch.setattr(x402_mod.sb, "record_tx_hash", ok)
+        monkeypatch.setattr(x402_mod.sb, "delete_pending_challenge", noop)
+        monkeypatch.setattr(x402_mod.sb, "store_pending_challenge", noop)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_challenge_for_another_tool_is_refused(self, no_onchain, mock_settings):
+        challenge = issue_payment_challenge("token_price", "0.01", "GDEV", {})
+        proof = f"tx_hash=sometx,from=GAGENT,id={challenge.payment_id}"
+
+        result = await verify_and_fulfill(
+            payment_header=proof, agent_address="GAGENT",
+            expected_tools=("pre_trade_check",), expected_price_usdc="0.01",
+        )
+        assert result["authorized"] is False
+        assert result["reason"] == "challenge_tool_mismatch"
+        assert no_onchain["verify_payment"] == 0
+        # Refused before the consume, so the proof is still spendable on the
+        # tool it was actually issued for.
+        assert challenge.payment_id in _pending_challenges
+
+    @pytest.mark.asyncio
+    async def test_free_challenge_does_not_buy_a_priced_tool(self, no_onchain, mock_settings):
+        """The path that skips verification must be unreachable when priced."""
+        challenge = issue_payment_challenge("token_price", "0.000", "GDEV", {})
+        proof = f"tx_hash=free:{challenge.payment_id},from=GAGENT,id={challenge.payment_id}"
+
+        result = await verify_and_fulfill(
+            payment_header=proof, agent_address="GAGENT",
+            expected_tools=("token_price",), expected_price_usdc="0.01",
+        )
+        assert result["authorized"] is False
+        assert result["reason"] == "challenge_amount_mismatch"
+        assert no_onchain["verify_payment"] == 0
+
+    @pytest.mark.asyncio
+    async def test_cheap_challenge_does_not_buy_an_expensive_tool(self, no_onchain, mock_settings):
+        challenge = issue_payment_challenge("token_price", "0.001", "GDEV", {})
+        proof = f"tx_hash=sometx2,from=GAGENT,id={challenge.payment_id}"
+
+        result = await verify_and_fulfill(
+            payment_header=proof, agent_address="GAGENT",
+            expected_tools=("token_price",), expected_price_usdc="0.05",
+        )
+        assert result["authorized"] is False
+        assert result["reason"] == "challenge_amount_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_matching_resource_still_authorizes(self, no_onchain, mock_settings):
+        challenge = issue_payment_challenge("token_price", "0.01", "GDEV", {})
+        proof = f"tx_hash=goodtx,from=GAGENT,id={challenge.payment_id}"
+
+        result = await verify_and_fulfill(
+            payment_header=proof, agent_address="GAGENT",
+            expected_tools=("token_price", "price"), expected_price_usdc="0.01",
+        )
+        assert result["authorized"] is True
+        assert no_onchain["verify_payment"] == 1
+
+    @pytest.mark.asyncio
+    async def test_alias_name_is_accepted(self, no_onchain, mock_settings):
+        """A challenge records whichever name the caller used, so both the
+        canonical name and the alias have to satisfy the binding."""
+        challenge = issue_payment_challenge("price", "0.01", "GDEV", {})
+        proof = f"tx_hash=aliastx,from=GAGENT,id={challenge.payment_id}"
+
+        result = await verify_and_fulfill(
+            payment_header=proof, agent_address="GAGENT",
+            expected_tools=("token_price", "price"), expected_price_usdc="0.01",
+        )
+        assert result["authorized"] is True

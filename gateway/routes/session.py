@@ -445,7 +445,11 @@ async def create_session(
 
         agent_short = (agent_address or "unknown")[:8]
         logger.info(f"[SESSION] agent={agent_short}... verifying Stellar X-Payment")
-        auth = await verify_and_fulfill(payment_header=x_payment, agent_address=agent_address)
+        auth = await verify_and_fulfill(
+            payment_header=x_payment, agent_address=agent_address,
+            expected_tools=(SESSION_TOOL_NAME,),
+            expected_price_usdc=SESSION_PRICE_USDC,
+        )
 
         if not auth["authorized"]:
             parsed = parse_payment_header(x_payment) or {}

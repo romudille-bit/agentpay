@@ -361,6 +361,7 @@ async def verify_base_tx(
     required_amount_atomic: int,
     pay_to: str,
     rpc_url: str,
+    usdc_contract: str,
 ) -> dict:
     """
     Mode B settlement: verify an already-broadcast USDC transferWithAuthorization.
@@ -368,6 +369,12 @@ async def verify_base_tx(
     Calls eth_getTransactionReceipt via JSON-RPC and checks that:
       - tx succeeded (status == 0x1)
       - USDC contract emitted a Transfer(from=payer, to=pay_to, value>=required)
+
+    usdc_contract is the asset the 402 asked for, and a log is only considered
+    when it was emitted by that address. Any contract can emit an event with the
+    Transfer topic, so without this check a worthless self-minted token settles
+    a real invoice for the cost of gas. The uncertain-settle recovery scan and
+    radar_settle.parse_settled_log pin the emitter the same way.
 
     Returns same shape as settle_base_payment():
         {"success": bool, "tx_hash": str, "payer": str, "network": str, "reason": str}
@@ -412,8 +419,15 @@ async def verify_base_tx(
     # Scan logs for USDC Transfer event matching our requirements
     payer_padded   = "0x" + payer.lower().lstrip("0x").zfill(64)
     pay_to_padded  = "0x" + pay_to.lower().lstrip("0x").zfill(64)
+    asset_expected = (usdc_contract or "").lower()
+    if not asset_expected:
+        return {"success": False, "tx_hash": tx_hash, "payer": payer, "network": "",
+                "reason": "asset_not_configured"}
 
     for log in receipt.get("logs", []):
+        # Emitter first: the topic alone says nothing about which token moved.
+        if (log.get("address") or "").lower() != asset_expected:
+            continue
         topics = log.get("topics", [])
         if len(topics) < 3:
             continue
@@ -423,9 +437,16 @@ async def verify_base_tx(
             continue
         if topics[2].lower() != pay_to_padded:
             continue
-        # Decode value from data field (uint256, 32 bytes = 64 hex chars)
-        raw_data = log.get("data", "0x").lstrip("0x")
-        transferred = int(raw_data.zfill(64), 16)
+        # Decode value from data field (uint256, 32 bytes = 64 hex chars).
+        # Read exactly one word: a longer data field is not a bigger uint256,
+        # and reading it whole would turn padding into value.
+        raw_data = log.get("data", "0x").removeprefix("0x")[:64]
+        if not raw_data:
+            continue
+        try:
+            transferred = int(raw_data.zfill(64), 16)
+        except ValueError:
+            continue
         if transferred < required_amount_atomic:
             return {
                 "success": False, "tx_hash": tx_hash, "payer": payer, "network": "",
@@ -646,6 +667,7 @@ async def _recover_uncertain_settle(
                         tx_hash=tx_hash, payer=payer,
                         required_amount_atomic=required_amount_atomic,
                         pay_to=pay_to, rpc_url=rpc_url,
+                        usdc_contract=usdc_contract,
                     )
                     if not verified.get("success"):
                         continue
@@ -738,6 +760,7 @@ async def settle_base_payment(
             required_amount_atomic = int(payment_requirements.get("amount", "0")),
             pay_to               = payment_requirements.get("payTo", ""),
             rpc_url              = rpc_url,
+            usdc_contract        = payment_requirements.get("asset", ""),
         )
         if result["success"]:
             # Atomic consume: closes the TOCTOU on the replay pre-check.
@@ -899,6 +922,32 @@ async def settle_base_payment(
                 "success": False, "tx_hash": tx, "payer": payer, "network": "",
                 "reason": "cdp_missing_network",
             }
+
+        # Consume the settled hash, exactly as Mode B and the recovery scan do.
+        # CDP's single-use authorization nonce stops the *authorization* being
+        # replayed, but it leaves the resulting on-chain Transfer unconsumed —
+        # and that transfer is public, so anyone reading the gateway's inbound
+        # USDC history could present it as a Mode B proof (which is bound only
+        # by payer/pay_to/amount plus this consume) and be served for free.
+        if tx in _used_base_tx_hashes:
+            return {"success": False, "tx_hash": tx, "payer": payer,
+                    "network": network, "reason": "replay_attack"}
+        _used_base_tx_hashes.add(tx)
+        recorded = await sb.record_tx_hash(tx, _network_label(network))
+        if recorded is False:
+            return {"success": False, "tx_hash": tx, "payer": payer,
+                    "network": network, "reason": "replay_attack"}
+        if recorded is None:
+            # Fail closed, same as Mode B: the in-memory set dies on restart,
+            # so an unconfirmed durable consume would make this settlement
+            # replayable. Release the hold so the retry works once the store
+            # is back. The authorization itself is spent either way, so this
+            # rejection is retryable, not a replay accusation.
+            _used_base_tx_hashes.discard(tx)
+            return {"success": False, "tx_hash": tx, "payer": payer,
+                    "network": network,
+                    "reason": ("replay_check_unavailable: durable replay "
+                               "store unreachable — retry the same proof")}
 
         return {
             "success": True,

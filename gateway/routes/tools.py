@@ -978,9 +978,15 @@ async def _record_rejected_attempt(
 
 
 async def _settle_stellar(
-    tool_name: str, x_payment: str, agent_address: Optional[str],
+    tool, resolved: str, tool_name: str, x_payment: str,
+    agent_address: Optional[str],
 ) -> Union[dict, JSONResponse]:
     """X-Payment header → verify the Stellar payment.
+
+    `tool` is the resource being called, after demo pricing — its price is what
+    the challenge must have been issued for, so the same object that built the
+    402 has to reach the settle. Both the canonical name and the requested
+    alias are accepted, since a challenge records whichever name was used.
 
     Returns the auth dict on success, or a JSONResponse (402) on rejection.
     """
@@ -989,7 +995,11 @@ async def _settle_stellar(
 
     agent_short = (agent_address or "unknown")[:8]
     logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... verifying X-Payment header")
-    auth = await verify_and_fulfill(payment_header=x_payment, agent_address=agent_address)
+    auth = await verify_and_fulfill(
+        payment_header=x_payment, agent_address=agent_address,
+        expected_tools=(tool.name, resolved, tool_name),
+        expected_price_usdc=str(tool.price_usdc or "0"),
+    )
     if not auth["authorized"]:
         status = "REPLAY_ATTACK" if "replay" in auth["reason"].lower() else "FAILED"
         logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status={status} reason={auth['reason']}")
@@ -1001,12 +1011,11 @@ async def _settle_stellar(
         # unless the reason marks scanner noise.
         rejected_pid = (parse_payment_header(x_payment) or {}).get("id")
         if rejected_pid:
-            _t = registry.get_tool(tool_name)
             await _record_rejected_attempt(
                 rejected_pid, auth["reason"],
                 tool_name=tool_name,
                 network=f"stellar-{settings.STELLAR_NETWORK}",
-                amount_usdc=str(getattr(_t, "price_usdc", "0") or "0"),
+                amount_usdc=str(tool.price_usdc or "0"),
                 agent_address=agent_address,
             )
 
@@ -1641,7 +1650,7 @@ async def call_tool(
         )
 
     if x_payment:
-        auth = await _settle_stellar(tool_name, x_payment, agent_address)
+        auth = await _settle_stellar(tool, resolved, tool_name, x_payment, agent_address)
         if isinstance(auth, JSONResponse):
             return auth
         parsed = parse_payment_header(x_payment) or {}

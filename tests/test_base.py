@@ -241,13 +241,20 @@ def _mode_b_signature_header(tx_hash: str, payer: str) -> str:
 
 TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 RPC_URL = "https://rpc.test.invalid"
+USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+OTHER_TOKEN = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
 
-def _receipt(transferred: int) -> dict:
-    """eth_getTransactionReceipt result with one matching USDC Transfer log."""
+def _receipt(transferred: int, emitter: str = USDC) -> dict:
+    """eth_getTransactionReceipt result with one matching Transfer log.
+
+    `emitter` is the contract that logged it — the field that decides whether
+    real USDC moved or some other token did.
+    """
     return {
         "status": "0x1",
         "logs": [{
+            "address": emitter,
             "topics": [
                 TRANSFER_SIG,
                 "0x" + VALID_PAYER.lower().lstrip("0x").zfill(64),
@@ -262,13 +269,15 @@ class TestVerifyBaseTxOverpayment:
     """Overpayments > 2x required verify but carry an `overpaid` flag,
     mirroring the Stellar path."""
 
-    async def _run(self, transferred: int, required: int) -> dict:
+    async def _run(self, transferred: int, required: int,
+                   emitter: str = USDC, asset: str = USDC) -> dict:
         from gateway.base import verify_base_tx
         with respx.mock:
             respx.post(RPC_URL).mock(
                 return_value=httpx.Response(
                     200,
-                    json={"jsonrpc": "2.0", "id": 1, "result": _receipt(transferred)},
+                    json={"jsonrpc": "2.0", "id": 1,
+                          "result": _receipt(transferred, emitter)},
                 )
             )
             return await verify_base_tx(
@@ -277,6 +286,7 @@ class TestVerifyBaseTxOverpayment:
                 required_amount_atomic=required,
                 pay_to=PAYTO,
                 rpc_url=RPC_URL,
+                usdc_contract=asset,
             )
 
     @pytest.mark.asyncio
@@ -806,3 +816,111 @@ class TestNonceBoundRecovery:
             result = await settle_base_payment(
                 self._mode_a_header_with_nonce(), _payment_requirements(), rpc_url=RPC_URL_R)
         assert result["success"] is False
+
+
+class TestVerifyBaseTxAssetProvenance:
+    """A Transfer log only counts when the asset the 402 named emitted it.
+
+    Any contract can log an event with the Transfer topic, so a token the payer
+    minted themselves would otherwise settle a real invoice for the cost of gas.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transfer_from_another_contract_is_not_payment(self):
+        result = await TestVerifyBaseTxOverpayment()._run(
+            transferred=1_000, required=1_000, emitter=OTHER_TOKEN,
+        )
+        assert result["success"] is False
+        assert result["reason"] == "no_matching_transfer_event"
+
+    @pytest.mark.asyncio
+    async def test_emitter_comparison_ignores_checksum_casing(self):
+        result = await TestVerifyBaseTxOverpayment()._run(
+            transferred=1_000, required=1_000,
+            emitter=USDC.lower(), asset=USDC.upper().replace("0X", "0x"),
+        )
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_asset_refuses_rather_than_matching_anything(self):
+        result = await TestVerifyBaseTxOverpayment()._run(
+            transferred=1_000, required=1_000, asset="",
+        )
+        assert result["success"] is False
+        assert result["reason"] == "asset_not_configured"
+
+class TestModeAConsumesItsTxHash:
+    """A settled Mode A hash is spent, on the durable store and in memory.
+
+    CDP's authorization nonce stops the authorization being replayed, but the
+    resulting Transfer is public on-chain, and Mode B accepts a raw hash bound
+    only by payer/pay_to/amount plus the replay consume. Without this, every
+    payment the gateway has ever received could be presented once as a Mode B
+    proof by anyone reading the chain.
+    """
+
+    @staticmethod
+    def _settle_ok():
+        return respx.post(f"{CDP_URL}/settle").mock(
+            return_value=httpx.Response(200, json={
+                "success": True,
+                "transaction": VALID_TX_HASH,
+                "payer": VALID_PAYER,
+                "network": VALID_NETWORK,
+            })
+        )
+
+    @pytest.mark.asyncio
+    async def test_hash_is_consumed_and_not_settleable_twice(self, monkeypatch):
+        import gateway.base as base_mod
+        base_mod._used_base_tx_hashes.discard(VALID_TX_HASH)
+        recorded = []
+
+        async def fake_record(tx_hash, network):
+            if tx_hash in recorded:
+                return False          # composite-PK conflict
+            recorded.append(tx_hash)
+            return True
+
+        monkeypatch.setattr(base_mod.sb, "record_tx_hash", fake_record)
+
+        with respx.mock:
+            self._settle_ok()
+            first = await settle_base_payment(
+                _mode_a_signature_header(), _payment_requirements(),
+            )
+        assert first["success"] is True
+        assert recorded == [VALID_TX_HASH]
+
+        # The same authorization settling again (a retry CDP also honours)
+        # must not produce a second delivery.
+        with respx.mock:
+            self._settle_ok()
+            second = await settle_base_payment(
+                _mode_a_signature_header(), _payment_requirements(),
+            )
+        assert second["success"] is False
+        assert second["reason"] == "replay_attack"
+        base_mod._used_base_tx_hashes.discard(VALID_TX_HASH)
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_durable_consume_fails_closed_and_is_retryable(
+        self, monkeypatch,
+    ):
+        import gateway.base as base_mod
+        base_mod._used_base_tx_hashes.discard(VALID_TX_HASH)
+
+        async def blip(tx_hash, network):
+            return None
+
+        monkeypatch.setattr(base_mod.sb, "record_tx_hash", blip)
+
+        with respx.mock:
+            self._settle_ok()
+            result = await settle_base_payment(
+                _mode_a_signature_header(), _payment_requirements(),
+            )
+        assert result["success"] is False
+        assert "replay_check_unavailable" in result["reason"]
+        # The in-memory hold was released, so the same proof retries cleanly.
+        assert VALID_TX_HASH not in base_mod._used_base_tx_hashes

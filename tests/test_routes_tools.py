@@ -36,7 +36,13 @@ def patch_route_verify(monkeypatch):
     """
     state = {"behavior": "authorize"}
 
-    async def fake_verify_and_fulfill(payment_header, agent_address):
+    async def fake_verify_and_fulfill(payment_header, agent_address,
+                                      expected_tools=None,
+                                      expected_price_usdc=None):
+        # The route must name the resource it is settling for; record it so
+        # a test can assert the challenge binding reaches x402.
+        state["expected_tools"] = expected_tools
+        state["expected_price_usdc"] = expected_price_usdc
         from gateway.x402 import parse_payment_header
         parsed = parse_payment_header(payment_header) or {}
         if state["behavior"] == "authorize":

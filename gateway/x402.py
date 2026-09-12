@@ -274,9 +274,20 @@ def parse_payment_header(header_value: str) -> Optional[dict]:
 async def verify_and_fulfill(
     payment_header: str,
     agent_address: str,
+    *,
+    expected_tools: tuple,
+    expected_price_usdc: str,
 ) -> dict:
     """
     Verify a payment and authorize tool execution.
+
+    expected_tools / expected_price_usdc describe the resource being called
+    right now. Both are required, not optional: the challenge is looked up by
+    the caller-supplied id, so without them a challenge issued for one
+    resource authorizes any other — and the amount checked below is the
+    challenge's, which makes a cheap or $0 challenge a way to buy an
+    expensive tool. A caller that cannot name the resource has nothing to
+    bind the payment to.
 
     Returns:
         {"authorized": True, "challenge": {...}} on success
@@ -297,6 +308,21 @@ async def verify_and_fulfill(
     challenge_data = await _lookup_challenge(payment_id)
     if not challenge_data:
         return {"authorized": False, "reason": "Payment ID not found or expired"}
+
+    # Bind the challenge to the resource being called, before anything else
+    # trusts what the challenge says. The Stacks path enforces the same two
+    # invariants at its own settle. Alias names resolve to the same tool, so
+    # expected_tools carries every name this resource answers to.
+    ch_tool = challenge_data.get("tool_name")
+    if ch_tool and ch_tool not in expected_tools:
+        return {"authorized": False, "reason": "challenge_tool_mismatch"}
+    try:
+        ch_amount = Decimal(str(challenge_data["amount_usdc"]))
+        want_amount = Decimal(str(expected_price_usdc))
+    except (InvalidOperation, ValueError, TypeError, KeyError):
+        return {"authorized": False, "reason": "challenge_amount_unparseable"}
+    if ch_amount != want_amount:
+        return {"authorized": False, "reason": "challenge_amount_mismatch"}
 
     # Check expiry. We re-check here even though sb.get_pending_challenge
     # already filters server-side, because the in-memory fallback path
@@ -320,10 +346,12 @@ async def verify_and_fulfill(
     # challenge still goes through expiry + replay checks above and is consumed
     # below, so the lifecycle (pending → payment_done) and replay protection
     # are preserved for analytics.
-    try:
-        _is_free = Decimal(str(challenge_data["amount_usdc"])) == 0
-    except (InvalidOperation, ValueError, TypeError):
-        _is_free = False
+    #
+    # The test reads the price of the resource being called, not the amount on
+    # the challenge: this branch skips verification entirely, so it must never
+    # be reachable on a priced resource. (The equality check above already
+    # ties the two together; this keeps the skip correct on its own terms.)
+    _is_free = want_amount == 0 and ch_amount == 0
 
     if _is_free:
         result = {"verified": True, "reason": "free_tool"}
