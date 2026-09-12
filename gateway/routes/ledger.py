@@ -355,6 +355,49 @@ def group_runs(rows: list[dict], run_cap: str = "0.25") -> dict:
     }
 
 
+def drop_unattested_runs(data: dict) -> int:
+    """Remove run clusters that nothing but a declared address vouches for.
+
+    A paid leg is verified at settle time on all three rails, and a run whose
+    reasoning came through the secret-gated ingest is attested by whoever holds
+    the ingest secret. A cluster with neither — only free rows, no meta — rests
+    entirely on `agent_address`, which a caller supplies and which the free path
+    does not verify. Since clustering is by time alone, one such row timestamped
+    away from a real run used to publish itself as a whole new run, moving
+    totals.runs, free_calls and the timeline under outside control.
+
+    This is the read-side guard. The durable fix is a column recording the payer
+    the settle path actually verified, so the ledger stops joining on a declared
+    address at all.
+
+    Mutates `data` in place (runs and totals) and returns the number dropped.
+    Call after attach_reasoning and before anything consumes the run list.
+    """
+    keep, dropped = [], 0
+    for run in data.get("runs", []):
+        if run.get("paid_calls") or run.get("reasoning"):
+            keep.append(run)
+            continue
+        dropped += 1
+    if not dropped:
+        return 0
+
+    logger.warning(
+        f"[ledger] dropped {dropped} unattested free-only run cluster(s): "
+        f"no paid leg and no ingest-attested reasoning"
+    )
+    data["runs"] = keep
+    totals = data.setdefault("totals", {})
+    totals["runs"] = len(keep)
+    totals["free_calls"] = sum(len(r.get("free_calls") or []) for r in keep)
+    totals["paid_calls"] = sum(len(r.get("paid_calls") or []) for r in keep)
+    spent = sum(_dec(r.get("spent_usdc")) for r in keep)
+    totals["spent_usdc"] = f"{spent:.2f}"
+    # started/ended are formatted strings on the output runs, newest first.
+    totals["first_run"] = keep[-1].get("started") if keep else None
+    totals["last_run"] = keep[0].get("ended") if keep else None
+    return dropped
+
 def attach_reasoning(runs: list[dict], metas: list[dict]) -> int:
     """Attach flagship run metadata (plan, regime, verdicts, receipt, …) to the
     grouped run whose [started, ended] window (±5 min) contains the meta's
@@ -824,6 +867,8 @@ async def ledger_json(request: Request):
     data = group_runs(rows, run_cap=settings.LEDGER_RUN_CAP_USDC)
     metas = await fetch_flagship_runs()
     data["runs_with_reasoning"] = attach_reasoning(data["runs"], metas)
+    # Publish only what something other than a declared address vouches for.
+    data["unattested_runs_dropped"] = drop_unattested_runs(data)
     # The authoritative, consumable multiset of legs AgentPay actually settled
     # through the gateway — keyed on (tx_hash_lower, amount). Receipt-derived
     # views (reconcile/synthesize) match each paid leg against this and consume

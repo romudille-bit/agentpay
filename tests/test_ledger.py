@@ -770,3 +770,66 @@ def test_ledger_json_names_the_stacks_payer(monkeypatch):
         "stacks": "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",
     }
     ledger._invalidate_ledger_cache()
+
+
+class TestUnattestedRunsAreNotPublished:
+    """A run cluster needs something other than a declared address behind it.
+
+    Clustering is by time alone and the free path does not verify the payer, so
+    a single row declaring the flagship's published address — which anyone can
+    send — used to publish itself as a whole new run on /ledger and /ledger.json.
+    """
+
+    @staticmethod
+    def _row(at, amount="0.000", tool="crypto_news", tx=None):
+        r = {"state": "payment_done", "created_at": at, "tool_name": tool,
+             "amount_usdc": amount, "network": "base-mainnet"}
+        if tx:
+            r["tx_hash"] = tx
+        return r
+
+    def test_free_only_cluster_without_reasoning_is_dropped(self):
+        # Two clusters, hours apart: one real (paid leg), one injected (free).
+        rows = [
+            self._row("2026-09-12T13:00:00+00:00", "0.010", "pre_trade_check", "0xaa"),
+            self._row("2026-09-12T13:01:00+00:00"),
+            self._row("2026-09-12T19:00:00+00:00"),      # the injected row
+        ]
+        data = ledger.group_runs(rows, run_cap="0.25")
+        assert data["totals"]["runs"] == 2      # clustering still sees both
+
+        dropped = ledger.drop_unattested_runs(data)
+        assert dropped == 1
+        assert data["totals"]["runs"] == 1
+        assert data["totals"]["free_calls"] == 1     # only the real run's free leg
+        assert data["totals"]["paid_calls"] == 1
+        assert data["totals"]["spent_usdc"] == "0.01"
+
+    def test_free_only_cluster_with_attested_reasoning_is_kept(self):
+        """A free-only goal is a real run — its reasoning came through the
+        secret-gated ingest, which is what vouches for it."""
+        rows = [
+            self._row("2026-09-12T13:00:00+00:00"),
+            self._row("2026-09-12T13:02:00+00:00"),
+        ]
+        data = ledger.group_runs(rows, run_cap="0.25")
+        data["runs"][0]["reasoning"] = {"run_at": "2026-09-12T13:00:00+00:00",
+                                        "kind": "regime_brief"}
+        assert ledger.drop_unattested_runs(data) == 0
+        assert data["totals"]["runs"] == 1
+        assert data["totals"]["free_calls"] == 2
+
+    def test_paid_cluster_needs_no_reasoning(self):
+        """A paid leg was verified at settle time on every rail."""
+        rows = [self._row("2026-09-12T13:00:00+00:00", "0.010",
+                          "pre_trade_check", "0xbb")]
+        data = ledger.group_runs(rows, run_cap="0.25")
+        assert ledger.drop_unattested_runs(data) == 0
+        assert data["totals"]["runs"] == 1
+
+    def test_nothing_to_drop_leaves_totals_untouched(self):
+        rows = [self._row("2026-09-12T13:00:00+00:00", "0.010", "x", "0xcc")]
+        data = ledger.group_runs(rows, run_cap="0.25")
+        before = dict(data["totals"])
+        assert ledger.drop_unattested_runs(data) == 0
+        assert data["totals"] == before
