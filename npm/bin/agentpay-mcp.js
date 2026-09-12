@@ -729,6 +729,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   const gatewayTools = tools.filter((t) => t.name !== 'verified_route').map((t) => {
     let description = t.description ?? '';
     if (t.use_when) description += `\n\nUse when: ${t.use_when}`;
+    if (t.avoid_when) description += `\nNot for: ${t.avoid_when}`;
     if (t.returns) description += `\nReturns: ${t.returns}`;
     if (t.response_example) {
       description += `\nExample response: ${JSON.stringify(t.response_example)}`;

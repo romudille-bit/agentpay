@@ -1374,6 +1374,40 @@ class TestHydrationEndpointFallback:
             reload_tools(snapshot)
 
     @pytest.mark.asyncio
+    async def test_seed_tool_contract_wins_over_stale_supabase_copy(self, monkeypatch):
+        """A house tool's description and parameter schema are versioned with
+        the code; a Supabase row holding an older copy (parameters without
+        descriptions, a parameter missing) must not be what /tools serves."""
+        import gateway.main as main_module
+        import gateway.services.supabase as sb_module
+        from gateway.main import _hydrate_tools_from_supabase
+        from registry import get_tool, list_tools, reload_tools
+        from registry.registry import _TOOLS as _SEED
+
+        monkeypatch.setattr(main_module, "settings", sb_module.settings)
+        snapshot = list(list_tools())
+        rows = [
+            {"name": "yield_scanner", "endpoint": "", "price_usdc": "0", "active": True,
+             "description": "old copy",
+             "parameters": {"type": "object", "required": ["token"], "properties": {
+                 "token": {"type": "string"}, "chain": {"type": "string", "default": ""}}}},
+            {"name": "dune_query", "endpoint": "", "price_usdc": "0", "active": True,
+             "parameters": {"type": "object", "properties": {"query_id": {"type": "integer"}}}},
+        ]
+        try:
+            with respx.mock:
+                respx.get(f"{SB}/rest/v1/tools").mock(return_value=httpx.Response(200, json=rows))
+                await _hydrate_tools_from_supabase()
+            ys = get_tool("yield_scanner")
+            assert ys.description == _SEED["yield_scanner"].description
+            assert ys.parameters["properties"]["chain"]["description"]
+            assert ys.parameters["properties"]["min_tvl"]["description"]
+            assert ys.avoid_when == _SEED["yield_scanner"].avoid_when != ""
+            assert "fast_only" in get_tool("dune_query").parameters["properties"]
+        finally:
+            reload_tools(snapshot)
+
+    @pytest.mark.asyncio
     async def test_startup_warning_names_tools_with_blank_fields(
             self, monkeypatch, caplog):
         """AGE-107 invariant: if a blank discovery field ever survives the

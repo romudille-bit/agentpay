@@ -3,6 +3,6 @@
 # gateway's requirements.txt; installing both pulls pydantic/uvicorn versions
 # fastapi 0.115 rejects. The decorator API the server uses exists in mcp 1.x
 # only (2.x replaced it), hence the upper bound.
-mcp>=1.0,<2
+mcp>=1.8,<2
 stellar-sdk>=10.0.0
 httpx>=0.27.0

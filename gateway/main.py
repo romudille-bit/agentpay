@@ -466,6 +466,7 @@ async def _hydrate_tools_from_supabase() -> None:
                 total_calls=r.get("total_calls", 0),
                 triggers=r.get("triggers", []),
                 use_when=r.get("use_when", ""),
+                avoid_when=r.get("avoid_when", ""),
                 returns=r.get("returns", ""),
                 response_example=r.get("response_example"),
             )
@@ -488,9 +489,16 @@ async def _hydrate_tools_from_supabase() -> None:
             seed = _SEED[t.name]
             # The seed price wins — Supabase may be stale after a pricing change
             t.price_usdc = seed.price_usdc
+            # The seed's tool contract wins too: description and parameter
+            # schema are what every client (SDK, MCP, directories) shows and
+            # scores, and they are versioned with the code that implements
+            # them. A Supabase row keeps only the operational columns.
+            if seed.description:            t.description = seed.description
+            if seed.parameters:             t.parameters = seed.parameters
             if t.response_example is None: t.response_example = seed.response_example
             if not t.triggers:              t.triggers = seed.triggers
             if not t.use_when:              t.use_when = seed.use_when
+            if not t.avoid_when:            t.avoid_when = seed.avoid_when
             if not t.returns:               t.returns = seed.returns
             # The endpoint is the one discovery field a buyer can't
             # reconstruct: path shapes vary (/v1/session/create, not

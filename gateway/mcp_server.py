@@ -37,7 +37,7 @@ from mcp.server.stdio import stdio_server
 if not hasattr(Server, "list_tools"):
     sys.exit(
         "gateway/mcp_server.py needs the mcp 1.x SDK: "
-        "pip install -r gateway/requirements-mcp.txt  (mcp>=1.0,<2)"
+        "pip install -r gateway/requirements-mcp.txt  (mcp>=1.8,<2)"
     )
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -247,25 +247,54 @@ async def list_tools() -> list[types.Tool]:
 
     mcp_tools = []
     for t in _TOOLS:
+        paid = _is_paid(t.get("price_usdc"))
         desc = t["description"]
         if t.get("use_when"):
             desc += f"\n\nUse when: {t['use_when']}"
+        if t.get("avoid_when"):
+            desc += f"\nNot for: {t['avoid_when']}"
         if t.get("returns"):
             desc += f"\nReturns: {t['returns']}"
         if t.get("response_example"):
             import json as _json
             desc += f"\nExample response: {_json.dumps(t['response_example'])}"
-        desc += f"\n\nPrice: ${t['price_usdc']} USDC per call"
+        if paid:
+            desc += (
+                f"\n\nPrice: ${t['price_usdc']} USDC per call — settles on-chain from "
+                f"the wallet in STELLAR_SECRET_KEY (funded mainnet Stellar account "
+                f"required); not read-only. Live public data, no other API key."
+            )
+        else:
+            desc += (
+                "\n\nPrice: free. Read-only live public data; no API key, nothing "
+                "signed or spent. Fails with an error message on an unknown "
+                "symbol or an unreachable upstream source."
+            )
 
         input_schema = t.get("parameters") or {"type": "object", "properties": {}}
+        title = " ".join(w.capitalize() for w in t["name"].split("_"))
 
         mcp_tools.append(types.Tool(
             name=t["name"],
             description=desc,
             inputSchema=input_schema,
+            annotations=types.ToolAnnotations(
+                title=title,
+                readOnlyHint=not paid,
+                destructiveHint=False,
+                idempotentHint=not paid,
+                openWorldHint=True,
+            ),
         ))
 
     return mcp_tools
+
+
+def _is_paid(price) -> bool:
+    try:
+        return float(price or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 @server.call_tool()
