@@ -551,3 +551,79 @@ def test_fetch_own_tool_receipts_serves_stale_cache_on_error(monkeypatch):
         assert asyncio.run(supabase.fetch_own_tool_receipts()) == cached
     finally:
         supabase._receipts_cache_clear()
+
+
+# ── unbounded-growth and per-request-cost guards ──────────────────────────────
+
+def test_service_scores_are_cached_between_requests(monkeypatch):
+    """Every caller of fetch_service_scores is a public route, and the /s/ pages
+    are crawler-facing — so an uncached full-table read means one read per
+    crawled URL."""
+    from gateway.services import supabase
+
+    supabase._scores_cache_clear()
+    calls = {"n": 0}
+
+    async def counting_fetch():
+        calls["n"] += 1
+        return {"https://svc.example/x": {"resource_url": "https://svc.example/x"}}
+
+    # Drive the cache through the real function with a stubbed transport layer.
+    monkeypatch.setattr(supabase, "sb_enabled", lambda: True)
+
+    import httpx as _httpx
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            calls["n"] += 1
+            return [{"resource_url": "https://svc.example/x", "name": "x"}]
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **kw):
+            return _Resp()
+
+    monkeypatch.setattr(_httpx, "AsyncClient", lambda *a, **kw: _Client())
+
+    import asyncio
+    first = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        supabase.fetch_service_scores())
+    assert first and calls["n"] == 1
+    second = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        supabase.fetch_service_scores())
+    assert second == first
+    assert calls["n"] == 1, "the second read should have been served from cache"
+    supabase._scores_cache_clear()
+
+
+def test_plan_estimate_rejects_an_oversize_step_list():
+    """The estimate loop is synchronous inside an async handler and scans the
+    registry per priced step, so an unbounded list from one request blocks the
+    event loop and every concurrent settle waits behind it."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from gateway.routes import plan
+
+    app = FastAPI()
+    app.state.limiter = None
+    app.include_router(plan.router)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    ok = client.post("/v1/plan/estimate",
+                     json={"steps": [{"tool": "token_price"}]})
+    assert ok.status_code in (200, 422, 500)   # shape, not pricing, is the point
+
+    too_many = client.post(
+        "/v1/plan/estimate",
+        json={"steps": [{"tool": "token_price"} for _ in range(plan._MAX_PLAN_STEPS + 1)]},
+    )
+    assert too_many.status_code == 422

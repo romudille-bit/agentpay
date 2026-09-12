@@ -45,6 +45,18 @@ def is_search_crawler(user_agent: str) -> bool:
     """True for search/social/AI-answer crawlers that index pages."""
     return bool(user_agent) and bool(_CRAWLER_RE.search(user_agent))
 
+def _ld_json(obj) -> str:
+    """JSON for a <script type="application/ld+json"> block.
+
+    The "</" sequence is neutralised because an HTML parser ends the script at
+    the first "</script>" wherever it appears, including inside a JSON string —
+    so tool text carrying it would break out of the block. Tool name and
+    description come from the registry table, which validates a name only on
+    the register route.
+    """
+    return _json.dumps(obj, indent=1).replace("</", "<\\/")
+
+
 _CSS = """
   :root{--bg:#0a0a0b;--card:#131316;--line:#1f1f24;--fg:#e8e8e8;--mut:#8a8a92;--ac:#5eead4;--price:#4ade80}
   *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
@@ -157,7 +169,7 @@ def render_tool_page(tool: Tool, gateway_url: str) -> str:
     use_when_html = (f"<h2>When agents use this</h2><p>{_e(tool.use_when)}</p>"
                      if tool.use_when else "")
 
-    json_ld = _json.dumps({
+    json_ld = _ld_json({
         "@context": "https://schema.org",
         "@type": "WebAPI",
         "name": tool.name,
@@ -172,7 +184,7 @@ def render_tool_page(tool: Tool, gateway_url: str) -> str:
                    "description": ("Free — no API key or wallet required"
                                    if free else
                                    f"{price} per call, settled via the x402 protocol")},
-    }, indent=1)
+    })
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -225,7 +237,7 @@ def render_tools_index(tools: list[Tool], gateway_url: str) -> str:
         f'<span class="d">{_e(t.description)}</span></li>'
         for t in active
     )
-    json_ld = _json.dumps({
+    json_ld = _ld_json({
         "@context": "https://schema.org",
         "@type": "ItemList",
         "name": "AgentPay tools",

@@ -2019,19 +2019,39 @@ async def fetch_own_tool_receipts() -> list[dict]:
         return _receipts_cache["rows"] or []
 
 
+_SCORES_TTL_SECONDS = 120
+_SCORES_MAX_ROWS = 5000
+_scores_cache: dict = {"at": 0.0, "rows": None}
+
+
+def _scores_cache_clear() -> None:
+    _scores_cache["at"], _scores_cache["rows"] = 0.0, None
+
+
 async def fetch_service_scores() -> dict[str, dict]:
     """SELECT all score rows keyed by resource_url — the input dict decide()
     joins on. {} on error/disabled/missing (decide() then treats every
-    service as unprobed = neutral factor 1.0)."""
+    service as unprobed = neutral factor 1.0).
+
+    Cached 2 min, like fetch_own_tool_receipts, and row-capped. Every caller is
+    a public route — /scores.json, /probes, each /s/ page, the sitemap — and the
+    /s/ pages are deliberately crawler-facing, so an uncached full-table read
+    per request means one read per crawled URL. The rows are a rolling 30-day
+    score, so two minutes of staleness costs nothing."""
     if not sb_enabled():
         return {}
+    import time as _time
+    now = _time.monotonic()
+    if _scores_cache["rows"] is not None and now - _scores_cache["at"] < _SCORES_TTL_SECONDS:
+        return _scores_cache["rows"]
     try:
         async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
             async def _get(cols):
                 return await client.get(
                     f"{settings.SUPABASE_URL}/rest/v1/service_scores",
                     headers={**sb_headers(), "Accept": "application/json"},
-                    params={"select": ",".join(cols) + ",updated_at"},
+                    params={"select": ",".join(cols) + ",updated_at",
+                            "limit": str(_SCORES_MAX_ROWS)},
                 )
             resp = await _get(_SCORE_COLUMNS)
             if resp.status_code == 400 and any(
@@ -2040,11 +2060,15 @@ async def fetch_service_scores() -> dict[str, dict]:
         if resp.status_code != 200:
             if resp.status_code != 404:
                 logger.error(f"fetch_service_scores error: HTTP {resp.status_code}")
-            return {}
-        return {r["resource_url"]: r for r in resp.json() if r.get("resource_url")}
+            # Serve the last good snapshot rather than telling every caller the
+            # whole catalogue is unprobed.
+            return _scores_cache["rows"] or {}
+        rows = {r["resource_url"]: r for r in resp.json() if r.get("resource_url")}
+        _scores_cache["at"], _scores_cache["rows"] = now, rows
+        return rows
     except Exception as e:
         logger.error(f"fetch_service_scores failure: {e}")
-        return {}
+        return _scores_cache["rows"] or {}
 
 
 async def mark_refund_failed(payment_id: str, error_reason: str) -> None:

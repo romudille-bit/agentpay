@@ -410,7 +410,8 @@ def render_landing(tools: list[Tool], gateway_url: str) -> str:
 
     tools_rows = "\n".join(
         f'    <li>'
-        f'<span class="tool-name"><a href="{gateway_url}/tools/{t.name}">{t.name}</a></span>'
+        f'<span class="tool-name"><a href="{gateway_url}/tools/{_escape(t.name)}">'
+        f'{_escape(t.name)}</a></span>'
         f'<span class="tool-price">{_price_label(t.price_usdc)}</span>'
         f'<span class="tool-desc">{_escape(t.description)}</span>'
         f'</li>'

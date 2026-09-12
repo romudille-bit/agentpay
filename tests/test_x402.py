@@ -451,7 +451,7 @@ class TestVerifyAndFulfill:
         writes for replay attempts."""
         challenge = issue_payment_challenge("token_price", "0.001", "GDEV", {})
         # Pre-seed _completed_payments to simulate a tx that was already used
-        _completed_payments.add("already_used_hash")
+        _completed_payments["already_used_hash"] = None
 
         proof = (
             f"tx_hash=already_used_hash,"
@@ -822,3 +822,22 @@ class TestChallengeResourceBinding:
             expected_tools=("token_price", "price"), expected_price_usdc="0.01",
         )
         assert result["authorized"] is True
+
+
+def test_completed_payments_is_bounded(monkeypatch):
+    """The key is whatever tx_hash a caller's header carried, and free proofs
+    are unauthenticated, so an unbounded store is a memory-growth path anyone
+    can drive. The durable replay tables are the authoritative gate, so
+    evicting the oldest entries costs nothing."""
+    import gateway.x402 as x402_mod
+
+    monkeypatch.setattr(x402_mod, "_COMPLETED_PAYMENTS_MAX", 10)
+    x402_mod._completed_payments.clear()
+    for i in range(50):
+        x402_mod._remember_payment(f"tx-{i}")
+
+    assert len(x402_mod._completed_payments) == 10
+    # Newest kept, oldest evicted.
+    assert "tx-49" in x402_mod._completed_payments
+    assert "tx-0" not in x402_mod._completed_payments
+    x402_mod._completed_payments.clear()

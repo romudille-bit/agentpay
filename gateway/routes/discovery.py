@@ -152,8 +152,17 @@ _RADAR_CHAINS: dict[str, tuple[str, str]] = {
 }
 
 # In-memory consume of verified radar txs (Supabase replay_tx_hashes is the
-# durable layer, keyed network=radar-<chain>).
-_consumed_radar_txs: set[str] = set()
+# durable layer, keyed network=radar-<chain>). Insertion-ordered and bounded:
+# the key comes from an unauthenticated request body, so an unbounded set grows
+# on demand; the durable table is what actually holds the consume.
+_consumed_radar_txs: dict[str, None] = {}
+_CONSUMED_RADAR_MAX = 20_000
+
+
+def _remember_radar_tx(key: str) -> None:
+    _consumed_radar_txs[key] = None
+    while len(_consumed_radar_txs) > _CONSUMED_RADAR_MAX:
+        _consumed_radar_txs.pop(next(iter(_consumed_radar_txs)))
 
 
 class RadarVerifyRequest(BaseModel):
@@ -200,6 +209,16 @@ async def radar_verify(body: RadarVerifyRequest, request: Request):
         required_atomic = int(usdc_to_atomic(body.amount_usdc))
     except Exception:
         raise HTTPException(status_code=422, detail=f"unparseable amount_usdc {body.amount_usdc!r}")
+    # The amount comes from the request, and the parser's "total >= required"
+    # check is vacuous at zero — any Settled event from the contract would
+    # verify, and success permanently consumes the tx_hash, which is a real
+    # payer's one shot at verifying it. Until the amount is read from
+    # gateway-issued state rather than the body, a non-positive one is refused.
+    if required_atomic <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="amount_usdc must be greater than zero to verify a settlement",
+        )
 
     result = await verify_radar_settlement(
         tx_hash=tx_hash,
@@ -216,14 +235,14 @@ async def radar_verify(body: RadarVerifyRequest, request: Request):
         # check-and-add, then awaited durable insert (409 = lost the race).
         if tx_hash in _consumed_radar_txs:
             return {"success": False, "reason": "already_verified (replay)", "tx_hash": tx_hash}
-        _consumed_radar_txs.add(tx_hash)
+        _remember_radar_tx(tx_hash)
         recorded = await sb.record_tx_hash(tx_hash, network_label)
         if recorded is False:
             return {"success": False, "reason": "already_verified (replay)", "tx_hash": tx_hash}
         if recorded is None:
             # AGE-60 fail-closed: durable consume unconfirmed — reject
             # retryably and release the in-memory hold.
-            _consumed_radar_txs.discard(tx_hash)
+            _consumed_radar_txs.pop(tx_hash, None)
             return {"success": False, "tx_hash": tx_hash,
                     "reason": ("replay_check_unavailable: durable replay store "
                                "unreachable — retry the same tx_hash")}

@@ -35,6 +35,19 @@ _FAUCET_IP_LOG: dict[str, float] = {}
 _FAUCET_COOLDOWN_SECS = 600  # 10 minutes — lets devs iterate, still stops farms
 
 
+def _prune_faucet_log(now: float) -> None:
+    """Drop entries past the cooldown window.
+
+    The map is keyed on caller IP and only exists to answer "was this IP here
+    within the window", so an older entry is dead weight — and without pruning
+    the map grows for the life of the process.
+    """
+    stale = [ip for ip, seen in _FAUCET_IP_LOG.items()
+             if now - seen >= _FAUCET_COOLDOWN_SECS]
+    for ip in stale:
+        _FAUCET_IP_LOG.pop(ip, None)
+
+
 async def _provision_wallet(base_url: str) -> dict:
     """
     Create and fund a fresh Stellar testnet wallet with XLM + 0.05 USDC.
@@ -205,6 +218,7 @@ async def faucet_json(request: Request):
     # err on the side of slightly tighter rate limiting.
     client_ip = request.client.host if request.client else "unknown"
     now = _time.time()
+    _prune_faucet_log(now)
 
     on_cooldown = False
     if sb.sb_enabled():

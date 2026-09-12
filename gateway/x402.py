@@ -150,7 +150,21 @@ async def _is_replay(payment_id: str, tx_hash: str, network: str) -> bool:
 # In-memory store of pending payment challenges
 # In production: use Redis or Supabase
 _pending_challenges: dict[str, dict] = {}
-_completed_payments: set[str] = set()  # prevent replay attacks
+
+# Replay guard for proofs consumed in this process. Insertion-ordered and
+# bounded, like _used_stacks_txids: the key is whatever tx_hash the caller's
+# header carried, and free proofs are unauthenticated, so an unbounded set is a
+# memory-growth path anyone can drive. The durable replay tables are the
+# authoritative gate, so evicting the oldest entries is safe — this only has to
+# cover a restart-free window.
+_completed_payments: dict[str, None] = {}
+_COMPLETED_PAYMENTS_MAX = 50_000
+
+
+def _remember_payment(tx_hash: str) -> None:
+    _completed_payments[tx_hash] = None
+    while len(_completed_payments) > _COMPLETED_PAYMENTS_MAX:
+        _completed_payments.pop(next(iter(_completed_payments)))
 
 
 @dataclass
@@ -386,7 +400,7 @@ async def verify_and_fulfill(
     #      few-ms cost buys correctness.
     if tx_hash in _completed_payments:
         return {"authorized": False, "reason": "Payment already used (replay attack)"}
-    _completed_payments.add(tx_hash)
+    _remember_payment(tx_hash)
 
     # The two durable inserts are not atomic. Attempt the second only when
     # the first is confirmed-new — otherwise an
@@ -419,7 +433,7 @@ async def verify_and_fulfill(
         # cleanly instead of false-positive rejecting as a replay.
         if tx_recorded is True:
             await sb.unrecord_tx_hash(tx_hash, network_label)
-        _completed_payments.discard(tx_hash)
+        _completed_payments.pop(tx_hash, None)
         return {
             "authorized": False,
             "reason": ("replay_check_unavailable: durable replay store "

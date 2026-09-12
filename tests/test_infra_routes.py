@@ -43,3 +43,13 @@ def test_health_reports_status_and_commit():
     body = _client().get("/health").json()
     assert body["status"] == "ok"
     assert "commit" in body
+
+
+def test_stats_recent_activity_is_capped_at_ten():
+    for i in range(15):
+        append_transaction({
+            "tool": f"t{i}", "amount_usdc": "0.01",
+            "agent": "0x" + "f" * 40, "tx_hash": "0x" + "0" * 64, "success": True,
+        })
+    body = _client().get("/stats").json()
+    assert len(body["recent_transactions"]) <= 10

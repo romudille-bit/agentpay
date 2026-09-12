@@ -364,6 +364,7 @@ async def _hydrate_replay_state_from_supabase() -> None:
     # Lazy imports so we don't create module-level cycles
     from gateway.x402 import (
         _completed_payments,
+        _remember_payment,
         _pending_challenges,
         _normalize_supabase_challenge,
     )
@@ -385,7 +386,7 @@ async def _hydrate_replay_state_from_supabase() -> None:
                 for row in r.json():
                     pid = row.get("payment_id")
                     if pid:
-                        _completed_payments.add(pid)
+                        _remember_payment(pid)
 
             # replay_tx_hashes — last hour, split by network prefix into
             # the two in-memory dedupe stores
@@ -405,7 +406,7 @@ async def _hydrate_replay_state_from_supabase() -> None:
                     else:
                         # stellar-mainnet / stellar-testnet → _completed_payments
                         # (also covers unknown prefixes defensively)
-                        _completed_payments.add(tx)
+                        _remember_payment(tx)
 
             # pending_challenges — non-expired only
             r = await client.get(

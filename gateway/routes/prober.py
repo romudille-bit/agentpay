@@ -56,6 +56,19 @@ def service_slug(url: str) -> str:
     return f"{base}-{tail}"
 
 
+# slug → resource_url for one scores snapshot. Keyed on the snapshot's identity
+# so it rebuilds when fetch_service_scores serves a new one and not otherwise.
+_slug_index_cache: dict = {"key": None, "index": {}}
+
+
+def _slug_index(scores: dict) -> dict[str, str]:
+    key = (id(scores), len(scores))
+    if _slug_index_cache["key"] != key:
+        _slug_index_cache["key"] = key
+        _slug_index_cache["index"] = {service_slug(u): u for u in scores}
+    return _slug_index_cache["index"]
+
+
 def service_has_probe_data(row: dict) -> bool:
     """True when a service_scores row carries actual probe evidence — the
     /s/ page for it says something unique (a delivery rate, real paid-probe
@@ -418,11 +431,12 @@ async def service_page(slug: str):
     from gateway.services.supabase import fetch_service_scores
 
     scores = await fetch_service_scores()
-    row, url = None, None
-    for u, r in scores.items():
-        if service_slug(u) == slug:
-            row, url = r, u
-            break
+    # Index once per snapshot rather than hashing every resource_url on every
+    # request: these pages are crawler-facing, so a crawl walks one /s/ URL per
+    # scored service and each walk would otherwise re-hash the whole table.
+    index = _slug_index(scores)
+    url = index.get(slug)
+    row = scores.get(url) if url else None
     if row is None:
         raise HTTPException(status_code=404, detail="Unknown service")
 

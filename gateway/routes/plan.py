@@ -32,8 +32,17 @@ class PlanStep(BaseModel):
     params: dict = Field(default_factory=dict)
 
 
+# A plan is something an agent is about to run, so a few dozen steps is the
+# real shape. The bound matters because the estimate loop is synchronous inside
+# an async handler and scans the registry per priced step: an unbounded list
+# from one unauthenticated request blocks the event loop, and every concurrent
+# payment settle waits behind it. Pydantic rejects an oversize list before the
+# handler runs.
+_MAX_PLAN_STEPS = 100
+
+
 class PlanEstimateRequest(BaseModel):
-    steps: list[PlanStep]
+    steps: list[PlanStep] = Field(..., max_length=_MAX_PLAN_STEPS)
     budget: Optional[str] = None   # USDC, e.g. "0.10"; omit for cost-only
 
 

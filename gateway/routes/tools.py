@@ -943,13 +943,26 @@ async def _issue_402(
     return JSONResponse(status_code=402, content=body_content, headers=headers)
 
 
-# Rejection reasons that carry no analytics value: the payment_id doesn't
-# correspond to any known challenge (scanner garbage / long-expired probe) or
-# the header never parsed. Recording these per-event would only generate
-# bot write churn.
+# Rejection reasons that carry no analytics value, so no row is written for
+# them. Two kinds: the payment_id doesn't correspond to any known challenge
+# (scanner garbage / long-expired probe) or the header never parsed; and a
+# proof that failed verification before anything settled, which anyone can
+# produce at will — get a 402, retry with an invented tx_hash — so recording it
+# would let unauthenticated callers author rows in the table /ledger,
+# /scores.json and the conversion counts all read. Non-paying traffic is
+# already counted in probe_rollup.
 _REJECTION_NOISE_MARKERS = (
     "not found or expired",
     "invalid x-payment header",
+    "challenge_tool_mismatch",
+    "challenge_amount_mismatch",
+    "challenge_amount_unparseable",
+    "memo_mismatch",
+    "horizon_error",
+    "transaction not found",
+    "transaction was not successful",
+    "no matching usdc payment",
+    "could not fetch transaction",
 )
 
 
@@ -1308,8 +1321,19 @@ async def _settle_stacks_path(
 
 # In-memory fast guard for _settle_free_v2 nonce consumption (mirrors
 # _used_base_tx_hashes in gateway/base.py — single-process guard when
-# Supabase is disabled/unreachable).
-_used_free_v2_nonces: set[str] = set()
+# Supabase is disabled/unreachable). Insertion-ordered and bounded: the key is
+# caller-supplied and the free path is unauthenticated, so an unbounded set is a
+# memory-growth path anyone can drive. Supabase is the durable layer, and
+# nothing of value can be replayed through a $0 proof, so evicting the oldest
+# keys is safe.
+_used_free_v2_nonces: dict[str, None] = {}
+_FREE_NONCES_MAX = 50_000
+
+
+def _remember_free_nonce(key: str) -> None:
+    _used_free_v2_nonces[key] = None
+    while len(_used_free_v2_nonces) > _FREE_NONCES_MAX:
+        _used_free_v2_nonces.pop(next(iter(_used_free_v2_nonces)))
 
 
 async def _settle_free_v2(
@@ -1375,7 +1399,7 @@ async def _settle_free_v2(
             content={"error": "Payment verification failed",
                      "reason": "Payment already used (replay attack)"},
         )
-    _used_free_v2_nonces.add(free_key)
+    _remember_free_nonce(free_key)
     if sb_enabled():
         recorded = await record_tx_hash(free_key, "free")
         # record_tx_hash returns None on infra error and the paid paths fail
