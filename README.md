@@ -147,11 +147,15 @@ with Session(wallet,
              allowed_tools=["token_price", "gas_tracker", "web_search"],
              max_per_tool={"dune_query": 0.02},
              rate_limit=10,                # max 10 calls/min
-             prefer_chain="base") as session:   # Base is the default; "stellar" or "stacks" to override
+             prefer_chain="base",          # Base is the default; "stellar" or "stacks" to override
+             allowed_recipients=["0x…", "SP…"],   # only these payees may be paid (any rail)
+             max_per_call="0.02",          # no single payment above this
+             approve_above="0.01",         # payments above this need the approver's yes
+             approver=lambda req: ask_human(req)) as session:
     ...
 ```
 
-`BudgetExceeded` fires before any payment goes out if a tool would push you over the cap, isn't on the allowlist, or exceeds its per-tool limit.
+`BudgetExceeded` fires before any payment goes out if a tool would push you over the cap, isn't on the allowlist, or exceeds its per-tool limit. The recipient allowlist, per-call maximum and approval gate are checked against the 402 itself — the payee and amount that would actually be signed — on every rail, and raise `PolicyRejected` / `ApprovalRequired` (both `BudgetExceeded` subclasses) with nothing signed. Every refusal is listed under `spending_summary()["anomalies"]`, alongside flags for repeated identical paid calls, a single call taking half the cap, and unconfirmed legs. `budget_policy()` picks the cap itself from an explicit value, an env var, a rule (share of balance) or a prompt, clamped to what the wallet holds — `wallet.get_sbtc_balance_usd(rate)` gives that ceiling for an sBTC payer.
 
 ---
 
@@ -382,6 +386,7 @@ print(r.data["verdict"], r.tx)      # verdict + the sbtc-token::transfer txid
 - **Mainnet guide:** [`docs/stacks-mainnet.md`](docs/stacks-mainnet.md) — config, the one-liner, redeeming an uncertain settle, ledger verification, the pilot agent.
 - **Testnet guide:** [`docs/stacks-m1.md`](docs/stacks-m1.md) — setup, known limitations, dependencies.
 - **Runnable demo:** [`examples/stacks_m1_demo.py`](examples/stacks_m1_demo.py) — capped session → sBTC payment → receipt → over-cap rejection (`STACKS_NETWORK=mainnet` for mainnet).
+- **Spending rules demo:** [`examples/stacks_policy_demo.py`](examples/stacks_policy_demo.py) — recipient allowlist, per-call maximum and approval gate refusing sBTC payments before anything is signed, then one approved settlement; refusals on the receipt.
 - **Demo video:** [YouTube (~40s)](https://www.youtube.com/watch?v=rGb07rwyG1I)
 - **Mainnet receipts:** [`0x30689b5e…`](https://explorer.hiro.so/txid/0x30689b5ee9f779fe571f0b7797e2453b21cf7d220cadf4f1881586757347387f?chain=mainnet), [`0xd1de1a79…`](https://explorer.hiro.so/txid/0xd1de1a792e2a23f5a0b22651eec4f3f00a49f3e9ca15c70c2a19fc8fb474dd8e?chain=mainnet), [`0x59ce7014…`](https://explorer.hiro.so/txid/0x59ce70146da57ffd8c71cd67eea9169373ad11b7298e77a88e5f946a0064e325?chain=mainnet) — `sbtc-token::transfer` payer → gateway, each from a `$0.05`-capped session, chain-verified on [agentpay.tools/ledger](https://agentpay.tools/ledger).
 - **Testnet proof:** [`0xa5351bad…`](https://explorer.hiro.so/txid/0xa5351bad31ed6bbcb57c0f9fcbcd997cc203b7011d62666176452edaed2d8c87?chain=testnet) — PoX-5 testnet, block 82215.

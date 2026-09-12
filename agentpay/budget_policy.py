@@ -43,6 +43,24 @@ Example (attended, human decides, with approval gate):
         interactive=True,
         approve_above="1.00",       # caps over $1 require explicit confirmation
     )
+
+Example (Stacks — sBTC valued in USD is the ceiling):
+    wallet = AgentWallet(network="mainnet", stacks_key=KEY)
+    decision = budget_policy(
+        balance_usd=wallet.get_sbtc_balance_usd(btc_usd_rate=110_000),
+        pct_of_balance=0.10,
+        max_cap="0.25",
+    )
+    with Session(wallet, max_spend=decision.max_spend, prefer_chain="stacks",
+                 allowed_recipients=[GATEWAY_PAYEE], max_per_call="0.02",
+                 approve_above="0.05") as s:
+        ...
+
+The cap decides how much a run may spend; the per-call rules on Session
+(allowed_recipients, max_per_call, approve_above + approver) decide whether
+each payment inside the run is allowed, checked against the 402 before
+anything is signed, on every rail. Refusals surface as
+`spending_summary()["anomalies"]`.
 """
 
 from __future__ import annotations
@@ -101,6 +119,7 @@ def budget_policy(
     interactive: bool = False,
     prompt: str = "Max spend for this run",
     usdc_balance: Optional[float] = None,
+    balance_usd: Optional[float] = None,
     reserve: str = "0",
     pct_of_balance: Optional[float] = None,
     min_cap: Optional[str] = None,
@@ -122,6 +141,10 @@ def budget_policy(
         usdc_balance:    Wallet USDC balance. Used both for pct_of_balance and
                          to clamp the final cap (you can't spend what you don't
                          have). If None, no balance clamp is applied.
+        balance_usd:     The same ceiling for a wallet whose spendable balance
+                         is not USDC — e.g. sBTC valued at a BTC/USD rate
+                         (AgentWallet.get_sbtc_balance_usd). Either name works;
+                         pass one.
         reserve:         USDC to hold back from the balance ceiling (e.g. to
                          leave room for fees). Subtracted before clamping.
         pct_of_balance:  Rule-based fraction of `usdc_balance` (0–1) to use
@@ -140,6 +163,8 @@ def budget_policy(
     warnings: list[str] = []
     requested: Optional[Decimal] = None
     source = "default"
+    if usdc_balance is None and balance_usd is not None:
+        usdc_balance = balance_usd
 
     # ── 1. explicit ──────────────────────────────────────────────────────────
     if explicit is not None:

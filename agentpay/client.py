@@ -13,6 +13,8 @@ from agentpay._wallet import (
     PrePaymentError,
     RefundPending,
     SettlementUncertain,
+    PolicyRejected,
+    ApprovalRequired,
     ToolResult,
 )
 
@@ -203,20 +205,26 @@ class Session(_Session):
                  testnet: bool = False, gateway_url: str = None,
                  prefer_chain: str = None, allowed_tools: list = None,
                  max_per_tool: dict = None, rate_limit: int = None,
-                 fallback: str = "off"):
+                 fallback: str = "off", allowed_recipients: list = None,
+                 max_per_call=None, approve_above=None, approver=None):
         if gateway_url is None:
             gateway_url = TESTNET_GATEWAY if testnet else MAINNET_GATEWAY
         # Forward the governance controls _wallet.Session supports so the public
         # API can set per-tool caps / allowlists / rate limits too.
         # fallback: tool substitution is opt-in — "off" (default)
         # raises typed errors; "auto" restores the legacy rerouting.
+        # allowed_recipients / max_per_call / approve_above (+ approver) are
+        # the spending rules checked against each 402 before signing.
         super().__init__(wallet=wallet, gateway_url=gateway_url, max_spend=max_spend,
                          prefer_chain=prefer_chain, allowed_tools=allowed_tools,
                          max_per_tool=max_per_tool, rate_limit=rate_limit,
-                         fallback=fallback)
+                         fallback=fallback, allowed_recipients=allowed_recipients,
+                         max_per_call=max_per_call, approve_above=approve_above,
+                         approver=approver)
 
 
 __all__ = ["AgentWallet", "Session", "ToolResult", "BudgetExceeded", "ToolNotFound", "PaymentFailed",
            "UnsupportedChainPayment",
-           "PrePaymentError", "RefundPending", "SettlementUncertain", "faucet_wallet", "quickstart",
+           "PrePaymentError", "RefundPending", "SettlementUncertain", "PolicyRejected",
+           "ApprovalRequired", "faucet_wallet", "quickstart",
            "TESTNET_GATEWAY", "MAINNET_GATEWAY"]

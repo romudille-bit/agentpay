@@ -6,6 +6,25 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Spending rules beyond the cap, on every rail** —
+  `Session(allowed_recipients=, max_per_call=, approve_above=, approver=)`.
+  Checked against the 402 (the payee and amount that would be signed)
+  before anything is signed, on Base, Stellar and Stacks; `max_per_call`
+  also refuses on the registry quote. Refusals raise `PolicyRejected` /
+  `ApprovalRequired` (subclasses of `BudgetExceeded`) carrying the rule,
+  chain, payee and amount.
+- **Receipt anomalies** — `spending_summary()["anomalies"]` /
+  `Session.anomalies()`: policy refusals, approval holds, the same paid call
+  repeated three or more times, a single call taking half the cap,
+  unconfirmed legs, failed paid legs.
+- **sBTC balance** — `AgentWallet.get_sbtc_balance()` (sats, from Hiro;
+  `RuntimeError` when the API is unreachable, never a silent 0) and
+  `get_sbtc_balance_usd(btc_usd_rate)`; `budget_policy(balance_usd=…)` is
+  the rail-neutral spelling of the balance ceiling.
+- `examples/stacks_policy_demo.py` — the rules refusing sBTC payments
+  against the live gateway, then one approved settlement.
+
 ## [0.5.0] — 2026-09-11
 
 **Stacks sBTC on mainnet.** `pip install "agentpay-x402[stacks]"` and the

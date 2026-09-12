@@ -7,6 +7,7 @@ Two main classes:
 """
 
 import base64
+import hashlib
 import json
 import os
 import httpx
@@ -14,6 +15,7 @@ import logging
 import secrets
 import threading
 from decimal import Decimal
+from typing import Callable
 
 from stellar_sdk import (
     Keypair, Server, Network, Asset,
@@ -92,9 +94,45 @@ def _settlement_from_headers(headers) -> dict | None:
     except Exception:
         return None
 
+def _params_key(parameters) -> str:
+    """Stable fingerprint of a call's parameters, for spotting the same call
+    paid for repeatedly. Not a secret; unhashable input just yields ""."""
+    try:
+        return hashlib.sha256(
+            json.dumps(parameters, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
 class BudgetExceeded(Exception):
     """Raised when a tool call would exceed the session budget."""
     pass
+
+
+class PolicyRejected(BudgetExceeded):
+    """A session spending rule refused the call before anything was signed or
+    paid: recipient not on the allowlist, amount over the per-call maximum.
+    Subclasses BudgetExceeded so existing handlers keep catching it.
+
+    Attributes:
+        rule:    which rule fired ("allowed_recipients", "max_per_call",
+                 "approve_above").
+        chain:   the rail the payment would have used, when known.
+        pay_to:  the recipient the 402 named, when known.
+        amount:  the USD amount the call would have cost, as a string.
+    """
+    def __init__(self, message: str, *, rule: str, chain: str = "",
+                 pay_to: str = "", amount: str = ""):
+        super().__init__(message)
+        self.rule, self.chain, self.pay_to, self.amount = rule, chain, pay_to, amount
+
+
+class ApprovalRequired(PolicyRejected):
+    """The call is above the session's approval threshold and no approver
+    confirmed it. Nothing was signed; approve and call again."""
+    def __init__(self, message: str, **kw):
+        super().__init__(message, rule="approve_above", **kw)
 
 
 class ToolNotFound(Exception):
@@ -715,6 +753,49 @@ class AgentWallet:
             STACKS_API_MAINNET if self.network == "mainnet" else STACKS_API_TESTNET
         )
 
+    def get_sbtc_balance(self) -> str:
+        """The wallet's sBTC balance in sats, as a string, read from Hiro.
+
+        '0' means the address holds no sBTC. An unreachable or erroring API
+        raises RuntimeError rather than answering 0, so a budget rule that
+        clamps to the balance is not silently clamped to nothing on an infra
+        blip — the same contract as get_usdc_balance on Horizon.
+        """
+        from agentpay import _stacks_tx
+        if not self.stacks_address:
+            raise RuntimeError(
+                "Stacks wallet not configured. Pass stacks_key= to AgentWallet "
+                "or set STACKS_AGENT_KEY env var."
+            )
+        contract = (
+            _stacks_tx.SBTC_CONTRACT_MAINNET if self.network == "mainnet"
+            else _stacks_tx.SBTC_CONTRACT_TESTNET
+        )
+        try:
+            resp = httpx.get(
+                f"{self._stacks_api_base}/extended/v1/address/{self.stacks_address}/balances",
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            tokens = resp.json().get("fungible_tokens") or {}
+        except Exception as e:
+            raise RuntimeError(f"sBTC balance check failed (Hiro unreachable or errored): {e}")
+        entry = tokens.get(f"{contract}::{_stacks_tx.SBTC_ASSET_NAME}") or {}
+        try:
+            return str(int(entry.get("balance") or 0))
+        except (ValueError, TypeError):
+            raise RuntimeError("sBTC balance check failed: unparseable balance from Hiro")
+
+    def get_sbtc_balance_usd(self, btc_usd_rate) -> str:
+        """The sBTC balance valued in USD at `btc_usd_rate`, for budget rules
+        that reason in dollars (e.g. budget_policy(balance_usd=...)). The
+        rate is the caller's — typically the one quoted on the last 402."""
+        rate = Decimal(str(btc_usd_rate))
+        if rate <= 0:
+            raise ValueError("btc_usd_rate must be positive")
+        sats = Decimal(self.get_sbtc_balance())
+        return _num(sats / Decimal(100_000_000) * rate)
+
     def fetch_stacks_nonce(self) -> int:
         """Next valid account nonce from the Stacks node (`/v2/accounts`)."""
         resp = httpx.get(
@@ -940,6 +1021,12 @@ def _fmt(amount) -> str:
     return f"${s}"
 
 
+def _num(amount) -> str:
+    """The same number without the currency sign, for machine-readable fields."""
+    s = f"{Decimal(str(amount)):.7f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
 class ToolResult(dict):
     """
     The value returned by `Session.call()`.
@@ -1084,6 +1171,10 @@ class Session:
         rate_limit: int | None = None,
         prefer_chain: str | None = None,
         fallback: str = "off",
+        allowed_recipients: list[str] | None = None,
+        max_per_call: str | float | None = None,
+        approve_above: str | float | None = None,
+        approver: Callable[[dict], bool] | None = None,
     ):
         self.wallet = wallet
         self.gateway_url = gateway_url.rstrip("/")
@@ -1115,6 +1206,24 @@ class Session:
         }
         self._rate_limit: int | None = rate_limit   # max calls per minute
         self._rate_window: list[float] = []          # timestamps of recent calls
+        # Spending rules beyond the cap. They are checked against the 402 —
+        # the recipient and amount the call would actually sign for — before
+        # anything is signed, on every rail (Base, Stellar, Stacks). Recipient
+        # comparison is exact on the address string, so a Stacks c32 address,
+        # an EVM address and a Stellar G-address all work the same way.
+        self._allowed_recipients: set[str] | None = (
+            {str(a).strip() for a in allowed_recipients if str(a).strip()}
+            if allowed_recipients is not None else None
+        )
+        self._max_per_call: Decimal | None = (
+            Decimal(str(max_per_call)) if max_per_call is not None else None
+        )
+        self._approve_above: Decimal | None = (
+            Decimal(str(approve_above)) if approve_above is not None else None
+        )
+        self._approver = approver
+        # Policy refusals and approvals, surfaced as receipt anomalies.
+        self._policy_events: list[dict] = []
         # Tool substitution is opt-in. "off" (default) = the tool you named or
         # a typed exception; "auto" = reroute to the cheapest same-category
         # tool on budget breach or pre-payment failure.
@@ -1336,7 +1445,121 @@ class Session:
                 }
                 for e in self._call_log
             ],
+            "anomalies": self.anomalies(),
         }
+
+    def anomalies(self) -> list[dict]:
+        """Spending patterns worth a second look, computed from the session
+        ledger and the policy log. Each entry is {"flag", "detail", ...}.
+        An empty list is the normal case.
+
+        Flags:
+          policy_rejected      — a spending rule refused a call (one entry
+                                 per rule that fired, with a count).
+          approval_required    — a call crossed approve_above and was not
+                                 confirmed.
+          repeated_call        — the same paid tool with the same parameters
+                                 three or more times (a loop, or a retry
+                                 storm that keeps paying).
+          large_single_call    — one paid leg took half or more of the cap.
+          uncertain_settlement — a leg was transmitted but never confirmed
+                                 in-session (redeemable on Stacks).
+          failed_paid_leg      — a spend was booked but the call failed.
+        """
+        out: list[dict] = []
+        with self._lock:
+            log = list(self._call_log)
+            events = list(self._policy_events)
+        by_rule: dict[str, int] = {}
+        for ev in events:
+            by_rule[ev["rule"]] = by_rule.get(ev["rule"], 0) + 1
+        for rule, n in by_rule.items():
+            flag = "approval_required" if rule == "approve_above" else "policy_rejected"
+            out.append({"flag": flag, "rule": rule, "count": n,
+                        "detail": f"{n} call(s) refused by {rule}"})
+        seen: dict[tuple, int] = {}
+        for e in log:
+            if Decimal(str(e.get("amount_usdc") or "0")) <= 0:
+                continue
+            key = (e.get("tool"), e.get("params_key"))
+            seen[key] = seen.get(key, 0) + 1
+        for (tool, _pk), n in seen.items():
+            if n >= 3:
+                out.append({"flag": "repeated_call", "tool": tool, "count": n,
+                            "detail": f"'{tool}' paid {n}× with identical parameters"})
+        half = self.max_spend / 2
+        for e in log:
+            amt = Decimal(str(e.get("amount_usdc") or "0"))
+            if amt > 0 and amt >= half:
+                out.append({"flag": "large_single_call", "tool": e.get("tool"),
+                            "amount": _num(amt),
+                            "detail": f"'{e.get('tool')}' cost {_fmt(amt)} — "
+                                      f"{_num(amt / self.max_spend * 100)}% of the cap"})
+        for e in log:
+            if e.get("state") == "uncertain_settlement":
+                out.append({"flag": "uncertain_settlement", "tool": e.get("tool"),
+                            "tx_hash": e.get("tx_hash", ""),
+                            "detail": f"'{e.get('tool')}' transmitted but unconfirmed"})
+            elif Decimal(str(e.get("amount_usdc") or "0")) > 0 and not e.get("success", True) \
+                    and e.get("state") not in ("uncertain_settlement",):
+                out.append({"flag": "failed_paid_leg", "tool": e.get("tool"),
+                            "detail": f"'{e.get('tool')}' booked a spend but the call failed"})
+        return out
+
+    def _pre_pay_check(self, *, tool: str, chain: str, pay_to: str, amount_usd) -> None:
+        """The spending rules, evaluated against what a 402 actually asks for.
+        Called by the client after the payment option is chosen and before
+        anything is signed; raises PolicyRejected / ApprovalRequired and
+        records the refusal for the receipt. A $0 call is never gated."""
+        try:
+            amt = Decimal(str(amount_usd)) if amount_usd is not None else None
+        except (ValueError, ArithmeticError):
+            amt = None
+        if amt is not None and amt <= 0:
+            return
+        pay_to = str(pay_to or "")
+        if self._allowed_recipients is not None and pay_to not in self._allowed_recipients:
+            self._note_policy("allowed_recipients", tool, chain, pay_to, amt)
+            raise PolicyRejected(
+                f"'{tool}' would pay {pay_to or '<unknown>'} on {chain}, which is not "
+                f"in the session's allowed_recipients — refusing to sign",
+                rule="allowed_recipients", chain=chain, pay_to=pay_to,
+                amount=_num(amt) if amt is not None else "",
+            )
+        if self._max_per_call is not None and (amt is None or amt > self._max_per_call):
+            self._note_policy("max_per_call", tool, chain, pay_to, amt)
+            raise PolicyRejected(
+                f"'{tool}' asks {_fmt(amt) if amt is not None else 'an unparseable amount'} "
+                f"USD, over the session's max_per_call of {_fmt(self._max_per_call)} — "
+                f"refusing to sign",
+                rule="max_per_call", chain=chain, pay_to=pay_to,
+                amount=_num(amt) if amt is not None else "",
+            )
+        if self._approve_above is not None and amt is not None and amt > self._approve_above:
+            approved = False
+            if self._approver is not None:
+                try:
+                    approved = bool(self._approver({
+                        "tool": tool, "chain": chain, "pay_to": pay_to,
+                        "amount_usd": _num(amt), "threshold": _num(self._approve_above),
+                    }))
+                except Exception:
+                    approved = False
+            if not approved:
+                self._note_policy("approve_above", tool, chain, pay_to, amt)
+                raise ApprovalRequired(
+                    f"'{tool}' asks {_fmt(amt)} USD, above the session's approve_above "
+                    f"threshold of {_fmt(self._approve_above)} and not approved — "
+                    f"refusing to sign",
+                    chain=chain, pay_to=pay_to, amount=_num(amt),
+                )
+
+    def _note_policy(self, rule: str, tool: str, chain: str, pay_to: str, amt) -> None:
+        with self._lock:
+            self._policy_events.append({
+                "rule": rule, "tool": tool, "chain": chain, "pay_to": pay_to,
+                "amount_usd": _num(amt) if amt is not None else "",
+            })
 
     # ── Bazaar discovery ──────────────────────────────────────────────────────
 
@@ -1634,6 +1857,10 @@ class Session:
             pay_network = chosen["network"]
             pay_scheme  = chosen["scheme"]
 
+            # Spending rules against the option actually chosen, before the
+            # hold and before any signing.
+            self._pre_pay_check(tool=url, chain=kind, pay_to=pay_to, amount_usd=amount_usdc)
+
             # ── Budget check + atomic reservation ─────────────────────────────
             if not self._reserve(amount_usdc):
                 raise BudgetExceeded(
@@ -1654,6 +1881,7 @@ class Session:
                 "network":     pay_network,
                 "success":     False,
                 "external":    True,
+                "params_key":  _params_key(params),
             }
 
             def _record_spend(state: str):
@@ -1906,6 +2134,17 @@ class Session:
                     f"{_fmt(self._max_per_tool[target])} cap"
                 )
 
+        # Per-call maximum against the quoted price: refuse before the HTTP
+        # round-trip. The 402's demanded amount is checked again in
+        # _pre_pay_check, since it is the amount that would be signed.
+        if self._max_per_call is not None and Decimal(str(price)) > self._max_per_call:
+            self._note_policy("max_per_call", target, _prefer_chain, "", Decimal(str(price)))
+            raise PolicyRejected(
+                f"'{target}' costs {_fmt(price)}, over the session's max_per_call of "
+                f"{_fmt(self._max_per_call)}",
+                rule="max_per_call", chain=_prefer_chain, amount=_num(price),
+            )
+
         # Place an atomic budget hold before any funds can move. Even
         # if two threads both cleared would_exceed above, only one gets the
         # reservation; the loser fails closed rather than double-paying.
@@ -1923,6 +2162,7 @@ class Session:
                     target, params,
                     max_spend=self._cap_excluding_hold(price, reserved_amt),
                     prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
+                    pre_pay_check=self._pre_pay_check,
                 )
             except (PaymentFailed, RefundPending):
                 # PaymentFailed: the on-chain payment itself failed — a fallback
@@ -1991,6 +2231,7 @@ class Session:
                         fallback["price_usdc"], reserved_amt
                     ),
                     prefer_chain=_prefer_chain, chain_is_explicit=_chain_is_explicit,
+                    pre_pay_check=self._pre_pay_check,
                 )
         finally:
             # Fold every payment the client made into the session (success or
@@ -2085,6 +2326,8 @@ class Session:
             }
             if e.get("state"):
                 entry["state"] = e["state"]
+            if e.get("params_key"):
+                entry["params_key"] = e["params_key"]
             if target != requested and entry["tool"] == target:
                 entry["fallback_for"] = requested
             self._call_log.append(entry)

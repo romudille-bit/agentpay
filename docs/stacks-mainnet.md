@@ -101,6 +101,37 @@ The cap binds before signing: the SDK refuses to sign an `amount_sats` the
 USD cap does not bound at a floor BTC/USD rate, or one inconsistent with the
 quoted rate, and `max_per_tool` / `allowed_tools` apply as on any rail.
 
+## Spending rules beyond the cap
+
+The cap bounds a run; three rules bound each payment inside it, on Stacks as
+on any rail. They are evaluated against the 402 — the payee and the USD
+amount the SDK would sign for — before anything is signed:
+
+```python
+with Session(wallet, max_spend="0.05", prefer_chain="stacks",
+             allowed_recipients=["SP23XKWSEQ9D4CVPT0H39N2TYVEE5AJECPKW6CZ3C"],  # the gateway's payee
+             max_per_call="0.02",
+             approve_above="0.01", approver=lambda req: ask(req)) as s:
+    ...
+```
+
+`allowed_recipients` is an exact match on the c32 address the 402 names; a
+402 for any other payee raises `PolicyRejected` with nothing signed.
+`max_per_call` refuses on the registry quote (no request at all) and again
+on the 402's amount. `approve_above` hands `{"tool", "chain", "pay_to",
+"amount_usd", "threshold"}` to the approver; without one, or on a `False`,
+the call raises `ApprovalRequired`. Both exceptions subclass
+`BudgetExceeded`. Refusals show on the receipt as
+`spending_summary()["anomalies"]`, next to `repeated_call`,
+`large_single_call`, `uncertain_settlement` and `failed_paid_leg` flags.
+
+For the cap itself, `budget_policy(balance_usd=wallet.get_sbtc_balance_usd(rate),
+pct_of_balance=…, max_cap=…)` clamps a rule-derived cap to the sBTC the
+wallet holds; `get_sbtc_balance` reads Hiro and raises `RuntimeError` when
+the API is unreachable rather than reporting zero, so an infra blip never
+silently shrinks the cap to nothing. `examples/stacks_policy_demo.py` runs
+the three refusals and one approved settlement against the live gateway.
+
 ## When the gateway cannot confirm in time
 
 The gateway broadcasts and polls Hiro for confirmation inside the request,

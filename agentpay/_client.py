@@ -34,6 +34,7 @@ from agentpay._wallet import (
     PrePaymentError,
     RefundPending,
     SettlementUncertain,
+    _params_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ class AgentPayClient:
             return None
 
     def _settle_stacks(self, client, url: str, payload: dict, data: dict,
-                       tool_name: str, *, max_spend, record):
+                       tool_name: str, *, max_spend, record, pre_pay_check=None):
         """The Stacks leg of call_tool: sign-don't-broadcast sBTC settlement.
 
         The cap bounds the option's USD amount before signing; the spend is
@@ -139,6 +140,13 @@ class AgentPayClient:
                     f"{amount_usd} USD, which exceeds the cap for this call "
                     f"({max_spend} USD) — refusing to sign"
                 )
+
+        if pre_pay_check is not None:
+            pre_pay_check(
+                tool=tool_name, chain="stacks",
+                pay_to=stacks_opt.get("pay_to") or stacks_opt.get("payTo") or "",
+                amount_usd=amount_usd,
+            )
 
         payment_id = data["payment_id"]
         logger.info(
@@ -440,9 +448,15 @@ class AgentPayClient:
         *,
         prefer_chain: str = "base",
         chain_is_explicit: bool = False,
+        pre_pay_check=None,
     ) -> dict:
         """
         Call a paid tool. Handles 402 automatically.
+
+        `pre_pay_check(tool=, chain=, pay_to=, amount_usd=)`, when given, runs
+        after the payment option is chosen and before anything is signed, on
+        every rail; it raises to refuse the call (the Session's spending
+        rules live there). It is not called for $0 tools.
 
         Raises BudgetExceeded (before paying or signing) if max_spend is set
         and the amount the 402 actually demands exceeds it — the hard cap is
@@ -466,6 +480,7 @@ class AgentPayClient:
         prefer_chain = (prefer_chain or "base").lower()
         url = f"{self.gateway_url}/tools/{tool_name}/call"
         payload = {"parameters": parameters, "agent_address": self.wallet.public_key}
+        params_key = _params_key(parameters)
 
         with httpx.Client(timeout=60.0) as client:
 
@@ -491,6 +506,7 @@ class AgentPayClient:
                     "tx_hash": None,
                     "success": True,
                     "free": True,
+                    "params_key": params_key,
                 })
                 logger.info(f"  ✓ {tool_name} (free) — logged at $0")
                 try:
@@ -546,6 +562,7 @@ class AgentPayClient:
                     "tx_hash": tx_hash,
                     "success": False,
                     "state": state,
+                    "params_key": params_key,
                 }
                 self.call_log.append(entry)
                 return entry
@@ -588,6 +605,7 @@ class AgentPayClient:
                 retry, tx_hash = self._settle_stacks(
                     client, url, payload, data, tool_name,
                     max_spend=max_spend, record=_record,
+                    pre_pay_check=pre_pay_check,
                 )
             else:
                 # ── Paid tool: prefer Base (Mode A) → fall back to Stellar ──
@@ -635,6 +653,12 @@ class AgentPayClient:
                                 f"Base option for '{tool_name}' would sign for "
                                 f"{base_amount} USDC, which exceeds the cap for "
                                 f"this call ({max_spend} USDC) — refusing to sign"
+                            )
+                        if pre_pay_check is not None:
+                            pre_pay_check(
+                                tool=tool_name, chain="base",
+                                pay_to=base_opt.get("pay_to") or base_opt.get("payTo") or "",
+                                amount_usd=base_amount,
                             )
                         sig = self._sign_base_auth(base_opt, url)
                     except BudgetExceeded:
@@ -691,6 +715,9 @@ class AgentPayClient:
 
                 if retry is None:
                     # ── Stellar settlement (fallback / explicit) ───────────
+                    if pre_pay_check is not None:
+                        pre_pay_check(tool=tool_name, chain="stellar",
+                                      pay_to=pay_to, amount_usd=amount_usdc)
                     logger.info(f"  Sending payment on Stellar {self.wallet.network}...")
                     payment = self.wallet.pay(
                         destination=pay_to,
