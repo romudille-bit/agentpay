@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse, Response
 
 from agents.prober.probe import need_leaderboard as _need_leaderboard
 from agents.prober.probe import score
+from gateway._limiter import limiter
 from gateway.config import settings
 from gateway.services.supabase import (
     fetch_service_probes,
@@ -514,6 +515,7 @@ ready-to-pay recommendation — one call instead of a score-then-choose pipeline
 
 
 @router.post("/v1/prober/run")
+@limiter.limit("10/minute")   # keeps the 401 path from being brute-forced
 async def prober_ingest(request: Request,
                         x_flagship_secret: str | None = Header(default=None)):
     """Ingest one prober sweep: {"probes": [...], "run": {...}?}.
@@ -526,7 +528,17 @@ async def prober_ingest(request: Request,
     secret = settings.FLAGSHIP_INGEST_SECRET
     if not secret:
         raise HTTPException(status_code=404, detail="Not found")
-    if not (x_flagship_secret and hmac.compare_digest(x_flagship_secret, secret)):
+    # compare_digest on str raises TypeError on any non-ASCII character, and
+    # header values are latin-1 decoded — so a garbage byte in the header would
+    # answer 500 instead of 401. Compare bytes, and treat any failure as no.
+    authorized = False
+    try:
+        authorized = bool(x_flagship_secret) and hmac.compare_digest(
+            x_flagship_secret.encode("utf-8", "ignore"), secret.encode("utf-8"),
+        )
+    except Exception:
+        authorized = False
+    if not authorized:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         payload = await request.json()

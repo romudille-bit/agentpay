@@ -302,8 +302,11 @@ PAYMENT_ID = "550e8400-e29b-41d4-a716-446655440000"
 
 
 class TestMemoBinding:
-    """The tx text memo must prefix-match the payment_id (28-byte
-    truncation tolerant) so a payment can't satisfy an unrelated challenge."""
+    """The tx text memo must equal the payment_id's first 28 bytes — the whole
+    wire contract, since the memo is the only thing tying a transfer to a
+    challenge. Exactly, not by prefix: a prefix rule let a 1-byte memo bind to
+    every challenge id starting with that byte, so a payer could choose after
+    the fact which of their open challenges a transfer settled."""
 
     def _mock_horizon(self, tx_json, op_amount="0.001"):
         respx.get(f"{HORIZON}/transactions/{TX_HASH}").mock(
@@ -330,6 +333,31 @@ class TestMemoBinding:
     async def test_wrong_memo_rejected(self, mock_settings):
         with respx.mock:
             self._mock_horizon(_tx_response(memo="some-other-payment-id", memo_type="text"))
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+                payment_id=PAYMENT_ID,
+            )
+        assert result["verified"] is False
+        assert "memo_mismatch" in result["reason"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("memo", ["5", "550", "550e8400-e29b"])
+    async def test_short_prefix_memo_rejected(self, mock_settings, memo):
+        """A memo that is merely a prefix of the id binds to nothing."""
+        with respx.mock:
+            self._mock_horizon(_tx_response(memo=memo, memo_type="text"))
+            result = await _verify_payment_horizon(
+                TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
+                payment_id=PAYMENT_ID,
+            )
+        assert result["verified"] is False
+        assert "memo_mismatch" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_memo_longer_than_the_id_rejected(self, mock_settings):
+        with respx.mock:
+            self._mock_horizon(_tx_response(memo=PAYMENT_ID[:28] + "x",
+                                           memo_type="text"))
             result = await _verify_payment_horizon(
                 TX_HASH, AGENT_ADDR, GATEWAY_ADDR, "0.001",
                 payment_id=PAYMENT_ID,

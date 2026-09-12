@@ -170,13 +170,24 @@ async def health():
 
 @router.get("/stats")
 async def stats():
-    """Gateway statistics."""
+    """Gateway statistics.
+
+    Recent activity is published as shape only — which tool, what it cost,
+    whether it worked. The in-memory log also holds the buyer's wallet and the
+    settlement hash, and those stay internal: an unauthenticated feed of
+    address-to-tool pairs is a customer list, and the same redaction rule
+    already governs the public ledger.
+    """
     tools = registry.list_tools()
     total_calls = sum(t.total_calls for t in tools)
     return {
         "total_tools": len(tools),
         "total_calls": total_calls,
-        "recent_transactions": recent_transactions(10),
+        "recent_transactions": [
+            {"tool": t.get("tool"), "amount_usdc": t.get("amount_usdc"),
+             "success": t.get("success")}
+            for t in recent_transactions(10)
+        ],
         "pending_payments": get_pending_count(),
         "network": settings.STELLAR_NETWORK,
     }

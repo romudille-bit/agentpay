@@ -82,6 +82,24 @@ def test_401_on_bad_secret(monkeypatch):
     assert r.status_code == 401
 
 
+def test_401_on_non_ascii_secret(monkeypatch):
+    """compare_digest on str raises TypeError on a non-ASCII character, and
+    header values are latin-1 decoded — so a garbage byte answered 500 instead
+    of 401 on a secret-gated write endpoint."""
+    monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")
+    # Sent as raw bytes: that is how it arrives on the wire, and it is what the
+    # ASGI server hands the handler after latin-1 decoding.
+    r = _client().post("/v1/prober/run", json={"probes": []},
+                       headers={"X-Flagship-Secret": "s3cr\u00e9t".encode("latin-1")})
+    assert r.status_code == 401
+
+
+def test_401_on_missing_secret_header(monkeypatch):
+    monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")
+    r = _client().post("/v1/prober/run", json={"probes": []})
+    assert r.status_code == 401
+
+
 def test_400_without_probes_list(monkeypatch):
     monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")
     r = _client().post("/v1/prober/run", json={"run": {}}, headers=SECRET_HDR)

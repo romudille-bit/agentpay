@@ -121,16 +121,16 @@ async def _verify_payment_horizon(
             if not tx_data.get("successful", False):
                 return {"verified": False, "reason": "Transaction was not successful"}
 
-            # Bind the tx to this challenge via the text memo (the SDK and
-            # 402 instructions send payment_id as the memo).
+            # Bind the tx to this challenge via the text memo. A text memo holds
+            # 28 bytes, so the wire contract is the id's first 28 — compared
+            # exactly. A prefix rule would let a 1-byte memo bind to every
+            # challenge id starting with that byte, which is how a payer could
+            # decide after the fact which open challenge a transfer settles.
             if payment_id:
                 memo_type = tx_data.get("memo_type", "none")
                 memo = tx_data.get("memo") or ""
-                if (
-                    memo_type != "text"
-                    or not memo
-                    or not (payment_id.startswith(memo) or memo.startswith(payment_id))
-                ):
+                expected_memo = payment_id.encode()[:28].decode(errors="ignore")
+                if memo_type != "text" or memo != expected_memo:
                     logger.warning(
                         f"memo_mismatch on {tx_hash[:16]}...: "
                         f"memo_type={memo_type!r} memo={memo[:28]!r} "
@@ -178,8 +178,11 @@ async def _verify_payment_horizon(
             return {"verified": False, "reason": "No matching USDC payment found in transaction"}
 
     except Exception as e:
+        # The reason is echoed into the 402 body, so it stays a fixed code:
+        # str(e) here is httpx/Horizon internals, which the payer cannot act on
+        # and we should not publish. The detail goes to the log.
         logger.error(f"Horizon direct verify error: {e}")
-        return {"verified": False, "reason": str(e)}
+        return {"verified": False, "reason": "horizon_error"}
 
 
 async def verify_payment(
@@ -187,7 +190,6 @@ async def verify_payment(
     to_address: str,
     amount_usdc: str,
     payment_id: str,
-    max_age_seconds: int = 60,
     tx_hash: str = "",
 ) -> dict:
     """
@@ -209,6 +211,10 @@ async def verify_payment(
     facilitator 5xx or timeout does not fail a payment that is valid
     on-chain. STELLAR_FACILITATOR_ENABLED=False (the default) skips the
     OZ POST entirely, avoiding ~15s of timeout per verification.
+
+    There is no ledger-age bound, and none is needed: the memo must equal this
+    challenge's id exactly, the challenge expires in minutes and its id is
+    consumed once, so a transfer cannot predate the challenge it settles.
 
     Returns:
         {"verified": True, "tx_hash": "..."} on success

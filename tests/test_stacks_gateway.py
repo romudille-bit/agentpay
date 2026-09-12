@@ -227,6 +227,29 @@ class TestVerify:
         assert not auth["authorized"]
         assert auth["reason"].startswith("underpaid")
 
+    async def test_small_quote_has_no_usable_tolerance(self):
+        """At micro-prices the 2% allowance rounds to whole sats, so the exact
+        amount is required: truncating the floor turned it into 10% on a 10-sat
+        quote and 25% on a 4-sat one."""
+        tx = _signed_tx(amount_sats=9)
+        auth = await _verify(_header_for(tx),
+                             expected_amount_sats=10)
+        assert not auth["authorized"]
+        assert auth["reason"].startswith("underpaid")
+
+        tx_exact = _signed_tx(amount_sats=10)
+        auth_ok = await _verify(_header_for(tx_exact),
+                                expected_amount_sats=10)
+        assert auth_ok["authorized"]
+
+    async def test_tolerance_still_absorbs_drift_on_a_real_quote(self):
+        """Above the threshold a 2% shortfall is still accepted — the tolerance
+        exists to absorb FX drift between quote and verification."""
+        tx = _signed_tx(amount_sats=990)
+        auth = await _verify(_header_for(tx),
+                             expected_amount_sats=1000)
+        assert auth["authorized"]
+
     async def test_overpay_flagged_not_rejected(self):
         tx = _signed_tx(amount_sats=5000)
         auth = await _verify(_header_for(tx))

@@ -212,6 +212,39 @@ async def test_refund_worker_cap_exhaustion_marks_failed(mocked_refund_deps):
 
 
 @pytest.mark.asyncio
+async def test_refund_worker_stacks_network_short_circuits(mocked_refund_deps):
+    """Stacks has no outbound path at all: the gateway address receives only and
+    holds no STX to pay a fee with. A stacks-* row previously fell through to
+    the Stellar sender, which builds a payment op to an SP… destination and
+    raises — burning the attempt cap before failing with an opaque message."""
+    mocked_refund_deps["rows"] = [{
+        "payment_id":      "pid-stacks",
+        "agent_address":   "SP27VCS0000000000000000000000000000000000",
+        "amount_usdc":     "0.01",
+        "network":         "stacks-mainnet",
+        "tool_name":       "pre_trade_check",
+        "refund_attempts": 0,
+    }]
+    # If the Stellar sender is reached this would mark the row done, so the
+    # test fails loudly rather than quietly sending to the wrong chain.
+    mocked_refund_deps["send_results"] = [
+        {"success": True, "tx_hash": "would_be_wrong"},
+    ]
+
+    from gateway.main import _refund_worker_loop
+    with pytest.raises(asyncio.CancelledError):
+        await _refund_worker_loop()
+
+    assert mocked_refund_deps["send_results"] == [
+        {"success": True, "tx_hash": "would_be_wrong"},
+    ]
+    assert "pid-stacks" not in mocked_refund_deps["attempts"]
+    assert mocked_refund_deps["failed_calls"] == [
+        ("pid-stacks", "stacks_refund_not_implemented"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_refund_worker_base_network_short_circuits(mocked_refund_deps):
     """Base refunds aren't implemented (no outgoing Base tx machinery).
     A refund_pending row with network='base-mainnet' must short-circuit

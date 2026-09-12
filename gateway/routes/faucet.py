@@ -229,17 +229,25 @@ async def faucet_json(request: Request):
             ),
         )
 
-    # ── Anti-script delay (3 seconds) ─────────────────────────────────────────
-    await asyncio.sleep(3)
-
-    base_url = settings.AGENTPAY_GATEWAY_URL or GATEWAY_URL
-    result = await _provision_wallet(base_url)
-
-    # Record IP — update both stores. Supabase is authoritative; in-memory
-    # is kept hot so a Supabase outage doesn't immediately let an IP
-    # bypass cooldown.
+    # Record the IP the moment the cooldown check passes, not after
+    # provisioning: the sleep below plus the Horizon round-trips leave a
+    # ten-second window in which concurrent requests all pass a check none of
+    # them has recorded yet. Rolled back if provisioning raises, so a failed
+    # attempt does not burn the caller's window.
+    #
+    # Both stores are updated. Supabase is authoritative; in-memory is kept hot
+    # so a Supabase outage doesn't immediately let an IP bypass the cooldown.
     _FAUCET_IP_LOG[client_ip] = _time.time()
     asyncio.create_task(sb.record_faucet_ip(client_ip))
+
+    # ── Anti-script delay (3 seconds) ─────────────────────────────────────────
+    try:
+        await asyncio.sleep(3)
+        base_url = settings.AGENTPAY_GATEWAY_URL or GATEWAY_URL
+        result = await _provision_wallet(base_url)
+    except Exception:
+        _FAUCET_IP_LOG.pop(client_ip, None)
+        raise
     return result
 
 

@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 import registry
 from registry import reload_tools
@@ -225,6 +226,19 @@ async def _refund_worker_loop():
                     await sb.mark_refund_failed(
                         payment_id,
                         "base_refund_not_implemented",
+                    )
+                    continue
+
+                # Stacks has no outbound path at all — the gateway address
+                # receives only and holds no STX to pay a fee with. Without this
+                # the row falls through to the Stellar sender, which builds a
+                # payment op to an SP… destination and raises, burning the
+                # attempt cap before landing in refund_failed with an opaque
+                # message. Terminate it here instead, so the state is honest.
+                if network.startswith("stacks-"):
+                    await sb.mark_refund_failed(
+                        payment_id,
+                        "stacks_refund_not_implemented",
                     )
                     continue
 
@@ -633,6 +647,12 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# slowapi applies default_limits only through this middleware; the @limiter.limit
+# decorator covers decorated routes and nothing else. Without it every
+# undecorated route was unlimited — including POST /v1/prober/run, a
+# secret-gated write whose sibling POST /v1/flagship/run carries an explicit
+# limit for exactly that reason.
+app.add_middleware(SlowAPIMiddleware)
 
 # Wildcard CORS is safe here only because auth is header/wallet-based
 # (X-Payment / PAYMENT-SIGNATURE / X-*-Secret) and there are no cookies or

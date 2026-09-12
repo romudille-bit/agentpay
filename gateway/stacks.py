@@ -96,6 +96,13 @@ _DEFINITIVE_REJECTIONS = (
 # between the 402 quote and verification.
 _OVERPAY_FLAG_FACTOR = Decimal("2")
 _UNDERPAY_TOLERANCE = Decimal("0.98")
+# Below this the tolerance is meaningless — 2% of a single-digit sat quote
+# rounds to a whole sat or more, so the exact amount is required instead.
+_TOLERANCE_MIN_SATS = 50
+
+# A SIP-010 transfer's args nest one level at most (an optional memo); the
+# bound exists so a hostile payload cannot recurse the decoder to death.
+_MAX_CLARITY_DEPTH = 8
 
 # SIP-005 wire constants needed for DECODING (the SDK's _stacks_tx owns the
 # encoding side; these mirror it — see that module's serializer for the spec
@@ -406,10 +413,16 @@ class _Reader:
         return version, self.take(20)
 
 
-def _read_clarity_value(r: _Reader):
+def _read_clarity_value(r: _Reader, depth: int = 0):
     """Minimal Clarity value decoder — exactly the types a SIP-010 transfer
     can carry as args. Unknown type prefixes reject the tx (we broadcast on
-    the client's behalf; anything we can't fully parse is unsafe)."""
+    the client's behalf; anything we can't fully parse is unsafe).
+
+    `some` nests, so depth is bounded: a payload of consecutive 0x0a bytes would
+    otherwise exhaust the interpreter stack, and RecursionError is a RuntimeError
+    that the caller's ValueError handler does not catch."""
+    if depth > _MAX_CLARITY_DEPTH:
+        raise ValueError("clarity value nested too deeply")
     t = r.u8()
     if t == _CV_UINT:
         return ("uint", r.uint(16))
@@ -430,7 +443,7 @@ def _read_clarity_value(r: _Reader):
     if t == _CV_NONE:
         return ("none", None)
     if t == _CV_SOME:
-        return ("some", _read_clarity_value(r))
+        return ("some", _read_clarity_value(r, depth + 1))
     raise ValueError(f"unsupported Clarity value type 0x{t:02x}")
 
 
@@ -581,7 +594,10 @@ async def verify_stacks_payment(
 
     try:
         tx = decode_sbtc_transfer(signed_tx)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
+        # RecursionError is caught alongside ValueError as a belt-and-braces
+        # pair with the depth bound in _read_clarity_value: a malformed payload
+        # is a rejection, never a 500.
         return _fail(f"malformed_stacks_tx: {e}")
 
     # No sponsored-relay path in M1: a client-signed sponsored tx carries only a
@@ -614,7 +630,13 @@ async def verify_stacks_payment(
         return _fail("memo_payment_id_mismatch")
 
     # ── amount (small drift tolerance only) ───────────────────────────────────
-    floor_sats = int(Decimal(expected_amount_sats) * _UNDERPAY_TOLERANCE)
+    # Round the floor up, and require the exact quote where 2% is sub-sat.
+    # Truncating turned the allowance into 10% on a 10-sat quote and 25% on a
+    # 4-sat one — and micro-priced tools quote in exactly that range.
+    floor_sats = (
+        expected_amount_sats if expected_amount_sats < _TOLERANCE_MIN_SATS
+        else -(-expected_amount_sats * 98 // 100)
+    )
     if tx["amount"] < max(floor_sats, 1):
         return _fail(
             f"underpaid: got {tx['amount']} sats, need {expected_amount_sats}"

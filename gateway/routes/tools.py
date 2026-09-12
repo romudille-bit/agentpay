@@ -683,7 +683,8 @@ def _bazaar_for(tool_name: str) -> dict:
     return _TOOL_BAZAAR.get(tool_name, {})
 
 
-async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception) -> JSONResponse:
+async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception,
+                          network: str = "") -> JSONResponse:
     """Payment accepted on-chain but tool execution failed → refund_pending.
 
     The PATCH is awaited (terminal state); the background refund worker
@@ -691,7 +692,18 @@ async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception) -> JS
     so SDK callers can branch (RefundPending exception). 500, not 502:
     Cloudflare replaces an origin 502/504 with its own HTML page, and the
     body would never reach the SDK.
+
+    A rail the gateway cannot pay out on reports refund_unavailable rather
+    than refund_pending: the Stacks gateway address receives only and holds no
+    STX, so promising a refund there would be a promise nothing can keep.
     """
+    refundable = settings.REFUND_ENABLED and not network.startswith("stacks-")
+    if network.startswith("stacks-"):
+        status = "refund_unavailable"
+    elif settings.REFUND_ENABLED:
+        status = "refund_pending"
+    else:
+        status = "refund_disabled"
     logger.error(f"Tool execution error: {exc}")
     await update_payment_log_state(
         payment_id,
@@ -704,8 +716,8 @@ async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception) -> JS
             "error":               "Tool execution failed",
             "tool":                tool_name,
             "payment_id":          payment_id,
-            "payment_status":      "refund_pending" if settings.REFUND_ENABLED else "refund_disabled",
-            "refund_eta_seconds":  60 if settings.REFUND_ENABLED else None,
+            "payment_status":      status,
+            "refund_eta_seconds":  60 if refundable else None,
             "error_reason":        f"tool_exec_failed: {str(exc)[:200]}",
         },
     )
@@ -882,9 +894,15 @@ async def _issue_402(
         "pay_to":      challenge.gateway_address,
         "asset":       "USDC",
         "network":     settings.STELLAR_NETWORK,
+        # A Stellar text memo holds 28 bytes, so the memo is the id's first 28
+        # and the full id goes in the header. Quoting the whole id here asked
+        # hand-rolled payers for a memo Stellar cannot carry; the SDK was
+        # already sending the truncation.
         "instructions": (
             f"[Stellar] Send {challenge.amount_usdc} USDC to {challenge.gateway_address} "
-            f"on Stellar {settings.STELLAR_NETWORK} with memo: {challenge.payment_id}. "
+            f"on Stellar {settings.STELLAR_NETWORK} with text memo: "
+            f"{challenge.payment_id[:28]} (the payment_id's first 28 bytes — a "
+            f"Stellar text memo cannot hold more). "
             f"Retry with X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}. "
             f"No Stellar wallet? Get a free funded testnet wallet instantly: {GATEWAY_URL}/faucet"
         ),
@@ -902,10 +920,12 @@ async def _issue_402(
                 "network":     settings.STELLAR_NETWORK,
                 "asset":       "USDC",
                 "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
+                "memo":        challenge.payment_id[:28],
                 "note": (
-                    "Classic Stellar payment + text memo (payment_id), "
-                    "verified via Horizon — not the standard @x402/stellar "
-                    "Soroban scheme. Pay with the AgentPay SDK (pip install "
+                    "Classic Stellar payment + text memo (the payment_id's "
+                    "first 28 bytes, which is all a text memo holds), verified "
+                    "via Horizon — not the standard @x402/stellar Soroban "
+                    "scheme. Pay with the AgentPay SDK (pip install "
                     "agentpay-x402) or manually per instructions."
                 ),
             },
@@ -1475,7 +1495,7 @@ async def _execute_and_log(
     except Exception as e:
         # _refund_and_500 PATCHes the row's state too — same ordering rule.
         await _ensure_row_inserted()
-        return await _refund_and_500(tool_name, payment_id, e)
+        return await _refund_and_500(tool_name, payment_id, e, receipt_network)
 
     # A paid tool that produced only an error refunds rather than charges.
     # real_tool_response swallows executor failures (missing implementation,
@@ -1490,6 +1510,7 @@ async def _execute_and_log(
         return await _refund_and_500(
             tool_name, payment_id,
             RuntimeError(f"paid tool returned error: {tool_result['error']}"),
+            receipt_network,
         )
 
     append_transaction({
