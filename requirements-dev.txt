@@ -22,5 +22,6 @@ uvicorn>=0.30
 pydantic-settings>=2.0
 stellar-sdk>=10.0.0
 eth-account>=0.11.0   # Base payment signing
+x402[evm]>=0.1.0      # EIP-3009 signer behind the Base leg (the SDK's [base] extra)
 PyJWT>=2.8.0          # CDP Facilitator JWT auth
 cryptography>=42.0.0  # EC + Ed25519 key loading for CDP JWT
