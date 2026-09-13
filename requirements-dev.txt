@@ -10,18 +10,9 @@ pytest>=8.0
 pytest-asyncio>=0.23
 respx>=0.21
 
-# Runtime deps the gateway needs to import during tests (TestClient
-# loads gateway.main, which transitively imports these). Already in
-# pyproject.toml's [project] dependencies — duplicated here so a fresh
-# checkout that does `pip install -r requirements-dev.txt` is enough
-# to run the suite without also installing the SDK package.
-fastapi>=0.110
-httpx>=0.27
-slowapi>=0.1.9
-uvicorn>=0.30
-pydantic-settings>=2.0
-stellar-sdk>=10.0.0
-eth-account>=0.11.0   # Base payment signing
-x402[evm]>=0.1.0      # EIP-3009 signer behind the Base leg (the SDK's [base] extra)
-PyJWT>=2.8.0          # CDP Facilitator JWT auth
-cryptography>=42.0.0  # EC + Ed25519 key loading for CDP JWT
+# The gateway's own pins, so the suite runs against the versions prod runs.
+# Resolving these loosely let CI drift to a fastapi/starlette/slowapi
+# combination where slowapi's middleware cannot find the handler behind an
+# included router, so the default rate limit never applied and the tests
+# that pin it failed only there.
+-r requirements.txt
