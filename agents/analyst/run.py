@@ -480,6 +480,41 @@ def payer_address(wallet, rail: str) -> str:
     return getattr(wallet, "base_address", None) or ""
 
 
+def session_kwargs(session_cls, rail: str, max_per_leg: str, log_fn=log):
+    """Keyword arguments for the run's Session, or None when the run must not
+    start.
+
+    The per-leg ceiling bounds what a single 402 can ask for. Gateway legs are
+    quoted from the registry, but the CMC leg is an external URL with no quote:
+    it is gated against a hardcoded price and would otherwise sign whatever
+    its 402 demands, up to everything left in the run cap.
+
+    The ceiling is passed only when the installed SDK accepts it. The cron
+    installs the SDK from PyPI on its own pin, so an argument this code knows
+    about can be one the running SDK does not — and an unexpected keyword is a
+    TypeError before the first call, a dead run with nothing on the ledger.
+    An older SDK gets the run cap alone, said out loud in the log."""
+    import inspect
+    kw = {"prefer_chain": "stacks"} if rail == "stacks" else {}
+    try:
+        per_leg = Decimal(str(max_per_leg).strip())
+        if per_leg <= 0:
+            raise ValueError("must be positive")
+    except Exception as e:
+        log_fn(f"FATAL: FLAGSHIP_MAX_PER_LEG={max_per_leg!r} is not a USD amount ({e})")
+        return None
+    try:
+        params = inspect.signature(session_cls.__init__).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "max_per_call" in params:
+        kw["max_per_call"] = str(per_leg)
+    else:
+        log_fn("WARN: installed agentpay SDK has no max_per_call; the per-leg "
+               "ceiling is off and external legs are bounded by the run cap only")
+    return kw
+
+
 def _redeem_uncertain(s, exc, log_fn=log, *, wait_s: float = 300.0):
     """A Stacks payment that was broadcast but not confirmed inside the
     gateway's settle window raises SettlementUncertain. The spend is already
@@ -623,14 +658,10 @@ def main() -> int:
         log(f"FATAL: FLAGSHIP_STACKS_KEY set but the Stacks wallet did not load: "
             f"{getattr(wallet, 'stacks_disabled_reason', 'unknown')}")
         return 1
-    session_kw = {"prefer_chain": "stacks"} if rail == "stacks" else {}
-    # A per-leg ceiling, not just a run cap. Gateway legs are quoted from the
-    # registry, but the CMC leg is an external URL with no quote — it is gated
-    # here against a hardcoded price and would otherwise sign whatever its 402
-    # demands, up to everything left in the run cap.
-    max_per_leg = os.environ.get("FLAGSHIP_MAX_PER_LEG", "0.02")
-    s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend,
-                max_per_call=max_per_leg, **session_kw)
+    session_kw = session_kwargs(Session, rail, os.environ.get("FLAGSHIP_MAX_PER_LEG", "0.02"))
+    if session_kw is None:
+        return 1
+    s = Session(wallet=wallet, gateway_url=GATEWAY, max_spend=max_spend, **session_kw)
     payer = payer_address(wallet, rail)
     objective["rail"] = rail
     run_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

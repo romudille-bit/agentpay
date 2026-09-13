@@ -17,6 +17,7 @@ from agents.analyst.run import (
     _redeem_uncertain,
     payer_address,
     select_rail,
+    session_kwargs,
 )
 
 
@@ -58,6 +59,40 @@ class TestPayerAddress:
         # A Stacks run must never be attributed to the Base wallet on /ledger.
         w = types.SimpleNamespace(base_address="0x" + "a" * 40, stacks_address=None)
         assert payer_address(w, "stacks") == ""
+
+
+class TestSessionKwargs:
+    """The Session is built from kwargs the installed SDK accepts. The cron
+    installs the SDK from PyPI on its own pin, so the run must not die on an
+    argument the running SDK is too old to know."""
+
+    class _Current:
+        def __init__(self, wallet, max_spend="0.10", gateway_url=None,
+                     prefer_chain=None, max_per_call=None):
+            pass
+
+    class _Older:
+        def __init__(self, wallet, max_spend="0.10", gateway_url=None,
+                     prefer_chain=None, allowed_tools=None, max_per_tool=None):
+            pass
+
+    def test_current_sdk_gets_the_per_leg_ceiling(self):
+        kw = session_kwargs(self._Current, "stacks", "0.02", lambda m: None)
+        assert kw == {"prefer_chain": "stacks", "max_per_call": "0.02"}
+        assert session_kwargs(self._Current, "base", "0.02", lambda m: None) == {"max_per_call": "0.02"}
+
+    def test_older_sdk_runs_on_the_cap_alone_and_says_so(self):
+        logs = []
+        kw = session_kwargs(self._Older, "stacks", "0.02", logs.append)
+        assert kw == {"prefer_chain": "stacks"}
+        assert any("max_per_call" in m for m in logs)
+        self._Older(wallet=None, **kw)
+
+    @pytest.mark.parametrize("bad", ["", "2c", "$0.02", "0", "-1"])
+    def test_unreadable_ceiling_stops_the_run_before_any_call(self, bad):
+        logs = []
+        assert session_kwargs(self._Current, "base", bad, logs.append) is None
+        assert any("FATAL" in m for m in logs)
 
 
 class _Redeemer:
