@@ -60,7 +60,7 @@ from agentpay.budget_policy import budget_policy, BudgetDecision
 # Kept in lockstep with pyproject.toml [project].version — enforced by
 # tests/test_agentpay_sdk.py::test_version_matches_pyproject. Bump both, or
 # the pre-publish test fails.
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 __all__ = [
     "AgentWallet",
     "Session",

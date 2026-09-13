@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentpay-x402"
-version = "0.5.0"
+version = "0.5.1"
 description = "Economic intelligence for AI agents — quickstart() in one line, 17 free tools, hard budget caps, session receipts, x402 on Base, Stellar, or Stacks (sBTC)"
 readme = "README.md"
 license = "MIT"

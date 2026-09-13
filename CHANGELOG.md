@@ -6,6 +6,12 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-13
+
+**Spending rules and the money-path fixes from the full-codebase review.**
+The daily flagship agent runs on this release; 0.5.0 predates the spending
+rules and the `Session` arguments below.
+
 ### Added
 - **Spending rules beyond the cap, on every rail** —
   `Session(allowed_recipients=, max_per_call=, approve_above=, approver=)`.
@@ -24,6 +30,53 @@ project uses [Semantic Versioning](https://semver.org/).
   the rail-neutral spelling of the balance ceiling.
 - `examples/stacks_policy_demo.py` — the rules refusing sBTC payments
   against the live gateway, then one approved settlement.
+
+### Changed
+- **The Base leg pays canonical USDC only.** Every dollar bound in the SDK
+  divides the atomic amount by 1e6, which is true of USDC and nothing else;
+  the leg nonetheless signed for whatever asset the 402 named. The asset is
+  pinned per chain (`eip155:8453`, `eip155:84532`) and a 402 naming another
+  contract is refused with `UnsupportedChainPayment`. A seller listing a
+  bridged or proxy USDC comes back unsupported rather than paid; add the
+  asset to the pinned map deliberately rather than widen the check.
+- **An external Stellar option is payable on this wallet's network only.**
+  The issuer and Horizon are fixed when the wallet is built, so a mainnet
+  wallet "paying" a testnet seller sent real USDC nobody could recover; the
+  option is now not selectable.
+- **`max_per_tool` binds external-URL legs** against what the 402 asks for,
+  as its docstring always said. A URL leg that crosses the per-tool cap now
+  raises `BudgetExceeded` before signing instead of after the call that
+  crossed it.
+- **`allowed_recipients` compares EVM addresses case-insensitively** (EIP-55
+  casing is cosmetic; the exact comparison refused every call for anyone who
+  allowlisted the spelling their explorer showed). Stellar and c32 addresses
+  stay exact.
+- **`approve_above` fails closed** on an unparseable 402 amount, as
+  `max_per_call` already did.
+- A Base option is settleable only when its network resolves to Base
+  mainnet or sepolia (the CAIP-2 ids or the `base`, `base-mainnet`,
+  `base-sepolia`, `base-testnet` names); other strings starting with `base`
+  are not Base.
+
+### Fixed
+- **A Stacks re-quote re-runs the spending rules.** A stale-nonce rejection
+  makes the SDK ask for a fresh 402, which can name another recipient or sit
+  on the other side of the approval threshold; only the cap was re-checked.
+  `allowed_recipients`, `max_per_call` and `approve_above` now run again on
+  the new quote before it is signed.
+- **Concurrent calls can no longer exceed the cap by the overpay
+  tolerance.** Other in-flight holds are counted at what they are permitted
+  to spend, not at their quote; an exact-fit single call still passes.
+- **`StacksKeypair` no longer prints the private key in its repr.** It is a
+  local in the signing frames, so a crash reporter or rich traceback would
+  have shipped the key.
+- The faucet and register error paths report the response's key names
+  rather than the body that holds the secret.
+- An option with no `payTo` is skipped at selection instead of being
+  selected, held and then raising — which leaked the hold for the life of
+  the session.
+- An unreadable `amount_usdc` in a 402 is a `PrePaymentError`, not a bare
+  `decimal.InvalidOperation`.
 
 ## [0.5.0] — 2026-09-11
 
