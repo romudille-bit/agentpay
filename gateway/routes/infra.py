@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 import registry
 
+from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
 from gateway.landing import render_landing
 from gateway.routes.discovery import build_llms_txt
@@ -157,7 +158,17 @@ async def favicon_ico():
 
 
 @router.get("/health")
+@limiter.exempt
 async def health():
+    """Liveness, and the platform healthcheck target.
+
+    Exempt from the global default limit. The limiter keys on
+    request.client.host, which behind a platform proxy is one bucket for every
+    caller, so an unrelated burst of traffic would 429 the healthcheck and get a
+    healthy process restarted. A limit whose failure mode is worse than the
+    traffic it throttles protects nothing — and this route reads no database and
+    does no work. Undecorated public reads keep the default.
+    """
     return {
         "status": "ok",
         "network": settings.STELLAR_NETWORK,

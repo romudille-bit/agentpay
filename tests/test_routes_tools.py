@@ -1816,3 +1816,37 @@ class TestBareBodyParamsFold:
         body = self._pay(client, {})
         assert body["parameters_received"] == {}
         assert "defaults" in body["parameters_note"]
+
+
+class TestVerificationFailuresAreRecorded:
+    """A failed verification is the only trace a failed attempt gets.
+
+    Issuing a 402 writes no payment_logs row, so on the Stellar path the insert
+    in _record_rejected_attempt is the whole record — and the attempt that
+    matters most is the payer whose USDC has already moved but whose
+    verification lost a race with Horizon. Suppressing that leaves no support
+    trail and no refund hook.
+    """
+
+    def test_verification_failures_are_not_treated_as_noise(self):
+        from gateway.routes.tools import _REJECTION_NOISE_MARKERS
+
+        for reason in ("Transaction not found on Stellar",
+                       "horizon_error",
+                       "No matching USDC payment found in transaction",
+                       "Could not fetch transaction operations",
+                       "memo_mismatch: tx memo does not bind to this payment_id",
+                       "challenge_tool_mismatch",
+                       "challenge_amount_mismatch",
+                       "Paid 0.001 USDC but 0.01 required"):
+            low = reason.lower()
+            assert not any(m in low for m in _REJECTION_NOISE_MARKERS), (
+                f"{reason!r} would be dropped without a trace"
+            )
+
+    def test_scanner_garbage_is_still_noise(self):
+        from gateway.routes.tools import _REJECTION_NOISE_MARKERS
+
+        for reason in ("Payment ID not found or expired",
+                       "Invalid X-Payment header format"):
+            assert any(m in reason.lower() for m in _REJECTION_NOISE_MARKERS)

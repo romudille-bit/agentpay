@@ -900,6 +900,49 @@ class TestProbePaidClassification:
         assert asked[0] > D("0.01")
         assert row["outcome"] == "cap_reached"
 
+    def test_unknown_price_is_assumed_to_be_the_ceiling(self):
+        """An unpriced listing is charged against the budget at the ceiling.
+
+        Assuming a penny is what let an unpriced candidate clear both the
+        selection ceiling and the budget gate, after which an external-URL 402
+        can ask for anything the session still has.
+        """
+        from decimal import Decimal as D
+        from agents.prober import probe as probe_mod
+        from agents.prober import run as prober_run
+
+        asked = []
+
+        class _Budget(self._Session):
+            def would_exceed(self, price):
+                asked.append(price)
+                return True
+
+        c = self._cand()
+        c["price_usd"] = None
+        row = prober_run.probe_paid(_Budget(result={"x": 1}), c)
+        assert asked == [probe_mod.DEFAULT_MAX_PROBE_USD]
+        assert asked[0] > D("0.01")
+        assert row["outcome"] == "cap_reached"
+
+    def test_unknown_price_uses_this_runs_ceiling(self):
+        """PROBER_MAX_PROBE_USD is what the run enforces, so a raised ceiling
+        must raise the assumption with it."""
+        from decimal import Decimal as D
+        from agents.prober import run as prober_run
+
+        asked = []
+
+        class _Budget(self._Session):
+            def would_exceed(self, price):
+                asked.append(price)
+                return True
+
+        c = self._cand()
+        c["price_usd"] = None
+        prober_run.probe_paid(_Budget(result={"x": 1}), c, D("0.40"))
+        assert asked == [D("0.40")]
+
     def test_known_path_template_is_filled_before_paying(self):
         from agents.prober import run as prober_run
         s = self._Session(result={"x": 1})
@@ -1009,3 +1052,32 @@ class TestReconcileSettlements:
         r = probe.reconcile_settlements(self.ENTRIES, [])
         assert [x["resolution"] for x in r] == \
             ["confirmed", "no_onchain_evidence", "no_onchain_evidence"]
+
+
+class TestMoneyEnvKnobsStopTheRun:
+    """A spend limit that does not parse stops the sweep, with a sentence that
+    names the variable — rather than raising from inside the SDK at Session
+    construction, before the first probe, with nothing stored."""
+
+    def test_unparseable_value_is_fatal(self, monkeypatch):
+        from agents.prober import run as prober_run
+
+        logs = []
+        monkeypatch.setenv("PROBER_MAX_SPEND", "O.50")   # letter O
+        assert prober_run.env_money("PROBER_MAX_SPEND", "0.50", logs.append) is None
+        assert any("FATAL" in m and "PROBER_MAX_SPEND" in m for m in logs)
+
+    def test_non_positive_value_is_fatal(self, monkeypatch):
+        from agents.prober import run as prober_run
+
+        monkeypatch.setenv("PROBER_MAX_PROBE_USD", "0")
+        assert prober_run.env_money("PROBER_MAX_PROBE_USD", "0.05", lambda m: None) is None
+
+    def test_unset_takes_the_default_and_a_good_override_is_honoured(self, monkeypatch):
+        from decimal import Decimal as D
+        from agents.prober import run as prober_run
+
+        monkeypatch.delenv("PROBER_MAX_SPEND", raising=False)
+        assert prober_run.env_money("PROBER_MAX_SPEND", "0.50", lambda m: None) == D("0.50")
+        monkeypatch.setenv("PROBER_MAX_SPEND", "1.25")
+        assert prober_run.env_money("PROBER_MAX_SPEND", "0.50", lambda m: None) == D("1.25")

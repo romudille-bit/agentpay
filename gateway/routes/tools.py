@@ -943,26 +943,21 @@ async def _issue_402(
     return JSONResponse(status_code=402, content=body_content, headers=headers)
 
 
-# Rejection reasons that carry no analytics value, so no row is written for
-# them. Two kinds: the payment_id doesn't correspond to any known challenge
-# (scanner garbage / long-expired probe) or the header never parsed; and a
-# proof that failed verification before anything settled, which anyone can
-# produce at will — get a 402, retry with an invented tx_hash — so recording it
-# would let unauthenticated callers author rows in the table /ledger,
-# /scores.json and the conversion counts all read. Non-paying traffic is
-# already counted in probe_rollup.
+# Rejection reasons that carry no analytics value: the payment_id doesn't
+# correspond to any known challenge (scanner garbage / long-expired probe) or
+# the header never parsed. Recording these per-event would only generate bot
+# write churn.
+#
+# Verification failures are deliberately NOT here. Issuing a 402 writes no row
+# (see _issue_402), so on the Stellar path this insert is the only record a
+# failed attempt ever gets — and the attempt that matters most is the payer
+# whose USDC has already moved but whose verification lost a race with Horizon.
+# Suppressing that leaves no support trail and no refund hook. A caller can mint
+# such rows, but only one per challenge, and a challenge costs a rate-limited
+# 402 — the same traffic probe_rollup already counts.
 _REJECTION_NOISE_MARKERS = (
     "not found or expired",
     "invalid x-payment header",
-    "challenge_tool_mismatch",
-    "challenge_amount_mismatch",
-    "challenge_amount_unparseable",
-    "memo_mismatch",
-    "horizon_error",
-    "transaction not found",
-    "transaction was not successful",
-    "no matching usdc payment",
-    "could not fetch transaction",
 )
 
 

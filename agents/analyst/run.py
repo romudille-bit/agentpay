@@ -621,13 +621,24 @@ def build_findings(kind: str, intel_calls: list[dict], verdicts: dict[str, dict]
 def main() -> int:
     from agentpay import AgentWallet, Session, PaymentFailed, RefundPending
 
+    # Config first, credentials second: both are fatal and both are free, and a
+    # spend limit that does not parse should be named here rather than raised
+    # from inside the SDK at Session construction — a dead run with nothing on
+    # the ledger. Same treatment session_kwargs gives the per-leg ceiling.
+    _raw_cap = (os.environ.get("FLAGSHIP_MAX_SPEND") or "0.25").strip()
+    try:
+        if Decimal(_raw_cap) <= 0:
+            raise ValueError("must be positive")
+    except Exception as e:
+        log(f"FATAL: FLAGSHIP_MAX_SPEND={_raw_cap!r} is not a USD amount ({e})")
+        return 1
+    max_spend = _raw_cap
+
     stellar_secret = os.environ.get("FLAGSHIP_STELLAR_SECRET", "")
     base_key       = os.environ.get("FLAGSHIP_BASE_KEY", "")
     if not (stellar_secret and base_key):
         log("FATAL: FLAGSHIP_STELLAR_SECRET and FLAGSHIP_BASE_KEY are required")
         return 1
-
-    max_spend = os.environ.get("FLAGSHIP_MAX_SPEND", "0.25")
     override = [s.strip().upper() for s in
                 os.environ.get("FLAGSHIP_SYMBOLS", "").split(",") if s.strip()] or None
     force_goal = os.environ.get("FLAGSHIP_GOAL", "").strip()

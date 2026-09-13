@@ -351,7 +351,7 @@ class TestModeBReplayCutover:
 
         # Make sure in-memory set is empty so we're testing the
         # Supabase-clean-AND-memory-clean path
-        base_mod._used_base_tx_hashes.discard(VALID_TX_HASH)
+        base_mod._used_base_tx_hashes.pop(VALID_TX_HASH, None)
 
         async def supabase_says_clean(tx, net):
             return False
@@ -873,7 +873,7 @@ class TestModeAConsumesItsTxHash:
     @pytest.mark.asyncio
     async def test_hash_is_consumed_and_not_settleable_twice(self, monkeypatch):
         import gateway.base as base_mod
-        base_mod._used_base_tx_hashes.discard(VALID_TX_HASH)
+        base_mod._used_base_tx_hashes.pop(VALID_TX_HASH, None)
         recorded = []
 
         async def fake_record(tx_hash, network):
@@ -901,14 +901,14 @@ class TestModeAConsumesItsTxHash:
             )
         assert second["success"] is False
         assert second["reason"] == "replay_attack"
-        base_mod._used_base_tx_hashes.discard(VALID_TX_HASH)
+        base_mod._used_base_tx_hashes.pop(VALID_TX_HASH, None)
 
     @pytest.mark.asyncio
     async def test_unconfirmed_durable_consume_fails_closed_and_is_retryable(
         self, monkeypatch,
     ):
         import gateway.base as base_mod
-        base_mod._used_base_tx_hashes.discard(VALID_TX_HASH)
+        base_mod._used_base_tx_hashes.pop(VALID_TX_HASH, None)
 
         async def blip(tx_hash, network):
             return None
@@ -924,3 +924,21 @@ class TestModeAConsumesItsTxHash:
         assert "replay_check_unavailable" in result["reason"]
         # The in-memory hold was released, so the same proof retries cleanly.
         assert VALID_TX_HASH not in base_mod._used_base_tx_hashes
+
+
+def test_used_base_tx_hashes_is_bounded(monkeypatch):
+    """Three settle paths write to it — Mode A, Mode B and the uncertain-settle
+    recovery — so it would otherwise grow for the life of the worker.
+    replay_tx_hashes is the authoritative consume, so eviction only shortens the
+    window this cache covers on its own."""
+    import gateway.base as base_mod
+
+    monkeypatch.setattr(base_mod, "_USED_BASE_HASHES_MAX", 10)
+    base_mod._used_base_tx_hashes.clear()
+    for i in range(50):
+        base_mod._remember_base_tx(f"0xhash{i}")
+
+    assert len(base_mod._used_base_tx_hashes) == 10
+    assert "0xhash49" in base_mod._used_base_tx_hashes
+    assert "0xhash0" not in base_mod._used_base_tx_hashes
+    base_mod._used_base_tx_hashes.clear()

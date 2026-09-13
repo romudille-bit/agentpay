@@ -178,7 +178,29 @@ def probe_free(cand: dict) -> dict:
     return _probe_row(cand, "free", error=error, **checks)
 
 
-def probe_paid(session, cand: dict) -> dict:
+def env_money(name: str, default: str, log_fn=log):
+    """A positive USD amount from the environment, the default when unset, or
+    None when the value is unusable.
+
+    These feed the Session's caps, which parse strictly: an unparseable value
+    raises from inside the SDK at construction, before the first probe, and the
+    sweep dies with nothing stored. A misconfigured spend limit is worth stopping
+    for — but stopping with a sentence that names the variable.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return Decimal(default)
+    try:
+        value = Decimal(raw)
+        if value <= 0:
+            raise ValueError("must be positive")
+        return value
+    except Exception as e:
+        log_fn(f"FATAL: {name}={raw!r} is not a positive USD amount ({e})")
+        return None
+
+
+def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
     """T1: settle a real payment via the SDK, judge delivery. The Session cap
     is the only spend authority — would_exceed() gates before every call.
 
@@ -194,10 +216,13 @@ def probe_paid(session, cand: dict) -> dict:
     except ImportError:                       # older SDK without the typed class
         UnsupportedChainPayment = ()
 
-    # An unknown catalogue price is assumed to be the ceiling, not a penny:
-    # guessing low here is what let an unpriced listing through the selection
-    # ceiling and into a paid probe.
-    price = cand.get("price_usd") or probe.DEFAULT_MAX_PROBE_USD
+    # An unknown catalogue price is assumed to be this run's ceiling, not a
+    # penny: guessing low is what let an unpriced listing through the selection
+    # ceiling and into a paid probe. The run's ceiling, not the module default —
+    # a raised PROBER_MAX_PROBE_USD would otherwise still under-assume, exactly
+    # when there is more room to lose.
+    ceiling = max_probe if max_probe is not None else probe.DEFAULT_MAX_PROBE_USD
+    price = cand.get("price_usd") or ceiling
     if session.would_exceed(price):
         return _probe_row(cand, "paid", error="skipped: cap reached",
                           skipped=True, outcome="cap_reached")
@@ -377,10 +402,12 @@ def main() -> int:
         log(f"jitter sleep {delay:.0f}s")
         time.sleep(delay)
 
-    max_spend = os.environ.get("PROBER_MAX_SPEND", "0.50")
+    _max_spend = env_money("PROBER_MAX_SPEND", "0.50")
     max_paid = int(os.environ.get("PROBER_MAX_PAID_PROBES", str(probe.DEFAULT_MAX_PAID)))
-    max_probe = Decimal(os.environ.get("PROBER_MAX_PROBE_USD",
-                                       str(probe.DEFAULT_MAX_PROBE_USD)))
+    max_probe = env_money("PROBER_MAX_PROBE_USD", str(probe.DEFAULT_MAX_PROBE_USD))
+    if _max_spend is None or max_probe is None:
+        return 1
+    max_spend = str(_max_spend)
     retest_max = int(os.environ.get("PROBER_RETEST_MAX", "6"))
     needs = _needs_from_env()
 
@@ -463,7 +490,7 @@ def main() -> int:
     # inference from the run receipt (AGE-87 root cause 4).
     paid_rows: list[dict] = []
     for cand in sel["t1"]:
-        row = probe_paid(s, cand)
+        row = probe_paid(s, cand, max_probe)
         paid_rows.append(row)
         err = f" | err: {row['error']}" if row.get("error") else ""
         if row.get("skipped"):

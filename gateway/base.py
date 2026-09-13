@@ -45,7 +45,19 @@ CDP_FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402"
 FACILITATOR_URL = CDP_FACILITATOR_URL
 
 # In-memory replay protection for Base tx hashes
-_used_base_tx_hashes: set[str] = set()
+# Consumed Base tx hashes for this process. Insertion-ordered and bounded, like
+# _used_stacks_txids and the Stellar guard: three settle paths write to it (Mode
+# A, Mode B and the uncertain-settle recovery), so it would otherwise grow for
+# the life of the worker. replay_tx_hashes is the authoritative consume, so
+# eviction only shortens the window this cache covers on its own.
+_used_base_tx_hashes: dict[str, None] = {}
+_USED_BASE_HASHES_MAX = 50_000
+
+
+def _remember_base_tx(tx_hash: str) -> None:
+    _used_base_tx_hashes[tx_hash] = None
+    while len(_used_base_tx_hashes) > _USED_BASE_HASHES_MAX:
+        _used_base_tx_hashes.pop(next(iter(_used_base_tx_hashes)))
 
 # USDC contract addresses
 USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
@@ -682,7 +694,7 @@ async def _recover_uncertain_settle(
                 # same PAYMENT-SIGNATURE would re-recover the same transfer.
                 if tx_hash in _used_base_tx_hashes:
                     return None
-                _used_base_tx_hashes.add(tx_hash)
+                _remember_base_tx(tx_hash)
                 recorded = await sb.record_tx_hash(tx_hash, network_label)
                 if recorded is False:
                     return None
@@ -690,7 +702,7 @@ async def _recover_uncertain_settle(
                     # Fail closed: durable consume unconfirmed, so don't claim
                     # the recovered transfer. Release the in-memory hold so a
                     # later retry can re-recover it once the store is back.
-                    _used_base_tx_hashes.discard(tx_hash)
+                    _used_base_tx_hashes.pop(tx_hash, None)
                     return None
                 logger.info(
                     f"[BASE] settle RECOVERED on-chain: {tx_hash[:20]}... "
@@ -777,7 +789,7 @@ async def settle_base_payment(
                 return {"success": False, "tx_hash": tx_hash, "payer": payer,
                         "network": payment_requirements.get("network", ""),
                         "reason": "replay_attack"}
-            _used_base_tx_hashes.add(tx_hash)
+            _remember_base_tx(tx_hash)
             recorded = await sb.record_tx_hash(tx_hash, network_label)
             if recorded is False:
                 return {"success": False, "tx_hash": tx_hash, "payer": payer,
@@ -789,7 +801,7 @@ async def settle_base_payment(
                 # settling here would make pre-restart payments replayable.
                 # Reject retryably (not "replay_attack") and release the
                 # in-memory hold so the same proof works once the store is back.
-                _used_base_tx_hashes.discard(tx_hash)
+                _used_base_tx_hashes.pop(tx_hash, None)
                 return {"success": False, "tx_hash": tx_hash, "payer": payer,
                         "network": payment_requirements.get("network", ""),
                         "reason": ("replay_check_unavailable: durable replay "
@@ -932,7 +944,7 @@ async def settle_base_payment(
         if tx in _used_base_tx_hashes:
             return {"success": False, "tx_hash": tx, "payer": payer,
                     "network": network, "reason": "replay_attack"}
-        _used_base_tx_hashes.add(tx)
+        _remember_base_tx(tx)
         recorded = await sb.record_tx_hash(tx, _network_label(network))
         if recorded is False:
             return {"success": False, "tx_hash": tx, "payer": payer,
@@ -943,7 +955,7 @@ async def settle_base_payment(
             # replayable. Release the hold so the retry works once the store
             # is back. The authorization itself is spent either way, so this
             # rejection is retryable, not a replay accusation.
-            _used_base_tx_hashes.discard(tx)
+            _used_base_tx_hashes.pop(tx, None)
             return {"success": False, "tx_hash": tx, "payer": payer,
                     "network": network,
                     "reason": ("replay_check_unavailable: durable replay "

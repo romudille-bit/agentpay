@@ -185,3 +185,23 @@ class TestPaidLoopOnStacks:
         s = S(SettlementUncertain("still pending", tx_hash="cd" * 32))
         verdicts, skipped = self._loop(s, lambda m: None)
         assert verdicts == {} and skipped == {"BTC": "settlement uncertain"}
+
+
+class TestRunCapValidation:
+    """The run cap gets the same treatment session_kwargs gave the per-leg
+    ceiling: it is passed straight to Session(max_spend=), which parses
+    strictly, so a typo in the Railway variable would raise from inside the SDK
+    at construction — a dead run with nothing on the ledger."""
+
+    @pytest.mark.parametrize("bad", ["O.25", "$0.25", "0", "-1", "abc"])
+    def test_an_unusable_cap_stops_the_run_before_any_call(self, bad, monkeypatch):
+        import agents.analyst.run as analyst_run
+
+        logs = []
+        monkeypatch.setattr(analyst_run, "log", logs.append)
+        monkeypatch.setenv("FLAGSHIP_MAX_SPEND", bad)
+        monkeypatch.setenv("FLAGSHIP_STELLAR_SECRET", "")
+        monkeypatch.setenv("FLAGSHIP_BASE_KEY", "")
+
+        assert analyst_run.main() == 1
+        assert any("FLAGSHIP_MAX_SPEND" in m and "FATAL" in m for m in logs), logs
