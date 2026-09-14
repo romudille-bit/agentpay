@@ -45,7 +45,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
   "url": "GATEWAY_URL_PLACEHOLDER",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Web",
-  "description": "The economic intelligence layer for MCP servers and AI agents: x402 payment gateway with hard budget caps, pre-flight plan pricing, on-chain receipts, and public delivery scores for the x402 marketplace. USDC on Base (standard x402) and Stellar (via the AgentPay SDK).",
+  "description": "The economic intelligence layer for MCP servers and AI agents: x402 payment gateway with hard budget caps, pre-flight plan pricing, on-chain receipts, and public delivery scores for the x402 marketplace. USDC on Base (standard x402) and Stellar, sBTC on Stacks (via the AgentPay SDK).",
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD",
              "description": "17 free tools; paid tools from $0.01 USDC per call"},
   "sameAs": [
@@ -208,7 +208,7 @@ pre {
 .how-step h3 { font-size: 1rem; font-weight: 600; margin: 0.4rem 0 0.5rem; }
 .how-step p { color: var(--muted); font-size: 0.9rem; margin: 0; }
 
-.networks-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.networks-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
 .network-card {
   padding: 1.25rem 1.5rem;
   background: var(--code-bg);
@@ -364,6 +364,10 @@ TOOLS_ROWS_PLACEHOLDER
       <p>Native USDC, gasless EIP-3009 settlement via the CDP facilitator — the default paid chain. Discovery via Coinbase's Bazaar directory: <code>session_create</code>, <code>pre_trade_check</code>, and <code>verified_route</code> are indexed and settle here today.</p>
     </div>
     <div class="network-card">
+      <h3>Stacks mainnet</h3>
+      <p>sBTC via the AgentPay SDK: the agent signs a SIP-010 <code>sbtc-token::transfer</code> under its USD cap and never broadcasts; the gateway verifies every field against its own quote, broadcasts, and waits for confirmation before the tool runs. Receipts are chain-verified on the public ledger. <a href="https://github.com/romudille-bit/agentpay/blob/main/docs/stacks-walkthrough.md">Walkthrough</a>.</p>
+    </div>
+    <div class="network-card">
       <h3>Stellar mainnet</h3>
       <p>Native USDC, sub-cent fees (~$0.000001 per tx), Horizon-verified classic payments — supported via the AgentPay SDK or a manual payment + memo. Not yet the standard <code>@x402/stellar</code> Soroban scheme (that migration is on the v2 roadmap), so standard x402 clients should pay on Base. Circle's CCTP is live on Stellar, so funds bridge 1:1 to and from Base.</p>
     </div>
@@ -377,7 +381,7 @@ TOOLS_ROWS_PLACEHOLDER
     AgentPay is the economic intelligence layer for MCP servers and AI agents — x402-v2 payment protocol,
     CDP Facilitator settlement on Base with
     <a href="https://www.coinbase.com/en-gb/developer-platform/discover/launches/introducing-bazaar">Bazaar</a> auto-indexing,
-    and Horizon-verified classic Stellar settlement via the AgentPay SDK.
+    Horizon-verified classic Stellar settlement and sBTC settlement on Stacks via the AgentPay SDK.
   </div>
   <ul>
     <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>

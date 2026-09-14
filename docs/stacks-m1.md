@@ -1,4 +1,11 @@
-# Stacks sBTC settlement — developer guide (M1)
+# Stacks sBTC settlement — developer guide (M1, testnet)
+
+> **Status:** this is the milestone-1 guide, kept as delivered. sBTC settlement
+> is **live on Stacks mainnet** at `agentpay.tools` since `agentpay-x402`
+> 0.5.0 (September 2026). For the current path start at
+> [`stacks-walkthrough.md`](stacks-walkthrough.md); the mainnet reference is
+> [`stacks-mainnet.md`](stacks-mainnet.md). Everything below describes the
+> testnet gateway and the testnet faucet.
 
 This is the developer reference for AgentPay's Stacks/sBTC settlement adapter as
 shipped for milestone M1 of the Stacks Endowment grant. It covers how to set up a

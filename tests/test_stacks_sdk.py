@@ -196,6 +196,62 @@ class TestStacksHardRequirement:
             assert route.call_count == 1  # only the initial 402
         assert wallet.total_spent_usdc == "0"
 
+    def test_cap_exactly_equal_to_the_price_signs(self):
+        """The boundary a reviewer probes first: a cap equal to the quote is
+        enough — the call signs, settles and lands exactly on the cap."""
+        wallet = _make_wallet()
+        client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(0)
+            route = respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=_stacks_402(amount_usdc="0.001")),
+                httpx.Response(200, json=_ok_200()),
+            ])
+            result = client.call_tool(
+                "verified_route", {}, max_spend="0.001",
+                prefer_chain="stacks", chain_is_explicit=True,
+            )
+        assert result["result"]["ok"] is True
+        assert route.call_count == 2
+        assert wallet.total_spent_usdc == "0.001"
+
+    def test_cap_one_unit_below_the_price_refuses_before_signing(self):
+        """And one micro-dollar under it: refused on the 402, nothing signed,
+        no nonce fetched, nothing recorded."""
+        wallet = _make_wallet()
+        client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)
+        with respx.mock:
+            nonce_route = _mock_nonce(0)
+            route = respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=_stacks_402(amount_usdc="0.001")),
+            ])
+            with pytest.raises(BudgetExceeded):
+                client.call_tool(
+                    "verified_route", {}, max_spend="0.000999",
+                    prefer_chain="stacks", chain_is_explicit=True,
+                )
+            assert nonce_route.call_count == 0
+            assert route.call_count == 1
+        assert wallet.total_spent_usdc == "0"
+
+    def test_sats_that_disagree_with_the_quoted_usd_are_refused(self):
+        """A 402 whose sats do not match its own USD at its own rate is the
+        altered-requirements case: the USD passes the cap, the sats would
+        not. The SDK signs neither."""
+        wallet = _make_wallet()
+        client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)
+        resp_402 = _stacks_402(amount_usdc="0.001", amount_sats=100_000)
+        with respx.mock:
+            nonce_route = _mock_nonce(0)
+            respx.post(TOOL_URL).mock(side_effect=[httpx.Response(402, json=resp_402)])
+            with pytest.raises(PaymentFailed, match="refusing to sign"):
+                client.call_tool(
+                    "verified_route", {}, max_spend="0.0011",
+                    prefer_chain="stacks", chain_is_explicit=True,
+                )
+            assert nonce_route.call_count == 0
+        assert wallet.total_spent_usdc == "0"
+
     def test_unparseable_usd_amount_fails_closed(self):
         wallet = _make_wallet()
         client = AgentPayClient(wallet=wallet, gateway_url=GATEWAY)

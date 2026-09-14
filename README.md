@@ -25,7 +25,8 @@ The developer sees all of it: spending patterns per agent, anomaly flags when so
 The result is an agent that doesn't just have a budget. It knows how to use one.
 
 **Start free:** 20 tools (17 free), no USDC needed, no wallet setup required.  
-**Live gateway:** `https://agentpay.tools`
+**Live gateway:** `https://agentpay.tools`  
+**Settles in:** USDC on Base and Stellar, **sBTC on Stacks mainnet** ([walkthrough](docs/stacks-walkthrough.md))
 
 ---
 
@@ -383,13 +384,13 @@ r = s.call("pre_trade_check", {"symbol": "BTC", "size_usd": 25000, "side": "long
 print(r.data["verdict"], r.tx)      # verdict + the sbtc-token::transfer txid
 ```
 
-- **Mainnet guide:** [`docs/stacks-mainnet.md`](docs/stacks-mainnet.md) — config, the one-liner, redeeming an uncertain settle, ledger verification, the pilot agent.
-- **Testnet guide:** [`docs/stacks-m1.md`](docs/stacks-m1.md) — setup, known limitations, dependencies.
-- **Runnable demo:** [`examples/stacks_m1_demo.py`](examples/stacks_m1_demo.py) — capped session → sBTC payment → receipt → over-cap rejection (`STACKS_NETWORK=mainnet` for mainnet).
+- **Walkthrough (start here):** [`docs/stacks-walkthrough.md`](docs/stacks-walkthrough.md) — install → one capped mainnet payment → the receipt verified three ways → the rules refusing before signing, with real output.
+- **Mainnet reference:** [`docs/stacks-mainnet.md`](docs/stacks-mainnet.md) — config, the one-liner, redeeming an uncertain settle, ledger verification, the pilot agent.
+- **Runnable demo:** [`examples/stacks_m1_demo.py`](examples/stacks_m1_demo.py) — capped session → sBTC payment → receipt → over-cap rejection. `STACKS_NETWORK=mainnet` runs it on mainnet; the name is from the milestone it was written for.
 - **Spending rules demo:** [`examples/stacks_policy_demo.py`](examples/stacks_policy_demo.py) — recipient allowlist, per-call maximum and approval gate refusing sBTC payments before anything is signed, then one approved settlement; refusals on the receipt.
 - **Demo video:** [YouTube (~40s)](https://www.youtube.com/watch?v=rGb07rwyG1I)
 - **Mainnet receipts:** [`0x30689b5e…`](https://explorer.hiro.so/txid/0x30689b5ee9f779fe571f0b7797e2453b21cf7d220cadf4f1881586757347387f?chain=mainnet), [`0xd1de1a79…`](https://explorer.hiro.so/txid/0xd1de1a792e2a23f5a0b22651eec4f3f00a49f3e9ca15c70c2a19fc8fb474dd8e?chain=mainnet), [`0x59ce7014…`](https://explorer.hiro.so/txid/0x59ce70146da57ffd8c71cd67eea9169373ad11b7298e77a88e5f946a0064e325?chain=mainnet) — `sbtc-token::transfer` payer → gateway, each from a `$0.05`-capped session, chain-verified on [agentpay.tools/ledger](https://agentpay.tools/ledger).
-- **Testnet proof:** [`0xa5351bad…`](https://explorer.hiro.so/txid/0xa5351bad31ed6bbcb57c0f9fcbcd997cc203b7011d62666176452edaed2d8c87?chain=testnet) — PoX-5 testnet, block 82215.
+- **Milestone-1 (testnet) material, kept as delivered:** [`docs/stacks-m1.md`](docs/stacks-m1.md) and the testnet proof [`0xa5351bad…`](https://explorer.hiro.so/txid/0xa5351bad31ed6bbcb57c0f9fcbcd997cc203b7011d62666176452edaed2d8c87?chain=testnet) (PoX-5 testnet, block 82215). The testnet gateway is still up for anyone who wants to try the rail without mainnet sBTC.
 
 ---
 
