@@ -2,7 +2,7 @@
 
 Curated, usage-ranked discovery + 0%-fee on-chain settlement for x402 tools on the
 **Arbitrum stack** (Arbitrum One, Sepolia, Robinhood Chain). Built on AgentPay's live
-x402 gateway. See `SUBMISSION.md` for the buildathon write-up.
+x402 gateway. Built for the Arbitrum buildathon; the write-up is not in this repo.
 
 ## Why
 

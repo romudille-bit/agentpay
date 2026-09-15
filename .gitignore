@@ -160,3 +160,21 @@ fuchss_history_*.json
 FUCHSS_PROBER_REPORT.md
 fuchss_trust_*.json
 fuchss_reports.json
+
+# Working files that accumulate at the repo root on the dev machine: patches
+# applied with git am, runbooks, outreach drafts, demo transcripts, one-off
+# deploy scripts. None of it is source.
+_tmp_upload/
+_to_delete/
+Claude outputs/
+*.patch
+/demo_run_*.txt
+/*_PREP*.md
+/DIRECTORY_SUBMISSIONS_*.md
+/PR_DESCRIPTION_*.md
+/*_STEPS.md
+/deploy_*.sh
+/push_*.sh
+/run_m1_demo.sh
+/*.png
+tools/age128-repro/

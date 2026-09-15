@@ -24,6 +24,19 @@ branches `rejected`, `refund_pending → refund_done | refund_failed`, and
   funnel analytics that the tests pin.
 - **Base settlements produce a second row keyed on tx_hash** because x402-v2
   doesn't echo the challenge UUID back; the UUID row is swept to `abandoned`.
+- **Stacks adds one non-terminal state, `uncertain`.** The gateway broadcasts
+  the agent's signed transfer and polls for confirmation inside the request;
+  when the settle window closes first, the call answers 503 with
+  `payment_status: "uncertain"` and a row keyed on the recomputed txid is left
+  in `uncertain`. A redeem re-presents the same bytes once the chain shows
+  `success`; the row moves `uncertain → verified` by compare-and-set
+  (`expected_state="uncertain"`), so a second redeem loses the race and is
+  refused, and an aborted transaction closes the row `rejected`. That row is
+  the proof this gateway broadcast the transaction — without it a re-presented
+  txid is a replay, not a redemption.
+- **Refunds exist only on rails the gateway can pay out on.** Stacks has no
+  outbound path (the payee address holds no key), so a failed paid Stacks
+  call answers `refund_unavailable` rather than `refund_pending`.
 
 ## Replay protection: atomic consume
 

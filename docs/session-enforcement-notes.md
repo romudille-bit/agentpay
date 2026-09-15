@@ -1,6 +1,8 @@
 # Notes: server-side session enforcement (parked)
 
-Status: **notes only — not built.** Captured 2026-06-02. Priority right now is
+Status: **notes only — not built.** Captured 2026-06-02 and left as written;
+the tool counts and rails below are from that date (the catalogue has had
+three paid tools since, and Stacks settlement is live). Priority right now is
 users + ease of use; monetization/enforcement comes second. Revisit when (a) a
 metered/paid tool ships, or (b) the Arbitrum contracts give us a non-custodial
 place to enforce.

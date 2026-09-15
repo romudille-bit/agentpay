@@ -1,6 +1,11 @@
 # AgentPay Tier 2 — Production Hardening Design
 
-Status: **Draft** · Author: romudille-bit · Last updated: April 25, 2026
+Status: **Draft, historical** · Author: romudille-bit · Last updated: April 25, 2026
+
+> Kept as the design record it was. Much of section 1–3 has since shipped in
+> some form (refund worker, replay consume, rate limits, the public ledger);
+> section 4's grant framing is superseded. For what the gateway does today,
+> start at [`DESIGN_NOTES.md`](DESIGN_NOTES.md) and the README.
 
 This document specifies the second wave of work on the AgentPay gateway after
 the initial public release. It exists to make three product calls explicit
