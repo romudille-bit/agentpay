@@ -14,6 +14,7 @@ __pycache__/
 .Python
 venv/
 .venv/
+.venv*/          # .venv310 and any other per-interpreter env
 *.egg-info/
 dist/
 build/
