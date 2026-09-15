@@ -228,3 +228,7 @@ thousand µSTX.
 - The settle waits for confirmation inside the HTTP request, so a slow block
   surfaces as `SettlementUncertain` rather than a 200; `redeem` is the
   recovery path.
+- `verified_route` settles in sBTC like any other tool, but the sellers it
+  recommends come from a marketplace sweep that has no Stacks listings yet
+  (Base and Solana), so its result is actionable only for a wallet that can
+  also pay on Base.

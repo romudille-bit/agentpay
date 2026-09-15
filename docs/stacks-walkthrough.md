@@ -303,6 +303,16 @@ paid call whose tool fails reports `refund_unavailable` rather than
 pretending), because the gateway holds no key to send from. All three are
 stated in the known-limitations section of the reference.
 
+**What a Stacks payer can buy.** Every tool in AgentPay's own catalogue
+settles in sBTC, `verified_route` included. What `verified_route` *returns*
+is another matter: it vets third-party x402 sellers, and the marketplace
+it sweeps (Coinbase's Bazaar) lists Base and Solana sellers today, none on
+Stacks. So a Stacks-only wallet can pay for the recommendation but not act
+on it without a Base wallet as well. The payment rail is Stacks-native; the
+marketplace is not yet. That changes the day the first Stacks x402 sellers
+are in the sweep, and it is listed as the next integration in the grant's
+closing update rather than glossed here.
+
 ## 8. An agent doing this on its own
 
 The flagship analyst is a daily Railway cron that opens a $0.25 session,
