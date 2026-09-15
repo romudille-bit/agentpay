@@ -6,8 +6,8 @@ routes/ledger.py — Public flagship receipt ledger.
 
 This is the public proof point for AgentPay's positioning: an autonomous agent
 (the flagship analyst, agents/analyst/run.py) that prices a plan, spends real
-USDC under a hard per-run cap, and leaves a verifiable on-chain receipt every
-day. The ledger reads the durable payment_logs table and reconstructs the
+money (USDC on Base, sBTC on Stacks) under a hard per-run cap, and leaves a
+verifiable on-chain receipt every day. The ledger reads the durable payment_logs table and reconstructs the
 agent's runs — free intel calls + paid verdicts — with spend-vs-cap and
 block-explorer links for every paid call.
 
@@ -906,9 +906,9 @@ async def ledger_json(request: Request):
     data["agent"] = "AgentPay flagship analyst"
     data["description"] = (
         "An autonomous market analyst running on AgentPay's own rails as a real "
-        "customer: it prices each run via /v1/plan/estimate, spends real USDC under "
-        "a hard per-run cap, and leaves a verifiable on-chain receipt for every "
-        "paid call."
+        "customer: it prices each run via /v1/plan/estimate, spends real money "
+        "(USDC on Base, sBTC on Stacks) under a hard per-run cap, and leaves a "
+        "verifiable on-chain receipt for every paid call."
     )
     data["wallets"] = {
         "base": next((a for a in addrs if a.startswith("0x")), None),
@@ -1004,7 +1004,7 @@ _LEDGER_HTML = r"""<!doctype html>
 <title>AgentPay — How an Agent Decides What to Spend</title>
 <meta name="description" content="The public receipt ledger: autonomous agents running on AgentPay daily under hard budget caps, with a verifiable on-chain receipt for every paid call. Plans, spend, and reasoning — live.">
 <meta property="og:title" content="AgentPay Receipt Ledger — how an agent decides what to spend">
-<meta property="og:description" content="Autonomous agents spending real USDC under hard caps, leaving on-chain receipts. Live and public.">
+<meta property="og:description" content="Autonomous agents spending real USDC and sBTC under hard caps, leaving on-chain receipts. Live and public.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://agentpay.tools/ledger">
 <meta property="og:image" content="https://agentpay.tools/og.png">
@@ -1118,9 +1118,9 @@ capital the strategy trades.</p>
 <div id="runs"><div class="msg">Loading…</div></div>
 
 <p class="foot">
-  Each run is one decision cycle. Paid calls are real USDC settlements on Base,
-  verifiable on-chain; free intel calls settle $0 on Stellar but still produce a
-  receipt. Source of truth: the durable <code>payment_logs</code> +
+  Each run is one decision cycle. Paid calls are real settlements — USDC on
+  Base or sBTC on Stacks, each linked to its explorer; free intel calls settle
+  $0 on Stellar but still produce a receipt. Source of truth: the durable <code>payment_logs</code> +
   <code>flagship_runs</code> ledger.<br>
   <a href="/ledger.json">/ledger.json</a> · <a href="https://github.com/romudille-bit/agentpay">github.com/romudille-bit/agentpay</a>
 </p>

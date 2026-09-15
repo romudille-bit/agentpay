@@ -124,7 +124,7 @@ def render_tool_page(tool: Tool, gateway_url: str) -> str:
              f"{'free' if free else 'x402'} API for AI agents | AgentPay")
     desc = (f"{tool.description}. "
             + ("Free — no API key, no wallet, no USDC. "
-               if free else f"{price} per call via x402 (USDC on Base or Stellar). ")
+               if free else f"{price} per call via x402 (USDC on Base or Stellar, sBTC on Stacks). ")
             + f"Call it via HTTP, the agentpay-x402 Python SDK, or MCP "
               f"(npx @romudille/agentpay-mcp).")
 
@@ -153,8 +153,10 @@ def render_tool_page(tool: Tool, gateway_url: str) -> str:
             f"  -H 'Content-Type: application/json' \\\n"
             f"  -d '{example_body}'"
             + ("" if free else
-               "\n# → HTTP 402 challenge → pay USDC on Base (gasless EIP-3009) or Stellar,"
-               "\n#   retry with the payment proof header. The SDK below does this for you."))
+               "\n# → HTTP 402 challenge listing the payment options: USDC on Base (gasless"
+               "\n#   EIP-3009) or Stellar, sBTC on Stacks. Pay one, retry with the proof"
+               "\n#   header. The SDK below does this for you. The body may also be the"
+               "\n#   bare parameters object, without the envelope."))
     py = ("from agentpay import quickstart  # pip install agentpay-x402\n\n"
           "s = quickstart(max_spend=0.10)   # hard budget cap; mints a wallet, no funding needed\n"
           f"r = s.call(\"{tool.name}\", {_json.dumps(example_params)})\n"
@@ -207,7 +209,7 @@ def render_tool_page(tool: Tool, gateway_url: str) -> str:
 <div class="chips"><span class="chip price">{_e(price)}</span>
 <span class="chip">{_e(tool.category)}</span>
 <span class="chip">x402 protocol</span>
-{'<span class="chip">no API key · no wallet</span>' if free else '<span class="chip">USDC on Base or Stellar</span>'}</div>
+{'<span class="chip">no API key · no wallet</span>' if free else '<span class="chip">USDC on Base or Stellar · sBTC on Stacks</span>'}</div>
 {use_when_html}
 {params_html}
 {returns_html}
@@ -230,7 +232,7 @@ def render_tools_index(tools: list[Tool], gateway_url: str) -> str:
     desc = (f"All {len(active)} AgentPay tools: market data, DeFi, security, and "
             f"routing APIs AI agents can call over HTTP, Python SDK, or MCP. "
             f"{n_free} are free with no API key or wallet; paid tools cost $0.01 "
-            f"via x402 (USDC on Base or Stellar).")
+            f"via x402 (USDC on Base or Stellar, sBTC on Stacks).")
     rows = "\n".join(
         f'<li><span class="n"><a href="{gateway_url}/tools/{_e(t.name)}">{_e(t.name)}</a></span>'
         f'<span class="p">{_e(_price_label(t.price_usdc)).replace(" USDC", "")}</span>'

@@ -50,8 +50,17 @@ payment options. No SDK needed for this step:
 
 ```bash
 curl -s -X POST https://agentpay.tools/tools/pre_trade_check/call \
-  -H 'content-type: application/json' -d '{"symbol":"BTC"}' | python -m json.tool
+  -H 'content-type: application/json' \
+  -d '{"parameters": {"symbol": "BTC"}, "agent_address": "<your address or any identifier>"}' \
+  | python -m json.tool
 ```
+
+That is the envelope the tool pages on `agentpay.tools` show: the tool's
+arguments under `parameters`, plus an optional `agent_address` that labels
+the call on the receipt (the SDK sends it as the `x-agent-address` header
+and, on Stacks, sets it to the payer's c32 address). A bare body
+(`{"symbol": "BTC"}`) is accepted too and treated as `parameters`; the
+reply is the same either way.
 
 The `stacks` option (captured 2026-09-13):
 
@@ -95,9 +104,18 @@ STACKS_NETWORK=mainnet python examples/stacks_m1_demo.py
 
 The script prints the verdict, the txid and the explorer link. Five
 payments have gone through this exact path from the pilot wallet
-`SP27VC…`: three by hand on 2026-09-07/08 (`30689b5e…`, `d1de1a79…`,
-`59ce7014…`) and two by the daily agent on 2026-09-14 (`3b51b4fe…`,
-`052058ec…`); step 4 takes one of them apart.
+`SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5`, each an
+`sbtc-token::transfer` to `SP23XKWSEQ9D4CVPT0H39N2TYVEE5AJECPKW6CZ3C`:
+
+| when | how | txid |
+|---|---|---|
+| 2026-09-07 | by hand | [`30689b5ee9f779fe571f0b7797e2453b21cf7d220cadf4f1881586757347387f`](https://explorer.hiro.so/txid/0x30689b5ee9f779fe571f0b7797e2453b21cf7d220cadf4f1881586757347387f?chain=mainnet) |
+| 2026-09-07 | by hand | [`d1de1a792e2a23f5a0b22651eec4f3f00a49f3e9ca15c70c2a19fc8fb474dd8e`](https://explorer.hiro.so/txid/0xd1de1a792e2a23f5a0b22651eec4f3f00a49f3e9ca15c70c2a19fc8fb474dd8e?chain=mainnet) |
+| 2026-09-08 | by hand | [`59ce70146da57ffd8c71cd67eea9169373ad11b7298e77a88e5f946a0064e325`](https://explorer.hiro.so/txid/0x59ce70146da57ffd8c71cd67eea9169373ad11b7298e77a88e5f946a0064e325?chain=mainnet) |
+| 2026-09-14 | daily agent | [`3b51b4fe4d7f1fc7ec932dc8731dea4002216f53f615db7f5f114d97818f5650`](https://explorer.hiro.so/txid/0x3b51b4fe4d7f1fc7ec932dc8731dea4002216f53f615db7f5f114d97818f5650?chain=mainnet) |
+| 2026-09-14 | daily agent | [`052058ec7988bdf5846c651c94e6c643549dc4a4070b28959a9f9f31452e1525`](https://explorer.hiro.so/txid/0x052058ec7988bdf5846c651c94e6c643549dc4a4070b28959a9f9f31452e1525?chain=mainnet) |
+
+Step 4 takes the third one apart; the same commands work on any of them.
 
 What happened, in order: the SDK asked for the 402 above, checked the
 quote against the $0.05 cap (and against a floor BTC/USD rate, so a gateway
@@ -296,9 +314,15 @@ receipts grow without anyone touching a key: each run card on
 verdicts bought, and the legs, each linking to explorer. The run's
 reasoning names the Stacks address as payer, and a run whose settle was
 uncertain waits and redeems the same transaction rather than dropping the
-verdict. The first such run bought two verdicts for 13 sats each:
-`3b51b4fe…` and `052058ec…`, both `sbtc-token::transfer` from the pilot
-wallet to the gateway's payee, confirmed in blocks 8988117 and 8988119. Source: [`agents/analyst/`](../agents/analyst/).
+verdict. The first such run (2026-09-14 13:04 UTC) bought two verdicts
+for 13 sats each, both `sbtc-token::transfer` from the pilot wallet to the
+gateway's payee:
+
+- SOL — [`3b51b4fe4d7f1fc7ec932dc8731dea4002216f53f615db7f5f114d97818f5650`](https://explorer.hiro.so/txid/0x3b51b4fe4d7f1fc7ec932dc8731dea4002216f53f615db7f5f114d97818f5650?chain=mainnet), block 8988117
+- AVAX — [`052058ec7988bdf5846c651c94e6c643549dc4a4070b28959a9f9f31452e1525`](https://explorer.hiro.so/txid/0x052058ec7988bdf5846c651c94e6c643549dc4a4070b28959a9f9f31452e1525?chain=mainnet), block 8988119
+
+Either resolves on Hiro without going through the ledger; the ledger's
+run card for that day links the same two. Source: [`agents/analyst/`](../agents/analyst/).
 
 ## 9. For reviewers: what to attack
 
@@ -308,10 +332,12 @@ suite runs on every push.
 
 **The wire, not the SDK.** The full exchange is four messages:
 
-1. `POST /tools/<tool>/call` with no payment → `402` with
-   `payment_options.stacks` (step 2).
+1. `POST /tools/<tool>/call` with the JSON envelope from step 2 and no
+   payment → `402` whose `payment_options` lists every rail the gateway
+   settles (`base`, `stellar`, `stacks`); the client picks one.
 2. The client builds and signs the `sbtc-token::transfer` and retries the
-   same POST with one header, `payment-signature`, whose value is base64 of
+   same POST, same body, with one header added, `payment-signature`, whose
+   value is base64 of
 
    ```json
    {"x402Version": 2, "scheme": "exact", "network": "stacks:1",
@@ -345,7 +371,43 @@ sats that disagree with the quoted USD; cap exactly equal to the price
 (signs, lands on the cap); cap one micro-dollar below (refused before the
 nonce is fetched); a re-quote after a stale nonce that changes the
 recipient or crosses the approval threshold
-(`tests/test_stacks_stale_nonce_requote.py`). Repeated calls at the
+(`tests/test_stacks_stale_nonce_requote.py`).
+
+The one to see with your own eyes, because it needs no funds and no
+gateway: the guard is a pure function, so a hostile quote can be checked
+in three lines.
+
+```bash
+python -c "
+from agentpay._stacks_tx import assert_sats_within_cap
+for sats in (13, 14, 100_000):
+    try: assert_sats_within_cap(sats, '0.01', '76752', network='mainnet'); print(sats, '-> ok, sign')
+    except ValueError as e: print(sats, '->', e)"
+```
+
+```
+13 -> ok, sign
+14 -> ok, sign
+100000 -> amount_sats=100000 exceeds the most sats $0.01 could buy at the $20000/BTC floor (50) - refusing to sign
+```
+
+And the same case end to end through the client against a mocked gateway,
+asserting that the wallet's nonce endpoint was never called and the
+recorded spend is zero (the signer needs the nonce, so "not fetched" means
+"not invoked"):
+
+```bash
+pytest tests/test_stacks_sdk.py -k "disagree_with_the_quoted or one_unit_below_the_price or exactly_equal_to_the_price" -v
+```
+
+```
+tests/test_stacks_sdk.py::TestStacksHardRequirement::test_sats_that_disagree_with_the_quoted_usd_are_refused PASSED
+tests/test_stacks_sdk.py::TestStacksHardRequirement::test_cap_one_unit_below_the_price_refuses_before_signing PASSED
+tests/test_stacks_sdk.py::TestStacksHardRequirement::test_cap_exactly_equal_to_the_price_signs PASSED
+3 passed
+```
+
+Repeated calls at the
 boundary are bounded by the session's reservation model: each in-flight
 call holds its quote against the cap from the moment it is accepted until
 it settles or fails, so two concurrent calls cannot both fit in headroom

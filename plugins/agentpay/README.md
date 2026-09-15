@@ -3,7 +3,7 @@
 **Buyer-side economic intelligence for your agent.** When the agent needs a paid tool, AgentPay
 helps it *find, judge, and pay for the best x402 service within a budget* — discovering across
 the marketplace, dropping stubs, ranking by **real usage (not price)**, and capping + receipting
-the spend. Peer-to-peer (AgentPay never holds funds), multi-chain (USDC on Base or Stellar).
+the spend. Peer-to-peer (AgentPay never holds funds), multi-chain (USDC on Base or Stellar, sBTC on Stacks).
 
 ## Install
 ```

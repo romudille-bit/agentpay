@@ -12,7 +12,7 @@ description: >
 Once the agent has chosen a paid tool (see the **agentpay-route** skill), wrap the payment in
 an AgentPay session so spend stays under a hard cap and every call leaves a verifiable receipt.
 This is the spend-governance layer: budget enforcement + receipts + a running ledger across
-calls, multi-chain (USDC on Base or Stellar), peer-to-peer (AgentPay never holds funds).
+calls, multi-chain (USDC on Base or Stellar, sBTC on Stacks), peer-to-peer (AgentPay never holds funds).
 
 ## When to use
 - Enforce a hard USDC cap across an agent's paid calls.

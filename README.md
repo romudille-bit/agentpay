@@ -293,7 +293,7 @@ remain free.
 Price any plan before spending a cent (free, no wallet): `POST /v1/plan/estimate`,
 or `session.estimate_plan([...])` from the SDK.
 
-When metered inference ships, it works through the same Session interface — your agent checks cost, decides if it's worth it, and pays in USDC on Base or Stellar (via the SDK).
+When metered inference ships, it works through the same Session interface — your agent checks cost, decides if it's worth it, and pays in USDC on Base or Stellar, or sBTC on Stacks (via the SDK).
 
 ```python
 # Future — inference as a Session tool
