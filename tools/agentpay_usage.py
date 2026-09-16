@@ -39,10 +39,24 @@ SELF_ADDRESSES = {
         # Added 2026-07-17. Both were landing in "real" traffic and only stayed
         # out of the KPI by accident (their UAs happen to hit the generic-runtime
         # bucket). Change either client's UA and our own spend books as revenue.
-        "0xe1601C10B8d4DbF71E0c592B779520380174bc3A",  # Flagship analyst (daily cron, ~$0.02/day)
+        # The flagship analyst has one address per rail: it settles paid calls on
+        # whichever rail FLAGSHIP_RAIL selects and uses the other identities for
+        # free legs. All three are ours.
+        "0xe1601C10B8d4DbF71E0c592B779520380174bc3A",  # Flagship analyst — Base
+        "GAACF3K43CEWDO2BMOGT3K3GSETBINQFXZ3EQFJUWFLYNTCRHRAA3KVD",  # Flagship analyst — Stellar
+        "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",  # Flagship analyst / M2 demo payer — Stacks mainnet
         "0x1111111111111111111111111111111111111111",  # free_v2_smoke.py test payer
+        "0x28211bC4BA5c634B935fd3B89B8Ed4123c73248C",  # agentpaytools Basename owner (operator wallet)
     ]
 }
+
+
+def _wallet_key(addr):
+    """Canonical wallet identity for grouping: EVM addresses are case-insensitive
+    (clients send checksummed or lowercase at random); Stellar/Stacks addresses
+    are already canonical and case-significant."""
+    a = addr or "—"
+    return a.lower() if a.startswith("0x") else a
 
 
 def _load_dotenv():
@@ -296,9 +310,11 @@ def main():
                           and r.get("state") == "abandoned"]
 
     # Roll paid calls up per wallet so a repeat payer is ONE auditable line, not N.
+    # EVM addresses arrive in whichever case the client sent (checksummed or not),
+    # so key on the canonical form or one wallet shows up as two lines.
     pay_by_wallet = {}
     for r in done_paid:
-        w = r.get("agent_address") or "—"
+        w = _wallet_key(r.get("agent_address"))
         e = pay_by_wallet.setdefault(w, {"n": 0, "usd": 0.0, "tools": Counter()})
         e["n"] += 1
         try:
@@ -307,7 +323,7 @@ def main():
             pass
         e["tools"][r.get("tool_name")] += 1
 
-    agents = Counter(r.get("agent_address") for r in human if r.get("agent_address"))
+    agents = Counter(_wallet_key(r.get("agent_address")) for r in human if r.get("agent_address"))
     ips     = Counter(r.get("client_ip") for r in human if r.get("client_ip"))
     tools   = Counter(r.get("tool_name") for r in human if r.get("tool_name"))
     uas     = Counter(r.get("user_agent") for r in real if r.get("user_agent"))
@@ -321,7 +337,7 @@ def main():
         print(f"      · {w}  {e['n']} paid  ${e['usd']:.2f}  ({breakdown})")
     if bot_paid:
         print(f"    (excluded: {len(bot_paid)} paid call(s) from prober/crawler wallets — not demand)")
-        for w, c in Counter((r.get('agent_address') or '—') for r in bot_paid).most_common():
+        for w, c in Counter(_wallet_key(r.get('agent_address')) for r in bot_paid).most_common():
             print(f"      · {w}  {c} paid  [bot cohort]")
     print(f"    abandoned session 402s  : {len(abandoned_sessions)}   (402 issued, NOTHING came back)")
     print(f"    unique IPs              : {len(ips)}")
