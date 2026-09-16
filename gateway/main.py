@@ -648,10 +648,20 @@ async def lifespan(app: FastAPI):
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
+# `contact` and `description` are what x402 directories read from /openapi.json:
+# x402scan uses info.contact.email to let the operator claim the listing, and
+# shows info.description on the server page.
 app = FastAPI(
     title="AgentPay Gateway",
-    description="The economic-intelligence layer for AI agents — budget-capped x402 spending sessions with verifiable receipts. USDC on Base (and Stellar).",
+    description=(
+        "Buyer-side trust layer for x402 agents. verified_route ranks providers on "
+        "paid delivery evidence and sybil-collapsed payer counts; pre_trade_check "
+        "returns an ok/caution/avoid verdict before a trade; session_create enforces "
+        "a hard USDC budget cap with chain-verified receipts on a public ledger. "
+        "USDC on Base and Stellar, sBTC on Stacks."
+    ),
     version="0.1.0",
+    contact={"name": "AgentPay", "url": "https://agentpay.tools", "email": "romudille@gmail.com"},
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -705,6 +715,7 @@ def _custom_openapi():
         title=app.title,
         version=app.version,
         description=app.description,
+        contact=app.contact,
         routes=app.routes,
     )
     for path, operations in schema.get("paths", {}).items():
