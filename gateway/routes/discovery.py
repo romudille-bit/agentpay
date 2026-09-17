@@ -6,6 +6,7 @@ routes/discovery.py — Discovery + manifest endpoints.
   GET /.well-known/l402-services       — 402index.io discovery format
   GET /.well-known/x402                — x402 protocol manifest
   GET /.well-known/402index-verify.txt — 402index.io domain proof
+  GET /.well-known/x402-trust.txt      — x402-trust.com domain proof
   GET /robots.txt                      — search-engine policy
   GET /llms.txt                        — LLM-readable service description
   GET /sitemap.xml                     — sitemap covering all public URLs
@@ -571,6 +572,24 @@ async def well_known_402index_verify():
         raise HTTPException(status_code=404, detail="Not configured")
     return Response(
         content=settings.INDEX402_VERIFY_HASH + "\n",
+        media_type="text/plain",
+    )
+
+
+@router.get("/.well-known/x402-trust.txt", response_class=Response)
+async def well_known_x402_trust():
+    """
+    Domain-proof file for the x402-trust.com provider claim.
+
+    One line, `x402-trust-verification=v1:<public key>`, re-checked by them
+    on a schedule; the verified badge lapses if the file is missing for a
+    week. Putting `x402-trust-remove` in the same file delists the whole
+    host, so the content is fixed here and not composed from request input.
+    """
+    if not settings.X402_TRUST_PROVIDER_KEY:
+        raise HTTPException(status_code=404, detail="Not configured")
+    return Response(
+        content=f"x402-trust-verification=v1:{settings.X402_TRUST_PROVIDER_KEY}\n",
         media_type="text/plain",
     )
 

@@ -101,6 +101,17 @@ class Settings(BaseSettings):
     # /.well-known/402index-verify.txt. Leave blank to serve 404.
     INDEX402_VERIFY_HASH: str = ""
 
+    # x402-trust.com provider claim — the P-256 public key (SPKI, base64url,
+    # unpadded: their verifier compares the line byte-for-byte) served at
+    # /.well-known/x402-trust.txt as domain proof. Public by design; the
+    # matching private key never enters the repo (keys/, ignored) and is
+    # what authorizes removal or contact changes on their side.
+    # Blank = 404, the same shape as the 402index proof.
+    X402_TRUST_PROVIDER_KEY: str = (
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEX8UYhImCB3ipMq03fXt_tfuEd00M"
+        "24T5Yrf0wyQDRGWfjcJG7e6YThAnwIQyjwGy6R2odoTq9tQVF8ZvexCLwA"
+    )
+
     # Search-engine verification + instant indexing (SEO). All optional;
     # blank = tag/endpoint not emitted. Set via Railway env vars.
     #
