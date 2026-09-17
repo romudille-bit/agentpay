@@ -51,7 +51,9 @@ if not stellar:
 wallet = AgentWallet(secret_key=stellar, network="mainnet", base_key=base)
 print(f"Base payer : {wallet.base_address}")
 
-FUCHSS = "https://x402.fuchss.app/v1/x402-trust"
+# fuchss moved to x402-trust.com (the old host 302s, which a 402 flow cannot follow).
+FUCHSS = "https://x402-trust.com/v1/x402-trust"
+SIMILAR = "https://x402-trust.com/v1/similar"
 RESOURCES = [
     "https://agentpay.tools/v1/session/create",
     "https://agentpay.tools/tools/pre_trade_check/call",
@@ -62,7 +64,7 @@ RESOURCES = [
 # per-call — at $0.005 x 3 endpoints the cap must be >= $0.015 or the last
 # report is refused with BudgetExceeded (learned the hard way, 2026-08-12).
 s = Session(wallet=wallet, gateway_url="https://agentpay.tools", max_spend="0.05",
-            max_per_tool={FUCHSS: "0.02"})
+            max_per_tool={FUCHSS: "0.02", SIMILAR: "0.01"})
 
 reports = {}
 for resource in RESOURCES:
@@ -71,6 +73,20 @@ for resource in RESOURCES:
         r = s.call(FUCHSS, {"resource": resource}, chain="base")
         data = r if isinstance(r, dict) else getattr(r, "data", r)
         reports[resource] = data
+        print(json.dumps(data, indent=2, default=str)[:4000])
+    except PaymentFailed as e:
+        print(f"✗ payment failed: {e}")
+    except Exception as e:
+        print(f"✗ {type(e).__name__}: {e}")
+
+# The public snapshot flags "a better alternative" only for pre_trade_check;
+# /v1/similar is the paid call that names it.
+for resource in [r for r in RESOURCES if "pre_trade_check" in r]:
+    print(f"\n═══ Buying ranked alternatives ($0.005): {resource}")
+    try:
+        r = s.call(SIMILAR, {"resource": resource}, chain="base")
+        data = r if isinstance(r, dict) else getattr(r, "data", r)
+        reports[resource + "#similar"] = data
         print(json.dumps(data, indent=2, default=str)[:4000])
     except PaymentFailed as e:
         print(f"✗ payment failed: {e}")
