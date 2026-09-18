@@ -12,19 +12,31 @@ this page is the path through it.
 ## What you need
 
 - Python 3.10 or newer.
-- A Stacks mainnet address you hold the key for, with a few hundred sats of
-  sBTC and about 0.1 STX for fees. Each paid call below is $0.01 (13–15 sats
-  at current rates) plus a fee of a few thousand µSTX. Nothing else: no
-  account, no API key, no signup.
+- A fresh Stacks mainnet wallet, holding a few hundred sats of sBTC and about
+  0.1 STX for fees. Each paid call below is $0.01 (13–15 sats at current
+  rates) plus a fee of a few thousand µSTX. Nothing else: no account, no API
+  key, no signup.
 
-If you use Leather, it exports a 24-word Secret Key rather than a raw key;
-[`tools/stacks_derive_key.py`](../tools/stacks_derive_key.py) derives the
-key on the same path Leather uses without the words touching your shell
-history (the address lets it pick the right account):
+We recommend the use of a new wallet, not your everyday one. You are about to
+put a private key in an environment variable and hand it to code you have not
+audited — ours included. With a few hundred sats in it and nothing else, that
+costs you nothing to get wrong.
+
+<details>
+<summary>Using Leather for the throwaway wallet</summary>
+
+Leather exports a 24-word Secret Key rather than a raw key.
+[`tools/stacks_derive_key.py`](../tools/stacks_derive_key.py) derives the key
+on the same path Leather uses, without the words touching your shell history
+(the address picks the right account):
 
 ```bash
 export STACKS_AGENT_KEY=$(python tools/stacks_derive_key.py --address SP<your address> --print-key)
 ```
+
+The words you type here derive the key it prints, so point it at the wallet
+you made for this rather than one holding anything else.
+</details>
 
 ## 1. Install
 

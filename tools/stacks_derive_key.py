@@ -66,6 +66,11 @@ def key_hex(kp: StacksKeypair) -> str:
 
 def _read_words() -> str:
     if sys.stdin.isatty():
+        print(
+            "The words you enter derive the key for the account at --address. "
+            "A wallet made for testing is the safe thing to point this at.",
+            file=sys.stderr,
+        )
         return getpass.getpass("Secret Key (24 words, hidden): ")
     return sys.stdin.read()
 
