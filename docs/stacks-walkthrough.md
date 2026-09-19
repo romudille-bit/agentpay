@@ -3,7 +3,7 @@
 For Stacks builders and reviewers. By the end you will have made one
 budget-capped sBTC payment on mainnet from Python, watched the SDK refuse a
 payment the rules do not allow before anything was signed, and verified the
-receipt three independent ways. Every output below is real; the transaction
+receipt two independent ways. Every output below is real; the transaction
 ids resolve on Hiro explorer.
 
 The reference for each piece is [`stacks-mainnet.md`](stacks-mainnet.md);
@@ -139,7 +139,7 @@ header. The gateway recomputed the txid from the bytes, verified the
 signature and every field against its own quote, broadcast to Hiro, waited
 for confirmation, and only then ran the tool.
 
-## 4. Verify the receipt three ways
+## 4. Verify the receipt two ways
 
 The point of a receipt is that you do not have to trust the party that
 issued it. Take the txid from step 3 (the one below is
@@ -170,32 +170,6 @@ The memo bytes decode to `d520fcf7-08fa-46b0-b0a0-04d5854…`, the first 34
 characters of the challenge's `payment_id`. That is the binding between
 this transfer and this tool call, and it is checked exactly, not by
 prefix.
-
-**On the public ledger.** [agentpay.tools/ledger](https://agentpay.tools/ledger)
-lists the runs of the wallets in `LEDGER_FLAGSHIP_ADDRESSES`; the Stacks
-payer above is one. The machine-readable form:
-
-```bash
-curl -s https://agentpay.tools/ledger.json | python -c "
-import json,sys; d=json.load(sys.stdin)
-print(d['wallets'])
-for r in d['runs']:
-    for l in r.get('paid_calls', []):
-        if l.get('network') == 'stacks': print(l['at'][:19], l['tool'], l['amount_usdc'], l['tx_hash'][:12], l['explorer_url'][:40])"
-```
-
-```
-{'base': '0xe1601C10B8d4DbF71E0c592B779520380174bc3A', 'stellar': 'GAACF3K4…', 'stacks': 'SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5'}
-2026-09-08T15:28:22 pre_trade_check 0.01 59ce70146da5 https://explorer.hiro.so/txid/0x59ce
-2026-09-07T… pre_trade_check 0.01 d1de1a792e… …
-2026-09-07T… pre_trade_check 0.01 30689b5ee9… …
-```
-
-Legs with a Stacks txid are re-verified by the ledger's own verifier
-against Hiro (confirmed `sbtc-token::transfer`, to the gateway's payee,
-from the run's wallet) before they render as chain-verified; a leg the
-verifier cannot confirm is shown without the explorer link, never as
-verified.
 
 **In the SDK's receipt.** `s.spending_summary()` carries the same txid
 under `breakdown`, with `network: stacks-mainnet`, the USD amount charged
@@ -333,7 +307,11 @@ reasoning to the ledger. Since 2026-09-14 it settles on the Stacks rail
 (`FLAGSHIP_STACKS_KEY`, `FLAGSHIP_RAIL=stacks`), so the ledger's Stacks
 receipts grow without anyone touching a key: each run card on
 [agentpay.tools/ledger](https://agentpay.tools/ledger) shows the goal, the
-verdicts bought, and the legs, each linking to explorer. The run's
+verdicts bought, and the legs, each linking to explorer. Legs with a
+Stacks txid are re-verified by the ledger's own verifier against Hiro
+(confirmed `sbtc-token::transfer`, to the gateway's payee, from the run's
+wallet) before they render as chain-verified; a leg the verifier cannot
+confirm is shown without the explorer link, never as verified. The run's
 reasoning names the Stacks address as payer, and a run whose settle was
 uncertain waits and redeems the same transaction rather than dropping the
 verdict. The first such run (2026-09-14 13:04 UTC) bought two verdicts
@@ -481,7 +459,6 @@ STACKS_NETWORK=mainnet python examples/stacks_policy_demo.py
 ```
 
 Two paid calls, $0.02 in sBTC plus fees. Paste the two txids into the
-explorer URL in step 4, and check `agentpay.tools/ledger.json` if your
-address is listed there. If anything on this page does not match what you
+explorer URL in step 4. If anything on this page does not match what you
 see, that is a bug in the page or the code, and either is a welcome issue
 on the repo.
