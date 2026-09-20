@@ -161,6 +161,8 @@ fuchss_history_*.json
 FUCHSS_PROBER_REPORT.md
 fuchss_trust_*.json
 fuchss_reports.json
+# Agentscan /recommend responses — their paid dataset, never ours to publish
+agents_trust_recommend.json
 
 # Working files that accumulate at the repo root on the dev machine: patches
 # applied with git am, runbooks, outreach drafts, demo transcripts, one-off

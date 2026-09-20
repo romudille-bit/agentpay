@@ -653,7 +653,8 @@ class AgentWallet:
             logger.error(f"Base payment failed: {reason}")
             return {"success": False, "reason": reason}
 
-    def build_base_payment_signature(self, accept: dict, resource_url: str) -> str:
+    def build_base_payment_signature(self, accept: dict, resource_url: str,
+                                     challenge_extensions: dict | None = None) -> str:
         """
         Sign an EIP-3009 transferWithAuthorization off-chain for an x402 Base
         payment option and return the base64 X-PAYMENT payload.
@@ -751,12 +752,36 @@ class AgentWallet:
         # same. All normalization (CAIP-2 network, amount key, timeout clamp)
         # still applies to the signed authorization above; only the declarative
         # echo is verbatim.
+        # `scheme` and `network` belong at the TOP LEVEL of the envelope, which
+        # is where the x402 spec puts them and where compliant sellers look:
+        # they match the payload back to one of their own accepts[] entries on
+        # scheme+network, and a miss is answered with a fresh 402, never a
+        # silent accept. Nesting them only inside `accepted` made us
+        # unpayable by any such seller — agents-trust.com re-issued a 402
+        # after we had already transmitted the signed authorization
+        # (2026-09-20). Echo the accept's own spelling verbatim, for the same
+        # reason `accepted` is echoed verbatim: a normalized copy can miss a
+        # strict deep-compare.
         payment_payload = {
             "x402Version": 2,
+            "scheme": accept.get("scheme") or scheme_name,
+            "network": accept.get("network") or network,
             "payload": payload_dict,
             "resource": {"url": resource_url, "mimeType": "application/json"},
             "accepted": json.loads(json.dumps(accept)),   # deep copy, untouched
         }
+        # Echo the seller's own `extensions` block back verbatim. Some sellers
+        # mint a signed, expiring payment-attempt token in the 402 and require
+        # it returned with the payment to link the two; without it the paid
+        # retry is answered with a fresh 402 and the authorization is never
+        # settled. agents-trust.com does this (`at-payment-attempt`, error
+        # `payment_attempt_link_invalid`) and documents none of it, so the
+        # only safe general rule is: hand back whatever the seller handed us.
+        # It is the seller's own data — MAC'd by them, opaque to us — so
+        # echoing it leaks nothing, and sellers that ignore extensions are
+        # unaffected.
+        if challenge_extensions:
+            payment_payload["extensions"] = json.loads(json.dumps(challenge_extensions))
         return base64.b64encode(json.dumps(payment_payload).encode()).decode()
 
     # ── Stacks/sBTC payment path ──────────────────────────────────────────────
@@ -1771,11 +1796,13 @@ class Session:
             # Default POST (AgentPay's own tools); GET-only servers (e.g. CMC's
             # DEX endpoints) answer 405 → re-probe with GET.
             logger.info(f"→ x402 external call: {url}")
+            probe_method = "POST"
             try:
                 resp = client.post(url, json=params)
                 if resp.status_code == 405:
                     # GET-only server: params belong in the query string, not a
                     # discarded body.
+                    probe_method = "GET"
                     resp = client.get(_with_query(url, params))
             except Exception as e:
                 raise PrePaymentError(f"External x402 call failed: {e}")
@@ -1811,8 +1838,12 @@ class Session:
             resource_for_payment = (data.get("resource") or {}).get("url") or url.split("?", 1)[0]
             # HTTP method the server serves the resource with. CMC's DEX endpoints
             # declare GET (query params in the URL); AgentPay's own tools use POST.
-            # Read it from the 402's bazaar extension; default POST.
-            req_method = "POST"
+            # Default to whichever method actually produced the 402: a GET-only
+            # seller 405s the POST probe, and retrying that same POST after
+            # paying 405s again — funds moved, no data, no retry allowed. The
+            # bazaar extension still wins when the seller sends one; sellers
+            # that don't (agents-trust.com) are why the probe is the default.
+            req_method = probe_method
             try:
                 _inp = (((data.get("extensions") or {}).get("bazaar") or {}).get("info") or {}).get("input") or {}
                 _m = str(_inp.get("method") or "").upper()
@@ -1984,7 +2015,8 @@ class Session:
                 # never as "no payment settled".
                 logger.info(f"  402 — signing {amount_usdc} USDC auth for {pay_to[:10]}... (Base, off-chain)")
                 try:
-                    x_payment = self.wallet.build_base_payment_signature(base_accept, resource_for_payment)
+                    x_payment = self.wallet.build_base_payment_signature(
+                        base_accept, resource_for_payment, data.get("extensions"))
                 except Exception as e:
                     self._release(_url_reserved)   # pre-payment, no funds moved
                     raise PaymentFailed(f"evm:could not sign x402 payment: {str(e)[:160]}")
