@@ -307,11 +307,7 @@ reasoning to the ledger. Since 2026-09-14 it settles on the Stacks rail
 (`FLAGSHIP_STACKS_KEY`, `FLAGSHIP_RAIL=stacks`), so the ledger's Stacks
 receipts grow without anyone touching a key: each run card on
 [agentpay.tools/ledger](https://agentpay.tools/ledger) shows the goal, the
-verdicts bought, and the legs, each linking to explorer. Legs with a
-Stacks txid are re-verified by the ledger's own verifier against Hiro
-(confirmed `sbtc-token::transfer`, to the gateway's payee, from the run's
-wallet) before they render as chain-verified; a leg the verifier cannot
-confirm is shown without the explorer link, never as verified. The run's
+verdicts bought, and the legs, each linking to explorer. The run's
 reasoning names the Stacks address as payer, and a run whose settle was
 uncertain waits and redeems the same transaction rather than dropping the
 verdict. The first such run (2026-09-14 13:04 UTC) bought two verdicts
