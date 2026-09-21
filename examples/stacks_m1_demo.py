@@ -34,6 +34,7 @@ from __future__ import annotations
 import itertools
 import logging
 import os
+import pprint
 import sys
 import threading
 import time
@@ -58,12 +59,19 @@ GATEWAYS = {
 GATEWAY = os.environ.get("AGENTPAY_GATEWAY_URL", "").rstrip("/") or GATEWAYS[NETWORK]
 TOOL = os.environ.get("AGENTPAY_DEMO_TOOL") or ("token_price" if NETWORK == "testnet" else "pre_trade_check")
 PARAMS = {"symbol": "BTC"}
+# Animate only on a terminal. Piped to a file the frames pile up instead of
+# overwriting: one reviewer's log reached 12 KB of them, with the line that
+# followed glued to the end of the last frame.
+_TTY = sys.stdout.isatty()
 EXPLORER = "https://explorer.hiro.so"
 NET = NETWORK.upper()
 
 
 class _Spinner:
-    """A background spinner so a slow on-chain wait reads as progress, not a hang."""
+    """A background spinner so a slow on-chain wait reads as progress, not a hang.
+
+    Off a terminal it prints the message once instead of animating.
+    """
 
     def __init__(self, msg: str):
         self.msg = msg
@@ -78,13 +86,31 @@ class _Spinner:
             time.sleep(0.15)
 
     def __enter__(self):
+        if not _TTY:
+            print(f"  ... {self.msg}", flush=True)
+            return self
         self._t.start()
         return self
 
     def __exit__(self, *exc):
+        if not _TTY:
+            return
         self._stop.set()
         self._t.join(timeout=1)
         print("\r" + " " * (len(self.msg) + 6) + "\r", end="", flush=True)
+
+
+def _show(label: str, obj) -> None:
+    """Print a labelled value, wrapping dicts across lines.
+
+    RESULT and RECEIPT are dicts; on one line they are unreadable in a log or
+    a screen recording, which is where most people meet this demo.
+    """
+    text = obj if isinstance(obj, str) else pprint.pformat(obj, width=72, sort_dicts=False)
+    head, *rest = text.splitlines() or [""]
+    print(f"  {label}: {head}")
+    for line in rest:
+        print(f"           {line}")
 
 
 def _wallet():
@@ -125,10 +151,10 @@ def pay_once() -> None:
         # Fully settled within the window.
         tx = getattr(result, "tx", None)
         print("  ✓ SETTLED")
-        print("  RESULT :", getattr(result, "data", result))
+        _show("RESULT ", getattr(result, "data", result))
         print("  TX     :", tx)
         print("  NETWORK:", getattr(result, "network", None))
-        print("  RECEIPT:", s.spending_summary())
+        _show("RECEIPT", s.spending_summary())
         if tx:
             print(f"  verify : {EXPLORER}/txid/0x{str(tx).removeprefix('0x')}?chain={NETWORK}")
     elif uncertain is not None:
@@ -150,8 +176,8 @@ def pay_once() -> None:
                 sys.exit(1)
         if redeemed is not None:
             print("  ✓ REDEEMED — tool result delivered for the confirmed payment")
-            print("  RESULT :", redeemed.get("result"))
-        print("  RECEIPT:", s.spending_summary())
+            _show("RESULT ", redeemed.get("result"))
+        _show("RECEIPT", s.spending_summary())
     else:
         print("  ✗ payment failed (nothing settled):", str(failed)[:200])
         sys.exit(1)
@@ -172,7 +198,7 @@ def redeem_only(txid: str) -> None:
     except PaymentFailed as e:
         sys.exit(f"  ✗ redeem refused: {str(e)[:200]}")
     print("  ✓ REDEEMED — tool result delivered for the confirmed payment")
-    print("  RESULT :", redeemed.get("result"))
+    _show("RESULT ", redeemed.get("result"))
     print(f"  verify : {EXPLORER}/txid/0x{txid.removeprefix('0x')}?chain={NETWORK}")
 
 
@@ -196,7 +222,8 @@ def reject_over_cap() -> None:
         sys.exit(1)
     except BudgetExceeded as e:
         print(f"  ✓ rejected client-side — BudgetExceeded: {str(e)[:160]}")
-    print("  RECEIPT:", s.spending_summary(), " (nothing spent)")
+    _show("RECEIPT", s.spending_summary())
+    print("           (nothing spent)")
 
 
 if __name__ == "__main__":
