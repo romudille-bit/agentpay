@@ -95,6 +95,12 @@ challenge, so the settle verifies against this exact quote even if BTC
 moves before you pay. `pay_to` is the gateway's receive-only address; it
 holds no key anywhere.
 
+`fee_microstx` is quoted fresh on every challenge from Hiro's current
+medium tier, so unlike the sats it is not fixed — two calls a minute apart
+can carry different fees. The SDK signs the fee the 402 quotes and only
+clamps it downwards against its own ceiling; it never re-estimates. The
+3,000 above is one capture, not a constant.
+
 ## 3. Pay once, under a cap
 
 ```python
