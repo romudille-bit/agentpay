@@ -752,16 +752,19 @@ class AgentWallet:
         # same. All normalization (CAIP-2 network, amount key, timeout clamp)
         # still applies to the signed authorization above; only the declarative
         # echo is verbatim.
-        # `scheme` and `network` belong at the TOP LEVEL of the envelope, which
-        # is where the x402 spec puts them and where compliant sellers look:
-        # they match the payload back to one of their own accepts[] entries on
-        # scheme+network, and a miss is answered with a fresh 402, never a
-        # silent accept. Nesting them only inside `accepted` made us
-        # unpayable by any such seller — agents-trust.com re-issued a 402
-        # after we had already transmitted the signed authorization
-        # (2026-09-20). Echo the accept's own spelling verbatim, for the same
-        # reason `accepted` is echoed verbatim: a normalized copy can miss a
-        # strict deep-compare.
+        # `scheme` and `network` are carried twice, on purpose. x402 v1 put
+        # them at the top level of the envelope; v2 moved them inside
+        # `accepted`. Live sellers do not agree on which layout to read: some
+        # v2 servers still match the payload back to their advertised
+        # accepts[] entry on the top-level pair, and a miss is answered with a
+        # fresh 402, never a silent accept — so an envelope that nests them
+        # only inside `accepted` is unpayable there, and the signed
+        # authorization has already been transmitted by the time the 402
+        # comes back. The reference v2 schema ignores unknown keys, so the
+        # extra pair costs nothing with sellers that read `accepted`. Do not
+        # remove either copy. The top-level pair echoes the accept's own
+        # spelling verbatim, for the same reason `accepted` is echoed
+        # verbatim: a normalized copy can miss a strict deep-compare.
         payment_payload = {
             "x402Version": 2,
             "scheme": accept.get("scheme") or scheme_name,
@@ -774,9 +777,8 @@ class AgentWallet:
         # mint a signed, expiring payment-attempt token in the 402 and require
         # it returned with the payment to link the two; without it the paid
         # retry is answered with a fresh 402 and the authorization is never
-        # settled. agents-trust.com does this (`at-payment-attempt`, error
-        # `payment_attempt_link_invalid`) and documents none of it, so the
-        # only safe general rule is: hand back whatever the seller handed us.
+        # settled. Sellers that do this rarely document it, so the only safe
+        # general rule is: hand back whatever the seller handed us.
         # It is the seller's own data — MAC'd by them, opaque to us — so
         # echoing it leaks nothing, and sellers that ignore extensions are
         # unaffected.
@@ -1842,7 +1844,7 @@ class Session:
             # seller 405s the POST probe, and retrying that same POST after
             # paying 405s again — funds moved, no data, no retry allowed. The
             # bazaar extension still wins when the seller sends one; sellers
-            # that don't (agents-trust.com) are why the probe is the default.
+            # that send none are why the probe is the default.
             req_method = probe_method
             try:
                 _inp = (((data.get("extensions") or {}).get("bazaar") or {}).get("info") or {}).get("input") or {}

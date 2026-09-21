@@ -23,8 +23,8 @@ The full URL (query included) is passed as the tool name with empty params, so
 the URL we sign is byte-identical to the one we retry — their challenge binds
 payment to a resourceHash of the exact request URL.
 
-Run:
-    $HOME/fx/bin/python tools/probe_agents_trust.py
+Run (from the repo root, in a venv with the SDK's `base` extra installed):
+    python tools/probe_agents_trust.py
 """
 import json
 import os

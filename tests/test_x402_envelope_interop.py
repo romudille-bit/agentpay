@@ -1,13 +1,13 @@
 """
-test_x402_envelope_interop.py — regression for two external-x402 interop bugs
-found on 2026-09-20 paying agents-trust.com, both in the AGE-90 series.
+test_x402_envelope_interop.py — regression for three external-x402 interop
+bugs found paying a standards-compliant GET-served seller (agents-trust.com).
 
 Bug 1 — the envelope hid `scheme` and `network`.
     A compliant v2 seller matches the payment payload back to one of its own
     advertised accepts[] entries on scheme+network, and a miss is answered
     with a fresh 402, never a silent accept. We carried both fields only
-    nested inside `accepted`, so a seller looking at the top level saw
-    neither. They belong at the top level, where the spec puts them.
+    nested inside `accepted` (the v2 layout), so a seller reading the v1
+    top-level pair saw neither. The envelope now carries both layouts.
 
 Bug 2 — the paid retry ignored which method actually worked.
     A GET-only seller answers the POST probe with 405; the SDK re-probes with
