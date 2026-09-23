@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 from decimal import Decimal
 from typing import Optional
@@ -57,6 +58,10 @@ __all__ = [
     "suggested_fee_microstx",
     "stacks_quote_sats",
     "stacks_configured",
+    "stacks_accepts_entry",
+    "payload_network",
+    "payload_signed_tx_hex",
+    "payload_payment_id",
 ]
 
 # In-memory fast guard for txid consumption (mirrors _used_base_tx_hashes in
@@ -344,6 +349,40 @@ def stacks_402_option(quote: tuple[int, Decimal], price_usdc,
     }
 
 
+# Challenge lifetime (gateway/x402.py issue_payment_challenge default) — a
+# standard client must not be told it has longer than the challenge lives.
+_ACCEPTS_MAX_TIMEOUT_S = 120
+
+
+def stacks_accepts_entry(quote: tuple[int, Decimal], price_usdc,
+                         payment_id: str) -> dict:
+    """Standard x402 v2 `accepts[]` entry for the sBTC option, for generic
+    Stacks clients (AIBTC MCP wallet, x402-stacks).
+
+    - asset is the sBTC contract id: both clients map `….sbtc-token` to sBTC.
+    - extra.payment_id carries the challenge id. Standard clients echo the
+      chosen entry back as `accepted` in their payment payload, which is how
+      the gateway finds the challenge when the client puts no memo binding
+      in the transaction (AIBTC leaves it empty, x402-stacks writes its own
+      nonce).
+    """
+    sats, rate = quote[0], quote[1]
+    return {
+        "scheme": "exact",
+        "network": _caip2(),
+        "amount": str(int(sats)),
+        "asset": _sbtc_contract(),
+        "payTo": settings.STACKS_GATEWAY_ADDRESS,
+        "maxTimeoutSeconds": _ACCEPTS_MAX_TIMEOUT_S,
+        "extra": {
+            "payment_id": payment_id,
+            "tokenType": "sBTC",
+            "amount_usdc": str(price_usdc),
+            "btc_usd_rate": str(rate),
+        },
+    }
+
+
 def stacks_offerable(price_usdc) -> bool:
     """Stacks is configured and the tool is priced. $0 tools never offer a
     stacks option: free calls must never touch the signing path."""
@@ -381,6 +420,39 @@ def decode_payment_signature(header: str) -> tuple[Optional[dict], str]:
         return payload, ""
     except Exception:
         return None, "invalid_payment_signature_encoding"
+
+
+def _accepted(payload: dict) -> dict:
+    acc = payload.get("accepted")
+    return acc if isinstance(acc, dict) else {}
+
+
+def payload_network(payload: dict) -> str:
+    """CAIP-2 network of a payment payload. The AgentPay SDK puts it at the
+    top level; standard x402 v2 clients carry it only in `accepted`."""
+    return str(payload.get("network") or _accepted(payload).get("network") or "")
+
+
+def payload_signed_tx_hex(payload: dict) -> str:
+    """Signed tx hex from either payload shape: the SDK's
+    `payload.signedTransaction`, or the standard `payload.transaction`
+    (AIBTC prefixes it with 0x)."""
+    inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    raw = inner.get("signedTransaction") or inner.get("transaction") or ""
+    raw = raw.strip() if isinstance(raw, str) else ""
+    return raw[2:] if raw[:2].lower() == "0x" else raw
+
+
+def payload_payment_id(payload: dict) -> tuple[str, bool]:
+    """(payment_id, echoed). The SDK names the challenge at the top level;
+    a standard client echoes the accepts[] entry it chose, whose
+    extra.payment_id the gateway set. echoed=True marks the second case."""
+    top = str(payload.get("payment_id") or "")
+    if top:
+        return top, False
+    extra = _accepted(payload).get("extra")
+    echoed = str(extra.get("payment_id") or "") if isinstance(extra, dict) else ""
+    return echoed, bool(echoed)
 
 
 class _Reader:
@@ -559,6 +631,17 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
 # ── verification ─────────────────────────────────────────────────────────────
 
 
+# Challenge ids are UUID4 strings and the SDK writes their first 34 bytes
+# (the memo cap) — so match the truncated form too.
+_UUID_MEMO = re.compile(
+    rb"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{10,12}$")
+
+
+def _looks_like_our_payment_id(memo: Optional[bytes]) -> bool:
+    """True when the memo names one of our challenges (full or truncated)."""
+    return bool(memo) and bool(_UUID_MEMO.match(memo))
+
+
 def _fail(reason: str) -> dict:
     return {"authorized": False, "reason": reason, "txid": "",
             "sender": "", "amount_sats": 0, "overpaid": False}
@@ -570,6 +653,7 @@ async def verify_stacks_payment(
     expected_amount_sats: int,
     expected_recipient: str,
     payment_id: str,
+    standard_client: bool = False,
 ) -> dict:
     """Decode + statically verify a signed-but-unbroadcast sBTC transfer.
 
@@ -583,8 +667,7 @@ async def verify_stacks_payment(
     payload, err = decode_payment_signature(payment_header)
     if err:
         return _fail(err)
-    inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
-    signed_hex = inner.get("signedTransaction") or ""
+    signed_hex = payload_signed_tx_hex(payload)
     try:
         signed_tx = bytes.fromhex(signed_hex)
         if not signed_tx:
@@ -624,9 +707,23 @@ async def verify_stacks_payment(
     # The memo is payment_id encoded and cut to the (buff 34) cap — exactly
     # what the SDK puts there. A looser prefix rule would let a 1-byte memo
     # bind to any challenge id starting with that byte.
-    if not tx["memo"]:
+    #
+    # Standard clients (standard_client=True: the route recovered the id from
+    # the echoed accepts[] entry) do not write our id into the memo. For them
+    # the binding is the echoed challenge id plus everything below — exact
+    # recipient and amount, the origin signature, and the single-use txid and
+    # payment_id consumes — so a memo that is empty or foreign is accepted,
+    # and the receipt says which binding held.
+    if tx["memo"] and tx["memo"] == payment_id.encode("utf-8")[:34]:
+        binding = "memo"
+    elif standard_client and not _looks_like_our_payment_id(tx["memo"]):
+        # Empty (AIBTC) or the client's own nonce (x402-stacks). A memo that
+        # IS one of our challenge ids but not this one is a tx signed for a
+        # different challenge — refused below like any memo mismatch.
+        binding = "echoed_payment_id"
+    elif not tx["memo"]:
         return _fail("missing_memo_binding")
-    if tx["memo"] != payment_id.encode("utf-8")[:34]:
+    else:
         return _fail("memo_payment_id_mismatch")
 
     # ── amount (small drift tolerance only) ───────────────────────────────────
@@ -648,24 +745,33 @@ async def verify_stacks_payment(
             f"{expected_amount_sats} quoted (payment {payment_id[:8]}…)"
         )
 
-    # Deny-mode (0x02) only: the tx must abort on any post-condition it does
-    # not list. The SDK always builds deny-mode; allow-mode is refused.
-    if tx["pc_mode"] != 0x02:
+    # Deny-mode (0x02): the tx must abort on any post-condition it does not
+    # list, and must carry exactly-N-sats-leave-sender. The SDK always builds
+    # this; for SDK payloads it stays mandatory (refused, never repaired).
+    #
+    # Allow-mode (0x01) is accepted only from standard clients (x402-stacks
+    # signs without post-conditions). What the post-condition guards is the
+    # payer against a token contract moving more than it says; the checks
+    # above already pin this tx to `transfer` on the canonical sBTC contract,
+    # whose code moves exactly the `amount` arg from tx-sender to the
+    # recipient. So broadcasting it moves nothing beyond the verified amount.
+    # The receipt records that the payer carried no chain-level limit.
+    if tx["pc_mode"] == 0x02:
+        pc_ok = any(
+            pc["condition_code"] == _FT_SENT_EQ
+            and pc["amount"] == tx["amount"]
+            and pc["asset_contract"] == _sbtc_contract()
+            and pc["asset_name"] == SBTC_ASSET_NAME
+            and pc["sender"] in ("origin", tx["sender"])
+            for pc in tx["post_conditions"]
+        )
+        if not pc_ok:
+            return _fail("unsafe_post_conditions")
+        payer_protection = "deny_mode_exact_amount"
+    elif tx["pc_mode"] == 0x01 and standard_client:
+        payer_protection = "none_allow_mode"
+    else:
         return _fail("post_condition_mode_not_deny")
-
-    # ── mandatory post-condition: exactly-N-sats-leave-sender ────────────────
-    # This is what makes broadcasting a stranger's signed tx safe; a transfer
-    # without it (or with a weaker code) is refused, never repaired.
-    pc_ok = any(
-        pc["condition_code"] == _FT_SENT_EQ
-        and pc["amount"] == tx["amount"]
-        and pc["asset_contract"] == _sbtc_contract()
-        and pc["asset_name"] == SBTC_ASSET_NAME
-        and pc["sender"] in ("origin", tx["sender"])
-        for pc in tx["post_conditions"]
-    )
-    if not pc_ok:
-        return _fail("unsafe_post_conditions")
 
     # Last, so the structural reasons above stay specific; still before any
     # consume or broadcast, so an unsigned tx never touches the replay store.
@@ -679,6 +785,8 @@ async def verify_stacks_payment(
         "sender": tx["sender"],
         "amount_sats": tx["amount"],
         "overpaid": overpaid,
+        "binding": binding,
+        "payer_protection": payer_protection,
     }
 
 

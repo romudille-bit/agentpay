@@ -71,6 +71,49 @@ can never double-fulfil one challenge.
 - anything else non-200 → SDK keeps the spend recorded as
   `uncertain_settlement` and treats the nonce as consumed.
 
+## Standard Stacks x402 clients (`STACKS_STANDARD_CLIENTS`)
+
+Off by default. When on, a paid 402 also lists the sBTC option in the
+standard `accepts[]` — in the body and in the `PAYMENT-REQUIRED` header,
+**appended after Base** so index 0 (what Bazaar/CDP read) never changes:
+
+```json
+{"scheme": "exact", "network": "stacks:1", "amount": "<sats>",
+ "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token",
+ "payTo": "<gateway payee>", "maxTimeoutSeconds": 120,
+ "extra": {"payment_id": "<challenge id>", "tokenType": "sBTC", ...}}
+```
+
+This makes the gateway payable by the AIBTC MCP wallet and by x402-stacks,
+both verified against their real published clients
+(`tests/test_stacks_standard_clients.py`). What they send differently, and
+how the gateway handles it:
+
+| | AgentPay SDK | AIBTC wallet | x402-stacks |
+|---|---|---|---|
+| signed tx field | `payload.signedTransaction` | `payload.transaction` (`0x…`) | `payload.transaction` |
+| names the challenge | top-level `payment_id` | echoes `accepted.extra.payment_id` | echoes `accepted.extra.payment_id` |
+| memo | `payment_id[:34]` | none | its own `x402:…` nonce |
+| post-conditions | deny + exact amount | deny + exact amount | allow mode, none |
+
+Rules, SDK path unchanged:
+- **Binding.** Memo = payment_id → `binding: "memo"`. For an echoed id, an
+  empty or foreign memo is accepted → `binding: "echoed_payment_id"`; the
+  challenge id, exact recipient/amount, origin signature and the single-use
+  txid + payment_id consumes still apply. A memo that names a *different*
+  challenge (UUID-shaped) is refused even then.
+- **Post-conditions.** Deny + exact amount stays mandatory for SDK payloads.
+  Allow mode is accepted only for echoed (standard-client) payloads, and the
+  verifier has already pinned the tx to `transfer` on the canonical sBTC
+  contract with our recipient and amount — that contract moves exactly
+  `amount`, so the post-condition's job (protecting the payer from a contract
+  taking more) is already covered. → `payer_protection: "none_allow_mode"`.
+- Both fields are returned in the paid response's `payment` block, so the
+  receipt says how the payment was bound and what protected the payer.
+- Sponsored transactions are still refused (no relay path yet).
+- Not covered: PerkOS/Nayori's client, which pays only Nayori-signed quotes
+  settled through Nayori's facilitator.
+
 ## Why this document exists
 
 The gateway/SDK review before 0.3.0 surfaced the defect classes a third

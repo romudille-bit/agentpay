@@ -19,6 +19,7 @@ four stages, each its own function:
 """
 
 import asyncio
+import base64
 import json
 import time
 import hmac
@@ -791,6 +792,27 @@ async def _run_tool(tool, resolved: str, tool_name: str, parameters: dict):
         return await real_tool_response(resolved, parameters)
 
 
+def _append_accepts_to_header(header: Optional[str], entry: dict,
+                              resource_url: str, description: str) -> str:
+    """Append one accepts[] entry to a base64 PAYMENT-REQUIRED header, or
+    build a minimal header when there is none (Base not configured)."""
+    payload = None
+    if header:
+        try:
+            payload = json.loads(base64.b64decode(header))
+        except Exception:
+            payload = None
+    if not isinstance(payload, dict):
+        payload = {
+            "x402Version": 2,
+            "error": "Payment required",
+            "resource": base_pay.build_resource_block(resource_url, description, None),
+            "accepts": [],
+        }
+    payload["accepts"] = list(payload.get("accepts") or []) + [entry]
+    return base64.b64encode(json.dumps(payload).encode()).decode()
+
+
 async def _issue_402(
     tool, resolved: str, tool_name: str, body: ToolCallRequest,
     request: Request, agent_address: Optional[str], resource_url: str,
@@ -868,6 +890,19 @@ async def _issue_402(
         if stacks_offer else None
     )
 
+    # Standard Stacks clients read accepts[] (header first, then body). The
+    # sBTC entry goes AFTER Base so index 0 — what Bazaar/CDP read — is
+    # unchanged.
+    stacks_accepts = (
+        stacks_pay.stacks_accepts_entry(stacks_quote, tool.price_usdc,
+                                        challenge.payment_id)
+        if (stacks_offer and settings.STACKS_STANDARD_CLIENTS) else None
+    )
+    if stacks_accepts:
+        payment_required_header = _append_accepts_to_header(
+            payment_required_header, stacks_accepts, resource_url, tool.description,
+        )
+
     headers = build_402_headers(challenge)
     if payment_required_header:
         headers["PAYMENT-REQUIRED"] = payment_required_header
@@ -887,7 +922,8 @@ async def _issue_402(
         "resource":    resource_block,
         # Standard x402 accepts[] in the body (not just the PAYMENT-REQUIRED
         # header) so generic payers find the Base path.
-        "accepts":     [accepts_entry] if accepts_entry else [],
+        "accepts":     ([accepts_entry] if accepts_entry else [])
+                       + ([stacks_accepts] if stacks_accepts else []),
         # Stellar option (backward-compatible top-level fields)
         "payment_id":  challenge.payment_id,
         "amount_usdc": challenge.amount_usdc,
@@ -1183,7 +1219,7 @@ async def _settle_stacks_path(
     _reject = _stacks_reject
 
     try:
-        signed_tx = bytes.fromhex((payload.get("payload") or {}).get("signedTransaction") or "")
+        signed_tx = bytes.fromhex(stacks_pay.payload_signed_tx_hex(payload))
     except (ValueError, TypeError, AttributeError):
         signed_tx = b""
     if not signed_tx:
@@ -1192,7 +1228,11 @@ async def _settle_stacks_path(
     # ── payment_id binding: the payload names the challenge; the memo inside
     # the signed tx must match it (verified below), and the challenge fixes
     # the expected amount. Missing/unknown id ⇒ nothing to verify against.
-    payment_id = str(payload.get("payment_id") or "")
+    # Standard clients (STACKS_STANDARD_CLIENTS) name it by echoing the
+    # accepts[] entry they chose; that id then stands in for the memo.
+    payment_id, echoed = stacks_pay.payload_payment_id(payload)
+    if echoed and not settings.STACKS_STANDARD_CLIENTS:
+        payment_id, echoed = "", False
     if not payment_id:
         return _reject("missing_payment_id")
     challenge = await _lookup_challenge(payment_id)
@@ -1228,6 +1268,7 @@ async def _settle_stacks_path(
         expected_amount_sats=expected_sats,
         expected_recipient=settings.STACKS_GATEWAY_ADDRESS,
         payment_id=payment_id,
+        standard_client=echoed,
     )
     if not auth["authorized"]:
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=FAILED "
@@ -1264,7 +1305,7 @@ async def _settle_stacks_path(
         payment_payload=payload,
         requirements={
             "scheme": "exact",
-            "network": (payload.get("network") or ""),
+            "network": stacks_pay.payload_network(payload),
             "amount": str(auth["amount_sats"]),
             "asset": "sbtc",
             "payTo": settings.STACKS_GATEWAY_ADDRESS,
@@ -1311,6 +1352,8 @@ async def _settle_stacks_path(
         "recovered":  settle["state"] == "ok_recovered",
         "amount_sats":  auth["amount_sats"],
         "btc_usd_rate": quote_rate,
+        "binding":      auth.get("binding", "memo"),
+        "payer_protection": auth.get("payer_protection", "deny_mode_exact_amount"),
     }
 
 
@@ -1593,6 +1636,11 @@ async def _execute_and_log(
             "network": receipt_network,
         },
     }
+    # Stacks: say how the payment was tied to this call and whether the payer
+    # carried a chain-level spend limit (standard clients may not).
+    for k in ("binding", "payer_protection"):
+        if auth.get(k):
+            response["payment"][k] = auth[k]
     if not params_used:
         response["parameters_note"] = (
             "no parameters received — the tool ran on its defaults; send a "
@@ -1707,11 +1755,12 @@ async def call_tool(
         # payload on a $0 tool falls through to _settle_free_v2 (free proofs
         # never touch a chain).
         _ps_payload, _ps_err = stacks_pay.decode_payment_signature(payment_signature)
-        _is_stacks = (
-            not _is_free_tool
-            and isinstance(_ps_payload, dict)
-            and str(_ps_payload.get("network") or "").startswith("stacks")
-        )
+        _ps_network = ""
+        if isinstance(_ps_payload, dict):
+            _ps_network = (stacks_pay.payload_network(_ps_payload)
+                           if settings.STACKS_STANDARD_CLIENTS
+                           else str(_ps_payload.get("network") or ""))
+        _is_stacks = not _is_free_tool and _ps_network.startswith("stacks")
         if _is_stacks:
             auth = await _settle_stacks_path(tool, tool_name, payment_signature,
                                              _ps_payload, parameters=body.parameters)
