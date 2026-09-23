@@ -349,17 +349,14 @@ def stacks_402_option(quote: tuple[int, Decimal], price_usdc,
     }
 
 
-# Challenge lifetime (gateway/x402.py issue_payment_challenge default) — a
-# standard client must not be told it has longer than the challenge lives.
-_ACCEPTS_MAX_TIMEOUT_S = 120
-
-
 def stacks_accepts_entry(quote: tuple[int, Decimal], price_usdc,
-                         payment_id: str) -> dict:
+                         payment_id: str, max_timeout_s: int) -> dict:
     """Standard x402 v2 `accepts[]` entry for the sBTC option, for generic
     Stacks clients (AIBTC MCP wallet, x402-stacks).
 
     - asset is the sBTC contract id: both clients map `….sbtc-token` to sBTC.
+    - maxTimeoutSeconds is passed in from the challenge's own remaining
+      lifetime, so it can never outlive the challenge it points at.
     - extra.payment_id carries the challenge id. Standard clients echo the
       chosen entry back as `accepted` in their payment payload, which is how
       the gateway finds the challenge when the client puts no memo binding
@@ -373,7 +370,7 @@ def stacks_accepts_entry(quote: tuple[int, Decimal], price_usdc,
         "amount": str(int(sats)),
         "asset": _sbtc_contract(),
         "payTo": settings.STACKS_GATEWAY_ADDRESS,
-        "maxTimeoutSeconds": _ACCEPTS_MAX_TIMEOUT_S,
+        "maxTimeoutSeconds": max(1, int(max_timeout_s)),
         "extra": {
             "payment_id": payment_id,
             "tokenType": "sBTC",
@@ -630,9 +627,16 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
 
 # ── verification ─────────────────────────────────────────────────────────────
 
+# The two official sBTC deployments — pinned constants, deliberately NOT
+# _sbtc_contract(), which follows the STACKS_SBTC_CONTRACT override.
+_CANONICAL_SBTC_CONTRACTS = frozenset({SBTC_CONTRACT_MAINNET, SBTC_CONTRACT_TESTNET})
 
-# Challenge ids are UUID4 strings and the SDK writes their first 34 bytes
-# (the memo cap) — so match the truncated form too.
+
+# Challenge ids are UUID4 strings (gateway/x402.py issue_payment_challenge)
+# and the SDK writes their first 34 bytes (the memo cap) — so match the
+# truncated form too. If the id format ever changes, this pattern must change
+# with it, or the "foreign memo" branch in verify_stacks_payment silently
+# widens to "any memo".
 _UUID_MEMO = re.compile(
     rb"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{10,12}$")
 
@@ -768,7 +772,11 @@ async def verify_stacks_payment(
         if not pc_ok:
             return _fail("unsafe_post_conditions")
         payer_protection = "deny_mode_exact_amount"
-    elif tx["pc_mode"] == 0x01 and standard_client:
+    elif (tx["pc_mode"] == 0x01 and standard_client
+          and tx["contract_id"] in _CANONICAL_SBTC_CONTRACTS):
+        # Only the real sBTC token: STACKS_SBTC_CONTRACT is overridable, and
+        # "moves exactly `amount`" holds for that contract's code alone. Any
+        # other contract falls back to requiring deny-mode.
         payer_protection = "none_allow_mode"
     else:
         return _fail("post_condition_mode_not_deny")

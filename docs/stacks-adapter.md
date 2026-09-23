@@ -80,7 +80,7 @@ standard `accepts[]` — in the body and in the `PAYMENT-REQUIRED` header,
 ```json
 {"scheme": "exact", "network": "stacks:1", "amount": "<sats>",
  "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token",
- "payTo": "<gateway payee>", "maxTimeoutSeconds": 120,
+ "payTo": "<gateway payee>", "maxTimeoutSeconds": "<challenge's remaining life, ≤120>",
  "extra": {"payment_id": "<challenge id>", "tokenType": "sBTC", ...}}
 ```
 
@@ -103,13 +103,19 @@ Rules, SDK path unchanged:
   txid + payment_id consumes still apply. A memo that names a *different*
   challenge (UUID-shaped) is refused even then.
 - **Post-conditions.** Deny + exact amount stays mandatory for SDK payloads.
-  Allow mode is accepted only for echoed (standard-client) payloads, and the
-  verifier has already pinned the tx to `transfer` on the canonical sBTC
-  contract with our recipient and amount — that contract moves exactly
+  Allow mode is accepted only for echoed (standard-client) payloads, and only
+  when the contract is one of the two official sBTC deployments (pinned
+  constants, not the overridable `STACKS_SBTC_CONTRACT`); the verifier has
+  already pinned the tx to `transfer` on it with our recipient and amount — that contract moves exactly
   `amount`, so the post-condition's job (protecting the payer from a contract
   taking more) is already covered. → `payer_protection: "none_allow_mode"`.
 - Both fields are returned in the paid response's `payment` block, so the
   receipt says how the payment was bound and what protected the payer.
+- Replay: the txid is consumed before broadcast, so the same signed tx can
+  settle once — whether it is resent as is or echoed under another
+  challenge of the same price (both pinned in the tests).
+- A PAYMENT-REQUIRED header that fails to decode is left untouched (sBTC
+  then appears in the body only), so index 0 of the header stays Base.
 - Sponsored transactions are still refused (no relay path yet).
 - Not covered: PerkOS/Nayori's client, which pays only Nayori-signed quotes
   settled through Nayori's facilitator.

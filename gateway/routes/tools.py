@@ -793,16 +793,25 @@ async def _run_tool(tool, resolved: str, tool_name: str, parameters: dict):
 
 
 def _append_accepts_to_header(header: Optional[str], entry: dict,
-                              resource_url: str, description: str) -> str:
-    """Append one accepts[] entry to a base64 PAYMENT-REQUIRED header, or
-    build a minimal header when there is none (Base not configured)."""
-    payload = None
+                              resource_url: str, description: str) -> Optional[str]:
+    """Append one accepts[] entry to a base64 PAYMENT-REQUIRED header.
+
+    No header at all (Base not configured) → build a minimal one; nothing
+    else is at index 0 then, in the header or the body. A header that is
+    present but does not decode is returned UNTOUCHED: rebuilding it would
+    put sBTC at index 0 of the header while the body keeps Base there, which
+    is the Bazaar/CDP invariant this entry must never break. Clients still
+    find the sBTC option in the body's accepts[]."""
     if header:
         try:
             payload = json.loads(base64.b64decode(header))
-        except Exception:
-            payload = None
-    if not isinstance(payload, dict):
+            if not isinstance(payload, dict):
+                raise ValueError("not an object")
+        except Exception as e:
+            logger.warning(f"[402] PAYMENT-REQUIRED header did not decode ({e}); "
+                           "left as is, sBTC option in the body only")
+            return header
+    else:
         payload = {
             "x402Version": 2,
             "error": "Payment required",
@@ -894,8 +903,10 @@ async def _issue_402(
     # sBTC entry goes AFTER Base so index 0 — what Bazaar/CDP read — is
     # unchanged.
     stacks_accepts = (
-        stacks_pay.stacks_accepts_entry(stacks_quote, tool.price_usdc,
-                                        challenge.payment_id)
+        stacks_pay.stacks_accepts_entry(
+            stacks_quote, tool.price_usdc, challenge.payment_id,
+            max_timeout_s=challenge.expires_at - time.time(),
+        )
         if (stacks_offer and settings.STACKS_STANDARD_CLIENTS) else None
     )
     if stacks_accepts:
