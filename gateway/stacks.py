@@ -351,18 +351,8 @@ def stacks_402_option(quote: tuple[int, Decimal], price_usdc,
 
 def stacks_accepts_entry(quote: tuple[int, Decimal], price_usdc,
                          payment_id: str, max_timeout_s: int) -> dict:
-    """Standard x402 v2 `accepts[]` entry for the sBTC option, for generic
-    Stacks clients (AIBTC MCP wallet, x402-stacks).
-
-    - asset is the sBTC contract id: both clients map `….sbtc-token` to sBTC.
-    - maxTimeoutSeconds is passed in from the challenge's own remaining
-      lifetime, so it can never outlive the challenge it points at.
-    - extra.payment_id carries the challenge id. Standard clients echo the
-      chosen entry back as `accepted` in their payment payload, which is how
-      the gateway finds the challenge when the client puts no memo binding
-      in the transaction (AIBTC leaves it empty, x402-stacks writes its own
-      nonce).
-    """
+    """Standard x402 v2 `accepts[]` entry for the sBTC option. Clients echo
+    it back as `accepted`, which is how extra.payment_id finds the challenge."""
     sats, rate = quote[0], quote[1]
     return {
         "scheme": "exact",
@@ -627,16 +617,12 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
 
 # ── verification ─────────────────────────────────────────────────────────────
 
-# The two official sBTC deployments — pinned constants, deliberately NOT
-# _sbtc_contract(), which follows the STACKS_SBTC_CONTRACT override.
+# Official sBTC deployments. Not _sbtc_contract(), which is overridable.
 _CANONICAL_SBTC_CONTRACTS = frozenset({SBTC_CONTRACT_MAINNET, SBTC_CONTRACT_TESTNET})
 
 
-# Challenge ids are UUID4 strings (gateway/x402.py issue_payment_challenge)
-# and the SDK writes their first 34 bytes (the memo cap) — so match the
-# truncated form too. If the id format ever changes, this pattern must change
-# with it, or the "foreign memo" branch in verify_stacks_payment silently
-# widens to "any memo".
+# Challenge ids are UUID4 (gateway/x402.py); the SDK memo holds the first 34
+# bytes. Must track the id format, or memos naming another challenge pass.
 _UUID_MEMO = re.compile(
     rb"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{10,12}$")
 
@@ -711,19 +697,12 @@ async def verify_stacks_payment(
     # The memo is payment_id encoded and cut to the (buff 34) cap — exactly
     # what the SDK puts there. A looser prefix rule would let a 1-byte memo
     # bind to any challenge id starting with that byte.
-    #
-    # Standard clients (standard_client=True: the route recovered the id from
-    # the echoed accepts[] entry) do not write our id into the memo. For them
-    # the binding is the echoed challenge id plus everything below — exact
-    # recipient and amount, the origin signature, and the single-use txid and
-    # payment_id consumes — so a memo that is empty or foreign is accepted,
-    # and the receipt says which binding held.
+    # Standard clients bind via the echoed payment_id instead of the memo.
     if tx["memo"] and tx["memo"] == payment_id.encode("utf-8")[:34]:
         binding = "memo"
     elif standard_client and not _looks_like_our_payment_id(tx["memo"]):
-        # Empty (AIBTC) or the client's own nonce (x402-stacks). A memo that
-        # IS one of our challenge ids but not this one is a tx signed for a
-        # different challenge — refused below like any memo mismatch.
+        # Empty or the client's own nonce; a memo naming another of our
+        # challenges falls through to the mismatch below.
         binding = "echoed_payment_id"
     elif not tx["memo"]:
         return _fail("missing_memo_binding")
@@ -749,17 +728,9 @@ async def verify_stacks_payment(
             f"{expected_amount_sats} quoted (payment {payment_id[:8]}…)"
         )
 
-    # Deny-mode (0x02): the tx must abort on any post-condition it does not
-    # list, and must carry exactly-N-sats-leave-sender. The SDK always builds
-    # this; for SDK payloads it stays mandatory (refused, never repaired).
-    #
-    # Allow-mode (0x01) is accepted only from standard clients (x402-stacks
-    # signs without post-conditions). What the post-condition guards is the
-    # payer against a token contract moving more than it says; the checks
-    # above already pin this tx to `transfer` on the canonical sBTC contract,
-    # whose code moves exactly the `amount` arg from tx-sender to the
-    # recipient. So broadcasting it moves nothing beyond the verified amount.
-    # The receipt records that the payer carried no chain-level limit.
+    # Deny mode with an exact-amount post-condition is required, except for
+    # standard clients on the official sBTC contract, which moves exactly
+    # `amount` (x402-stacks signs in allow mode). See docs/stacks-adapter.md.
     if tx["pc_mode"] == 0x02:
         pc_ok = any(
             pc["condition_code"] == _FT_SENT_EQ
@@ -774,9 +745,6 @@ async def verify_stacks_payment(
         payer_protection = "deny_mode_exact_amount"
     elif (tx["pc_mode"] == 0x01 and standard_client
           and tx["contract_id"] in _CANONICAL_SBTC_CONTRACTS):
-        # Only the real sBTC token: STACKS_SBTC_CONTRACT is overridable, and
-        # "moves exactly `amount`" holds for that contract's code alone. Any
-        # other contract falls back to requiring deny-mode.
         payer_protection = "none_allow_mode"
     else:
         return _fail("post_condition_mode_not_deny")

@@ -1,25 +1,10 @@
 """
-test_stacks_standard_clients.py — the sBTC option payable by standard Stacks
-x402 clients (flag STACKS_STANDARD_CLIENTS), with the AgentPay SDK path
-unchanged.
+Standard Stacks x402 clients paying the sBTC option (STACKS_STANDARD_CLIENTS).
 
-The two payment-signature headers in fixtures/stacks_standard_clients.json
-were produced by the REAL published clients — x402-stacks 2.0.3
-(wrapAxiosWithPayment) and @aibtc/mcp-server 1.71.0 (createApiClient) —
-paying a flag-on mainnet 402 from this gateway, served locally. Signed with
-throwaway keys, never broadcast. What each client does differently from our
-SDK, and what these tests pin:
-
-  x402-stacks  payload.transaction, memo = its own "x402:…" nonce,
-               post-condition mode ALLOW (no post-conditions)
-  AIBTC        payload.transaction with 0x prefix, memo = none,
-               post-condition mode DENY + exact amount
-  both         no top-level network or payment_id — they echo the accepts[]
-               entry they chose as `accepted`, whose extra.payment_id we set
-
-Regenerate: serve a flag-on mainnet 402 (Base + sBTC accepts) on localhost,
-call it through each client with a throwaway key, capture the
-payment-signature header on the retry.
+The fixture headers were produced by the real published clients, x402-stacks
+2.0.3 and @aibtc/mcp-server 1.71.0, paying a flag-on mainnet 402 from this
+gateway (throwaway keys, never broadcast). The client differences these tests
+cover are tabled in docs/stacks-adapter.md.
 """
 
 import base64
@@ -269,9 +254,7 @@ class TestRouteGlue:
 
     @pytest.mark.parametrize("client", ["x402-stacks", "aibtc"])
     async def test_same_tx_echoed_under_second_challenge_rejected(self, rt, client):
-        # The binding for standard clients is the echoed id, so an attacker
-        # (or a confused client) can point one signed tx at another live
-        # challenge of the same price. The txid consume must stop it.
+        # One signed tx pointed at another same-price challenge.
         header = FX["headers"][client]
         p2 = _payload(client)
         p2["accepted"] = {**p2["accepted"],

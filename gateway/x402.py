@@ -206,9 +206,7 @@ def issue_payment_challenge(
     stacks_quote=(sats, rate): the sBTC quote the 402 offers, kept on the
     challenge so settle verifies against it after a restart.
     """
-    # Keep this a UUID4 string: the Stacks verifier recognises a memo that
-    # names one of our challenges by this shape (gateway/stacks.py
-    # _UUID_MEMO). Changing the id format means changing that pattern too.
+    # gateway/stacks.py _UUID_MEMO depends on this format.
     payment_id = str(uuid.uuid4())
     now = time.time()
 

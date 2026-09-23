@@ -794,14 +794,9 @@ async def _run_tool(tool, resolved: str, tool_name: str, parameters: dict):
 
 def _append_accepts_to_header(header: Optional[str], entry: dict,
                               resource_url: str, description: str) -> Optional[str]:
-    """Append one accepts[] entry to a base64 PAYMENT-REQUIRED header.
-
-    No header at all (Base not configured) → build a minimal one; nothing
-    else is at index 0 then, in the header or the body. A header that is
-    present but does not decode is returned UNTOUCHED: rebuilding it would
-    put sBTC at index 0 of the header while the body keeps Base there, which
-    is the Bazaar/CDP invariant this entry must never break. Clients still
-    find the sBTC option in the body's accepts[]."""
+    """Append an accepts[] entry to the PAYMENT-REQUIRED header, building
+    one if absent. An undecodable header is returned unchanged so Base
+    stays at index 0."""
     if header:
         try:
             payload = json.loads(base64.b64decode(header))
@@ -899,9 +894,7 @@ async def _issue_402(
         if stacks_offer else None
     )
 
-    # Standard Stacks clients read accepts[] (header first, then body). The
-    # sBTC entry goes AFTER Base so index 0 — what Bazaar/CDP read — is
-    # unchanged.
+    # After Base: index 0 is what Bazaar/CDP read.
     stacks_accepts = (
         stacks_pay.stacks_accepts_entry(
             stacks_quote, tool.price_usdc, challenge.payment_id,
@@ -1239,8 +1232,7 @@ async def _settle_stacks_path(
     # ── payment_id binding: the payload names the challenge; the memo inside
     # the signed tx must match it (verified below), and the challenge fixes
     # the expected amount. Missing/unknown id ⇒ nothing to verify against.
-    # Standard clients (STACKS_STANDARD_CLIENTS) name it by echoing the
-    # accepts[] entry they chose; that id then stands in for the memo.
+    # Standard clients name it via the echoed accepted.extra.payment_id.
     payment_id, echoed = stacks_pay.payload_payment_id(payload)
     if echoed and not settings.STACKS_STANDARD_CLIENTS:
         payment_id, echoed = "", False
@@ -1647,8 +1639,7 @@ async def _execute_and_log(
             "network": receipt_network,
         },
     }
-    # Stacks: say how the payment was tied to this call and whether the payer
-    # carried a chain-level spend limit (standard clients may not).
+    # Stacks receipts record the binding and payer protection used.
     for k in ("binding", "payer_protection"):
         if auth.get(k):
             response["payment"][k] = auth[k]
