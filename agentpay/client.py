@@ -8,6 +8,7 @@ from agentpay._wallet import (
     Session as _Session,
     BudgetExceeded,
     ToolNotFound,
+    GatewayUnavailable,
     PaymentFailed,
     UnsupportedChainPayment,
     PrePaymentError,
@@ -231,7 +232,7 @@ class Session(_Session):
                          approver=approver)
 
 
-__all__ = ["AgentWallet", "Session", "ToolResult", "BudgetExceeded", "ToolNotFound", "PaymentFailed",
+__all__ = ["AgentWallet", "Session", "ToolResult", "BudgetExceeded", "ToolNotFound", "GatewayUnavailable", "PaymentFailed",
            "UnsupportedChainPayment",
            "PrePaymentError", "RefundPending", "SettlementUncertain", "PolicyRejected",
            "ApprovalRequired", "faucet_wallet", "quickstart",

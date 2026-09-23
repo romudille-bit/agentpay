@@ -1440,6 +1440,88 @@ class TestFallbackOptIn:
             Session(w, gateway_url=GATEWAY, max_spend="1.00", fallback="on")
 
 
+class TestRegistryLookupUnavailable:
+    """A gateway that does not answer the registry lookup is not an unknown
+    tool. call() raises GatewayUnavailable after one retry; only an actual
+    404 raises ToolNotFound. The price helpers keep their soft "unknown".
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr(Session, "_LOOKUP_RETRY_DELAY_S", 0.0)
+
+    def test_timeout_raises_gateway_unavailable_not_toolnotfound(self):
+        from agentpay import GatewayUnavailable, ToolNotFound
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            route = respx.get(f"{GATEWAY}/tools/gas_tracker").mock(
+                side_effect=httpx.ReadTimeout("read timed out"))
+            with pytest.raises(GatewayUnavailable) as ei:
+                s.call("gas_tracker", {})
+        assert route.call_count == 2                   # one retry
+        assert "ReadTimeout" in ei.value.cause
+        assert "gas_tracker" in str(ei.value)
+        assert not isinstance(ei.value, ToolNotFound)
+        assert w.pay.call_count == 0
+        assert s.spent_usd() == Decimal("0")
+
+    def test_5xx_then_200_recovers_on_retry(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            route = respx.get(f"{GATEWAY}/tools/token_price").mock(
+                side_effect=[httpx.Response(503, text="down"),
+                             httpx.Response(200, json=TOKEN_PRICE_INFO)])
+            respx.post(TOOL_URL).mock(
+                return_value=httpx.Response(200, json={"result": {"price_usd": 1}}))
+            s.call("token_price", {"symbol": "ETH"})
+        assert route.call_count == 2
+        assert s.spent_usd() == Decimal("0")           # free response, no 402
+
+    def test_5xx_twice_raises_gateway_unavailable(self):
+        from agentpay import GatewayUnavailable
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            route = respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(502, text="bad gateway"))
+            with pytest.raises(GatewayUnavailable, match="HTTP 502"):
+                s.call("token_price", {"symbol": "ETH"})
+        assert route.call_count == 2
+
+    def test_non_404_4xx_is_not_retried_and_not_a_typo(self):
+        from agentpay import GatewayUnavailable
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            route = respx.get(f"{GATEWAY}/tools/token_price").mock(
+                return_value=httpx.Response(403, text="blocked"))
+            with pytest.raises(GatewayUnavailable, match="HTTP 403"):
+                s.call("token_price", {"symbol": "ETH"})
+        assert route.call_count == 1
+
+    def test_404_still_raises_toolnotfound_without_retry(self):
+        from agentpay import ToolNotFound
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            route = respx.get(f"{GATEWAY}/tools/token_pricee").mock(
+                return_value=httpx.Response(404, json={"error": "not found"}))
+            with pytest.raises(ToolNotFound):
+                s.call("token_pricee", {"symbol": "ETH"})
+        assert route.call_count == 1
+
+    def test_estimate_stays_soft_on_timeout(self):
+        w = _session_wallet()
+        s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
+        with respx.mock:
+            respx.get(f"{GATEWAY}/tools/token_price").mock(
+                side_effect=httpx.ConnectError("refused"))
+            assert s.estimate("token_price") == "unknown"
+            assert s.tool_cost_usd("token_price") is None
+
+
 class TestBaseAssetIsPinned:
     """The Base leg signs for USDC or refuses.
 

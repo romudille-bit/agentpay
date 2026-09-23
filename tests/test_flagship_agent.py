@@ -5,6 +5,8 @@ The run loop talks to production and is exercised by the daily cron; the
 note composition and regime logic are pinned here.
 """
 
+import json
+
 from agents.analyst.run import (
     build_findings,
     compact_verdict,
@@ -261,3 +263,79 @@ class TestRegimeLineAGE85:
                  self.row("SOL", "bullish")]
         assert _funding_bias({"rates": rates}) == "crowded-long"
         assert _funding_bias({"rates": []}) is None
+
+
+class TestPublishRunRetries:
+    """The ingest POST is the run's only path to the ledger. A transport
+    error or a 5xx is retried with backoff; a 4xx is not; a lost response
+    is safe to repeat because the gateway keys the row on run_at.
+    """
+
+    @staticmethod
+    def _ok_response(stored=True):
+        import io
+        class _Resp(io.BytesIO):
+            status = 200 if stored else 202
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        return _Resp(json.dumps({"stored": stored}).encode())
+
+    def _run(self, monkeypatch, outcomes):
+        """outcomes: per attempt, an exception instance to raise or a
+        response object to return. Returns (result, attempts, sleeps)."""
+        import urllib.request
+        from agents.analyst import run as mod
+        monkeypatch.setenv("FLAGSHIP_INGEST_SECRET", "s3cret")
+        calls, sleeps = [], []
+        def fake_urlopen(req, timeout=None):
+            calls.append((req, timeout))
+            outcome = outcomes[len(calls) - 1]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        result = mod.publish_run({"run_at": "2026-01-01T13:00:00Z"},
+                                 sleep=sleeps.append)
+        return result, calls, sleeps
+
+    def test_timeout_then_success(self, monkeypatch):
+        import socket
+        result, calls, sleeps = self._run(
+            monkeypatch, [socket.timeout("timed out"), self._ok_response()])
+        assert result is True
+        assert len(calls) == 2
+        assert sleeps == [2.0]
+        assert all(t == 30.0 for _, t in calls)
+
+    def test_gives_up_after_three_transport_failures(self, monkeypatch):
+        import urllib.error
+        errs = [urllib.error.URLError("unreachable")] * 3
+        result, calls, sleeps = self._run(monkeypatch, errs)
+        assert result is False
+        assert len(calls) == 3
+        assert sleeps == [2.0, 5.0]
+
+    def test_5xx_is_retried(self, monkeypatch):
+        import urllib.error
+        e = urllib.error.HTTPError("u", 503, "down", {}, None)
+        result, calls, _ = self._run(monkeypatch, [e, self._ok_response()])
+        assert result is True and len(calls) == 2
+
+    def test_4xx_is_not_retried(self, monkeypatch):
+        import urllib.error
+        e = urllib.error.HTTPError("u", 401, "nope", {}, None)
+        result, calls, sleeps = self._run(monkeypatch, [e, self._ok_response()])
+        assert result is False and len(calls) == 1 and sleeps == []
+
+    def test_accepted_but_not_stored_is_not_ok_and_not_retried(self, monkeypatch):
+        result, calls, sleeps = self._run(
+            monkeypatch, [self._ok_response(stored=False)])
+        assert result is False and len(calls) == 1 and sleeps == []
+
+    def test_same_body_on_every_attempt(self, monkeypatch):
+        import socket
+        _, calls, _ = self._run(
+            monkeypatch, [socket.timeout(), socket.timeout(), self._ok_response()])
+        bodies = {req.data for req, _ in calls}
+        assert len(bodies) == 1
+        assert all(req.get_header("X-flagship-secret") == "s3cret" for req, _ in calls)

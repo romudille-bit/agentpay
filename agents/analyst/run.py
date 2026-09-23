@@ -997,53 +997,76 @@ def run_strategy(s, spec, intel_calls, run_at, run_at_iso, payer, max_spend, obj
     return 0
 
 
-def publish_run(payload: dict) -> bool:
+# The ingest is the only copy of the run that reaches the ledger: a run that
+# completes and then loses this one POST leaves no row anywhere, so a
+# transient stall costs a whole day. Retries are safe because the gateway
+# keys the row on run_at, so a POST that landed but whose response was lost
+# is a no-op the second time.
+INGEST_ATTEMPTS = 3
+INGEST_BACKOFF_S = (2.0, 5.0)
+INGEST_TIMEOUT_S = 30.0
+
+
+def publish_run(payload: dict, *, sleep=None) -> bool:
     """POST a completed run to the gateway's flagship ingest endpoint.
 
     Auth is a shared secret (FLAGSHIP_INGEST_SECRET) sent as a header; the gateway
     holds the Supabase credentials and does the write, so the flagship stays a
     credential-free HTTP customer. No-op (returns False) when the secret is unset.
-    Best-effort: any failure is logged and swallowed.
+    Best-effort: a transport error or a 5xx is retried with backoff, a 4xx is
+    not (the secret or the payload is wrong, and the same request would get the
+    same answer); the final failure is logged and swallowed.
     """
     secret = os.environ.get("FLAGSHIP_INGEST_SECRET", "")
     if not secret:
         log("ingest skipped — FLAGSHIP_INGEST_SECRET unset")
         return False
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            f"{GATEWAY}/v1/flagship/run",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json",
-                     "X-Flagship-Secret": secret,
-                     # AGE-46 root cause: Cloudflare 403s urllib's default
-                     # "Python-urllib/3.x" UA (error 1010, UA ban) on
-                     # agentpay.tools, so EVERY daily ingest died as
-                     # "ingest failed: HTTP Error 403" since 2026-06-12.
-                     # Same incident the prober hit on its first sweep
-                     # (2026-07-10) and fixed with PROBE_UA — mirror it.
-                     "User-Agent": "Mozilla/5.0 (compatible; x402-client)"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            status = resp.status
-            try:
-                body = json.loads(resp.read().decode() or "{}")
-            except Exception:
-                body = {}
-        # AGE-46: a 202 means the gateway ACCEPTED but did NOT store the run —
-        # reasoning will be missing on /ledger. Calling that "ok" hid a
-        # never-populated pipeline for a month. Only stored=True is ok.
-        stored = bool(body.get("stored"))
-        if stored:
-            log("ingest ok → /v1/flagship/run (stored)")
+    import time
+    import urllib.error
+    import urllib.request
+    sleep = sleep or time.sleep
+    body_bytes = json.dumps(payload).encode()
+    for attempt in range(1, INGEST_ATTEMPTS + 1):
+        try:
+            req = urllib.request.Request(
+                f"{GATEWAY}/v1/flagship/run",
+                data=body_bytes,
+                headers={"Content-Type": "application/json",
+                         "X-Flagship-Secret": secret,
+                         # Cloudflare rejects urllib's default User-Agent
+                         # at the edge, before the gateway sees the request.
+                         "User-Agent": "Mozilla/5.0 (compatible; x402-client)"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=INGEST_TIMEOUT_S) as resp:
+                status = resp.status
+                try:
+                    body = json.loads(resp.read().decode() or "{}")
+                except Exception:
+                    body = {}
+            # A 202 means the gateway accepted but did not store the run, so
+            # the reasoning would be missing on /ledger. Only stored=True is ok.
+            stored = bool(body.get("stored"))
+            if stored:
+                log("ingest ok → /v1/flagship/run (stored)")
+            else:
+                log(f"ingest NOT STORED → /v1/flagship/run (HTTP {status}, "
+                    f"stored={body.get('stored')!r}) — reasoning will be missing on /ledger")
+            return stored
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                log(f"ingest failed: HTTP {e.code} — not retrying")
+                return False
+            err = f"HTTP {e.code}"
+        except Exception as e:
+            err = str(e) or type(e).__name__
+        if attempt < INGEST_ATTEMPTS:
+            delay = INGEST_BACKOFF_S[min(attempt - 1, len(INGEST_BACKOFF_S) - 1)]
+            log(f"ingest attempt {attempt}/{INGEST_ATTEMPTS} failed: {err} — retrying in {delay:g}s")
+            sleep(delay)
         else:
-            log(f"ingest NOT STORED → /v1/flagship/run (HTTP {status}, "
-                f"stored={body.get('stored')!r}) — reasoning will be missing on /ledger")
-        return stored
-    except Exception as e:
-        log(f"ingest failed: {e}")
-        return False
+            log(f"ingest failed after {INGEST_ATTEMPTS} attempts: {err}")
+    return False
 
 
 if __name__ == "__main__":

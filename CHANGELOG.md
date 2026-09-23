@@ -6,6 +6,17 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `GatewayUnavailable` — raised by `Session.call()` when the gateway does
+  not answer the registry lookup (a connection error, a timeout, or a 5xx,
+  after one retry). Carries the cause. Nothing is signed or paid.
+
+### Changed
+- `ToolNotFound` is raised only on an actual 404 from the gateway. A lookup
+  that timed out used to raise it too, sending the caller to fix a name that
+  was not wrong. `estimate()`, `tool_cost()` and `tool_cost_usd()` keep
+  answering "unknown" / `None` when the gateway does not answer.
+
 ## [0.5.1] — 2026-09-13
 
 **Spending rules and the money-path fixes from the full-codebase review.**

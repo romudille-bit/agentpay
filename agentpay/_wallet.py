@@ -16,6 +16,7 @@ import httpx
 import logging
 import secrets
 import threading
+import time
 from decimal import Decimal
 from typing import Callable
 
@@ -142,9 +143,26 @@ class ToolNotFound(Exception):
 
     A typo'd or unknown tool is an input error, not a budget problem — it is
     never substituted with another tool and never raises BudgetExceeded.
-    Check the name against GET {gateway_url}/tools.
+    Check the name against GET {gateway_url}/tools. Raised only on an actual
+    404 from the gateway; a gateway that does not answer raises
+    GatewayUnavailable instead.
     """
     pass
+
+
+class GatewayUnavailable(Exception):
+    """Raised when the gateway did not answer a registry lookup: a connection
+    error, a timeout, or a 5xx, after one retry.
+
+    Distinct from ToolNotFound because the tool may well exist and the same
+    call can succeed a moment later. Nothing was signed or paid.
+
+    Attributes:
+        cause: the transport error or the HTTP status, as a short string.
+    """
+    def __init__(self, message: str, *, cause: str = ""):
+        super().__init__(message)
+        self.cause = cause
 
 
 class PaymentFailed(Exception):
@@ -2192,8 +2210,9 @@ class Session:
         # (even with fallback="auto" there is no category to substitute
         # within, and substituting would silently bill an unrelated tool for a
         # typo) and it is not a budget problem, so it raises the typed
-        # ToolNotFound rather than BudgetExceeded.
-        tool_info = self._fetch_tool_info(tool_name)
+        # ToolNotFound rather than BudgetExceeded. A gateway that does not
+        # answer is a different failure and raises GatewayUnavailable.
+        tool_info = self._fetch_tool_info(tool_name, strict=True)
         if tool_info is None:
             raise ToolNotFound(
                 f"Tool '{tool_name}' not found on gateway {self.gateway_url} — "
@@ -2492,18 +2511,57 @@ class Session:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _fetch_tool_info(self, tool_name: str) -> dict | None:
-        """Fetch and cache tool metadata from gateway."""
+    # A registry lookup that fails to reach the gateway is retried once after a
+    # short pause; the two attempts stay well under a typical tool call.
+    _LOOKUP_TIMEOUT_S = 5.0
+    _LOOKUP_RETRY_DELAY_S = 1.0
+
+    def _fetch_tool_info(self, tool_name: str, *, strict: bool = False) -> dict | None:
+        """Fetch and cache tool metadata from the gateway.
+
+        Returns the tool's metadata, or None when the gateway answered 404:
+        the name is unknown. When the gateway does not answer at all (a
+        connection error, a timeout, or a 5xx, after one retry) the outcome
+        depends on `strict`: the price helpers pass False and get None, so
+        estimate() keeps reading "unknown"; call() passes True and gets a
+        GatewayUnavailable, because reporting a stalled gateway as an unknown
+        tool would send the caller to fix a name that is not wrong.
+        """
         if tool_name in self._tool_cache:
             return self._tool_cache[tool_name]
-        try:
-            resp = httpx.get(f"{self.gateway_url}/tools/{tool_name}", timeout=5.0)
-            if resp.status_code == 200:
-                info = resp.json()
-                self._tool_cache[tool_name] = info
-                return info
-        except Exception:
-            pass
+        url = f"{self.gateway_url}/tools/{tool_name}"
+        cause = ""
+        for attempt in (1, 2):
+            try:
+                resp = httpx.get(url, timeout=self._LOOKUP_TIMEOUT_S)
+            except httpx.HTTPError as e:
+                cause = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            except Exception as e:  # pragma: no cover - defensive
+                cause = f"{type(e).__name__}: {e}"
+            else:
+                if resp.status_code == 200:
+                    try:
+                        info = resp.json()
+                    except ValueError:
+                        cause = "HTTP 200 with a non-JSON body"
+                    else:
+                        self._tool_cache[tool_name] = info
+                        return info
+                elif resp.status_code == 404:
+                    return None
+                else:
+                    cause = f"HTTP {resp.status_code}"
+                    if resp.status_code < 500:
+                        break   # the same request would get the same answer
+            if attempt == 1:
+                time.sleep(self._LOOKUP_RETRY_DELAY_S)
+        if strict:
+            raise GatewayUnavailable(
+                f"Gateway {self.gateway_url} did not answer GET /tools/{tool_name} "
+                f"({cause}) — the tool may exist; retry, or check "
+                f"{self.gateway_url}/health",
+                cause=cause,
+            )
         return None
 
     def _all_tools(self) -> list[dict]:
