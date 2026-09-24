@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # Accept standard Stacks x402 clients (AIBTC wallet, x402-stacks).
     # See docs/stacks-adapter.md. The SDK path is unaffected.
     STACKS_STANDARD_CLIENTS: bool = False
+    # Server-side session cap (db/migrations/sessions.sql must be applied).
+    # Off: session_create returns an id nothing checks, as before.
+    SESSION_ENFORCEMENT: bool = False
+    SESSION_DEFAULT_TTL_S: int = 86_400
+    SESSION_MAX_TTL_S: int = 7 * 86_400
     STACKS_SETTLE_TIMEOUT_S: float = 30.0    # one broadcast attempt (facilitator or Hiro)
     STACKS_CONFIRM_POLL_S: float = 3.0
     STACKS_CONFIRM_MAX_POLLS: int = 20

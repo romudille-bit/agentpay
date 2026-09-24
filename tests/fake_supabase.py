@@ -152,3 +152,118 @@ def install(monkeypatch, fake: FakeSupabase) -> None:
     # gateway.main keeps the disabled stub: its lifespan workers are not
     # part of the contract and would poll the fake forever.
 
+
+# ── sessions (AGE-207) ───────────────────────────────────────────────────────
+# PostgREST routes for the sessions table and its functions, mirroring
+# db/migrations/sessions.sql (validated against Postgres 16 before this was
+# written). Mounted on a respx router so the service's real HTTP layer runs.
+
+SB_URL = "https://sb.test"
+
+
+class FakeSessionStore:
+    def __init__(self, fake: FakeSupabase) -> None:
+        self.fake = fake
+        self.rows: dict[str, dict] = {}
+        self.rpc_down = False
+        self.rpc_calls: list[tuple] = []
+        self.now_offset_s = 0.0
+
+    def _now(self):
+        from datetime import datetime, timedelta, timezone
+        return datetime.now(tz=timezone.utc) + timedelta(seconds=self.now_offset_s)
+
+    @staticmethod
+    def _ts(s: str):
+        from datetime import datetime, timezone
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+    def live_for(self, payer: str) -> Optional[dict]:
+        cands = [r for r in self.rows.values()
+                 if r["payer"] == payer and r["status"] in ("active", "exhausted")]
+        cands.sort(key=lambda r: (r["status"] == "active", r["created_at"]), reverse=True)
+        return cands[0] if cands else None
+
+    def consume(self, payer: str, cost: str, session_id: Optional[str]) -> dict:
+        from decimal import Decimal
+        none = {"r_found": False, "r_ok": False, "r_session_id": None,
+                "r_max_spend": None, "r_spent": None, "r_expires_at": None}
+        s = self.rows.get(session_id) if session_id else self.live_for(payer)
+        if s is None or s["status"] not in ("active", "exhausted"):
+            return none
+        view = {"r_session_id": s["session_id"], "r_max_spend": s["max_spend"],
+                "r_spent": s["spent"], "r_expires_at": s["expires_at"]}
+        if s["payer"] != payer:
+            return {"r_found": True, "r_ok": False, **view}
+        if self._ts(s["expires_at"]) <= self._now():
+            s["status"] = "expired"
+            return {"r_found": False, "r_ok": False, **view}
+        spent, cap, c = Decimal(s["spent"]), Decimal(s["max_spend"]), Decimal(cost)
+        if spent + c > cap:
+            return {"r_found": True, "r_ok": False, **view}
+        s["spent"] = str(spent + c)
+        s["status"] = "exhausted" if spent + c >= cap else "active"
+        return {"r_found": True, "r_ok": True, **view, "r_spent": s["spent"]}
+
+    def release(self, session_id: str, cost: str) -> str:
+        from decimal import Decimal
+        s = self.rows[session_id]
+        s["spent"] = str(max(Decimal(s["spent"]) - Decimal(cost), Decimal(0)))
+        if s["status"] == "exhausted":
+            s["status"] = "active"
+        return s["spent"]
+
+    def expire(self) -> int:
+        n = 0
+        for s in self.rows.values():
+            if s["status"] in ("active", "exhausted") and self._ts(s["expires_at"]) <= self._now():
+                s["status"] = "expired"
+                n += 1
+        return n
+
+    def mount(self, router) -> None:
+        import json as _json
+        import httpx
+
+        def insert(request):
+            row = _json.loads(request.content)
+            if any(r["payer"] == row["payer"] and r["status"] == "active" for r in self.rows.values()):
+                return httpx.Response(409, json={"code": "23505"})
+            self.rows[row["session_id"]] = dict(row)
+            return httpx.Response(201, json=[row])
+
+        def select(request):
+            p = request.url.params
+            rows = list(self.rows.values())
+            if "payer" in p:
+                rows = [r for r in rows if r["payer"] == p["payer"].removeprefix("eq.")]
+            if "status" in p:
+                rows = [r for r in rows if r["status"] == p["status"].removeprefix("eq.")]
+            if "session_id" in p:
+                rows = [r for r in rows if r["session_id"] == p["session_id"].removeprefix("eq.")]
+            rows.sort(key=lambda r: r["created_at"], reverse=True)
+            return httpx.Response(200, json=rows[: int(p.get("limit", "50"))])
+
+        def rpc(request, name):
+            args = _json.loads(request.content or b"{}")
+            self.rpc_calls.append((name, args))
+            if self.rpc_down:
+                return httpx.Response(503, text="down")
+            if name == "consume_session_budget":
+                return httpx.Response(200, json=[self.consume(
+                    args["p_payer"], args["p_cost"], args.get("p_session_id"))])
+            if name == "release_session_budget":
+                return httpx.Response(200, json=self.release(args["p_session_id"], args["p_cost"]))
+            if name == "expire_sessions":
+                return httpx.Response(200, json=self.expire())
+            return httpx.Response(404)
+
+        def receipts(request):
+            sid = request.url.params.get("session_id", "").removeprefix("eq.")
+            rows = [r for r in self.fake.logs.values() if r.get("session_id") == sid]
+            return httpx.Response(200, json=rows)
+
+        router.post(f"{SB_URL}/rest/v1/sessions").mock(side_effect=insert)
+        router.get(f"{SB_URL}/rest/v1/sessions").mock(side_effect=select)
+        router.post(url__regex=rf"{SB_URL}/rest/v1/rpc/(?P<name>\w+)").mock(side_effect=rpc)
+        router.get(f"{SB_URL}/rest/v1/payment_logs").mock(side_effect=receipts)

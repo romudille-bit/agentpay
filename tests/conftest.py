@@ -139,6 +139,25 @@ def sb_semantics(mock_settings, monkeypatch):
 
 
 @pytest.fixture
+def session_enforcement(sb_semantics, mock_settings, monkeypatch):
+    """SESSION_ENFORCEMENT on, with the sessions table and its Postgres
+    functions served by a respx-mounted fake (tests.fake_supabase). Yields
+    (store, router); add other HTTP mocks (Hiro, CoinGecko) to `router`."""
+    import respx
+    from gateway.services import sessions
+    from tests.fake_supabase import SB_URL, FakeSessionStore
+    monkeypatch.setattr(mock_settings, "SUPABASE_URL", SB_URL)
+    monkeypatch.setattr(mock_settings, "SUPABASE_KEY", "test-key")
+    monkeypatch.setattr(mock_settings, "SESSION_ENFORCEMENT", True)
+    monkeypatch.setattr(sessions, "settings", mock_settings)
+    store = FakeSessionStore(sb_semantics)
+    router = respx.MockRouter(assert_all_called=False, assert_all_mocked=True)
+    store.mount(router)
+    with router:
+        yield store, router
+
+
+@pytest.fixture
 def client(mock_settings):
     """FastAPI TestClient with the test settings applied.
 

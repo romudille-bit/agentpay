@@ -31,6 +31,7 @@ from registry import reload_tools
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
 from gateway.services import leg_verifier, probe_rollup
+from gateway.services import sessions
 from gateway.routes.agent import router as agent_router
 from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
@@ -100,6 +101,12 @@ async def _cleanup_loop():
                 logger.info(f"cleanup_expired_challenges swept {n} stale rows")
         except Exception as e:
             logger.warning(f"cleanup_expired_challenges failed: {e}")
+        try:
+            n = await sessions.expire_stale()
+            if n:
+                logger.info(f"expire_sessions closed {n} sessions")
+        except Exception as e:
+            logger.warning(f"expire_sessions failed: {e}")
         await asyncio.sleep(_CLEANUP_INTERVAL_SECS)
 
 
@@ -656,9 +663,10 @@ app = FastAPI(
     description=(
         "Buyer-side trust layer for x402 agents. verified_route ranks providers on "
         "paid delivery evidence and sybil-collapsed payer counts; pre_trade_check "
-        "returns an ok/caution/avoid verdict before a trade; session_create enforces "
-        "a hard USDC budget cap with chain-verified receipts on a public ledger. "
-        "USDC on Base and Stellar, sBTC on Stacks."
+        "returns an ok/caution/avoid verdict before a trade; session_create opens a "
+        "spend cap the gateway enforces for the paying wallet on Stacks and Base, "
+        "with chain-verified receipts on a public ledger. USDC on Base and Stellar, "
+        "sBTC on Stacks (any Stacks x402 client)."
     ),
     version="0.1.0",
     contact={"name": "AgentPay", "url": "https://agentpay.tools", "email": "romudille@gmail.com"},

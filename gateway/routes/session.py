@@ -30,6 +30,7 @@ from gateway import base as base_pay
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
 from gateway.services import probe_rollup
+from gateway.services import sessions
 from gateway.services.supabase import (
     correlate_pending_challenge,
     insert_pending_payment_log,
@@ -95,7 +96,7 @@ _SESSION_OUTPUT_SCHEMA = {
 # serviceName <= 32 chars; tags <= 5 entries, each <= 32 chars.
 _SESSION_BAZAAR_RESOURCE = {
     "url":         SESSION_RESOURCE_URL,
-    "description": "A stateful, multi-chain spending session for AI agents. One session enforces a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger for each payment — not a one-shot budget check, but persistent spend governance with a full audit trail. USDC on Base (standard x402) or Stellar (via the AgentPay SDK).",
+    "description": "A stateful, multi-chain spending session for AI agents. One session enforces a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger for each payment — not a one-shot budget check, but persistent spend governance with a full audit trail. The gateway enforces the cap for the paying wallet on Stacks and Base. USDC on Base (standard x402) or Stellar (via the AgentPay SDK); sBTC on Stacks (any Stacks x402 client).",
     "mimeType":    "application/json",
     "serviceName": "AgentPay Spend Cap & Receipts",
     # ≤5 tags, ≤32 chars each — own the governance category, not the data-API
@@ -107,7 +108,7 @@ _SESSION_BAZAAR_RESOURCE = {
 _SESSION_BAZAAR_EXTENSION = {
     # Top-level description mirrors indexed resources (their bazaar block is
     # {description, info, schema}); also carried on resource.description.
-    "description": "A stateful, multi-chain spending session for AI agents: a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger per payment. Not a one-shot budget check — persistent spend governance with a full audit trail. USDC on Base (standard x402) or Stellar (via the AgentPay SDK).",
+    "description": "A stateful, multi-chain spending session for AI agents: a hard USDC budget cap across every tool call, with a verifiable receipt and running ledger per payment. Not a one-shot budget check — persistent spend governance with a full audit trail. The gateway enforces the cap for the paying wallet on Stacks and Base. USDC on Base (standard x402) or Stellar (via the AgentPay SDK); sBTC on Stacks (any Stacks x402 client).",
     "info": {
         "input": {
             "type":     "http",
@@ -173,6 +174,7 @@ class SessionCreateRequest(BaseModel):
     agent_address: Optional[str] = None
     max_spend: str = "0.10"      # Agent's budget cap for this session
     label: Optional[str] = None  # Optional human label for this session
+    ttl_seconds: Optional[int] = None  # server-side cap lifetime (bounded)
 
 
 # ── 402 challenge builder (shared by POST no-payment branch + GET probe) ──────
@@ -595,11 +597,38 @@ async def create_session(
         gateway_fee_usdc=gateway_fee,
     )
 
-    logger.info(f"[SESSION] created session_id={session_id[:8]}... agent={str(agent_address or '')[:8]}... tx={tx_hash[:16]}")
+    # Server-side cap, bound to the verified payer. An address that already
+    # holds an active session gets that session back: its cap is not raised
+    # by paying for another create.
+    enforced = sessions.enabled()
+    expires_at = None
+    reused = False
+    if enforced:
+        stored = await sessions.open_session(
+            payer=agent_address, network=receipt_network, max_spend=body.max_spend,
+            label=body.label, payment_id=payment_id, ttl_seconds=body.ttl_seconds,
+        )
+        if stored is None:
+            enforced = False
+        else:
+            session_id = stored["session_id"]
+            expires_at = stored.get("expires_at")
+            reused = bool(stored.get("reused"))
 
+    logger.info(f"[SESSION] created session_id={session_id[:8]}... agent={str(agent_address or '')[:8]}... tx={tx_hash[:16]} enforced={enforced}")
+
+    hint = ("The gateway enforces max_spend for this wallet on Stacks and Base: "
+            "priced calls past the cap are refused with nothing charged. "
+            "`from agentpay import Session` adds client-side rules and receipts."
+            if enforced else
+            "Use `from agentpay import Session` to enforce the max_spend cap client-side.")
     return {
         "session_id":     session_id,
         "max_spend":      body.max_spend,
+        "enforced":       enforced,
+        "reused":         reused,
+        "expires_at":     expires_at,
+        "session_url":    f"{GATEWAY_URL}/v1/session/{session_id}",
         "agent_address":  agent_address,
         "label":          body.label,
         "gateway_url":    GATEWAY_URL,
@@ -610,7 +639,7 @@ async def create_session(
             "network":     receipt_network,
             "amount_usdc": SESSION_PRICE_USDC,
         },
-        "sdk_hint": "Use `from agentpay import Session` to enforce the max_spend cap client-side.",
+        "sdk_hint": hint,
         # In-band upsell — buyers are wallets, not emails; the response
         # payload is the only channel that reliably reaches them.
         "related": {
@@ -627,3 +656,20 @@ async def create_session(
             ],
         },
     }
+
+
+@router.get("/v1/session/{session_id}")
+@limiter.limit("60/minute")
+async def get_session(session_id: str, request: Request):
+    """Server-side ledger for a session: cap, spent, remaining, receipts."""
+    if not sessions.enabled():
+        raise HTTPException(status_code=404, detail="Server-side sessions are not enabled on this gateway")
+    try:
+        uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown session")
+    row = await sessions.get_session(session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown session")
+    receipts = await sessions.receipts_for(session_id)
+    return sessions.public_view(row, receipts)

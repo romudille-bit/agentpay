@@ -56,6 +56,7 @@ from gateway.services.supabase import (
     update_payment_log_state,
 )
 from gateway.services import probe_rollup
+from gateway.services import sessions
 from gateway.services.tools_runtime import real_tool_response
 from gateway.services.transaction_log import append_transaction
 from gateway.x402 import (
@@ -185,14 +186,16 @@ _PAID_RELATED: dict[str, list[dict]] = {
          "why": ("one-call ok/caution/avoid trade verdict: live slippage at "
                  "your size + side-aware funding + OI crowding + security")},
         {"tool": "session_create", "price_usdc": "0.01",
-         "why": "hard multi-call spend cap with a verifiable receipt ledger"},
+         "why": ("gateway-enforced multi-call spend cap for your wallet on Stacks "
+                 "and Base, with a verifiable receipt ledger")},
     ],
     "pre_trade_check": [
         {"tool": "verified_route", "price_usdc": "0.01",
          "why": ("usage-vetted pick of the best x402 provider for any need — "
                  "sybil tails collapsed, ready-to-pay challenge included")},
         {"tool": "session_create", "price_usdc": "0.01",
-         "why": "hard multi-call spend cap with a verifiable receipt ledger"},
+         "why": ("gateway-enforced multi-call spend cap for your wallet on Stacks "
+                 "and Base, with a verifiable receipt ledger")},
     ],
 }
 
@@ -1093,6 +1096,15 @@ async def _settle_stellar(
         )
     logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={agent_short}... status=OK tx={auth.get('tx_hash','')[:16]}")
 
+    # Stellar pays before the gateway sees the proof, so the cap is recorded
+    # here, never enforced (sessions.ENFORCED_RAILS).
+    hold = await sessions.reserve(agent_address, str(tool.price_usdc or "0"),
+                                  f"stellar-{settings.STELLAR_NETWORK}")
+    if hold is not None and hold.refused:
+        logger.info(f"[SESSION] stellar call over cap for {agent_short}... — recorded, not refused")
+        hold.refused = None
+    auth["session"] = hold
+
     # No intermediate 'verified' PATCH here: there is no pending row to
     # advance. _execute_and_log inserts the state='verified' row for every
     # paid settle (both rails) and the terminal PATCH lands on it.
@@ -1117,6 +1129,13 @@ async def _settle_base_path(
         description=tool.description,
     )
     logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
+    # Reserve against the payload's payer before money moves; a signature that
+    # doesn't match that address fails settlement and releases the hold.
+    declared_payer = base_pay.payer_from_signature(payment_signature)
+    hold = await sessions.reserve(declared_payer, str(tool.price_usdc or "0"),
+                                 base_pay._network_label(settings.BASE_NETWORK))
+    if hold is not None and hold.refused:
+        return JSONResponse(status_code=402, content=sessions.refusal_body(hold, tool_name))
     bz = _bazaar_for(tool.name)
     result = await base_pay.settle_base_payment(
         payment_signature, base_req, rpc_url=settings.BASE_RPC_URL,
@@ -1127,6 +1146,7 @@ async def _settle_base_path(
         bazaar_extension=bz.get("extension"),
     )
     if not result["success"]:
+        await sessions.release(hold)
         status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"
         logger.info(f"[PAYMENT] tool={tool_name} network=base status={status} reason={result['reason']}")
         return JSONResponse(
@@ -1139,6 +1159,7 @@ async def _settle_base_path(
         "tx_hash":    result["tx_hash"],
         "payer":      result["payer"],
         "network":    result["network"],
+        "session":    hold,
     }
 
 
@@ -1182,8 +1203,10 @@ async def _redeem_uncertain_stacks(
         return _stacks_reject("redeem_tool_mismatch")
     confirm = await stacks_pay.poll_confirmation(txid, max_polls=2)
     if confirm["status"] == "rejected":
-        await update_payment_log_state(txid, "rejected", expected_state="uncertain",
-                                       error_reason=confirm["reason"])
+        dropped = await update_payment_log_state(txid, "rejected", expected_state="uncertain",
+                                                 error_reason=confirm["reason"])
+        if dropped and row.get("session_id"):
+            await sessions.release_by_id(row["session_id"], row.get("amount_usdc") or "0")
         return _stacks_reject(confirm["reason"])
     if confirm["status"] != "success":
         return _stacks_uncertain("still_unconfirmed", row.get("payment_id") or "", txid)
@@ -1199,6 +1222,9 @@ async def _redeem_uncertain_stacks(
         "network":    row.get("network") or f"stacks-{settings.STACKS_NETWORK}",
         "recovered":  True,
         "redeemed":   True,
+        "session":    (sessions.Hold(session_id=row["session_id"],
+                                     cost=str(row.get("amount_usdc") or "0"), enforced=True)
+                       if row.get("session_id") else None),
     }
 
 
@@ -1287,17 +1313,35 @@ async def _settle_stacks_path(
         )
         return _reject(auth["reason"])
 
+    # A re-presented uncertain settle is redeemed on its original
+    # reservation; it never re-enters the cap check below.
+    redeemed = await _redeem_uncertain_stacks(tool, tool_name, signed_tx)
+    if redeemed is not None:
+        return redeemed
+
+    # ── session cap, before the challenge is consumed so a refused call
+    # leaves its 402 reusable once the cap frees. Nothing is broadcast.
+    stacks_network = f"stacks-{settings.STACKS_NETWORK}"
+    hold = await sessions.reserve(auth["sender"], str(tool.price_usdc or "0"), stacks_network)
+    if hold is not None and hold.refused:
+        return JSONResponse(status_code=402, content={
+            **sessions.refusal_body(hold, tool_name),
+            "payment_status": "rejected", "error_reason": hold.refused,
+        })
+
     # ── consume the challenge before broadcast (fail closed): a second tx
     # against the same payment_id must never double-fulfil. The txid consume
     # inside settle_stacks_payment guards the tx itself.
     if sb_enabled():
         pid_recorded = await record_payment_id(payment_id)
         if pid_recorded is False:
+            await sessions.release(hold)
             redeemed = await _redeem_uncertain_stacks(tool, tool_name, signed_tx)
             if redeemed is not None:
                 return redeemed
             return _reject("payment_id_already_used_replay")
         if pid_recorded is None:
+            await sessions.release(hold)
             # Nothing broadcast, nothing consumed: the SDK confirms the tx is
             # absent on Hiro, zeroes the leg and signs again.
             return _reject("replay_store_unavailable: nothing was broadcast "
@@ -1319,6 +1363,7 @@ async def _settle_stacks_path(
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status={status} "
                     f"state={settle['state']} reason={settle['reason']}")
         if settle["state"] == "rejected":
+            await sessions.release(hold)
             await _record_rejected_attempt(
                 payment_id, settle["reason"],
                 tool_name=tool.name,
@@ -1326,6 +1371,7 @@ async def _settle_stacks_path(
                 amount_usdc=str(tool.price_usdc or "0"),
             )
             return _reject(settle["reason"])
+        # The reservation stays: the tx may still confirm and be redeemed.
         # uncertain → the tx may be live. Record it so the payer can redeem
         # (same header, once confirmed) and the ledger never loses a
         # broadcast; the SDK keeps the spend recorded meanwhile.
@@ -1341,6 +1387,7 @@ async def _settle_stacks_path(
                 developer_address=tool.developer_address or None,
                 error_reason=f"{settle['reason']} challenge={payment_id}",
                 parameters=parameters or None,
+                session_id=hold.session_id if hold else None,
             )
         return _stacks_uncertain(settle["reason"], payment_id, settle["txid"])
 
@@ -1357,6 +1404,7 @@ async def _settle_stacks_path(
         "btc_usd_rate": quote_rate,
         "binding":      auth.get("binding", "memo"),
         "payer_protection": auth.get("payer_protection", "deny_mode_exact_amount"),
+        "session":    hold,
     }
 
 
@@ -1507,6 +1555,8 @@ async def _execute_and_log(
     # execution, but its task handle is awaited before any terminal state
     # write; otherwise the PATCH can race the insert, no-op on the missing
     # row, and leave it stuck in 'verified'.
+    hold = auth.get("session")
+    session_id = hold.session_id if hold and hold.session_id else None
     insert_task: Optional[asyncio.Task] = None
     if sb_enabled() and not is_free_call and not auth.get("redeemed"):
         insert_task = asyncio.create_task(insert_pending_payment_log(
@@ -1521,6 +1571,7 @@ async def _execute_and_log(
             gateway_fee_usdc=gateway_fee,
             client_ip=client_ip,
             user_agent=user_agent_str,
+            session_id=session_id,
             # Buyer-observability: the settled call's request params — which
             # symbols pre_trade_check screened, which need verified_route
             # vetted. This is the row the buyer-health digest reads.
@@ -1561,6 +1612,26 @@ async def _execute_and_log(
         # _refund_and_500 PATCHes the row's state too — same ordering rule.
         await _ensure_row_inserted()
         return await _refund_and_500(tool_name, payment_id, e, receipt_network)
+
+    # session_create paid through the tools route (standard clients, the npm
+    # MCP): bind the cap to the verified payer, same as /v1/session/create.
+    if resolved == "session_create" and isinstance(tool_result, dict) and sessions.enabled():
+        params = body.parameters or {}
+        stored = await sessions.open_session(
+            payer=agent_address, network=receipt_network,
+            max_spend=str(params.get("max_spend") or tool_result.get("max_spend") or "0.10"),
+            label=params.get("label"), payment_id=payment_id,
+            ttl_seconds=params.get("ttl_seconds"),
+        )
+        if stored is not None:
+            tool_result.update({
+                "session_id": stored["session_id"], "enforced": True,
+                "reused": bool(stored.get("reused")), "expires_at": stored.get("expires_at"),
+                "session_url": f"{GATEWAY_URL}/v1/session/{stored['session_id']}",
+                "sdk_hint": ("The gateway enforces max_spend for this wallet on Stacks "
+                             "and Base: priced calls past the cap are refused with "
+                             "nothing charged."),
+            })
 
     # A paid tool that produced only an error refunds rather than charges.
     # real_tool_response swallows executor failures (missing implementation,
@@ -1623,6 +1694,7 @@ async def _execute_and_log(
             gateway_fee_usdc=gateway_fee,
             client_ip=client_ip,
             user_agent=user_agent_str,
+            session_id=session_id,
         )
 
     # Echo the parameters the tool actually ran with, so a buyer whose intent
@@ -1643,6 +1715,12 @@ async def _execute_and_log(
     for k in ("binding", "payer_protection"):
         if auth.get(k):
             response["payment"][k] = auth[k]
+    if hold and hold.session_id:
+        response["session"] = {
+            "session_id": hold.session_id, "max_spend": hold.max_spend,
+            "spent": hold.spent, "remaining": hold.remaining, "enforced": hold.enforced,
+            "url": f"{GATEWAY_URL}/v1/session/{hold.session_id}",
+        }
     if not params_used:
         response["parameters_note"] = (
             "no parameters received — the tool ran on its defaults; send a "

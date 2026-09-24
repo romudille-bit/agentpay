@@ -603,6 +603,7 @@ async def insert_pending_payment_log(
     user_agent: Optional[str] = None,
     parameters: Optional[dict] = None,
     error_reason: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Optional[int]:
     """INSERT a new payment_logs row.
 
@@ -647,6 +648,7 @@ async def insert_pending_payment_log(
         # Rejected attempts are inserted complete (no pending row exists
         # to PATCH), so the reason rides the insert.
         "error_reason":      error_reason,
+        "session_id":        session_id,
     }.items():
         if val is not None:
             payload[key] = val

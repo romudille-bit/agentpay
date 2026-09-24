@@ -1,90 +1,69 @@
-# Notes: server-side session enforcement (parked)
+# Server-side session cap
 
-Status: **notes only — not built.** Captured 2026-06-02 and left as written;
-the tool counts and rails below are from that date (the catalogue has had
-three paid tools since, and Stacks settlement is live). Priority right now is
-users + ease of use; monetization/enforcement comes second. Revisit when (a) a
-metered/paid tool ships, or (b) the Arbitrum contracts give us a non-custodial
-place to enforce.
+Status: **built** (model A below), dark-launched behind `SESSION_ENFORCEMENT`.
+Apply `db/migrations/sessions.sql` before turning it on. The original notes
+(2026-06-02, "not built — nothing paid to meter yet") are folded into the
+design section; the reasoning that made this worth building is at the end.
 
-## Current reality (what `session_create` actually does)
+## What `session_create` does now
 
-- `session_create` ($0.001) returns a `session_id` (UUID) and echoes `max_spend`,
-  then **forgets it**. `routes/session.py:428` mints the UUID; nothing persists it.
-- The `session_token` from `POST /v1/agent/register` (`routes/agent.py:90`) is
-  also a throwaway UUID — never stored, never checked.
-- There is **no `sessions` table**, and `payment_logs` has **no `session_id`** column.
-- Tool calls (`/tools/{name}/call`) require only an address + per-call payment.
-  No `session_id` is checked anywhere.
-- The budget cap + receipt/ledger + multi-tool calling all live **client-side in
-  the SDK** (`from agentpay import Session`, `quickstart()`), and are **free**.
+- `POST /v1/session/create` and `/tools/session_create/call` store a row in
+  `sessions` for the address that **paid**: `max_spend`, `spent`, `status`,
+  `expires_at`. Binding to the verified payer means nobody can cap someone
+  else's wallet. An address that already holds an active session gets that
+  session back (`reused: true`); paying again never raises the cap.
+- On every priced call the payer is known before money moves — Stacks: the
+  signed tx's origin; Base: the EIP-3009 authorization's `from`. If that
+  address has a live session, the price is reserved atomically
+  (`consume_session_budget`, a Postgres function: one row, `FOR UPDATE`,
+  `spent + cost <= max_spend`) **before** settlement. Over the cap → 402
+  `session_cap_exceeded`, nothing charged, and the call's 402 challenge is
+  still usable once the cap frees.
+- No header is required, so clients that cannot add one (AIBTC wallet,
+  x402-stacks) are covered. `session_id` on the reply lets the SDK show the
+  server's view next to its own.
+- A settle that charged nothing (node rejection, failed EIP-3009 settle,
+  replay refused) releases the reservation. An **uncertain** Stacks settle
+  keeps it: the tx may still confirm and be redeemed; a redemption that finds
+  the tx aborted releases it then.
+- `payment_logs.session_id` links every settled call to its session.
+  `GET /v1/session/{id}` returns cap, spent, remaining, status, expiry and
+  the receipt list (the same rows /ledger chain-verifies).
+- Sessions expire (default 24h, `ttl_seconds` on create, bounded by
+  `SESSION_MAX_TTL_S`). An exhausted session keeps refusing until it expires
+  or the payer opens a new one; expiry is swept by the gateway's cleanup loop.
 
-So today `session_create` is a **discovery/positioning anchor** (the paid resource
-that gets indexed on Coinbase Bazaar — indexing only fires when a real CDP payment
-settles for it) and a placeholder for future metering. It does **not** gate any
-functionality. Don't market it as a functional paywall.
+## Rails
 
-## Two enforcement models
+| rail | when the gateway learns the payer | cap |
+|---|---|---|
+| Stacks | before broadcast (gateway is the broadcaster) | **enforced** |
+| Base (EIP-3009 via CDP) | before `/settle` | **enforced** |
+| Stellar | after the agent already paid on-chain | recorded, never refused |
 
-**Model A — non-custodial spend ceiling (bookkeeping).**
-Each call still pays per-call on-chain (today's x402 flow). The session is a
-server-side ledger; the gateway refuses calls that would breach `max_spend`. No
-agent funds held. Fits the "relay, not custodian" stance. ~days of work.
+Stellar pays first and presents a tx hash, so refusing there would move money
+for nothing. Its calls are counted against the session so the ledger is
+complete; over-cap Stellar calls are served and logged.
 
-**Model B — prepaid escrow.**
-Agent pays a lump sum into the session; gateway debits per call, no per-call tx.
-Better UX (one payment, many calls) and the natural base for metered inference —
-but the gateway holds agent USDC (custodial), which contradicts the current
-positioning. Non-custodial version = an **on-chain escrow + atomic-split contract**
-(Stellar Soroban on the existing Tier-3 roadmap, **or the Arbitrum contracts we're
-now building** — this is the reuse opportunity).
+## Failure rules
 
-## What Model A would take (concrete build list)
+- Store outage during the cap check: on enforced rails the call is refused
+  with `session_store_unavailable` and nothing charged — the same fail-closed
+  rule the replay store already applies to paid calls. Stellar proceeds.
+- A reservation that could not be released is logged at critical; the cap
+  then over-counts by that amount until corrected (never under-counts).
+- `session_create` itself is never reserved against a session.
 
-1. `sessions` table (manual Supabase migration — no migration tooling in-repo):
-   `session_id` PK, `agent_address`, `max_spend`, `spent` (default 0), `label`,
-   `status` (active/exhausted/expired/revoked), `created_at`, `expires_at`.
-   Add `session_id` column to `payment_logs` so the ledger is a simple query.
-2. Persist the session row on create (`routes/session.py`, after payment verifies).
-3. Accept `X-Session-Id` on `routes/tools.py:call_tool`; look it up; reject if
-   missing/expired/exhausted/agent-mismatch. Gate **paid tools only** — free tools
-   never require a session (keeps the zero-setup free tier intact).
-4. **Atomic cap enforcement** (same TOCTOU class as the replay fix): a Postgres
-   RPC `consume_session_budget` —
-   `UPDATE sessions SET spent = spent + :cost WHERE session_id = :id AND spent + :cost <= max_spend RETURNING spent`.
-   Zero rows → over budget → reject. PostgREST can't do this in a plain PATCH, so
-   it's a small SQL function via `/rpc` (same pattern the design doc flags for
-   `increment_refund_attempt`).
-5. Lifecycle: expiry sweep (reuse the `_cleanup_loop` pattern) + a
-   `GET /v1/session/{id}` so the agent can read the server-side ledger/remaining.
-6. Dark-launch behind a `SESSION_ENFORCEMENT` flag (like `REFUND_ENABLED`).
+## Why bound to the payer, not a header
 
-## The question that decides if it's worth it
+Server-side enforcement only adds value over the SDK's client-side cap when
+the budget owner is not the code doing the spending. Standard Stacks and Base
+x402 clients never load the SDK, so without this they get paid calls and no
+cap at all; with it, the wallet's principal sets a cap once and the gateway
+holds it regardless of which agent runtime drives the wallet.
 
-Server-side enforcement only adds value over the client-side cap when the **budget
-owner ≠ the code spending it** (a principal sets a budget; a delegated/untrusted/
-buggy agent spends; the gateway, not the agent's own code, enforces the ceiling).
-That's the "spend-authorization" framing in the Bazaar tags. If delegated spend
-isn't a real user scenario yet, Model A is enforcement theater.
+## Not built
 
-Plus a chicken-and-egg: **nothing paid to meter yet** — all 18 tools are free, the
-only paid resource is `session_create` itself. A server-enforced ceiling has
-nothing to bite on until metered inference / paid tools ship. Build enforcement
-*with* the thing being enforced, not before.
-
-## Recommendation (sequencing)
-
-1. **Now:** keep `session_create` as the Bazaar anchor; stop framing it as a gate;
-   the client-side SDK cap is the honest story. Focus on users + ease of use.
-2. **When the first metered/paid tool ships:** build Model A alongside it.
-3. **If prepaid/escrow becomes the product:** do it as the Arbitrum (or Soroban)
-   escrow + atomic-split contract — non-custodial Model B — not a gateway patch.
-
-## Arbitrum reuse hook
-
-The escrow/atomic-split contract being built for Arbitrum is the right home for
-Model B: agent funds a session on-chain, the contract enforces the cap and splits
-85/15 atomically, emits an event the gateway listens for. That makes the gateway a
-relay (non-custodial) AND gives real, on-chain spend governance — the version of
-"session" that's actually worth paying for. Carry the schema/RPC ideas above over
-as the off-chain ledger/index that mirrors the contract state.
+Model B — prepaid escrow (one payment, many calls, gateway debits per call).
+It makes the gateway custodial unless done as an on-chain escrow + atomic
+split contract, which stays on the v2 roadmap.

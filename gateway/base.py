@@ -602,6 +602,19 @@ def _extract_auth_nonce(payload: dict | None) -> str | None:
     return None
 
 
+def payer_from_signature(header: str) -> str:
+    """The address a PAYMENT-SIGNATURE says will pay: EIP-3009 `from` (Mode A)
+    or the declared payer (Mode B). Declared, not verified — a settle binds it."""
+    payload, err = _decode_payment_signature(header)
+    if err or not isinstance(payload, dict):
+        return ""
+    if "tx_hash" in payload:
+        return str(payload.get("payer") or "")
+    inner = payload.get("payload")
+    auth = inner.get("authorization") if isinstance(inner, dict) else None
+    return str(auth.get("from") or "") if isinstance(auth, dict) else ""
+
+
 async def _recover_uncertain_settle(
     payer: str,
     pay_to: str,
