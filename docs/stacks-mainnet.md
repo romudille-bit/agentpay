@@ -14,6 +14,7 @@ Set on the production Railway service. Everything else derives from
 STACKS_ENABLED=true
 STACKS_NETWORK=mainnet
 STACKS_GATEWAY_ADDRESS=SP23XKWSEQ9D4CVPT0H39N2TYVEE5AJECPKW6CZ3C
+STACKS_STANDARD_CLIENTS=true
 ```
 
 The payee address only receives. The gateway broadcasts transactions the
@@ -206,6 +207,27 @@ address as the payer. `agents/analyst/README.md` covers funding and the
 uncertain-settle path (the run waits for the confirmation and redeems the
 same signed transaction rather than dropping the verdict).
 
+## Paying with standard Stacks x402 clients
+
+With `STACKS_STANDARD_CLIENTS=true` (set on production), every priced 402
+also carries a v2 `accepts[]` entry for `stacks:1`, after the Base entry,
+in both the body and the `PAYMENT-REQUIRED` header. Agents using the
+published Stacks x402 clients can then pay without the AgentPay SDK. The
+wire rules are in
+[`stacks-adapter.md`](stacks-adapter.md#standard-stacks-x402-clients-stacks_standard_clients).
+
+Verified on mainnet 2026-09-24, one `pre_trade_check` call each, 12 sats
+sBTC to `SP23XKWSEQ9D4CVPT0H39N2TYVEE5AJECPKW6CZ3C`:
+
+| Client | Payer | txid | Post-conditions | Gateway reports |
+|--------|-------|------|-----------------|-----------------|
+| `x402-stacks` 2.0.3 | `SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5` | [`c2eb7368…5c32c1`](https://explorer.hiro.so/txid/0xc2eb736856c9b7fe8f5c6e3f9fff81d29ffc40e2798d83be3a239c627d5c32c1?chain=mainnet) | allow | `echoed_payment_id`, `none_allow_mode` |
+| `@aibtc/mcp-server` 1.71.0 | `SPPHWDRGN2E449TXZNX2KB66VG39P9ZH69N0D2EG` | [`6e1ce0b4…074019`](https://explorer.hiro.so/txid/0x6e1ce0b4cb58e98cd311d766349a3b9a45e96debd79af2841c6115cc5e074019?chain=mainnet) | deny, exact amount | `echoed_payment_id`, `deny_mode_exact_amount` |
+
+Every settled response names how the payment was bound to its challenge
+(`payment.binding`) and what protected the payer (`payment.payer_protection`).
+`tools/stacks_client_interop.mjs` reproduces both payments.
+
 ## Reproducing
 
 ```bash
@@ -232,3 +254,9 @@ thousand µSTX.
   recommends come from a marketplace sweep that has no Stacks listings yet
   (Base and Solana), so its result is actionable only for a wallet that can
   also pay on Base.
+- Standard clients that sign in allow mode (`x402-stacks`) carry no
+  post-condition limiting what the payer sends. The gateway accepts them
+  only for the canonical sBTC contract, where the transfer amount is checked
+  before broadcast, and reports `payer_protection: none_allow_mode`.
+- PerkOS/Nayori clients pay only Nayori-signed quotes through their own
+  facilitator, so they cannot pay this gateway directly.
