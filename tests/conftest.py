@@ -128,6 +128,17 @@ def mock_settings(monkeypatch):
 
 
 @pytest.fixture
+def sb_semantics(mock_settings, monkeypatch):
+    """Supabase-*enabled* replay semantics over an in-memory fake: a repeated
+    payment_id / tx_hash is refused (409 → False), an outage fails closed
+    (None). Use for every consume / reservation contract test."""
+    from tests.fake_supabase import FakeSupabase, install
+    fake = FakeSupabase()
+    install(monkeypatch, fake)
+    return fake
+
+
+@pytest.fixture
 def client(mock_settings):
     """FastAPI TestClient with the test settings applied.
 
