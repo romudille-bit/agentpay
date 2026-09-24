@@ -20,7 +20,7 @@ const SBTC_ADDR = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4";
 const SBTC = `${SBTC_ADDR}.sbtc-token::sbtc-token`;
 const HIRO = "https://api.hiro.so";
 const FUND_SATS = 50n;
-const FUND_USTX = 60000n;  // AIBTC clamps its contract-call fee at 0.05 STX
+const FUND_USTX = 70000n;  // AIBTC fee can hit its 0.05 STX cap; the rest pays the sBTC sweep
 const CALL = ["/tools/pre_trade_check/call", { parameters: { symbol: "BTC", side: "long", size_usd: 1000 } }];
 
 function askHidden(q) {
@@ -152,7 +152,7 @@ try {
   const b = await balances(throwaway.address);
   let n = BigInt((await axios.get(`${HIRO}/extended/v1/address/${throwaway.address}/nonces`)).data.possible_next_nonce);
   let ustx = b.ustx;
-  if (b.sats > 0n && ustx > 10000n) {
+  if (b.sats > 0n && ustx >= 10000n) {
     sweep.push(await send(await sbtcTransfer(throwaway.key, throwaway.address, EXPECTED, b.sats, n++), "sBTC back"));
     ustx -= 10000n;
   }
