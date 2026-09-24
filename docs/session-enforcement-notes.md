@@ -10,8 +10,12 @@ design section; the reasoning that made this worth building is at the end.
 - `POST /v1/session/create` and `/tools/session_create/call` store a row in
   `sessions` for the address that **paid**: `max_spend`, `spent`, `status`,
   `expires_at`. Binding to the verified payer means nobody can cap someone
-  else's wallet. An address that already holds an active session gets that
-  session back (`reused: true`); paying again never raises the cap.
+  else's wallet. On Stacks and Base a `session_create` from an address that
+  already holds an active session is refused before anything is charged
+  (`session_already_active`, the existing session in the body); on Stellar,
+  where the payment precedes the request, the existing session is returned
+  (`reused: true`). Paying again never raises the cap. Base addresses are
+  stored lowercase, so a differently-cased `from` cannot sidestep a session.
 - On every priced call the payer is known before money moves — Stacks: the
   signed tx's origin; Base: the EIP-3009 authorization's `from`. If that
   address has a live session, the price is reserved atomically
@@ -23,9 +27,11 @@ design section; the reasoning that made this worth building is at the end.
   x402-stacks) are covered. `session_id` on the reply lets the SDK show the
   server's view next to its own.
 - A settle that charged nothing (node rejection, failed EIP-3009 settle,
-  replay refused) releases the reservation. An **uncertain** Stacks settle
-  keeps it: the tx may still confirm and be redeemed; a redemption that finds
-  the tx aborted releases it then.
+  replay refused, an exception mid-settle) releases the reservation, and so
+  does a paid call that ends in `refund_pending`. An **uncertain** Stacks
+  settle keeps it: the tx may still confirm and be redeemed; a redemption
+  that finds the tx aborted releases it then. A release never reopens an
+  exhausted session when the payer has since opened a new one.
 - `payment_logs.session_id` links every settled call to its session.
   `GET /v1/session/{id}` returns cap, spent, remaining, status, expiry and
   the receipt list (the same rows /ledger chain-verifies).
@@ -42,8 +48,8 @@ design section; the reasoning that made this worth building is at the end.
 | Stellar | after the agent already paid on-chain | recorded, never refused |
 
 Stellar pays first and presents a tx hash, so refusing there would move money
-for nothing. Its calls are counted against the session so the ledger is
-complete; over-cap Stellar calls are served and logged.
+for nothing. Its calls are recorded against the session even past the cap
+(the session reads `exhausted`), so `spent` always matches the receipts.
 
 ## Failure rules
 
@@ -52,7 +58,13 @@ complete; over-cap Stellar calls are served and logged.
   rule the replay store already applies to paid calls. Stellar proceeds.
 - A reservation that could not be released is logged at critical; the cap
   then over-counts by that amount until corrected (never under-counts).
-- `session_create` itself is never reserved against a session.
+- `session_create` itself is never reserved against a session, so an
+  exhausted cap never locks a wallet out of opening a new one.
+- A fake Base signature naming another wallet as `from` reserves that
+  wallet's budget for the length of a failed settle, then releases it;
+  rate-limited and bounded, accepted.
+- `sessions` has row-level security on with no policy and the functions are
+  revoked from `PUBLIC`/`anon`: only the gateway's key touches them.
 
 ## Why bound to the payer, not a header
 

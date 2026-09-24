@@ -53,7 +53,8 @@ const evidence = { gateway: BASE, payer: EXPECTED, client: "x402-stacks 2.0.3", 
 const txOf = (res) => { const h = res.data?.payment?.tx_hash || ""; return h.startsWith("0x") ? h : `0x${h}`; };
 
 console.log(`\n→ opening a session with max_spend ${MAX_SPEND} …`);
-const created = (await http.post("/tools/session_create/call", { parameters: { max_spend: MAX_SPEND, label: "cap proof" } })).data;
+// 15-minute session: the flagship pays from this wallet daily and must not inherit an exhausted cap.
+const created = (await http.post("/tools/session_create/call", { parameters: { max_spend: MAX_SPEND, label: "cap proof", ttl_seconds: 900 } })).data;
 const s = created.result || {};
 if (!s.enforced) stop(`gateway did not enforce this session (enforced=${s.enforced}). Is SESSION_ENFORCEMENT on?`);
 console.log(`  session ${s.session_id} (reused=${s.reused}) tx ${txOf({ data: created })}`);

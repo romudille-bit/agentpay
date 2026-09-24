@@ -688,7 +688,7 @@ def _bazaar_for(tool_name: str) -> dict:
 
 
 async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception,
-                          network: str = "") -> JSONResponse:
+                          network: str = "", hold=None) -> JSONResponse:
     """Payment accepted on-chain but tool execution failed → refund_pending.
 
     The PATCH is awaited (terminal state); the background refund worker
@@ -702,6 +702,8 @@ async def _refund_and_500(tool_name: str, payment_id: str, exc: Exception,
     STX, so promising a refund there would be a promise nothing can keep.
     """
     refundable = settings.REFUND_ENABLED and not network.startswith("stacks-")
+    if refundable:
+        await sessions.release(hold)  # the money comes back; so does the cap room
     if network.startswith("stacks-"):
         status = "refund_unavailable"
     elif settings.REFUND_ENABLED:
@@ -1098,11 +1100,10 @@ async def _settle_stellar(
 
     # Stellar pays before the gateway sees the proof, so the cap is recorded
     # here, never enforced (sessions.ENFORCED_RAILS).
-    hold = await sessions.reserve(agent_address, str(tool.price_usdc or "0"),
-                                  f"stellar-{settings.STELLAR_NETWORK}")
-    if hold is not None and hold.refused:
-        logger.info(f"[SESSION] stellar call over cap for {agent_short}... — recorded, not refused")
-        hold.refused = None
+    hold = None
+    if not sessions.is_session_tool(tool):
+        hold = await sessions.reserve(agent_address, str(tool.price_usdc or "0"),
+                                      f"stellar-{settings.STELLAR_NETWORK}")
     auth["session"] = hold
 
     # No intermediate 'verified' PATCH here: there is no pending row to
@@ -1131,20 +1132,32 @@ async def _settle_base_path(
     logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
     # Reserve against the payload's payer before money moves; a signature that
     # doesn't match that address fails settlement and releases the hold.
+    # session_create is never reserved: refused outright when this payer
+    # already holds an active session, so nothing is charged for a no-op.
     declared_payer = base_pay.payer_from_signature(payment_signature)
-    hold = await sessions.reserve(declared_payer, str(tool.price_usdc or "0"),
-                                 base_pay._network_label(settings.BASE_NETWORK))
-    if hold is not None and hold.refused:
-        return JSONResponse(status_code=402, content=sessions.refusal_body(hold, tool_name))
+    hold = None
+    if sessions.is_session_tool(tool):
+        dup = await sessions.refuse_duplicate_create(declared_payer)
+        if dup is not None:
+            return JSONResponse(status_code=402, content=dup)
+    else:
+        hold = await sessions.reserve(declared_payer, str(tool.price_usdc or "0"),
+                                     base_pay._network_label(settings.BASE_NETWORK))
+        if hold is not None and hold.refused:
+            return JSONResponse(status_code=402, content=sessions.refusal_body(hold, tool_name))
     bz = _bazaar_for(tool.name)
-    result = await base_pay.settle_base_payment(
-        payment_signature, base_req, rpc_url=settings.BASE_RPC_URL,
-        bazaar_resource=(
-            {"url": resource_url, "mimeType": "application/json", **bz["resource"]}
-            if bz.get("resource") else None
-        ),
-        bazaar_extension=bz.get("extension"),
-    )
+    try:
+        result = await base_pay.settle_base_payment(
+            payment_signature, base_req, rpc_url=settings.BASE_RPC_URL,
+            bazaar_resource=(
+                {"url": resource_url, "mimeType": "application/json", **bz["resource"]}
+                if bz.get("resource") else None
+            ),
+            bazaar_extension=bz.get("extension"),
+        )
+    except BaseException:
+        await sessions.release(hold)
+        raise
     if not result["success"]:
         await sessions.release(hold)
         status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"
@@ -1313,21 +1326,29 @@ async def _settle_stacks_path(
         )
         return _reject(auth["reason"])
 
-    # A re-presented uncertain settle is redeemed on its original
-    # reservation; it never re-enters the cap check below.
-    redeemed = await _redeem_uncertain_stacks(tool, tool_name, signed_tx)
-    if redeemed is not None:
-        return redeemed
-
     # ── session cap, before the challenge is consumed so a refused call
     # leaves its 402 reusable once the cap frees. Nothing is broadcast.
-    stacks_network = f"stacks-{settings.STACKS_NETWORK}"
-    hold = await sessions.reserve(auth["sender"], str(tool.price_usdc or "0"), stacks_network)
-    if hold is not None and hold.refused:
-        return JSONResponse(status_code=402, content={
-            **sessions.refusal_body(hold, tool_name),
-            "payment_status": "rejected", "error_reason": hold.refused,
-        })
+    # A re-presented uncertain settle is redeemed on its original
+    # reservation and never re-enters the cap check; session_create is
+    # never reserved, but refused when this payer already holds a session.
+    hold = None
+    if sessions.enabled():
+        redeemed = await _redeem_uncertain_stacks(tool, tool_name, signed_tx)
+        if redeemed is not None:
+            return redeemed
+        if sessions.is_session_tool(tool):
+            dup = await sessions.refuse_duplicate_create(auth["sender"])
+            if dup is not None:
+                return JSONResponse(status_code=402, content={
+                    **dup, "payment_status": "rejected", "error_reason": dup["reason"]})
+        else:
+            hold = await sessions.reserve(auth["sender"], str(tool.price_usdc or "0"),
+                                          f"stacks-{settings.STACKS_NETWORK}")
+            if hold is not None and hold.refused:
+                return JSONResponse(status_code=402, content={
+                    **sessions.refusal_body(hold, tool_name),
+                    "payment_status": "rejected", "error_reason": hold.refused,
+                })
 
     # ── consume the challenge before broadcast (fail closed): a second tx
     # against the same payment_id must never double-fulfil. The txid consume
@@ -1611,7 +1632,7 @@ async def _execute_and_log(
     except Exception as e:
         # _refund_and_500 PATCHes the row's state too — same ordering rule.
         await _ensure_row_inserted()
-        return await _refund_and_500(tool_name, payment_id, e, receipt_network)
+        return await _refund_and_500(tool_name, payment_id, e, receipt_network, hold)
 
     # session_create paid through the tools route (standard clients, the npm
     # MCP): bind the cap to the verified payer, same as /v1/session/create.
@@ -1646,7 +1667,7 @@ async def _execute_and_log(
         return await _refund_and_500(
             tool_name, payment_id,
             RuntimeError(f"paid tool returned error: {tool_result['error']}"),
-            receipt_network,
+            receipt_network, hold,
         )
 
     append_transaction({

@@ -35,8 +35,12 @@ CREATE INDEX IF NOT EXISTS payment_logs_session_id_idx
 --   found = false                → no live session for this payer (unmetered)
 --   found = true, ok = true      → reserved; spent is the new total
 --   found = true, ok = false     → over cap, exhausted, or not this payer's
+-- p_force records the cost even past the cap (a rail where the payment
+-- already happened): ok = true, status 'exhausted'.
+DROP FUNCTION IF EXISTS consume_session_budget(text, numeric, uuid);
 CREATE OR REPLACE FUNCTION consume_session_budget(
-    p_payer text, p_cost numeric, p_session_id uuid DEFAULT NULL
+    p_payer text, p_cost numeric, p_session_id uuid DEFAULT NULL,
+    p_force boolean DEFAULT false
 ) RETURNS TABLE (r_found boolean, r_ok boolean, r_session_id uuid,
                  r_max_spend numeric, r_spent numeric, r_expires_at timestamptz)
 LANGUAGE plpgsql AS $$
@@ -63,30 +67,37 @@ BEGIN
         RETURN QUERY SELECT false, false, s.session_id, s.max_spend, s.spent, s.expires_at;
         RETURN;
     END IF;
-    IF s.spent + p_cost > s.max_spend THEN
+    IF s.spent + p_cost > s.max_spend AND NOT p_force THEN
         RETURN QUERY SELECT true, false, s.session_id, s.max_spend, s.spent, s.expires_at;
         RETURN;
     END IF;
     UPDATE sessions SET spent = sessions.spent + p_cost,
                         status = CASE WHEN sessions.spent + p_cost >= sessions.max_spend
-                                      THEN 'exhausted' ELSE 'active' END
+                                      THEN 'exhausted' ELSE sessions.status END
      WHERE sessions.session_id = s.session_id
      RETURNING sessions.spent INTO s.spent;
     RETURN QUERY SELECT true, true, s.session_id, s.max_spend, s.spent, s.expires_at;
 END $$;
 
 -- Give a reservation back after a settle that charged nothing. An
--- 'exhausted' session reopens; 'expired'/'revoked' stay closed.
+-- 'exhausted' session reopens unless the payer has since opened another
+-- one (the partial index allows one active per payer); 'expired'/'revoked'
+-- stay closed.
 CREATE OR REPLACE FUNCTION release_session_budget(p_session_id uuid, p_cost numeric)
 RETURNS numeric LANGUAGE plpgsql AS $$
 DECLARE
     new_spent numeric;
 BEGIN
     UPDATE sessions
-       SET spent  = GREATEST(spent - p_cost, 0),
-           status = CASE WHEN status = 'exhausted' THEN 'active' ELSE status END
-     WHERE session_id = p_session_id
-     RETURNING spent INTO new_spent;
+       SET spent  = GREATEST(sessions.spent - p_cost, 0),
+           status = CASE WHEN sessions.status = 'exhausted'
+                          AND NOT EXISTS (SELECT 1 FROM sessions o
+                                           WHERE o.payer = sessions.payer
+                                             AND o.status = 'active'
+                                             AND o.session_id <> sessions.session_id)
+                         THEN 'active' ELSE sessions.status END
+     WHERE sessions.session_id = p_session_id
+     RETURNING sessions.spent INTO new_spent;
     RETURN new_spent;
 END $$;
 
@@ -99,4 +110,23 @@ BEGIN
      WHERE status IN ('active', 'exhausted') AND expires_at <= now();
     GET DIAGNOSTICS n = ROW_COUNT;
     RETURN n;
+END $$;
+
+-- Private table: the gateway's secret key bypasses RLS; the anon key gets
+-- nothing (no policy). The functions move money-shaped state, so only the
+-- gateway may call them.
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+REVOKE EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION release_session_budget(uuid, numeric) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION expire_sessions() FROM PUBLIC;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean),
+                                   release_session_budget(uuid, numeric),
+                                   expire_sessions() FROM anon, authenticated;
+        GRANT EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean),
+                                  release_session_budget(uuid, numeric),
+                                  expire_sessions() TO service_role;
+    END IF;
 END $$;

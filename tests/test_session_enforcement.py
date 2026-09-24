@@ -143,8 +143,10 @@ class TestStacksRoute:
     def _route(self, monkeypatch, session_enforcement, stacks_env):
         self.store, self.router = session_enforcement
 
+        self.challenge_tool = "verified_route"
+
         async def _lookup(pid):  # any id: one challenge per call
-            return {"payment_id": pid, "tool_name": "verified_route", "amount_usdc": "0.001",
+            return {"payment_id": pid, "tool_name": self.challenge_tool, "amount_usdc": "0.001",
                     "expires_at": 9999999999.0, "stacks_sats": 1, "stacks_rate": "100000"}
 
         monkeypatch.setattr(rt, "_lookup_challenge", _lookup)
@@ -351,3 +353,163 @@ class TestHttp:
     def test_get_404_when_off(self, client, mock_settings, monkeypatch):
         monkeypatch.setattr(mock_settings, "SESSION_ENFORCEMENT", False)
         assert client.get("/v1/session/00000000-0000-0000-0000-000000000000").status_code == 404
+
+
+# ── review fixes ─────────────────────────────────────────────────────────────
+
+
+class TestReviewFixes:
+    async def test_base_payer_case_is_normalised(self, session_enforcement):
+        s = await _open("0xAbCdEf" + "0" * 34, "0.02", network="base-mainnet")
+        h = await sessions.reserve("0xabcdef" + "0" * 34, "0.01", "base-mainnet")
+        assert h is not None and h.session_id == s["session_id"]
+        again = await _open("0xABCDEF" + "0" * 34, "5", network="base-mainnet")
+        assert again["reused"] is True and again["session_id"] == s["session_id"]
+
+    async def test_stellar_over_cap_is_recorded(self, session_enforcement):
+        store, _ = session_enforcement
+        s = await _open("GA", "0.01", network="stellar-mainnet")
+        assert (await sessions.reserve("GA", "0.01", "stellar-mainnet")).refused is None
+        over = await sessions.reserve("GA", "0.01", "stellar-mainnet")
+        assert over.refused is None
+        assert Decimal(store.rows[s["session_id"]]["spent"]) == Decimal("0.02")
+        assert store.rows[s["session_id"]]["status"] == "exhausted"
+
+    async def test_release_does_not_reopen_when_a_newer_session_is_active(self, session_enforcement):
+        store, _ = session_enforcement
+        old = await _open("SPA", "0.01")
+        h = await sessions.reserve("SPA", "0.01", STACKS_NET)
+        store.rows[old["session_id"]]["status"] = "exhausted"
+        new = await _open("SPA", "1")
+        assert new["session_id"] != old["session_id"]
+        await sessions.release(h)
+        assert store.rows[old["session_id"]]["status"] == "exhausted"
+        assert (await sessions.reserve("SPA", "0.01", STACKS_NET)).session_id == new["session_id"]
+
+    async def test_duplicate_create_refused_without_charge(self, session_enforcement):
+        s = await _open("SPA", "0.05")
+        dup = await sessions.refuse_duplicate_create("SPA")
+        assert dup["reason"] == sessions.REFUSED_ACTIVE and dup["session_id"] == s["session_id"]
+        assert dup["charged"] == "0"
+        assert await sessions.refuse_duplicate_create("SPNOBODY") is None
+
+
+class TestSessionCreateOnStacks(TestStacksRoute):
+    """session_create paid through the Stacks route is never reserved."""
+
+    class _SessionTool:
+        name = "session_create"
+        price_usdc = "0.01"
+        developer_address = ""
+        description = "session"
+
+    async def _create(self, payment_id, nonce=4):
+        self.challenge_tool = "session_create"
+        tx = _signed_tx(amount_sats=1, payment_id=payment_id, nonce=nonce)
+        header = _header_for(tx, payment_id=payment_id)
+        try:
+            return await rt._settle_stacks_path(self._SessionTool(), "session_create", header,
+                                                json.loads(base64.b64decode(header)))
+        finally:
+            self.challenge_tool = "verified_route"
+
+    async def test_exhausted_cap_does_not_block_a_new_session(self):
+        s = await _open(STACKS_PAYER, "0.001")
+        bc = _hiro(self.router)
+        ok, _ = await self._settle("pid-1")
+        assert isinstance(ok, dict)
+        self.store.rows[s["session_id"]]["status"] = "exhausted"
+        created = await self._create("pid-2", nonce=5)
+        assert isinstance(created, dict) and created["session"] is None
+        assert bc.call_count == 2
+        assert Decimal(self.store.rows[s["session_id"]]["spent"]) == Decimal("0.001")
+
+    async def test_active_session_refuses_a_second_create_before_broadcast(self):
+        s = await _open(STACKS_PAYER, "0.05")
+        bc = _hiro(self.router)
+        refused = await self._create("pid-1")
+        body = json.loads(refused.body)
+        assert refused.status_code == 402
+        assert body["error_reason"] == sessions.REFUSED_ACTIVE
+        assert body["session_id"] == s["session_id"] and body["charged"] == "0"
+        assert bc.call_count == 0
+
+    async def test_lookup_not_added_when_off(self, sb_semantics, mock_settings, monkeypatch):
+        monkeypatch.setattr(mock_settings, "SESSION_ENFORCEMENT", False)
+        reads = []
+        real = rt.get_payment_log
+
+        async def spy(pid, *a, **k):
+            reads.append(pid)
+            return await real(pid, *a, **k)
+
+        monkeypatch.setattr(rt, "get_payment_log", spy)
+        _hiro(self.router)
+        ok, _ = await self._settle("pid-1")
+        assert isinstance(ok, dict) and reads == []
+
+
+class TestBaseReviewFixes(TestBaseRoute):
+    async def test_settle_exception_releases(self):
+        s = await _open("0x" + "b" * 40, "0.001", network="base-mainnet")
+
+        async def boom(*a, **k):
+            raise RuntimeError("cdp down")
+
+        import gateway.base as base_mod
+        from unittest.mock import patch
+        with patch.object(base_mod, "settle_base_payment", boom):
+            with pytest.raises(RuntimeError):
+                await self._call()
+        assert Decimal(self.store.rows[s["session_id"]]["spent"]) == 0
+
+    async def test_session_create_refused_when_active_else_not_reserved(self):
+        s = await _open("0x" + "b" * 40, "0.001", network="base-mainnet")
+        tool = SimpleNamespace(name="session_create", price_usdc="0.01",
+                               developer_address="", description="session")
+        refused = await rt._settle_base_path(tool, "session_create", _mode_a(),
+                                             "https://agentpay.tools/tools/session_create/call")
+        assert json.loads(refused.body)["reason"] == sessions.REFUSED_ACTIVE
+        assert self.settles == []
+        self.store.rows[s["session_id"]]["status"] = "exhausted"
+        ok = await rt._settle_base_path(tool, "session_create", _mode_a(),
+                                        "https://agentpay.tools/tools/session_create/call")
+        assert isinstance(ok, dict) and ok["session"] is None
+        assert Decimal(self.store.rows[s["session_id"]]["spent"]) == 0
+
+
+class TestRefundRelease:
+    async def test_refundable_failure_gives_the_reservation_back(
+            self, session_enforcement, sb_semantics, monkeypatch):
+        store, _ = session_enforcement
+        monkeypatch.setattr(settings, "REFUND_ENABLED", True)
+        s = await _open("0x" + "b" * 40, "0.05", network="base-mainnet")
+        hold = await sessions.reserve("0x" + "b" * 40, "0.001", "base-mainnet")
+
+        async def run(*a, **k):
+            return {"error": "upstream down"}
+
+        monkeypatch.setattr(rt, "_run_tool", run)
+        auth = {"authorized": True, "tx_hash": "0xef", "payer": "0x" + "b" * 40,
+                "network": "base-mainnet", "session": hold}
+        resp = await rt._execute_and_log(_Tool(), "verified_route", "verified_route",
+                                         rt.ToolCallRequest(parameters={}), _request(),
+                                         auth, "0x" + "b" * 40, "0xef", True)
+        assert resp.status_code == 500
+        assert Decimal(store.rows[s["session_id"]]["spent"]) == 0
+
+    async def test_unrefundable_failure_keeps_it(self, session_enforcement, sb_semantics, monkeypatch):
+        store, _ = session_enforcement
+        s = await _open(STACKS_PAYER, "0.05")
+        hold = await sessions.reserve(STACKS_PAYER, "0.001", STACKS_NET)
+
+        async def run(*a, **k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(rt, "_run_tool", run)
+        auth = {"authorized": True, "tx_hash": "0xef", "payer": STACKS_PAYER,
+                "network": STACKS_NET, "session": hold}
+        await rt._execute_and_log(_Tool(), "verified_route", "verified_route",
+                                  rt.ToolCallRequest(parameters={}), _request(),
+                                  auth, STACKS_PAYER, "0xef", True)
+        assert Decimal(store.rows[s["session_id"]]["spent"]) == Decimal("0.001")

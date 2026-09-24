@@ -21,7 +21,7 @@ from typing import Optional
 
 import httpx
 
-from gateway.config import settings
+from gateway.config import GATEWAY_URL, settings
 from gateway.services.supabase import sb_enabled, sb_headers
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,8 @@ _TIMEOUT = 5.0
 ENFORCED_RAILS = ("stacks", "base")
 
 REFUSED_OVER_CAP = "session_cap_exceeded"
+REFUSED_ACTIVE = "session_already_active"
+SESSION_TOOL = "session_create"
 REFUSED_UNAVAILABLE = ("session_store_unavailable: the spend cap could not be "
                        "checked — nothing was charged, retry")
 
@@ -42,6 +44,16 @@ def enabled() -> bool:
 
 def rail_of(network: str) -> str:
     return (network or "").split("-", 1)[0].split(":", 1)[0]
+
+
+def norm_payer(payer: str) -> str:
+    """EVM addresses compare case-insensitively on chain; store one spelling."""
+    p = (payer or "").strip()
+    return p.lower() if p.startswith("0x") else p
+
+
+def is_session_tool(tool) -> bool:
+    return getattr(tool, "name", "") == SESSION_TOOL
 
 
 @dataclass
@@ -100,6 +112,7 @@ async def open_session(*, payer: str, network: str, max_spend: str,
     its cap and the new create does not raise it."""
     if not enabled() or not payer:
         return None
+    payer = norm_payer(payer)
     try:
         cap = str(Decimal(str(max_spend)))
     except (InvalidOperation, ValueError):
@@ -139,6 +152,9 @@ async def open_session(*, payer: str, network: str, max_spend: str,
 
 
 async def active_for(payer: str) -> Optional[dict]:
+    if not enabled() or not payer:
+        return None
+    payer = norm_payer(payer)
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(
@@ -192,14 +208,17 @@ async def reserve(payer: str, cost: str, network: str,
 
     None → enforcement off or no live session for this payer (unmetered).
     Hold with refused=None → reserved; carry it to the terminal write.
-    Hold with refused set → on an enforced rail the call must not settle;
-    on Stellar the caller settles anyway and records the overrun.
+    Hold with refused set → on an enforced rail the call must not settle.
+    On a rail where the payment already happened (Stellar) the cost is
+    recorded even past the cap, so the ledger stays complete.
     """
     if not enabled() or not payer:
         return None
+    payer = norm_payer(payer)
     enforced = rail_of(network) in ENFORCED_RAILS
     rows = await _rpc("consume_session_budget",
-                      {"p_payer": payer, "p_cost": str(cost), "p_session_id": session_id})
+                      {"p_payer": payer, "p_cost": str(cost), "p_session_id": session_id,
+                       "p_force": not enforced})
     if rows is None:
         # The replay store already fails paid calls closed on a Supabase
         # outage; the cap check follows the same rule on enforced rails.
@@ -264,6 +283,28 @@ def refusal_body(hold: Hold, tool_name: str) -> dict:
                              "session to expire, or pay for a new session_create "
                              "to open a fresh cap."})
     return body
+
+
+async def refuse_duplicate_create(payer: str) -> Optional[dict]:
+    """Before charging for session_create: the body that refuses it when
+    this payer already holds an active session (its cap cannot be raised),
+    or None when a new session may be opened."""
+    existing = await active_for(payer)
+    if existing is None:
+        return None
+    return {
+        "error": "This wallet already has an active session",
+        "reason": REFUSED_ACTIVE,
+        "tool": SESSION_TOOL,
+        "charged": "0",
+        "session_id": existing["session_id"],
+        "max_spend": str(existing["max_spend"]),
+        "spent": str(existing["spent"]),
+        "expires_at": existing.get("expires_at"),
+        "session_url": f"{GATEWAY_URL}/v1/session/{existing['session_id']}",
+        "hint": "Use the existing session until it expires or is exhausted; "
+                "paying again would not raise its cap.",
+    }
 
 
 def public_view(row: dict, receipts: list[dict]) -> dict:

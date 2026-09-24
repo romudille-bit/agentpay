@@ -184,7 +184,8 @@ class FakeSessionStore:
         cands.sort(key=lambda r: (r["status"] == "active", r["created_at"]), reverse=True)
         return cands[0] if cands else None
 
-    def consume(self, payer: str, cost: str, session_id: Optional[str]) -> dict:
+    def consume(self, payer: str, cost: str, session_id: Optional[str],
+                force: bool = False) -> dict:
         from decimal import Decimal
         none = {"r_found": False, "r_ok": False, "r_session_id": None,
                 "r_max_spend": None, "r_spent": None, "r_expires_at": None}
@@ -199,17 +200,19 @@ class FakeSessionStore:
             s["status"] = "expired"
             return {"r_found": False, "r_ok": False, **view}
         spent, cap, c = Decimal(s["spent"]), Decimal(s["max_spend"]), Decimal(cost)
-        if spent + c > cap:
+        if spent + c > cap and not force:
             return {"r_found": True, "r_ok": False, **view}
         s["spent"] = str(spent + c)
-        s["status"] = "exhausted" if spent + c >= cap else "active"
+        s["status"] = "exhausted" if spent + c >= cap else s["status"]
         return {"r_found": True, "r_ok": True, **view, "r_spent": s["spent"]}
 
     def release(self, session_id: str, cost: str) -> str:
         from decimal import Decimal
         s = self.rows[session_id]
         s["spent"] = str(max(Decimal(s["spent"]) - Decimal(cost), Decimal(0)))
-        if s["status"] == "exhausted":
+        other_active = any(r["payer"] == s["payer"] and r["status"] == "active"
+                           and r["session_id"] != session_id for r in self.rows.values())
+        if s["status"] == "exhausted" and not other_active:
             s["status"] = "active"
         return s["spent"]
 
@@ -251,7 +254,8 @@ class FakeSessionStore:
                 return httpx.Response(503, text="down")
             if name == "consume_session_budget":
                 return httpx.Response(200, json=[self.consume(
-                    args["p_payer"], args["p_cost"], args.get("p_session_id"))])
+                    args["p_payer"], args["p_cost"], args.get("p_session_id"),
+                    bool(args.get("p_force")))])
             if name == "release_session_budget":
                 return httpx.Response(200, json=self.release(args["p_session_id"], args["p_cost"]))
             if name == "expire_sessions":
