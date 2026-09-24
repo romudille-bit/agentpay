@@ -185,7 +185,7 @@ class FakeSessionStore:
         return cands[0] if cands else None
 
     def consume(self, payer: str, cost: str, session_id: Optional[str],
-                force: bool = False) -> dict:
+                force: bool = False, floor: str = "0") -> dict:
         from decimal import Decimal
         none = {"r_found": False, "r_ok": False, "r_session_id": None,
                 "r_max_spend": None, "r_spent": None, "r_expires_at": None}
@@ -199,11 +199,14 @@ class FakeSessionStore:
         if self._ts(s["expires_at"]) <= self._now():
             s["status"] = "expired"
             return {"r_found": False, "r_ok": False, **view}
-        spent, cap, c = Decimal(s["spent"]), Decimal(s["max_spend"]), Decimal(cost)
+        spent, cap, c, f = Decimal(s["spent"]), Decimal(s["max_spend"]), Decimal(cost), Decimal(floor)
         if spent + c > cap and not force:
+            if cap - spent < f:
+                s["status"] = "exhausted"
             return {"r_found": True, "r_ok": False, **view}
         s["spent"] = str(spent + c)
-        s["status"] = "exhausted" if spent + c >= cap else s["status"]
+        if spent + c >= cap or cap - (spent + c) < f:
+            s["status"] = "exhausted"
         return {"r_found": True, "r_ok": True, **view, "r_spent": s["spent"]}
 
     def release(self, session_id: str, cost: str) -> str:
@@ -255,7 +258,7 @@ class FakeSessionStore:
             if name == "consume_session_budget":
                 return httpx.Response(200, json=[self.consume(
                     args["p_payer"], args["p_cost"], args.get("p_session_id"),
-                    bool(args.get("p_force")))])
+                    bool(args.get("p_force")), str(args.get("p_floor") or "0"))])
             if name == "release_session_budget":
                 return httpx.Response(200, json=self.release(args["p_session_id"], args["p_cost"]))
             if name == "expire_sessions":

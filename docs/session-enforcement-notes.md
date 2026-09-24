@@ -16,6 +16,10 @@ design section; the reasoning that made this worth building is at the end.
   where the payment precedes the request, the existing session is returned
   (`reused: true`). Paying again never raises the cap. Base addresses are
   stored lowercase, so a differently-cased `from` cannot sidestep a session.
+  Two creates from one wallet in the same moment charge once: the gateway
+  marks the wallet "creating" before it looks the session up, and the
+  second is refused (`session_create_in_flight`, retry in a moment) until
+  the first is stored or fails.
 - On every priced call the payer is known before money moves — Stacks: the
   signed tx's origin; Base: the EIP-3009 authorization's `from`. If that
   address has a live session, the price is reserved atomically
@@ -36,8 +40,12 @@ design section; the reasoning that made this worth building is at the end.
   `GET /v1/session/{id}` returns cap, spent, remaining, status, expiry and
   the receipt list (the same rows /ledger chain-verifies).
 - Sessions expire (default 24h, `ttl_seconds` on create, bounded by
-  `SESSION_MAX_TTL_S`). An exhausted session keeps refusing until it expires
-  or the payer opens a new one; expiry is swept by the gateway's cleanup loop.
+  `SESSION_MAX_TTL_S`). A session is `exhausted` once less remains than the
+  cheapest priced call (nothing can be bought with it), and an exhausted
+  session keeps refusing until it expires or the payer opens a new one;
+  while more than that remains, cheaper calls still fit and a second
+  `session_create` is refused — the refusal body says which case applies.
+  Expiry is swept by the gateway's cleanup loop.
 
 ## Rails
 

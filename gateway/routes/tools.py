@@ -1136,10 +1136,12 @@ async def _settle_base_path(
     # already holds an active session, so nothing is charged for a no-op.
     declared_payer = base_pay.payer_from_signature(payment_signature)
     hold = None
+    creating = ""
     if sessions.is_session_tool(tool):
         dup = await sessions.refuse_duplicate_create(declared_payer)
         if dup is not None:
             return JSONResponse(status_code=402, content=dup)
+        creating = declared_payer
     else:
         hold = await sessions.reserve(declared_payer, str(tool.price_usdc or "0"),
                                      base_pay._network_label(settings.BASE_NETWORK))
@@ -1157,9 +1159,13 @@ async def _settle_base_path(
         )
     except BaseException:
         await sessions.release(hold)
+        if creating:
+            sessions.abandon_create(creating)
         raise
     if not result["success"]:
         await sessions.release(hold)
+        if creating:
+            sessions.abandon_create(creating)
         status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"
         logger.info(f"[PAYMENT] tool={tool_name} network=base status={status} reason={result['reason']}")
         return JSONResponse(
@@ -1332,6 +1338,12 @@ async def _settle_stacks_path(
     # reservation and never re-enters the cap check; session_create is
     # never reserved, but refused when this payer already holds a session.
     hold = None
+    creating = ""
+
+    async def _give_back():
+        await sessions.release(hold)
+        if creating:
+            sessions.abandon_create(creating)
     if sessions.enabled():
         redeemed = await _redeem_uncertain_stacks(tool, tool_name, signed_tx)
         if redeemed is not None:
@@ -1341,6 +1353,7 @@ async def _settle_stacks_path(
             if dup is not None:
                 return JSONResponse(status_code=402, content={
                     **dup, "payment_status": "rejected", "error_reason": dup["reason"]})
+            creating = auth["sender"]
         else:
             hold = await sessions.reserve(auth["sender"], str(tool.price_usdc or "0"),
                                           f"stacks-{settings.STACKS_NETWORK}")
@@ -1356,13 +1369,13 @@ async def _settle_stacks_path(
     if sb_enabled():
         pid_recorded = await record_payment_id(payment_id)
         if pid_recorded is False:
-            await sessions.release(hold)
+            await _give_back()
             redeemed = await _redeem_uncertain_stacks(tool, tool_name, signed_tx)
             if redeemed is not None:
                 return redeemed
             return _reject("payment_id_already_used_replay")
         if pid_recorded is None:
-            await sessions.release(hold)
+            await _give_back()
             # Nothing broadcast, nothing consumed: the SDK confirms the tx is
             # absent on Hiro, zeroes the leg and signs again.
             return _reject("replay_store_unavailable: nothing was broadcast "
@@ -1384,7 +1397,7 @@ async def _settle_stacks_path(
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status={status} "
                     f"state={settle['state']} reason={settle['reason']}")
         if settle["state"] == "rejected":
-            await sessions.release(hold)
+            await _give_back()
             await _record_rejected_attempt(
                 payment_id, settle["reason"],
                 tool_name=tool.name,

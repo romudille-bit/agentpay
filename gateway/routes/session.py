@@ -491,17 +491,22 @@ async def create_session(
             description=_SESSION_BAZAAR_RESOURCE["description"],
         )
         logger.info("[SESSION] verifying Base PAYMENT-SIGNATURE")
-        dup = await sessions.refuse_duplicate_create(
-            base_pay.payer_from_signature(payment_signature))
+        declared_payer = base_pay.payer_from_signature(payment_signature)
+        dup = await sessions.refuse_duplicate_create(declared_payer)
         if dup is not None:
             return JSONResponse(status_code=402, content=dup)
-        result = await base_pay.settle_base_payment(
-            payment_signature, base_req, rpc_url=settings.BASE_RPC_URL,
-            bazaar_resource=_SESSION_BAZAAR_RESOURCE,
-            bazaar_extension=_SESSION_BAZAAR_EXTENSION,
-        )
+        try:
+            result = await base_pay.settle_base_payment(
+                payment_signature, base_req, rpc_url=settings.BASE_RPC_URL,
+                bazaar_resource=_SESSION_BAZAAR_RESOURCE,
+                bazaar_extension=_SESSION_BAZAAR_EXTENSION,
+            )
+        except BaseException:
+            sessions.abandon_create(declared_payer)
+            raise
 
         if not result["success"]:
+            sessions.abandon_create(declared_payer)
             status = "REPLAY_ATTACK" if result["reason"] == "replay_attack" else "FAILED"
             logger.info(f"[SESSION] base status={status} reason={result['reason']}")
             return JSONResponse(

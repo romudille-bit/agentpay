@@ -153,8 +153,13 @@ def session_enforcement(sb_semantics, mock_settings, monkeypatch):
     store = FakeSessionStore(sb_semantics)
     router = respx.MockRouter(assert_all_called=False, assert_all_mocked=True)
     store.mount(router)
+    sessions._creating.clear()
+    # The floor is the registry's cheapest priced tool; pin it so a test
+    # that registered a cheaper tool earlier in the run cannot move it.
+    monkeypatch.setattr(sessions, "min_paid_price", lambda: "0.01")
     with router:
         yield store, router
+    sessions._creating.clear()
 
 
 @pytest.fixture

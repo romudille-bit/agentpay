@@ -37,10 +37,14 @@ CREATE INDEX IF NOT EXISTS payment_logs_session_id_idx
 --   found = true, ok = false     → over cap, exhausted, or not this payer's
 -- p_force records the cost even past the cap (a rail where the payment
 -- already happened): ok = true, status 'exhausted'.
+-- p_floor is the cheapest priced call: once less than that remains, the
+-- session is 'exhausted' (nothing can be bought) and the payer may open a
+-- new one instead of waiting for expiry.
 DROP FUNCTION IF EXISTS consume_session_budget(text, numeric, uuid);
+DROP FUNCTION IF EXISTS consume_session_budget(text, numeric, uuid, boolean);
 CREATE OR REPLACE FUNCTION consume_session_budget(
     p_payer text, p_cost numeric, p_session_id uuid DEFAULT NULL,
-    p_force boolean DEFAULT false
+    p_force boolean DEFAULT false, p_floor numeric DEFAULT 0
 ) RETURNS TABLE (r_found boolean, r_ok boolean, r_session_id uuid,
                  r_max_spend numeric, r_spent numeric, r_expires_at timestamptz)
 LANGUAGE plpgsql AS $$
@@ -68,11 +72,15 @@ BEGIN
         RETURN;
     END IF;
     IF s.spent + p_cost > s.max_spend AND NOT p_force THEN
+        IF s.max_spend - s.spent < p_floor THEN
+            UPDATE sessions SET status = 'exhausted' WHERE sessions.session_id = s.session_id;
+        END IF;
         RETURN QUERY SELECT true, false, s.session_id, s.max_spend, s.spent, s.expires_at;
         RETURN;
     END IF;
     UPDATE sessions SET spent = sessions.spent + p_cost,
-                        status = CASE WHEN sessions.spent + p_cost >= sessions.max_spend
+                        status = CASE WHEN sessions.max_spend - (sessions.spent + p_cost) < p_floor
+                                        OR sessions.spent + p_cost >= sessions.max_spend
                                       THEN 'exhausted' ELSE sessions.status END
      WHERE sessions.session_id = s.session_id
      RETURNING sessions.spent INTO s.spent;
@@ -116,16 +124,16 @@ END $$;
 -- nothing (no policy). The functions move money-shaped state, so only the
 -- gateway may call them.
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
-REVOKE EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean, numeric) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION release_session_budget(uuid, numeric) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION expire_sessions() FROM PUBLIC;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean),
+        REVOKE EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean, numeric),
                                    release_session_budget(uuid, numeric),
                                    expire_sessions() FROM anon, authenticated;
-        GRANT EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean),
+        GRANT EXECUTE ON FUNCTION consume_session_budget(text, numeric, uuid, boolean, numeric),
                                   release_session_budget(uuid, numeric),
                                   expire_sessions() TO service_role;
     END IF;

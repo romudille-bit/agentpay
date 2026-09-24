@@ -33,7 +33,15 @@ ENFORCED_RAILS = ("stacks", "base")
 
 REFUSED_OVER_CAP = "session_cap_exceeded"
 REFUSED_ACTIVE = "session_already_active"
+REFUSED_IN_FLIGHT = "session_create_in_flight"
 SESSION_TOOL = "session_create"
+
+# A session_create that passed the duplicate check but has not been stored
+# yet, so a second create from the same wallet in the same moment is refused
+# instead of charged. Cleared when the session is stored or the create
+# fails; the TTL covers any path that forgets.
+_creating: dict[str, float] = {}
+_CREATING_TTL_S = 120.0
 REFUSED_UNAVAILABLE = ("session_store_unavailable: the spend cap could not be "
                        "checked — nothing was charged, retry")
 
@@ -54,6 +62,32 @@ def norm_payer(payer: str) -> str:
 
 def is_session_tool(tool) -> bool:
     return getattr(tool, "name", "") == SESSION_TOOL
+
+
+def min_paid_price() -> str:
+    """The cheapest priced call: below this much remaining, a cap is spent."""
+    try:
+        import registry
+        prices = [Decimal(str(t.price_usdc)) for t in registry.list_tools()
+                  if Decimal(str(t.price_usdc or "0")) > 0]
+        return str(min(prices)) if prices else "0"
+    except Exception:
+        return "0"
+
+
+def _creating_now(payer: str) -> bool:
+    import time
+    started = _creating.get(payer)
+    return started is not None and time.monotonic() - started < _CREATING_TTL_S
+
+
+def begin_create(payer: str) -> None:
+    import time
+    _creating[norm_payer(payer)] = time.monotonic()
+
+
+def abandon_create(payer: str) -> None:
+    _creating.pop(norm_payer(payer), None)
 
 
 @dataclass
@@ -118,6 +152,7 @@ async def open_session(*, payer: str, network: str, max_spend: str,
     except (InvalidOperation, ValueError):
         cap = "0.10"
     now = datetime.now(tz=timezone.utc)
+    _creating.pop(payer, None)
     row = {
         "session_id": str(uuid.uuid4()),
         "payer": payer,
@@ -218,7 +253,7 @@ async def reserve(payer: str, cost: str, network: str,
     enforced = rail_of(network) in ENFORCED_RAILS
     rows = await _rpc("consume_session_budget",
                       {"p_payer": payer, "p_cost": str(cost), "p_session_id": session_id,
-                       "p_force": not enforced})
+                       "p_force": not enforced, "p_floor": min_paid_price()})
     if rows is None:
         # The replay store already fails paid calls closed on a Supabase
         # outage; the cap check follows the same rule on enforced rails.
@@ -279,19 +314,47 @@ def refusal_body(hold: Hold, tool_name: str) -> dict:
     if hold.refused == REFUSED_OVER_CAP:
         body.update({"max_spend": hold.max_spend, "spent": hold.spent,
                      "remaining": hold.remaining, "price": hold.cost,
-                     "hint": "This wallet's session cap is reached. Wait for the "
-                             "session to expire, or pay for a new session_create "
-                             "to open a fresh cap."})
+                     "hint": _over_cap_hint(hold)})
     return body
+
+
+def _over_cap_hint(hold: Hold) -> str:
+    """What the payer can do next. Below the cheapest priced call the
+    session is spent and a new one may be opened; above it, cheaper calls
+    still fit and a second session_create would be refused."""
+    try:
+        spent = Decimal(hold.remaining) < Decimal(min_paid_price())
+    except (InvalidOperation, ValueError):
+        spent = True
+    if spent:
+        return ("This wallet's session cap is spent: pay for a new session_create "
+                "to open a fresh cap, or wait for this one to expire.")
+    return (f"This call costs {hold.cost} and the session has {hold.remaining} left: "
+            "spend the remainder on cheaper calls or wait for the session to expire; "
+            "a new session_create is refused while this one is active.")
 
 
 async def refuse_duplicate_create(payer: str) -> Optional[dict]:
     """Before charging for session_create: the body that refuses it when
-    this payer already holds an active session (its cap cannot be raised),
-    or None when a new session may be opened."""
+    this payer already holds an active session (its cap cannot be raised)
+    or has one being opened right now, or None when a new session may be
+    opened — in which case the create is marked in flight until stored."""
+    if not enabled() or not payer:
+        return None
+    key = norm_payer(payer)
+    if _creating_now(key):
+        return {
+            "error": "A session is already being opened for this wallet",
+            "reason": REFUSED_IN_FLIGHT, "tool": SESSION_TOOL, "charged": "0",
+            "hint": "Retry in a moment; the first session_create is still settling.",
+        }
+    # Claim before the lookup: the check and the claim share one step of
+    # the event loop, so two creates in the same moment cannot both pass.
+    begin_create(key)
     existing = await active_for(payer)
     if existing is None:
         return None
+    abandon_create(key)
     return {
         "error": "This wallet already has an active session",
         "reason": REFUSED_ACTIVE,

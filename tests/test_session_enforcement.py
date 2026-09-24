@@ -29,6 +29,7 @@ from tests.test_stacks_gateway import (
 )
 
 STACKS_NET = "stacks-testnet"
+_REAL_FLOOR = sessions.min_paid_price   # the fixture pins it to "0.01"
 STACKS_PAYER = PAYER.address("testnet")
 
 
@@ -513,3 +514,91 @@ class TestRefundRelease:
                                   rt.ToolCallRequest(parameters={}), _request(),
                                   auth, STACKS_PAYER, "0xef", True)
         assert Decimal(store.rows[s["session_id"]]["spent"]) == Decimal("0.001")
+
+
+# ── second review: exhaustion floor and simultaneous creates ────────────────
+
+
+class TestFloorAndInFlight:
+    """A session with less left than the cheapest priced call is spent, so
+    the payer may open a new one; two creates in the same moment charge once."""
+
+    async def test_below_cheapest_call_is_spent_and_a_new_create_is_allowed(self, session_enforcement):
+        store, _ = session_enforcement
+        s = await _open("SPA", "0.025")
+        for _ in range(2):
+            assert (await sessions.reserve("SPA", "0.01", STACKS_NET)).refused is None
+        assert store.rows[s["session_id"]]["status"] == "exhausted"
+        assert await sessions.refuse_duplicate_create("SPA") is None
+        again = await _open("SPA", "0.05")
+        assert again["reused"] is False and again["session_id"] != s["session_id"]
+        assert store.rows[s["session_id"]]["status"] == "exhausted"
+
+    def test_floor_is_the_cheapest_priced_tool(self):
+        import registry
+        prices = [Decimal(str(t.price_usdc)) for t in registry.list_tools()
+                  if Decimal(str(t.price_usdc or "0")) > 0]
+        assert Decimal(_REAL_FLOOR()) == min(prices)
+
+    async def test_refusal_below_floor_marks_spent_and_says_so(self, session_enforcement):
+        store, _ = session_enforcement
+        s = await _open("SPA", "0.03")
+        store.rows[s["session_id"]]["spent"] = "0.025"   # opened before the floor rule
+        over = await sessions.reserve("SPA", "0.01", STACKS_NET)
+        assert over.refused == sessions.REFUSED_OVER_CAP
+        assert store.rows[s["session_id"]]["status"] == "exhausted"
+        assert "pay for a new session_create" in sessions.refusal_body(over, "x")["hint"]
+
+    async def test_refusal_above_floor_keeps_the_session(self, session_enforcement):
+        store, _ = session_enforcement
+        s = await _open("SPA", "0.05")
+        store.rows[s["session_id"]]["spent"] = "0.04"
+        over = await sessions.reserve("SPA", "0.02", STACKS_NET)
+        assert over.refused == sessions.REFUSED_OVER_CAP
+        assert store.rows[s["session_id"]]["status"] == "active"
+        hint = sessions.refusal_body(over, "x")["hint"]
+        assert "cheaper calls" in hint and "has 0.01 left" in hint
+        assert (await sessions.refuse_duplicate_create("SPA"))["reason"] == sessions.REFUSED_ACTIVE
+        assert (await sessions.reserve("SPA", "0.01", STACKS_NET)).refused is None
+
+    async def test_simultaneous_creates_charge_once(self, session_enforcement, monkeypatch):
+        import asyncio
+
+        async def slow_lookup(payer):   # both creates pass the lookup
+            await asyncio.sleep(0)
+            return None
+
+        monkeypatch.setattr(sessions, "active_for", slow_lookup)
+        a, b = await asyncio.gather(sessions.refuse_duplicate_create("SPA"),
+                                    sessions.refuse_duplicate_create("SPA"))
+        refused = [r for r in (a, b) if r is not None]
+        assert len(refused) == 1 and refused[0]["reason"] == sessions.REFUSED_IN_FLIGHT
+        assert refused[0]["charged"] == "0"
+
+    async def test_marker_clears_on_store_or_abandon(self, session_enforcement):
+        assert await sessions.refuse_duplicate_create("SPA") is None
+        assert (await sessions.refuse_duplicate_create("SPA"))["reason"] == sessions.REFUSED_IN_FLIGHT
+        sessions.abandon_create("SPA")
+        assert await sessions.refuse_duplicate_create("SPA") is None
+        await _open("SPA", "0.05")
+        assert (await sessions.refuse_duplicate_create("SPA"))["reason"] == sessions.REFUSED_ACTIVE
+        # a lookup that finds an active session leaves no marker behind
+        assert "SPA" not in sessions._creating
+
+
+class TestInFlightOnStacks(TestSessionCreateOnStacks):
+    async def test_rejected_create_frees_the_wallet(self):
+        _hiro(self.router, broadcast=False)
+        res = await self._create("pid-1")
+        assert res.status_code == 402
+        assert STACKS_PAYER not in sessions._creating
+        assert await sessions.refuse_duplicate_create(STACKS_PAYER) is None
+
+    async def test_second_create_while_first_settles_is_refused(self):
+        bc = _hiro(self.router)
+        sessions.begin_create(STACKS_PAYER)
+        refused = await self._create("pid-1")
+        body = json.loads(refused.body)
+        assert refused.status_code == 402
+        assert body["error_reason"] == sessions.REFUSED_IN_FLIGHT and body["charged"] == "0"
+        assert bc.call_count == 0
