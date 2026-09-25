@@ -1130,10 +1130,8 @@ async def _settle_base_path(
         description=tool.description,
     )
     logger.info(f"[PAYMENT] tool={tool_name} network=base verifying PAYMENT-SIGNATURE header")
-    # Reserve against the payload's payer before money moves; a signature that
-    # doesn't match that address fails settlement and releases the hold.
-    # session_create is never reserved: refused outright when this payer
-    # already holds an active session, so nothing is charged for a no-op.
+    # Reserve against the declared payer before money moves; a mismatched
+    # signature fails settlement and releases the hold.
     declared_payer = base_pay.payer_from_signature(payment_signature)
     hold = None
     creating = ""
@@ -1332,11 +1330,9 @@ async def _settle_stacks_path(
         )
         return _reject(auth["reason"])
 
-    # ── session cap, before the challenge is consumed so a refused call
-    # leaves its 402 reusable once the cap frees. Nothing is broadcast.
-    # A re-presented uncertain settle is redeemed on its original
-    # reservation and never re-enters the cap check; session_create is
-    # never reserved, but refused when this payer already holds a session.
+    # ── session cap, before the challenge is consumed: a refused call keeps
+    # its 402 and nothing is broadcast. A redeemed uncertain settle never
+    # re-enters the check.
     hold = None
     creating = ""
 

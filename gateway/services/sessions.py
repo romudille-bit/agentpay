@@ -1,13 +1,6 @@
-"""Server-side session cap: the gateway's own copy of the SDK's budget cap,
-bound to the address that paid for `session_create`, so a standard x402
-client with no AgentPay SDK still has a spend limit.
-
-Every priced call reserves its price against the payer's live session
-BEFORE anything settles (consume_session_budget, atomic in Postgres); a
-refusal charges nothing. Release on a settle that charged nothing; keep the
-reservation when the outcome is uncertain, since the payment may still land.
-Off unless SESSION_ENFORCEMENT is set and Supabase is configured.
-See db/migrations/sessions.sql for the tables and functions.
+"""Server-side session cap for wallets without the SDK: reserve before
+settling, release when nothing was charged. Off unless SESSION_ENFORCEMENT
+is set. Design in docs/session-enforcement-notes.md; schema in db/migrations/sessions.sql.
 """
 
 from __future__ import annotations
@@ -36,10 +29,8 @@ REFUSED_ACTIVE = "session_already_active"
 REFUSED_IN_FLIGHT = "session_create_in_flight"
 SESSION_TOOL = "session_create"
 
-# A session_create that passed the duplicate check but has not been stored
-# yet, so a second create from the same wallet in the same moment is refused
-# instead of charged. Cleared when the session is stored or the create
-# fails; the TTL covers any path that forgets.
+# Wallets with a session_create in flight: a second create in the same
+# moment is refused unpaid. Cleared on store or failure; the TTL is the backstop.
 _creating: dict[str, float] = {}
 _CREATING_TTL_S = 120.0
 REFUSED_UNAVAILABLE = ("session_store_unavailable: the spend cap could not be "

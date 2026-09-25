@@ -154,9 +154,8 @@ def install(monkeypatch, fake: FakeSupabase) -> None:
 
 
 # ── sessions (AGE-207) ───────────────────────────────────────────────────────
-# PostgREST routes for the sessions table and its functions, mirroring
-# db/migrations/sessions.sql (validated against Postgres 16 before this was
-# written). Mounted on a respx router so the service's real HTTP layer runs.
+# PostgREST routes mirroring db/migrations/sessions.sql, mounted on respx so
+# the service's real HTTP layer runs.
 
 SB_URL = "https://sb.test"
 
