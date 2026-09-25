@@ -49,7 +49,9 @@ wallet = null;
 const http = x402stacks.wrapAxiosWithPayment(axios.create({ baseURL: BASE, timeout: 180000 }), account);
 const nonceOf = async () => (await axios.get(`${HIRO}/extended/v1/address/${EXPECTED}/nonces`)).data.possible_next_nonce;
 
-const evidence = { gateway: BASE, payer: EXPECTED, client: "x402-stacks 2.0.3", at: new Date().toISOString(), steps: [] };
+const health = (await axios.get(`${BASE}/health`)).data;
+const evidence = { gateway: BASE, gateway_commit: (health.commit || "").slice(0, 7), payer: EXPECTED,
+                   client: "x402-stacks 2.0.3", at: new Date().toISOString(), steps: [] };
 const txOf = (res) => { const h = res.data?.payment?.tx_hash || ""; return h.startsWith("0x") ? h : `0x${h}`; };
 
 console.log(`\n→ opening a session with max_spend ${MAX_SPEND} …`);
@@ -69,23 +71,27 @@ for (const n of [1, 2]) {
 }
 
 console.log(`\n→ call 3, past the cap …`);
+// x402-stacks raises its own error (no HTTP response attached) when the paid
+// retry is refused, so the verdict comes from the chain and the session view,
+// not from the client's error.
 const nonceBefore = await nonceOf();
+let clientError = null;
 try {
   const res = await http.post(...CALL);
   stop(`call 3 was served (tx ${txOf(res)}) — the cap did not hold.`);
 } catch (e) {
-  const body = e.response?.data || {};
-  const nonceAfter = await nonceOf();
-  const refused = e.response?.status === 402 && body.error_reason === "session_cap_exceeded";
-  console.log(`  ${refused ? "refused" : "UNEXPECTED"} HTTP ${e.response?.status} ${JSON.stringify(body).slice(0, 300)}`);
-  console.log(`  payer nonce before ${nonceBefore} after ${nonceAfter} (${nonceAfter === nonceBefore ? "nothing broadcast" : "SOMETHING WAS BROADCAST"})`);
-  evidence.steps.push({ step: "call_3_refused", status: e.response?.status, body, nonce_before: nonceBefore, nonce_after: nonceAfter });
-  if (!refused || nonceAfter !== nonceBefore) stop("the refusal did not look right; read the body above.");
+  clientError = { message: e.message, status: e.response?.status, body: e.response?.data };
+  console.log(`  client: ${e.message}${e.response ? ` (HTTP ${e.response.status} ${JSON.stringify(e.response.data).slice(0, 300)})` : ""}`);
 }
-
+const nonceAfter = await nonceOf();
 const view = (await axios.get(`${BASE}/v1/session/${s.session_id}`)).data;
+const refused = nonceAfter === nonceBefore && view.receipts.length === 2 && view.status === "exhausted";
+console.log(`  payer nonce before ${nonceBefore} after ${nonceAfter} (${nonceAfter === nonceBefore ? "nothing broadcast" : "SOMETHING WAS BROADCAST"})`);
 console.log(`\n→ GET /v1/session/${s.session_id}\n  status=${view.status} spent=${view.spent}/${view.max_spend} receipts=${view.receipts.length}`);
+console.log(`  ${refused ? "refused: cap held" : "UNEXPECTED: read the lines above"}`);
+evidence.steps.push({ step: "call_3_refused", client_error: clientError, nonce_before: nonceBefore, nonce_after: nonceAfter, refused });
 evidence.session_view = view;
+if (!refused) stop("the refusal did not look right.");
 
 fs.mkdirSync(path.join(process.env.HOME, "Projects/agentpay/notes"), { recursive: true });
 const out = path.join(process.env.HOME, "Projects/agentpay/notes", `session_cap_proof_${new Date().toISOString().slice(0, 10)}.json`);

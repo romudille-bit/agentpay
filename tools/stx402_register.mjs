@@ -29,6 +29,15 @@ const ENTRIES = [
     category: "analytics",
     tags: ["x402", "discovery", "trust", "sbtc", "agentpay"],
   },
+  {
+    url: "https://agentpay.tools/tools/session_create/call",
+    name: "AgentPay session_create",
+    description: "Open a spend cap for your wallet: every priced AgentPay call from that address " +
+      "is reserved against max_spend before it settles and refused past it with nothing charged. " +
+      "$0.01, payable in sBTC; enforced on Stacks and Base. Read it back at /v1/session/{id}.",
+    category: "infrastructure",
+    tags: ["x402", "session", "spend-cap", "sbtc", "agentpay"],
+  },
 ];
 
 function ask(q, hidden = false) {
@@ -80,7 +89,8 @@ for (const e of todo) {
     if (r.probeResult) console.log(`   probe: ${JSON.stringify(r.probeResult).slice(0, 300)}`);
   } catch (err) {
     failed++;
-    console.log(`FAILED ${err.response?.status || ""} ${JSON.stringify(err.response?.data || err.message).slice(0, 300)}`);
+    console.log(`FAILED ${err.response?.status || ""} ${err.message}`);
+    if (err.response?.data) console.log(`   ${JSON.stringify(err.response.data).slice(0, 300)}`);
   }
 }
 process.exit(failed ? 1 : 0);
