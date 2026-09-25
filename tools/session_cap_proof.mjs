@@ -7,7 +7,6 @@
 //   node ~/Projects/agentpay/tools/session_cap_proof.mjs
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import { createRequire } from "node:module";
 
 const BASE = process.env.AGENTPAY_URL || "https://agentpay.tools";
@@ -21,11 +20,25 @@ const x402stacks = req("x402-stacks");
 const axios = req("axios");
 const wsdk = req("@stacks/wallet-sdk");
 
+// Read a line with no echo: raw mode, so it works on every Node version
+// (readline's _writeToOutput override silently stopped working on 20+).
 function askHidden(q) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    rl._writeToOutput = (s) => { if (s.includes(q)) rl.output.write(s); };
-    rl.question(q, (a) => { rl.close(); process.stdout.write("\n"); resolve(a.trim()); });
+    const { stdin, stdout } = process;
+    stdout.write(q);
+    let buf = "";
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode(true); stdin.resume(); stdin.setEncoding("utf8");
+    const done = (v) => { stdin.setRawMode(wasRaw ?? false); stdin.pause(); stdin.off("data", onData); stdout.write("\n"); resolve(v); };
+    const onData = (ch) => {
+      for (const c of ch) {
+        if (c === "\u0003") { stdout.write("\n"); process.exit(130); }
+        if (c === "\r" || c === "\n") return done(buf.trim());
+        if (c === "\u007f" || c === "\b") buf = buf.slice(0, -1);
+        else if (c >= " ") buf += c;
+      }
+    };
+    stdin.on("data", onData);
   });
 }
 function stop(msg) { console.error(`\nStopped: ${msg}`); process.exit(1); }

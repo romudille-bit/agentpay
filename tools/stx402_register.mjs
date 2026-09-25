@@ -40,11 +40,31 @@ const ENTRIES = [
   },
 ];
 
-function ask(q, hidden = false) {
+function ask(q) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    if (hidden) rl._writeToOutput = (s) => { if (s.includes(q)) rl.output.write(s); };
-    rl.question(q, (a) => { rl.close(); if (hidden) process.stdout.write("\n"); resolve(a.trim()); });
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(q, (a) => { rl.close(); resolve(a.trim()); });
+  });
+}
+// Read a line with no echo: raw mode, so it works on every Node version
+// (readline's _writeToOutput override silently stopped working on 20+).
+function askHidden(q) {
+  return new Promise((resolve) => {
+    const { stdin, stdout } = process;
+    stdout.write(q);
+    let buf = "";
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode(true); stdin.resume(); stdin.setEncoding("utf8");
+    const done = (v) => { stdin.setRawMode(wasRaw ?? false); stdin.pause(); stdin.off("data", onData); stdout.write("\n"); resolve(v); };
+    const onData = (ch) => {
+      for (const c of ch) {
+        if (c === "\u0003") { stdout.write("\n"); process.exit(130); }
+        if (c === "\r" || c === "\n") return done(buf.trim());
+        if (c === "\u007f" || c === "\b") buf = buf.slice(0, -1);
+        else if (c >= " ") buf += c;
+      }
+    };
+    stdin.on("data", onData);
   });
 }
 function stop(msg) { console.error(`\nStopped: ${msg}`); process.exit(1); }
@@ -65,7 +85,7 @@ console.log(`Owner ${OWNER}, fee paid by ${PAYER}. To register:`);
 for (const e of todo) console.log(`  ${e.name}  ${e.url}`);
 if ((await ask("Proceed? [y/N] ")).toLowerCase() !== "y") stop("nothing registered.");
 
-let words = await ask("Demo payer Secret Key (24 words, hidden): ", true);
+let words = await askHidden("Demo payer Secret Key (24 words, hidden): ");
 let wallet = await wsdk.generateWallet({ secretKey: words, password: "" });
 words = "";
 let payer;
