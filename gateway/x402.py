@@ -103,6 +103,8 @@ def _normalize_supabase_challenge(row: dict) -> dict:
         "request_data":      row.get("request_data") or {},
         "stacks_sats":       int(row["stacks_sats"]) if row.get("stacks_sats") else None,
         "stacks_rate":       str(row["stacks_rate"]) if row.get("stacks_rate") else None,
+        "stacks_ustx":       int(row["stacks_ustx"]) if row.get("stacks_ustx") else None,
+        "stx_usd_rate":      str(row["stx_usd_rate"]) if row.get("stx_usd_rate") else None,
     }
 
 
@@ -180,6 +182,8 @@ class PaymentChallenge:
     request_data: dict       # Original request (to replay after payment)
     stacks_sats: Optional[int] = None    # sBTC quote at issuance
     stacks_rate: Optional[str] = None    # BTC/USD rate that quote used
+    stacks_ustx: Optional[int] = None    # native-STX quote at issuance
+    stx_usd_rate: Optional[str] = None
 
 
 def issue_payment_challenge(
@@ -190,6 +194,7 @@ def issue_payment_challenge(
     ttl_seconds: int = 120,
     persist: bool = True,
     stacks_quote: Optional[tuple] = None,
+    stx_quote: Optional[tuple] = None,
 ) -> PaymentChallenge:
     """
     Create a payment challenge for an agent to fulfill.
@@ -221,6 +226,8 @@ def issue_payment_challenge(
         request_data=request_data,
         stacks_sats=int(stacks_quote[0]) if stacks_quote else None,
         stacks_rate=str(stacks_quote[1]) if stacks_quote else None,
+        stacks_ustx=int(stx_quote[0]) if stx_quote else None,
+        stx_usd_rate=str(stx_quote[1]) if stx_quote else None,
     )
 
     _pending_challenges[payment_id] = asdict(challenge)
@@ -241,6 +248,8 @@ def issue_payment_challenge(
             request_data=request_data,
             stacks_sats=challenge.stacks_sats,
             stacks_rate=challenge.stacks_rate,
+            stacks_ustx=challenge.stacks_ustx,
+            stx_usd_rate=challenge.stx_usd_rate,
         )
     )
     return challenge

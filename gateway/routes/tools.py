@@ -822,6 +822,11 @@ def _append_accepts_to_header(header: Optional[str], entry: dict,
     return base64.b64encode(json.dumps(payload).encode()).decode()
 
 
+def _wants_stx(request: Request) -> bool:
+    asked = (request.query_params.get("asset") or request.headers.get("x-pay-asset") or "")
+    return asked.strip().lower() == "stx"
+
+
 async def _issue_402(
     tool, resolved: str, tool_name: str, body: ToolCallRequest,
     request: Request, agent_address: Optional[str], resource_url: str,
@@ -856,11 +861,15 @@ async def _issue_402(
     # restart). Bounded: the option is optional, a slow quote must not slow
     # the 402.
     stacks_offer = None
+    stx_quote = None
     if stacks_pay.stacks_offerable(tool.price_usdc):
         try:
             stacks_offer = await asyncio.wait_for(
                 stacks_pay.stacks_offer(tool.price_usdc), timeout=4.0,
             )
+            if stacks_pay.stacks_stx_offerable(tool.price_usdc):
+                stx_quote = await asyncio.wait_for(
+                    stacks_pay.stacks_stx_quote(tool.price_usdc), timeout=2.0)
         except asyncio.TimeoutError:
             logger.warning(f"[CALL] tool={tool_name} stacks quote timed out — "
                            "402 issued without the stacks option")
@@ -877,6 +886,7 @@ async def _issue_402(
         request_data={"parameters": body.parameters},
         persist=(log_pending and not is_free and bool(agent_address)),
         stacks_quote=stacks_quote,
+        stx_quote=stx_quote,
     )
 
     # Aggregate telemetry for every 402 issued — the durable record of
@@ -895,21 +905,26 @@ async def _issue_402(
 
     stacks_option = (
         stacks_pay.stacks_402_option(stacks_quote, tool.price_usdc,
-                                     fee_microstx=stacks_offer[2])
+                                     fee_microstx=stacks_offer[2], stx_quote=stx_quote)
         if stacks_offer else None
     )
 
-    # After Base: index 0 is what Bazaar/CDP read.
-    stacks_accepts = (
-        stacks_pay.stacks_accepts_entry(
+    # After Base: index 0 is what Bazaar/CDP read. Stacks clients take the
+    # first stacks:* entry, so sBTC leads unless the caller asks for STX
+    # (?asset=stx or X-Pay-Asset: STX).
+    stacks_entries = []
+    if stacks_offer and settings.STACKS_STANDARD_CLIENTS:
+        stacks_entries.append(stacks_pay.stacks_accepts_entry(
             stacks_quote, tool.price_usdc, challenge.payment_id,
-            max_timeout_s=challenge.expires_at - time.time(),
-        )
-        if (stacks_offer and settings.STACKS_STANDARD_CLIENTS) else None
-    )
-    if stacks_accepts:
+            max_timeout_s=challenge.expires_at - time.time()))
+        if stx_quote:
+            stx_entry = stacks_pay.stacks_accepts_entry_stx(
+                stx_quote, tool.price_usdc, challenge.payment_id,
+                max_timeout_s=challenge.expires_at - time.time())
+            stacks_entries.insert(0 if _wants_stx(request) else 1, stx_entry)
+    for entry in stacks_entries:
         payment_required_header = _append_accepts_to_header(
-            payment_required_header, stacks_accepts, resource_url, tool.description,
+            payment_required_header, entry, resource_url, tool.description,
         )
 
     headers = build_402_headers(challenge)
@@ -931,8 +946,7 @@ async def _issue_402(
         "resource":    resource_block,
         # Standard x402 accepts[] in the body (not just the PAYMENT-REQUIRED
         # header) so generic payers find the Base path.
-        "accepts":     ([accepts_entry] if accepts_entry else [])
-                       + ([stacks_accepts] if stacks_accepts else []),
+        "accepts":     ([accepts_entry] if accepts_entry else []) + stacks_entries,
         # Stellar option (backward-compatible top-level fields)
         "payment_id":  challenge.payment_id,
         "amount_usdc": challenge.amount_usdc,
@@ -1296,7 +1310,22 @@ async def _settle_stacks_path(
     # fresh re-quote: a BTC move between issue and settle must not fail the
     # amount check. Re-quote only when the challenge carries no quote
     # (issued without a Stacks option).
-    if challenge.get("stacks_sats"):
+    asset = stacks_pay.payload_asset(payload) if echoed else "sbtc"
+    if asset == "stx" and not settings.STACKS_STX:
+        return _reject("stx_not_accepted")
+    expected_sats = expected_ustx = 0
+    if asset == "stx":
+        if challenge.get("stacks_ustx"):
+            expected_ustx = int(challenge["stacks_ustx"])
+            quote_rate = str(challenge.get("stx_usd_rate") or "")
+        else:
+            requote = await stacks_pay.stacks_stx_quote(
+                challenge.get("amount_usdc") or tool.price_usdc)
+            if requote is None:
+                raise HTTPException(status_code=503,
+                                    detail="Stacks pricing unavailable on this gateway")
+            expected_ustx, quote_rate = requote[0], str(requote[1])
+    elif challenge.get("stacks_sats"):
         expected_sats = int(challenge["stacks_sats"])
         quote_rate = str(challenge.get("stacks_rate") or "")
     else:
@@ -1307,7 +1336,7 @@ async def _settle_stacks_path(
                                 detail="Stacks pricing unavailable on this gateway")
         expected_sats, quote_rate = requote[0], str(requote[1])
 
-    logger.info(f"[PAYMENT] tool={tool_name} network=stacks verifying "
+    logger.info(f"[PAYMENT] tool={tool_name} network=stacks asset={asset} verifying "
                 f"payment-signature (payment {payment_id[:8]}…)")
     auth = await stacks_pay.verify_stacks_payment(
         payment_signature,
@@ -1315,6 +1344,8 @@ async def _settle_stacks_path(
         expected_recipient=settings.STACKS_GATEWAY_ADDRESS,
         payment_id=payment_id,
         standard_client=echoed,
+        asset=asset,
+        expected_amount_ustx=expected_ustx,
     )
     if not auth["authorized"]:
         logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=FAILED "
@@ -1383,8 +1414,8 @@ async def _settle_stacks_path(
         requirements={
             "scheme": "exact",
             "network": stacks_pay.payload_network(payload),
-            "amount": str(auth["amount_sats"]),
-            "asset": "sbtc",
+            "amount": str(auth["amount_ustx"] if asset == "stx" else auth["amount_sats"]),
+            "asset": asset,
             "payTo": settings.STACKS_GATEWAY_ADDRESS,
         },
     )
@@ -1430,8 +1461,11 @@ async def _settle_stacks_path(
         "payer":      auth["sender"],
         "network":    f"stacks-{settings.STACKS_NETWORK}",
         "recovered":  settle["state"] == "ok_recovered",
+        "asset":      asset,
         "amount_sats":  auth["amount_sats"],
-        "btc_usd_rate": quote_rate,
+        "amount_ustx":  auth.get("amount_ustx", 0),
+        "btc_usd_rate": quote_rate if asset == "sbtc" else "",
+        "stx_usd_rate": quote_rate if asset == "stx" else "",
         "binding":      auth.get("binding", "memo"),
         "payer_protection": auth.get("payer_protection", "deny_mode_exact_amount"),
         "session":    hold,
@@ -1745,6 +1779,10 @@ async def _execute_and_log(
     for k in ("binding", "payer_protection"):
         if auth.get(k):
             response["payment"][k] = auth[k]
+    if auth.get("asset") == "stx":
+        response["payment"]["asset"] = "STX"
+        response["payment"]["amount_ustx"] = auth.get("amount_ustx")
+        response["payment"]["stx_usd_rate"] = auth.get("stx_usd_rate")
     if hold and hold.session_id:
         response["session"] = {
             "session_id": hold.session_id, "max_spend": hold.max_spend,

@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import time
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Optional
 
 import httpx
@@ -49,6 +49,7 @@ __all__ = [
     "settle_stacks_payment",
     "poll_confirmation",
     "decode_sbtc_transfer",
+    "decode_stacks_transfer",
     "decode_payment_signature",
     "build_stacks_402_option",
     "stacks_402_option",
@@ -59,6 +60,10 @@ __all__ = [
     "stacks_quote_sats",
     "stacks_configured",
     "stacks_accepts_entry",
+    "stacks_accepts_entry_stx",
+    "stacks_stx_quote",
+    "stacks_stx_offerable",
+    "payload_asset",
     "payload_network",
     "payload_signed_tx_hex",
     "payload_payment_id",
@@ -104,6 +109,8 @@ _UNDERPAY_TOLERANCE = Decimal("0.98")
 # Below this the tolerance is meaningless — 2% of a single-digit sat quote
 # rounds to a whole sat or more, so the exact amount is required instead.
 _TOLERANCE_MIN_SATS = 50
+_TOLERANCE_MIN_USTX = 1_000
+STX_ASSET = "STX"   # the accepts[] asset id x402-stacks, AIBTC and stx402.com use for native STX
 
 # A SIP-010 transfer's args nest one level at most (an optional memo); the
 # bound exists so a hostile payload cannot recurse the decoder to death.
@@ -118,11 +125,12 @@ _HASH_MODE_P2PKH = 0x00
 _SPENDING_CONDITION_LEN = 1 + 20 + 8 + 8 + 1 + 65
 _ADDR_VERSION_P2PKH = {"mainnet": 22, "testnet": 26}
 
-_PC_TYPE_FUNGIBLE = 0x01
+_PC_TYPE_STX, _PC_TYPE_FUNGIBLE = 0x00, 0x01
 _PC_PRINCIPAL_ORIGIN, _PC_PRINCIPAL_STANDARD, _PC_PRINCIPAL_CONTRACT = 0x01, 0x02, 0x03
 _FT_SENT_EQ = 0x01
 
-_PAYLOAD_CONTRACT_CALL = 0x02
+_PAYLOAD_TOKEN_TRANSFER, _PAYLOAD_CONTRACT_CALL = 0x00, 0x02
+_MEMO_LEN = 34
 _CV_INT, _CV_UINT, _CV_BUFFER = 0x00, 0x01, 0x02
 _CV_TRUE, _CV_FALSE = 0x03, 0x04
 _CV_PRINCIPAL_STANDARD, _CV_PRINCIPAL_CONTRACT = 0x05, 0x06
@@ -173,6 +181,7 @@ def _sbtc_contract() -> str:
 # agentpay._stacks_tx.sats_from_usd, shared by both sides.
 
 _rate_cache: dict = {"rate": None, "at": 0.0}   # {"rate": Decimal|None, "at": monotonic}
+_stx_rate_cache: dict = {"rate": None, "at": 0.0}
 
 # Single-flight guard for the background refresh: the 402 path never waits
 # on CoinGecko when any cached rate exists (see _btc_usd_rate).
@@ -185,23 +194,73 @@ _RATE_FETCH_TIMEOUT_S = 3.0
 
 
 async def _fetch_btc_usd_live() -> Optional[Decimal]:
-    """One bounded live CoinGecko fetch; updates the cache on success."""
+    """One bounded live CoinGecko fetch for BTC and STX; updates both caches."""
     try:
         async with httpx.AsyncClient(timeout=_RATE_FETCH_TIMEOUT_S) as client:
             resp = await client.get(
                 f"{settings.COINGECKO_API_URL}/simple/price",
-                params={"ids": "bitcoin", "vs_currencies": "usd"},
+                params={"ids": "bitcoin,blockstack", "vs_currencies": "usd"},
             )
             resp.raise_for_status()
-            usd = resp.json()["bitcoin"]["usd"]
-            rate = Decimal(str(usd))
+            data = resp.json()
+            rate = Decimal(str(data["bitcoin"]["usd"]))
             if rate <= 0:
                 raise ValueError("non-positive rate")
             _rate_cache["rate"] = rate
             _rate_cache["at"] = time.monotonic()
+            try:
+                stx = Decimal(str(data["blockstack"]["usd"]))
+                if stx > 0:
+                    _stx_rate_cache["rate"] = stx
+                    _stx_rate_cache["at"] = _rate_cache["at"]
+            except (KeyError, TypeError, ValueError, ArithmeticError):
+                pass
             return rate
     except Exception as e:
         logger.warning(f"[STACKS] live BTC/USD fetch failed ({e})")
+        return None
+
+
+async def _stx_usd_rate() -> Optional[Decimal]:
+    """STX/USD with the same stale-while-revalidate rule as BTC; the fetch is
+    shared, so a call here never adds a second CoinGecko request."""
+    global _rate_refresh_task
+    now = time.monotonic()
+    cached = _stx_rate_cache["rate"]
+    if cached is not None and (now - _stx_rate_cache["at"]) < settings.STACKS_RATE_CACHE_S:
+        return cached
+    if cached is not None:
+        if _rate_refresh_task is None or _rate_refresh_task.done():
+            _rate_refresh_task = asyncio.create_task(_fetch_btc_usd_live())
+        return cached
+    await _fetch_btc_usd_live()
+    if _stx_rate_cache["rate"] is not None:
+        return _stx_rate_cache["rate"]
+    if settings.STACKS_FIXED_STX_USD:
+        try:
+            return Decimal(str(settings.STACKS_FIXED_STX_USD))
+        except Exception:
+            pass
+    return None
+
+
+def ustx_from_usd(amount_usd: Decimal, stx_usd_rate: Decimal) -> int:
+    """USD → µSTX, rounded up so the payer never underpays by rounding."""
+    if stx_usd_rate <= 0:
+        raise ValueError("non-positive rate")
+    ustx = (Decimal(amount_usd) / stx_usd_rate * 1_000_000).to_integral_value(rounding=ROUND_CEILING)
+    return max(int(ustx), 1)
+
+
+async def stacks_stx_quote(price_usdc) -> Optional[tuple[int, Decimal]]:
+    """(µSTX, rate) for a USD price, or None when unquotable."""
+    rate = await _stx_usd_rate()
+    if rate is None:
+        return None
+    try:
+        return ustx_from_usd(Decimal(str(price_usdc)), rate), rate
+    except Exception as e:
+        logger.warning(f"[STACKS] STX quote failed for {price_usdc} USD: {e}")
         return None
 
 
@@ -331,11 +390,16 @@ async def stacks_offer(price_usdc) -> Optional[tuple[int, Decimal, int]]:
 
 
 def stacks_402_option(quote: tuple[int, Decimal], price_usdc,
-                      fee_microstx: Optional[int] = None) -> dict:
+                      fee_microstx: Optional[int] = None,
+                      stx_quote: Optional[tuple] = None) -> dict:
     """The `payment_options.stacks` block for an already-computed quote
-    (docs/stacks-adapter.md §Wire contract)."""
+    (docs/stacks-adapter.md §Wire contract). `stx` is informational: the
+    SDK pays in sBTC; standard clients read accepts[]."""
     sats, rate = quote[0], quote[1]
+    stx = ({"stx": {"amount_ustx": int(stx_quote[0]), "stx_usd_rate": str(stx_quote[1])}}
+           if stx_quote else {})
     return {
+        **stx,
         "scheme": "exact",
         "network": _caip2(),
         "amount_sats": int(sats),
@@ -368,6 +432,32 @@ def stacks_accepts_entry(quote: tuple[int, Decimal], price_usdc,
             "btc_usd_rate": str(rate),
         },
     }
+
+
+def stacks_accepts_entry_stx(quote: tuple[int, Decimal], price_usdc,
+                             payment_id: str, max_timeout_s: int) -> dict:
+    """The native-STX `accepts[]` entry: asset "STX", amount in µSTX — the
+    dialect x402-stacks, the AIBTC wallet and stx402.com share."""
+    ustx, rate = quote[0], quote[1]
+    return {
+        "scheme": "exact",
+        "network": _caip2(),
+        "amount": str(int(ustx)),
+        "asset": STX_ASSET,
+        "payTo": settings.STACKS_GATEWAY_ADDRESS,
+        "maxTimeoutSeconds": max(1, int(max_timeout_s)),
+        "extra": {
+            "payment_id": payment_id,
+            "tokenType": "STX",
+            "amount_usdc": str(price_usdc),
+            "stx_usd_rate": str(rate),
+        },
+    }
+
+
+def stacks_stx_offerable(price_usdc) -> bool:
+    return bool(settings.STACKS_STX and settings.STACKS_STANDARD_CLIENTS
+                and stacks_offerable(price_usdc))
 
 
 def stacks_offerable(price_usdc) -> bool:
@@ -418,6 +508,12 @@ def payload_network(payload: dict) -> str:
     """CAIP-2 network of a payment payload. The AgentPay SDK puts it at the
     top level; standard x402 v2 clients carry it only in `accepted`."""
     return str(payload.get("network") or _accepted(payload).get("network") or "")
+
+
+def payload_asset(payload: dict) -> str:
+    """"stx" when the client chose the native-STX entry, else "sbtc"."""
+    asset = str(_accepted(payload).get("asset") or "").strip().lower()
+    return "stx" if asset in ("stx", "stacks:1/native", "stacks:2147483648/native") else "sbtc"
 
 
 def payload_signed_tx_hex(payload: dict) -> str:
@@ -506,10 +602,11 @@ def _read_clarity_value(r: _Reader, depth: int = 0):
     raise ValueError(f"unsupported Clarity value type 0x{t:02x}")
 
 
-def decode_sbtc_transfer(tx: bytes) -> dict:
-    """Deserialize a signed SIP-005 contract-call transaction far enough to
-    verify an sBTC transfer: header, origin spending condition, post-
-    conditions, and the contract-call payload with Clarity args.
+def decode_stacks_transfer(tx: bytes) -> dict:
+    """Deserialize a signed SIP-005 transaction far enough to verify a
+    payment: header, origin spending condition, post-conditions, then either
+    a contract call with Clarity args (sBTC) or a native token transfer
+    (STX). `payload_type` says which.
 
     Raises ValueError on anything malformed/unsupported — the caller maps
     that to a verification rejection (we never broadcast bytes we can't
@@ -543,8 +640,7 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
     post_conditions = []
     for _ in range(pc_count):
         pc_type = r.u8()
-        if pc_type != _PC_TYPE_FUNGIBLE:
-            # STX / NFT post-conditions never appear on our transfers.
+        if pc_type not in (_PC_TYPE_STX, _PC_TYPE_FUNGIBLE):
             raise ValueError("unsupported post-condition type")
         p_type = r.u8()
         if p_type == _PC_PRINCIPAL_ORIGIN:
@@ -557,9 +653,12 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
             pc_sender = f"{c32_address(v, h)}.{r.lp_name()}"
         else:
             raise ValueError("unknown post-condition principal type")
-        av, ah = r.address()
-        asset_contract = f"{c32_address(av, ah)}.{r.lp_name()}"
-        asset_name = r.lp_name()
+        if pc_type == _PC_TYPE_STX:
+            asset_contract, asset_name = "", "STX"
+        else:
+            av, ah = r.address()
+            asset_contract = f"{c32_address(av, ah)}.{r.lp_name()}"
+            asset_name = r.lp_name()
         code = r.u8()
         amount = r.uint(8)
         post_conditions.append({
@@ -570,9 +669,26 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
             "amount": amount,
         })
 
+    sender_address = c32_address(_ADDR_VERSION_P2PKH[network], signer)
     payload_type = r.u8()
+    if payload_type == _PAYLOAD_TOKEN_TRANSFER:
+        kind, recipient = _read_clarity_value(r)
+        if kind != "principal":
+            raise ValueError("token transfer recipient is not a principal")
+        amount = r.uint(8)
+        memo = r.take(_MEMO_LEN).rstrip(b"\x00")
+        if r.pos != len(tx):
+            raise ValueError("trailing bytes after payload")
+        return {
+            "payload_type": "token_transfer",
+            "network": network, "sponsored": sponsored, "sender": sender_address,
+            "nonce": nonce, "fee": fee, "pc_mode": pc_mode,
+            "post_conditions": post_conditions,
+            "contract_id": "", "function": "", "amount": amount,
+            "arg_sender": sender_address, "arg_recipient": recipient, "memo": memo,
+        }
     if payload_type != _PAYLOAD_CONTRACT_CALL:
-        raise ValueError("not a contract call")
+        raise ValueError("not a token transfer or contract call")
     cv, ch = r.address()
     contract_id = f"{c32_address(cv, ch)}.{r.lp_name()}"
     function = r.lp_name()
@@ -582,8 +698,6 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
     args = [_read_clarity_value(r) for _ in range(arg_count)]
     if r.pos != len(tx):
         raise ValueError("trailing bytes after payload")
-
-    sender_address = c32_address(_ADDR_VERSION_P2PKH[network], signer)
 
     # SIP-010 transfer args: (amount uint) (sender principal)
     # (recipient principal) (memo (optional (buff 34)))
@@ -599,6 +713,7 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
             memo = args[3][1][1]
 
     return {
+        "payload_type": "contract_call",
         "network": network,
         "sponsored": sponsored,
         "sender": sender_address,
@@ -613,6 +728,14 @@ def decode_sbtc_transfer(tx: bytes) -> dict:
         "arg_recipient": arg_recipient,
         "memo": memo,
     }
+
+
+def decode_sbtc_transfer(tx: bytes) -> dict:
+    """The contract-call decode only (the sBTC verify path calls this)."""
+    out = decode_stacks_transfer(tx)
+    if out["payload_type"] != "contract_call":
+        raise ValueError("not a contract call")
+    return out
 
 
 # ── verification ─────────────────────────────────────────────────────────────
@@ -637,6 +760,11 @@ def _fail(reason: str) -> dict:
             "sender": "", "amount_sats": 0, "overpaid": False}
 
 
+def _amount_floor(expected: int, exact_below: int) -> int:
+    """2% under the quote for FX drift, rounded up; exact below `exact_below`."""
+    return expected if expected < exact_below else -(-expected * 98 // 100)
+
+
 async def verify_stacks_payment(
     payment_header: str,
     *,
@@ -644,8 +772,12 @@ async def verify_stacks_payment(
     expected_recipient: str,
     payment_id: str,
     standard_client: bool = False,
+    asset: str = "sbtc",
+    expected_amount_ustx: int = 0,
 ) -> dict:
-    """Decode + statically verify a signed-but-unbroadcast sBTC transfer.
+    """Decode + statically verify a signed-but-unbroadcast sBTC transfer, or
+    a native STX transfer when asset="stx" (then expected_amount_ustx is the
+    quote and the result carries amount_ustx).
 
     No network I/O: structure, binding, amount, post-conditions and the
     origin signature are all checked from the bytes. Same result contract
@@ -666,7 +798,7 @@ async def verify_stacks_payment(
         return _fail("missing_or_invalid_signed_transaction")
 
     try:
-        tx = decode_sbtc_transfer(signed_tx)
+        tx = decode_stacks_transfer(signed_tx) if asset == "stx" else decode_sbtc_transfer(signed_tx)
     except (ValueError, RecursionError) as e:
         # RecursionError is caught alongside ValueError as a belt-and-braces
         # pair with the depth bound in _read_clarity_value: a malformed payload
@@ -680,9 +812,12 @@ async def verify_stacks_payment(
 
     if tx["network"] != _network():
         return _fail("wrong_network")
-    if tx["contract_id"] != _sbtc_contract():
+    if asset == "stx":
+        if tx["payload_type"] != "token_transfer":
+            return _fail("not_an_stx_transfer")
+    elif tx["contract_id"] != _sbtc_contract():
         return _fail("wrong_contract")
-    if tx["function"] != "transfer":
+    elif tx["function"] != "transfer":
         return _fail("not_a_transfer")
     if tx["amount"] is None or tx["arg_sender"] is None or tx["arg_recipient"] is None:
         return _fail("malformed_transfer_args")
@@ -713,25 +848,33 @@ async def verify_stacks_payment(
     # Round the floor up, and require the exact quote where 2% is sub-sat.
     # Truncating turned the allowance into 10% on a 10-sat quote and 25% on a
     # 4-sat one — and micro-priced tools quote in exactly that range.
-    floor_sats = (
-        expected_amount_sats if expected_amount_sats < _TOLERANCE_MIN_SATS
-        else -(-expected_amount_sats * 98 // 100)
-    )
-    if tx["amount"] < max(floor_sats, 1):
-        return _fail(
-            f"underpaid: got {tx['amount']} sats, need {expected_amount_sats}"
-        )
-    overpaid = Decimal(tx["amount"]) > Decimal(expected_amount_sats) * _OVERPAY_FLAG_FACTOR
+    if asset == "stx":
+        expected, unit, floor = expected_amount_ustx, "ustx", _amount_floor(
+            expected_amount_ustx, _TOLERANCE_MIN_USTX)
+    else:
+        expected, unit, floor = expected_amount_sats, "sats", _amount_floor(
+            expected_amount_sats, _TOLERANCE_MIN_SATS)
+    if tx["amount"] < max(floor, 1):
+        return _fail(f"underpaid: got {tx['amount']} {unit}, need {expected}")
+    overpaid = Decimal(tx["amount"]) > Decimal(expected) * _OVERPAY_FLAG_FACTOR
     if overpaid:
         logger.warning(
-            f"[STACKS] overpaid transfer flagged: {tx['amount']} sats vs "
-            f"{expected_amount_sats} quoted (payment {payment_id[:8]}…)"
+            f"[STACKS] overpaid transfer flagged: {tx['amount']} {unit} vs "
+            f"{expected} quoted (payment {payment_id[:8]}…)"
         )
 
+    if asset == "stx":
+        # The amount is fixed in the payload; a post-condition can only make
+        # the tx abort, never move more. Refuse one that contradicts it.
+        for pc in tx["post_conditions"]:
+            if pc["asset_name"] == "STX" and pc["condition_code"] == _FT_SENT_EQ \
+                    and pc["amount"] != tx["amount"]:
+                return _fail("unsafe_post_conditions")
+        payer_protection = "fixed_amount_transfer"
     # Deny mode with an exact-amount post-condition is required, except for
     # standard clients on the official sBTC contract, which moves exactly
     # `amount` (x402-stacks signs in allow mode). See docs/stacks-adapter.md.
-    if tx["pc_mode"] == 0x02:
+    elif tx["pc_mode"] == 0x02:
         pc_ok = any(
             pc["condition_code"] == _FT_SENT_EQ
             and pc["amount"] == tx["amount"]
@@ -759,7 +902,9 @@ async def verify_stacks_payment(
         "reason": "ok",
         "txid": txid_of(signed_tx),
         "sender": tx["sender"],
-        "amount_sats": tx["amount"],
+        "asset": asset,
+        "amount_sats": tx["amount"] if asset == "sbtc" else 0,
+        "amount_ustx": tx["amount"] if asset == "stx" else 0,
         "overpaid": overpaid,
         "binding": binding,
         "payer_protection": payer_protection,

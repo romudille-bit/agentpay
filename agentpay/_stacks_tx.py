@@ -29,6 +29,7 @@ __all__ = [
     "StacksKeypair",
     "PostCondition",
     "build_sbtc_transfer",
+    "build_stx_transfer",
     "serialize_transfer_payload",
     "sign_transaction",
     "verify_origin_signature",
@@ -79,6 +80,7 @@ _FT_CONDITION_CODES = {
     "sent_less_equal": 0x05,
 }
 
+_PAYLOAD_TOKEN_TRANSFER = 0x00
 _PAYLOAD_CONTRACT_CALL = 0x02
 
 # Clarity value type prefixes (SIP-005 §Clarity value representation).
@@ -510,6 +512,46 @@ def build_sbtc_transfer(
         contract=contract_id, sender=sender_address, recipient=recipient,
         amount_sats=amount_sats, memo=memo_bytes,
     )
+    return out
+
+
+def build_stx_transfer(
+    *,
+    sender: StacksKeypair,
+    recipient: str,
+    amount_ustx: int,
+    memo: bytes,
+    nonce: int,
+    fee_microstx: int,
+    network: str = "testnet",
+) -> bytes:
+    """Serialize an UNSIGNED native STX token-transfer (SIP-005 payload 0x00:
+    recipient, µSTX amount, 34-byte zero-padded memo). No post-conditions:
+    the amount is fixed in the payload. The client still pays in sBTC."""
+    if network not in _TX_VERSION:
+        raise ValueError("network must be 'mainnet' or 'testnet'")
+    if amount_ustx <= 0:
+        raise ValueError("amount_ustx must be positive")
+    if len(memo) > _MEMO_MAX_BYTES:
+        raise ValueError("memo exceeds 34 bytes")
+    if nonce < 0 or fee_microstx < 0:
+        raise ValueError("nonce and fee must be non-negative")
+    out = bytes([_TX_VERSION[network]])
+    out += _CHAIN_ID[network].to_bytes(4, "big")
+    out += bytes([_AUTH_STANDARD])
+    key_encoding = (
+        _KEY_ENCODING_COMPRESSED if sender.compressed else _KEY_ENCODING_UNCOMPRESSED
+    )
+    out += _serialize_spending_condition(
+        sender.signer_hash160(), nonce, fee_microstx, key_encoding, _SIG_PLACEHOLDER
+    )
+    out += bytes([_ANCHOR_MODE_ANY])
+    out += bytes([_PC_MODE_DENY])
+    out += (0).to_bytes(4, "big")
+    out += bytes([_PAYLOAD_TOKEN_TRANSFER])
+    out += _cv_standard_principal(recipient)
+    out += amount_ustx.to_bytes(8, "big")
+    out += memo.ljust(_MEMO_MAX_BYTES, b"\x00")
     return out
 
 

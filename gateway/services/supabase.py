@@ -324,6 +324,8 @@ async def store_pending_challenge(
     request_data: dict,
     stacks_sats: Optional[int] = None,
     stacks_rate: Optional[str] = None,
+    stacks_ustx: Optional[int] = None,
+    stx_usd_rate: Optional[str] = None,
 ) -> None:
     """INSERT into pending_challenges. Fire-and-forget, with one retry.
 
@@ -351,6 +353,9 @@ async def store_pending_challenge(
     if stacks_sats is not None:
         body["stacks_sats"] = int(stacks_sats)
         body["stacks_rate"] = stacks_rate
+    if stacks_ustx is not None:   # pending_challenges_stx_quote.sql
+        body["stacks_ustx"] = int(stacks_ustx)
+        body["stx_usd_rate"] = stx_usd_rate
     last_err = ""
     for attempt in (1, 2):
         try:

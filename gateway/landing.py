@@ -45,7 +45,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
   "url": "GATEWAY_URL_PLACEHOLDER",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Web",
-  "description": "The economic intelligence layer for MCP servers and AI agents: x402 payment gateway with hard budget caps, pre-flight plan pricing, on-chain receipts, and public delivery scores for the x402 marketplace. USDC on Base (standard x402) and Stellar, sBTC on Stacks (any Stacks x402 client or the AgentPay SDK).",
+  "description": "The economic intelligence layer for MCP servers and AI agents: x402 payment gateway with hard budget caps, pre-flight plan pricing, on-chain receipts, and public delivery scores for the x402 marketplace. USDC on Base (standard x402) and Stellar, sBTC or STX on Stacks (any Stacks x402 client; the AgentPay SDK pays sBTC).",
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD",
              "description": "17 free tools; paid tools from $0.01 USDC per call"},
   "sameAs": [
@@ -365,7 +365,7 @@ TOOLS_ROWS_PLACEHOLDER
     </div>
     <div class="network-card">
       <h3>Stacks mainnet</h3>
-      <p>sBTC from any Stacks x402 client (AIBTC wallet, x402-stacks) or the AgentPay SDK: the agent signs a SIP-010 <code>sbtc-token::transfer</code> and never broadcasts; the gateway verifies every field against its own quote, checks the wallet's session cap, broadcasts, and waits for confirmation before the tool runs. Receipts are chain-verified on the public ledger. <a href="https://github.com/romudille-bit/agentpay/blob/main/docs/stacks-walkthrough.md">Walkthrough</a>.</p>
+      <p>sBTC or STX from any Stacks x402 client (AIBTC wallet, x402-stacks), sBTC from the AgentPay SDK: the agent signs a SIP-010 <code>sbtc-token::transfer</code> or a plain STX transfer and never broadcasts; the gateway verifies every field against its own quote, checks the wallet's session cap, broadcasts, and waits for confirmation before the tool runs. Receipts are chain-verified on the public ledger. <a href="https://github.com/romudille-bit/agentpay/blob/main/docs/stacks-walkthrough.md">Walkthrough</a>.</p>
     </div>
     <div class="network-card">
       <h3>Stellar mainnet</h3>
@@ -381,7 +381,7 @@ TOOLS_ROWS_PLACEHOLDER
     AgentPay is the economic intelligence layer for MCP servers and AI agents — x402-v2 payment protocol,
     CDP Facilitator settlement on Base with
     <a href="https://www.coinbase.com/en-gb/developer-platform/discover/launches/introducing-bazaar">Bazaar</a> auto-indexing,
-    Horizon-verified classic Stellar settlement and sBTC settlement on Stacks from any Stacks x402 client.
+    Horizon-verified classic Stellar settlement and sBTC or STX settlement on Stacks from any Stacks x402 client.
   </div>
   <ul>
     <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>

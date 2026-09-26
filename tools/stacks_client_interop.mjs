@@ -7,6 +7,8 @@
 // Run from a folder with the clients installed:
 //   npm i @aibtc/mcp-server@1.71.0 x402-stacks@2.0.3 axios
 //   node ~/Projects/agentpay/tools/stacks_client_interop.mjs
+// ASSET=stx pays the native-STX entry instead (x402-stacks takes the first
+// stacks entry, so the call URL asks for STX first; AIBTC is told the asset).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,8 +21,11 @@ const SBTC_ADDR = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4";
 const SBTC = `${SBTC_ADDR}.sbtc-token::sbtc-token`;
 const HIRO = "https://api.hiro.so";
 const FUND_SATS = 50n;
-const FUND_USTX = 70000n;  // AIBTC fee can hit its 0.05 STX cap; the rest pays the sBTC sweep
-const CALL = ["/tools/pre_trade_check/call", { parameters: { symbol: "BTC", side: "long", size_usd: 1000 } }];
+// AIBTC fee can hit its 0.05 STX cap; the rest pays the sweep (and the STX price itself in STX mode).
+const FUND_USTX = (process.env.ASSET || "").toLowerCase() === "stx" ? 130000n : 70000n;
+const ASSET = (process.env.ASSET || "sbtc").toLowerCase();
+const CALL = [`/tools/pre_trade_check/call${ASSET === "stx" ? "?asset=stx" : ""}`,
+              { parameters: { symbol: "BTC", side: "long", size_usd: 1000 } }];
 
 // Read a line with no echo: raw mode, so it works on every Node version
 // (readline's _writeToOutput override silently stopped working on 20+).
@@ -128,8 +133,9 @@ async function run(client, version, pay) {
     const txid = p.tx_hash?.startsWith("0x") ? p.tx_hash : `0x${p.tx_hash}`;
     console.log(`  ok  tx ${txid}\n      binding=${p.binding} payer_protection=${p.payer_protection}`);
     console.log(`      https://explorer.hiro.so/txid/${txid}?chain=mainnet`);
-    results.push({ client, version, ok: true, txid, network: p.network, binding: p.binding,
-                   payer_protection: p.payer_protection, amount_usdc: p.amount_usdc });
+    results.push({ client, version, ok: true, txid, network: p.network, asset: p.asset || "sBTC",
+                   binding: p.binding, payer_protection: p.payer_protection, amount_usdc: p.amount_usdc,
+                   amount_ustx: p.amount_ustx });
   } catch (e) {
     const body = e.response?.data ? JSON.stringify(e.response.data).slice(0, 300) : "";
     console.log(`  FAILED: ${e.message} ${body}`);
@@ -153,7 +159,8 @@ const funding = [
 for (const id of funding) await waitTx(id, "funding");
 
 process.env.CLIENT_MNEMONIC = throwaway.words;
-await run("@aibtc/mcp-server", "1.71.0", async () => (await aibtc.createApiClient(BASE)).post(...CALL));
+await run("@aibtc/mcp-server", "1.71.0", async () =>
+  (await aibtc.createApiClient(BASE, ASSET === "stx" ? { asset: "STX" } : undefined)).post(...CALL));
 delete process.env.CLIENT_MNEMONIC;
 throwaway.words = "";
 if (results[1].ok) await waitTx(results[1].txid, "AIBTC payment");
@@ -177,9 +184,9 @@ try {
 }
 
 const out = path.join(os.homedir(), "Projects/agentpay/notes",
-                      `stacks_standard_clients_mainnet_${now.toISOString().slice(0, 10)}.json`);
+                      `stacks_standard_clients_mainnet_${ASSET === "stx" ? "stx_" : ""}${now.toISOString().slice(0, 10)}.json`);
 fs.mkdirSync(path.dirname(out), { recursive: true });
-fs.writeFileSync(out, JSON.stringify({ gateway: BASE, payer: EXPECTED, aibtc_payer: throwaway.address,
+fs.writeFileSync(out, JSON.stringify({ gateway: BASE, asset: ASSET, payer: EXPECTED, aibtc_payer: throwaway.address,
   at: now.toISOString(), results, funding, sweep }, null, 2));
 console.log(`\nEvidence saved to ${out}`);
 process.exit(results.every((r) => r.ok) ? 0 : 1);

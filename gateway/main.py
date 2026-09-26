@@ -666,7 +666,7 @@ app = FastAPI(
         "returns an ok/caution/avoid verdict before a trade; session_create opens a "
         "spend cap the gateway enforces for the paying wallet on Stacks and Base, "
         "with chain-verified receipts on a public ledger. USDC on Base and Stellar, "
-        "sBTC on Stacks (any Stacks x402 client)."
+        "sBTC or STX on Stacks (any Stacks x402 client)."
     ),
     version="0.1.0",
     contact={"name": "AgentPay", "url": "https://agentpay.tools", "email": "romudille@gmail.com"},

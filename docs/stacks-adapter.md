@@ -120,6 +120,23 @@ Rules, SDK path unchanged:
 - Not covered: PerkOS/Nayori's client, which pays only Nayori-signed quotes
   settled through Nayori's facilitator.
 
+### Native STX (`STACKS_STX`)
+
+A second `stacks:1` entry, `asset: "STX"`, `amount` in µSTX (`extra.tokenType`
+"STX", `extra.stx_usd_rate`). That identifier is what x402-stacks
+(`assetFromV2`), the AIBTC wallet (`detectTokenType`, which also takes
+`stacks:1/native`) and stx402.com's own 402 use; both clients build a
+`makeSTXTokenTransfer` for it (AIBTC with an empty memo, x402-stacks with its
+nonce memo). The gateway decodes the token-transfer payload (type 0x00:
+recipient principal, u64 amount, 34-byte memo), applies the same binding,
+recipient, network, signature and single-use rules, allows 2% under the
+quote (exact under 1,000 µSTX), and refuses an STX post-condition that
+contradicts the amount. `payer_protection: fixed_amount_transfer`. Both
+clients choose the first `stacks:1` entry, so the order is sBTC then STX
+unless the request carries `?asset=stx` or `X-Pay-Asset: STX`. An echoed
+STX entry with the flag off is refused (`stx_not_accepted`) before
+verification.
+
 ## Why this document exists
 
 The gateway/SDK review before 0.3.0 surfaced the defect classes a third

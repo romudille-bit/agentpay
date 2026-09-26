@@ -15,6 +15,7 @@ STACKS_ENABLED=true
 STACKS_NETWORK=mainnet
 STACKS_GATEWAY_ADDRESS=SP23XKWSEQ9D4CVPT0H39N2TYVEE5AJECPKW6CZ3C
 STACKS_STANDARD_CLIENTS=true
+STACKS_STX=true
 ```
 
 The payee address only receives. The gateway broadcasts transactions the
@@ -32,7 +33,9 @@ apply.
 
 Before deploying a gateway with Stacks enabled, apply
 `db/migrations/pending_challenges_stacks_quote.sql` (two nullable columns
-that keep the issued quote on the challenge row).
+that keep the issued quote on the challenge row); before `STACKS_STX=true`,
+also `db/migrations/pending_challenges_stx_quote.sql` (the STX quote).
+`STACKS_FIXED_STX_USD` is the STX/USD fallback.
 
 ## What a mainnet 402 looks like
 
@@ -228,6 +231,27 @@ Every settled response names how the payment was bound to its challenge
 (`payment.binding`) and what protected the payer (`payment.payer_protection`).
 `tools/stacks_client_interop.mjs` reproduces both payments.
 
+### Paying in STX
+
+With `STACKS_STX=true` the 402 lists a second `stacks:1` entry with
+`asset: "STX"` and the price in µSTX (ceiled at the STX/USD rate the 402 was
+issued at, kept on the challenge). The payer signs a plain STX token
+transfer; the gateway verifies recipient, amount, network and the challenge
+binding exactly as for sBTC and reports `payment.asset: "STX"`,
+`payment.amount_ustx` and `payer_protection: fixed_amount_transfer` (the
+amount is fixed in the payload, no post-condition needed).
+
+Both published clients take the **first** `stacks:1` entry, so sBTC stays
+first by default. To pay in STX: with x402-stacks add `?asset=stx` to the
+call URL (or send `X-Pay-Asset: STX`), which lists STX first; with the AIBTC
+wallet pass `asset: "STX"` (`tokenType` on `execute_x402_endpoint`).
+`ASSET=stx node tools/stacks_client_interop.mjs` does both.
+
+Cost disclosure: on a $0.01 call the STX network fee dominates the price.
+The gateway's suggested fee is a few thousand µSTX, but clients set their
+own — the AIBTC wallet paid its 0.05 STX fee cap on the 24 Sep run — so an
+STX-paying agent should budget the fee, not the price.
+
 ## Reproducing
 
 ```bash
@@ -260,3 +284,5 @@ thousand µSTX.
   before broadcast, and reports `payer_protection: none_allow_mode`.
 - PerkOS/Nayori clients pay only Nayori-signed quotes through their own
   facilitator, so they cannot pay this gateway directly.
+- STX is offered to standard clients only; the SDK and the flagship agent
+  pay in sBTC, and the public ledger chain-verifies sBTC legs only.
