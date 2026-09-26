@@ -247,10 +247,19 @@ call URL (or send `X-Pay-Asset: STX`), which lists STX first; with the AIBTC
 wallet pass `asset: "STX"` (`tokenType` on `execute_x402_endpoint`).
 `ASSET=stx node tools/stacks_client_interop.mjs` does both.
 
-Cost disclosure: on a $0.01 call the STX network fee dominates the price.
-The gateway's suggested fee is a few thousand µSTX, but clients set their
-own — the AIBTC wallet paid its 0.05 STX fee cap on the 24 Sep run — so an
-STX-paying agent should budget the fee, not the price.
+Cost disclosure: the network fee is set by the client, not the gateway, and
+on a $0.01 call it can exceed the price. The 26 Sep STX transfers below paid
+180 µSTX on a 29,565 µSTX price; the AIBTC wallet's sBTC contract call on
+24 Sep paid its 0.05 STX fee cap. An STX-paying agent should budget the
+fee its client chooses, not just the price.
+
+Verified on mainnet 2026-09-26, one `pre_trade_check` call each, 29,565
+µSTX ($0.01 at $0.338) to the same payee:
+
+| Client | Payer | txid | Gateway reports |
+|--------|-------|------|-----------------|
+| `x402-stacks` 2.0.3 | `SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5` | [`7e3e8ef7…a1396d`](https://explorer.hiro.so/txid/0x7e3e8ef707ba1ecec4acbb4ea9aa88398f2e2cc69ca7024ff20ce54771a1396d?chain=mainnet) | `echoed_payment_id`, `fixed_amount_transfer` |
+| `@aibtc/mcp-server` 1.71.0 | `SP28D7ZPHJJFKDNMM26Q1K5P03T7VJB4BDW2QN07P` | [`da34fc59…4b06e4`](https://explorer.hiro.so/txid/0xda34fc59cc7530654374797a63e5f4173ff3165d115948bf2599d8c2514b06e4?chain=mainnet) | `echoed_payment_id`, `fixed_amount_transfer` |
 
 ## Reproducing
 
