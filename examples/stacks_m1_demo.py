@@ -28,6 +28,9 @@ with AGENTPAY_DEMO_TOOL. If the gateway cannot confirm the settle inside its
 window the SDK raises SettlementUncertain; the demo then redeems: it waits
 for the tx to confirm and re-presents the same signed payment. If that redeem
 was interrupted, STACKS_REDEEM_TXID=<txid> redeems it from the chain alone.
+
+Each settled call prints one line — verdict, cost, txid, explorer link; pass
+--verbose for the full RESULT and RECEIPT dicts.
 """
 from __future__ import annotations
 
@@ -63,6 +66,7 @@ PARAMS = {"symbol": "BTC"}
 # overwriting: one reviewer's log reached 12 KB of them, with the line that
 # followed glued to the end of the last frame.
 _TTY = sys.stdout.isatty()
+VERBOSE = any(a in ("-v", "--verbose") for a in sys.argv[1:])
 EXPLORER = "https://explorer.hiro.so"
 NET = NETWORK.upper()
 
@@ -101,16 +105,34 @@ class _Spinner:
 
 
 def _show(label: str, obj) -> None:
-    """Print a labelled value, wrapping dicts across lines.
+    """Print a labelled value, wrapping dicts across lines (--verbose only).
 
     RESULT and RECEIPT are dicts; on one line they are unreadable in a log or
     a screen recording, which is where most people meet this demo.
     """
+    if not VERBOSE:
+        return
     text = obj if isinstance(obj, str) else pprint.pformat(obj, width=72, sort_dicts=False)
     head, *rest = text.splitlines() or [""]
     print(f"  {label}: {head}")
     for line in rest:
         print(f"           {line}")
+
+
+def _summary(data, cost, tx, network=None) -> str:
+    """One line per settled call: verdict, cost, txid, explorer link."""
+    verdict = data.get("verdict") if isinstance(data, dict) else None
+    parts = [f"verdict {verdict}" if verdict else f"{TOOL} ok", f"${cost}"]
+    if tx:
+        txid = str(tx).removeprefix("0x")
+        parts += [f"tx {txid[:10]}… ({network or NETWORK})", f"{EXPLORER}/txid/0x{txid}?chain={NETWORK}"]
+    return "  " + " · ".join(parts)
+
+
+def _receipt(s) -> None:
+    r = s.spending_summary()
+    print(f"  receipt: {r['calls']} call(s) · spent {r['spent']} · remaining {r['remaining']} of {r['budget']}")
+    _show("RECEIPT", r)
 
 
 def _wallet():
@@ -151,12 +173,10 @@ def pay_once() -> None:
         # Fully settled within the window.
         tx = getattr(result, "tx", None)
         print("  ✓ SETTLED")
+        print(_summary(getattr(result, "data", result), getattr(result, "cost", None), tx,
+                       getattr(result, "network", None)))
         _show("RESULT ", getattr(result, "data", result))
-        print("  TX     :", tx)
-        print("  NETWORK:", getattr(result, "network", None))
-        _show("RECEIPT", s.spending_summary())
-        if tx:
-            print(f"  verify : {EXPLORER}/txid/0x{str(tx).removeprefix('0x')}?chain={NETWORK}")
+        _receipt(s)
     elif uncertain is not None:
         # Broadcast, confirming asynchronously: redeem once the tx confirms.
         print("  ✓ sBTC PAYMENT BROADCAST — confirming on-chain")
@@ -176,8 +196,11 @@ def pay_once() -> None:
                 sys.exit(1)
         if redeemed is not None:
             print("  ✓ REDEEMED — tool result delivered for the confirmed payment")
+            pay = redeemed.get("payment") or {}
+            print(_summary(redeemed.get("result"), pay.get("amount_usdc"),
+                           pay.get("tx_hash") or uncertain.tx_hash, pay.get("network")))
             _show("RESULT ", redeemed.get("result"))
-        _show("RECEIPT", s.spending_summary())
+        _receipt(s)
     else:
         print("  ✗ payment failed (nothing settled):", str(failed)[:200])
         sys.exit(1)
@@ -198,8 +221,9 @@ def redeem_only(txid: str) -> None:
     except PaymentFailed as e:
         sys.exit(f"  ✗ redeem refused: {str(e)[:200]}")
     print("  ✓ REDEEMED — tool result delivered for the confirmed payment")
+    pay = redeemed.get("payment") or {}
+    print(_summary(redeemed.get("result"), pay.get("amount_usdc"), txid, pay.get("network")))
     _show("RESULT ", redeemed.get("result"))
-    print(f"  verify : {EXPLORER}/txid/0x{txid.removeprefix('0x')}?chain={NETWORK}")
 
 
 def reject_over_cap() -> None:
@@ -222,8 +246,7 @@ def reject_over_cap() -> None:
         sys.exit(1)
     except BudgetExceeded as e:
         print(f"  ✓ rejected client-side — BudgetExceeded: {str(e)[:160]}")
-    _show("RECEIPT", s.spending_summary())
-    print("           (nothing spent)")
+    _receipt(s)
 
 
 if __name__ == "__main__":

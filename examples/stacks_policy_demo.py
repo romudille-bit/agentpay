@@ -20,7 +20,8 @@ STACKS_NETWORK=mainnet) with the same funded payer:
     STACKS_NETWORK=mainnet python examples/stacks_policy_demo.py
 
 Override the gateway with AGENTPAY_GATEWAY_URL and the tool with
-AGENTPAY_DEMO_TOOL (a $0.01 tool is assumed for the thresholds below).
+AGENTPAY_DEMO_TOOL (a $0.01 tool is assumed for the thresholds below). The
+settled call prints one line; --verbose adds the full receipt dict.
 """
 from __future__ import annotations
 
@@ -46,6 +47,7 @@ GATEWAY = os.environ.get("AGENTPAY_GATEWAY_URL", "").rstrip("/") or GATEWAYS[NET
 TOOL = os.environ.get("AGENTPAY_DEMO_TOOL") or ("token_price" if NETWORK == "testnet" else "pre_trade_check")
 PARAMS = {"symbol": "BTC"}
 EXPLORER = "https://explorer.hiro.so"
+VERBOSE = any(a in ("-v", "--verbose") for a in sys.argv[1:])
 # A Stacks address that is not the gateway's payee, for the allowlist scenario.
 NOT_THE_PAYEE = "SP000000000000000000002Q6VF78"
 
@@ -122,16 +124,22 @@ def scenario_approval(w) -> None:
     print(f"\nsame rule, approver says yes   calling {TOOL} ...")
     try:
         r = s2.call(TOOL, PARAMS)
-        tx = getattr(r, "tx", None)
-        print("  ✓ SETTLED — tx", tx)
-        if tx:
-            print(f"  verify : {EXPLORER}/txid/0x{str(tx).removeprefix('0x')}?chain={NETWORK}")
+        tx = str(getattr(r, "tx", None) or "").removeprefix("0x")
+        verdict = r.data.get("verdict") if isinstance(r.data, dict) else None
+        head = f"verdict {verdict}" if verdict else f"{TOOL} ok"
+        link = f" · tx {tx[:10]}… · {EXPLORER}/txid/0x{tx}?chain={NETWORK}" if tx else ""
+        print(f"  ✓ SETTLED — {head} · ${r.cost}{link}")
     except SettlementUncertain as e:
         print("  ✓ BROADCAST, confirming — tx", e.tx_hash, "(redeemable: s.redeem(e))")
     except PaymentFailed as e:
         print("  x payment failed:", str(e)[:200]); sys.exit(1)
     _banner(4, "THE RECEIPT")
-    print(s2.spending_summary())
+    rc = s2.spending_summary()
+    print(f"  {rc['calls']} call(s) · spent {rc['spent']} · remaining {rc['remaining']} of {rc['budget']}"
+          f" · anomalies: {len(s2.anomalies())}")
+    if VERBOSE:
+        import pprint
+        pprint.pprint(rc, width=72, sort_dicts=False)
 
 
 if __name__ == "__main__":
