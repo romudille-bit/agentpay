@@ -602,6 +602,19 @@ def test_ledger_html_marks_attested_legs(monkeypatch):
     assert "tatt" in html            # the badge class ships in the page
 
 
+def test_ledger_html_names_the_rail(monkeypatch):
+    """A Stacks leg must not look like a Base leg until the explorer is opened:
+    the page names the rail on each paid step and on the run header, and a
+    vetting run says where the sellers it found live (AGE-214)."""
+    monkeypatch.setattr(ledger.settings, "LEDGER_ENABLED", True)
+    from gateway.main import app
+    html = TestClient(app).get("/ledger").text
+    assert 'class="trail"' in html and "railName(s.network)" in html
+    assert "paid on ${esc(rails.map(railChain)" in html
+    assert "bought the map, not the data" in html
+    assert '"eip155:8453":"Base"' in html and 'stacks:"Stacks"' in html
+
+
 # ── AGE-63 ingest idempotency ────────────────────────────────────────────────
 
 @pytest.mark.asyncio

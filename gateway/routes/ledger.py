@@ -1061,6 +1061,8 @@ _LEDGER_HTML = r"""<!doctype html>
   .tcost{flex:none;font-size:10.5px;border-radius:5px;padding:1px 7px;min-width:42px;text-align:center}
   .tcost.free{background:#1a2128;color:#8a97a6}
   .tcost.paid{background:rgba(79,124,255,.14);color:var(--base)}
+  .trail{flex:none;font-size:10.5px;color:var(--mut);white-space:nowrap}
+  .pill.rail{background:rgba(245,197,66,.10);color:#e2c46a;border:1px solid #4a3f1f}
   .tbud{flex:none;color:var(--mut);font-size:11.5px;min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
   .tlink{flex:none;font-size:11px}
   .tatt{flex:none;font-size:9.5px;border-radius:5px;padding:1px 6px;background:#241f14;color:#d8a24a;border:1px solid #3a3020;letter-spacing:.02em;cursor:help}
@@ -1133,6 +1135,25 @@ function fmtWhen(iso){ if(!iso) return ""; const d=new Date(iso);
   return d.toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",timeZoneName:"short"}); }
 function shortHash(h){ return h? h.slice(0,8)+"…"+h.slice(-6) : ""; }
 
+// The rail a leg settled on, in words — a Stacks leg should not look like a
+// Base leg until the reader opens the explorer. payment_logs does not record
+// the asset, so Stacks stays "Stacks" (sBTC or STX; the explorer shows which).
+const RAIL = {base:"USDC · Base","base-sepolia":"USDC · Base Sepolia",stellar:"USDC · Stellar",
+  "stellar-testnet":"USDC · Stellar testnet",stacks:"Stacks","stacks-testnet":"Stacks testnet"};
+// Off-gateway legs carry the seller's CAIP-2 id (an EVM chain paid in USDC).
+const railName = n => RAIL[n] || (n && n!=="unknown" ? (n.includes(":")? "USDC · "+chainName(n) : n) : "");
+const railChain = n => railName(n).split("· ").pop();
+function railsOf(run){ const out=[]; for(const s of (run.timeline||[]))
+  if(s.kind==="paid" && s.network && s.network!=="unknown" && !out.includes(s.network)) out.push(s.network);
+  return out; }
+// CAIP-2 ids as sellers list them in the x402 catalog → chain names.
+const CHAIN = {"eip155:1":"Ethereum","eip155:10":"Optimism","eip155:56":"BNB Chain","eip155:137":"Polygon",
+  "eip155:8453":"Base","eip155:84532":"Base Sepolia","eip155:42161":"Arbitrum","eip155:42220":"Celo",
+  "eip155:43114":"Avalanche","stellar:pubnet":"Stellar","stacks:1":"Stacks","xrpl:0":"XRPL"};
+function chainName(id){ const s=String(id||""); if(CHAIN[s]) return CHAIN[s];
+  if(s.startsWith("solana:")) return "Solana"; if(s.startsWith("algorand:")) return "Algorand";
+  if(s.startsWith("eip155:")) return "EVM chain "+s.slice(7); return s||"unknown"; }
+
 // ① the goal the agent set for itself this run
 function goalText(rz, run){
   if(rz && rz.goal_text){
@@ -1192,6 +1213,7 @@ function execStep(run){
       <span class="tn">${s.step}</span>
       <div class="tlmain"><span class="tpurpose">${esc(s.purpose)}</span><span class="ttool">${esc(s.tool)}</span></div>
       <span class="tcost ${esc(s.kind)}">${esc(cost)}</span>
+      ${s.kind==="paid" && railName(s.network)? `<span class="trail">${esc(railName(s.network))}</span>`:""}
       <span class="tbud">${money(s.remaining_usdc)} left</span>
       ${mark}</li>`;
   }).join("");
@@ -1225,7 +1247,7 @@ function verdictCardFromFull(sym, v){
   const lv=String(v.verdict||"?").toLowerCase();
   return `<div class="vd"><div class="vhead"><span class="verd ${esc(lv)}">${esc(lv.toUpperCase())}</span> <b>${esc(sym)}</b></div><div class="subt">${subs}</div></div>`;
 }
-function whatCameBack(rz){
+function whatCameBack(rz, run){
   if(!rz) return "";
   const kind = rz.kind || "pre_trade";
   const f = rz.findings||{};
@@ -1281,10 +1303,25 @@ function whatCameBack(rz){
     const big=(cat.biggest_factory&&cat.biggest_factory.listings)
       ? `<div class="bought2">Biggest sybil factory: ${esc(String(cat.biggest_factory.listings))} listings from one wallet${cat.biggest_factory.pay_to?` (${esc(String(cat.biggest_factory.pay_to).slice(0,10))}…)`:""}.</div>`:"";
     const capn=vt.vetting? `<div class="bought2">${esc(vt.vetting)}</div>`:"";
+    // Where the answer points vs where the call was paid: a Stacks agent
+    // paying for a list of Base sellers bought the map, not the data.
+    // survivors = every real provider; the ones that match the need are the answer.
+    const all = Array.isArray(vt.survivors)? vt.survivors : (rec.network? [rec] : []);
+    const matched = all.filter(x=>Array.isArray(x.matches_need)&&x.matches_need.length);
+    const sellers = matched.length? matched : all;
+    const byChain = {}; for(const x of sellers){ const c=chainName(x.network); byChain[c]=(byChain[c]||0)+1; }
+    const chains = Object.entries(byChain).sort((a,b)=>b[1]-a[1]);
+    const rails = run? railsOf(run) : [];
+    let where = "";
+    if(chains.length){
+      const list = chains.length===1 ? chains[0][0] : chains.map(([c,n])=>`${c} (${n})`).join(", ");
+      const paid = rails.length? `Paid on ${esc(rails.map(railChain).join(" and "))} · ` : "";
+      where = `<div class="bought2">${paid}the ${sellers.length} matching seller${sellers.length===1?"":"s"} ${sellers.length===1?"is":"are"} on ${esc(list)}. This call bought the map, not the data — nothing was paid to those sellers in this run.</div>`;
+    }
     if(!cells && !capn) return "";
     return `<div class="dstep"><div class="dhead"><span class="dnum">3</span> What came back — vetted marketplace</div>`
       +`<div class="vd"><div class="vhead"><span class="verd ok">VETTED</span> <b>verified_route</b> <span class="mut" style="font-size:11.5px">— the real, used provider (vet before you pay a stranger)</span></div></div>`
-      +`${cells?`<div class="readout">${cells}</div>`:""}${capn}${big}</div>`;
+      +`${cells?`<div class="readout">${cells}</div>`:""}${capn}${where}${big}</div>`;
   }
   if(kind==="strategy"){
     const sp=f.strategy_spec||{}, vt=f.vetting||{}, rec=vt.recommendation||{};
@@ -1375,6 +1412,8 @@ async function run(){
       const cap=Number(run.cap_usdc||0), spent=Number(run.spent_usdc||0);
       const pct = cap>0? Math.min(100, Math.round(spent/cap*100)) : 0;
       const capPill = run.under_cap? `<span class="pill cap">under cap</span>` : `<span class="pill over">over cap</span>`;
+      const rails = railsOf(run);
+      const railPill = rails.length? `<span class="pill rail" title="the chain(s) this run's paid calls settled on">paid on ${esc(rails.map(railChain).join(" + "))}</span>` : "";
       const rz = run.reasoning;
       const ctx = rz && (rz.regime||rz.context)
         ? `<div class="ctx">${esc([rz.regime, rz.context].filter(Boolean).join("  ·  "))}</div>` : "";
@@ -1382,12 +1421,12 @@ async function run(){
         ? `${run.paid_count} verifiable on-chain receipt${run.paid_count===1?"":"s"}`
         : `free run — no on-chain spend`;
       return `<div class="run">
-        <h2>Run <span class="when">${esc(fmtWhen(run.started))}</span> ${capPill}</h2>
+        <h2>Run <span class="when">${esc(fmtWhen(run.started))}</span> ${capPill} ${railPill}</h2>
         <div class="goal"><span class="lbl">Asked</span>${goalText(rz, run)}</div>
         ${ctx}
         ${planStep(rz, run)}
         ${execStep(run)}
-        ${whatCameBack(rz)}
+        ${whatCameBack(rz, run)}
         <div class="receipt">
           <div class="spendbar"><i style="width:${pct}%"></i></div>
           <div class="spendmeta">Receipt: <b>${money(run.spent_usdc)}</b> intel spent · <b>${money(run.remaining_usdc)}</b> left of the <b>${money(run.cap_usdc)}</b> cap · ${receiptNote}</div>
