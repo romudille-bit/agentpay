@@ -59,6 +59,15 @@ class TestPreTradeCheck:
         assert "orderbook_depth" in r["components"]
 
     @pytest.mark.asyncio
+    async def test_asset_alias_maps_to_symbol(self, monkeypatch):
+        # Recipes send {"asset": ...}; it must not fall back to ETH.
+        _stub_components(monkeypatch)
+        r = await tools_runtime._fetch_pre_trade_check(
+            {"asset": "SOL", "size_usd": 10_000, "side": "long"})
+        assert r["symbol"] == "SOL"
+        assert r["factors"]["security"]["level"] == "n/a"
+
+    @pytest.mark.asyncio
     async def test_thin_book_is_avoid(self, monkeypatch):
         _stub_components(monkeypatch, {"orderbook_depth": {
             "asset": "ETH", "spread_pct": 0.2,

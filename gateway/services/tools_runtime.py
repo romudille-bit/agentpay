@@ -1515,7 +1515,10 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
     """
     from datetime import datetime, timezone
 
-    symbol   = (params.get("symbol") or "ETH").strip().upper().replace("USDT", "") or "ETH"
+    # "asset" is accepted as an alias: funding_rates and the C4A recipes use it,
+    # and silently defaulting a SOL request to ETH is worse than taking both.
+    symbol   = ((params.get("symbol") or params.get("asset") or "ETH")
+                .strip().upper().replace("USDT", "") or "ETH")
     size_usd = float(params.get("size_usd") or 10_000)
     side     = (params.get("side") or "long").lower()
     if side not in ("long", "short"):
