@@ -803,6 +803,12 @@ POST /tools/{{name}}/call with {{parameters, agent_address}}
 On 402: free tools ($0.000) authorize without an on-chain tx; paid tools settle USDC on Base (standard x402, PAYMENT-SIGNATURE header), Stellar (AgentPay SDK / manual classic payment + memo, X-Payment header), or sBTC on Stacks (AgentPay SDK: signed `sbtc-token::transfer` with the challenge id as memo, X-Payment header; the gateway broadcasts and confirms).
 Response: data is in result["result"]
 
+## Recipe — pre-trade guardrail alongside Coinbase for Agents
+
+Coinbase for Agents gives an agent trading (orders_preview / orders_create) and a curated x402 data catalog. AgentPay adds the step that catalog does not have: a one-call risk verdict before the order. Run the two MCPs side by side — AgentPay is not part of Coinbase's catalog and settles its own $0.01 from the small wallet you give it.
+Config (claude_desktop_config.json, next to the Coinbase connector): "agentpay": {{"command": "npx", "args": ["-y", "@romudille/agentpay-mcp"], "env": {{"AGENTPAY_ENABLE_PAID": "1", "AGENTPAY_MAX_SPEND": "0.10"}}}} — fund the per-install wallet (address printed at startup) with a few cents of USDC on Base, or set AGENTPAY_BASE_KEY. Keyless, pre_trade_check refuses cleanly and says what to set.
+Prompt to paste: Trading guardrail: before every Coinbase orders_create, call AgentPay pre_trade_check with {{"symbol": <asset>, "side": <long|short>, "size_usd": <notional>}}. Proceed only if the verdict is "ok". On "caution" or "avoid", show me the per-factor reasons and ask before doing anything else. For data the Coinbase catalog does not cover, call AgentPay verified_route first and use the provider it picks. Never exceed AGENTPAY_MAX_SPEND.
+
 ## Docs
 
 - README: {GATEWAY_URL}/

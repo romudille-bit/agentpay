@@ -145,6 +145,21 @@ print(s.call("token_price", {"symbol": "ETH"}).data["price_usd"])
 print(s.spending_summary())                 # receipt: every call, cost, tx, chain
 ```
 
+## Recipe — pre-trade guardrail alongside Coinbase for Agents
+
+Coinbase for Agents gives an agent trading (`orders_preview` / `orders_create`) and a curated
+x402 data catalog. AgentPay adds the step that catalog doesn't have: a one-call risk verdict
+*before* the order. Run the two MCPs side by side — AgentPay is not part of Coinbase's catalog
+and settles its own $0.01 from the small wallet you give it (paid mode above).
+
+Prompt to paste into the session:
+
+> Trading guardrail: before every Coinbase orders_create, call AgentPay pre_trade_check with {"symbol": <asset>, "side": <long|short>, "size_usd": <notional>}. Proceed only if the verdict is "ok". On "caution" or "avoid", show me the per-factor reasons and ask before doing anything else. For data the Coinbase catalog does not cover, call AgentPay verified_route first and use the provider it picks. Never exceed AGENTPAY_MAX_SPEND.
+
+The verdict comes back as `ok` / `caution` / `avoid` with a per-factor breakdown (slippage at
+your size, funding carry, OI crowding, contract security) and the raw components embedded, so
+the agent can show its reasons instead of just refusing.
+
 ## Privacy Policy
 
 AgentPay is built for autonomous agents and does not collect names, emails, or other personal
