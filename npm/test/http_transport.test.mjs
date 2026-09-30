@@ -33,7 +33,7 @@ function fakeGateway() {
     if (req.url === '/tools') json = toolsList;
     else if (req.url.startsWith('/tools/') && req.headers['payment-signature']) {
       const paid = JSON.parse(Buffer.from(req.headers['payment-signature'], 'base64').toString());
-      if (paid.payload?.signature === '0xbad') { status = 402; json = { error: 'settlement failed', reason: 'invalid_signature', amount_usdc: '0.01', accepts: [] }; }
+      if (paid.payload?.signature === '0xbad') { status = 402; json = { error: 'settlement failed', reason: 'invalid_signature' }; }
       else json = { tool: 'pre_trade_check', result: { verdict: 'ok' },
                     payment: { amount_usdc: '0.01', tx_hash: '0xtx1', network: 'base-mainnet' } };
     } else if (req.url.startsWith('/tools/') && !req.headers['x-payment']) {
@@ -163,6 +163,10 @@ test('http mode: initialize, list, free call, x402-over-MCP paid flow, server ne
       params: { name: 'pre_trade_check', arguments: {}, _meta: { 'x402/payment': { ...payment, payload: { ...payment.payload, signature: '0xbad' } } } } });
     assert.equal(bad.msg.result.isError, true);
     assert.equal(bad.msg.result.structuredContent.x402Version, 2);
+    // The gateway's rejection body has no accepts; the server re-fetched the
+    // challenge so the client can retry, and put the reason first.
+    assert.match(bad.msg.result.structuredContent.error, /^payment rejected \(invalid_signature\) — 'pre_trade_check' costs \$0\.01/);
+    assert.equal(bad.msg.result.structuredContent.accepts[0].network, 'eip155:8453');
 
     assert.equal((await fetch(`${srv.base}/mcp`)).status, 405);
     assert.equal((await fetch(`${srv.base}/mcp`, { method: 'DELETE' })).status, 405);

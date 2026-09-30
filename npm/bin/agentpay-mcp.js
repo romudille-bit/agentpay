@@ -60,7 +60,7 @@ import { loadOrCreateWallet, paidModeEnabled } from './wallet.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.7.0';
+const VERSION = '2.7.1';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -214,13 +214,31 @@ async function payInBand(toolName, url, params, payment) {
     signal: AbortSignal.timeout(90_000),
   });
   if (r.status === 402) {
-    // Rejected (or a fresh challenge): hand the client the new PaymentRequired.
+    // Rejected. The gateway's rejection body is only {error, reason}, so
+    // re-fetch the challenge: the client gets a complete PaymentRequired
+    // (accepts, amount) to retry from, with the reason up front.
     const again = await r.json().catch(() => ({}));
-    throw new PaymentRequiredError(paymentRequiredFrom(
-      { ...again, amount_usdc: again.amount_usdc ?? '?' }, toolName, url));
+    const challenge = (Array.isArray(again.accepts) && again.accepts.length)
+      ? again : (await freshChallenge(url, params, payer)) ?? again;
+    const pr = paymentRequiredFrom({ ...challenge, amount_usdc: challenge.amount_usdc ?? '?' }, toolName, url);
+    const why = again.reason ?? again.error_reason ?? again.error;
+    if (why) pr.error = `payment rejected (${why}) — ${pr.error}`;
+    throw new PaymentRequiredError(pr);
   }
   if (!r.ok) throw new Error(`Paid call failed: ${r.status}${await failureReason(r)}`);
   return paymentResult(payment, await r.json());
+}
+
+async function freshChallenge(url, params, payer) {
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+      body: JSON.stringify({ parameters: params, agent_address: payer }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    return r.status === 402 ? await r.json() : null;
+  } catch { return null; }
 }
 
 // ── x402 free-flow ────────────────────────────────────────────────────────────
