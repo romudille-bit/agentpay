@@ -37,6 +37,7 @@ from gateway.routes.discovery import router as discovery_router
 from gateway.routes.faucet import router as faucet_router
 from gateway.routes.infra import router as infra_router
 from gateway.routes.ledger import router as ledger_router
+from gateway.routes.mcp_proxy import router as mcp_proxy_router
 from gateway.routes.plan import router as plan_router
 from gateway.routes.prober import router as prober_router
 from gateway.routes.session import router as session_router
@@ -704,6 +705,7 @@ app.include_router(discovery_router)
 app.include_router(faucet_router)
 app.include_router(agent_router)
 app.include_router(ledger_router)
+app.include_router(mcp_proxy_router)
 app.include_router(prober_router)
 
 

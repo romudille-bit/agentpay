@@ -704,19 +704,21 @@ async def auth_md():
 
 @router.get("/.well-known/mcp/server-card.json", response_class=JSONResponse)
 async def mcp_server_card():
-    """MCP Server Card (SEP-1649, schema still stabilizing) for the
-    npm-distributed AgentPay MCP server."""
+    """MCP Server Card (SEP-1649, schema still stabilizing) for the AgentPay
+    MCP server: the remote Streamable-HTTP endpoint (keyless) and the local
+    npm stdio server (wallet mode). `transport` stays for older readers."""
+    remote = {"type": "streamable-http", "url": f"{GATEWAY_URL}/mcp", "auth": "none",
+              "note": "keyless: free tools, verified_route preview, estimate_plan"}
+    stdio = {"type": "stdio", "command": "npx", "args": ["-y", "@romudille/agentpay-mcp"],
+             "runtime": "node>=18",
+             "note": "wallet mode via AGENTPAY_ENABLE_PAID / AGENTPAY_BASE_KEY settles paid tools"}
     return JSONResponse(content={
-        "serverInfo": {"name": "agentpay-mcp", "version": "2.3.0"},
+        "serverInfo": {"name": "agentpay-mcp", "version": "2.6.0"},
         "description": ("AgentPay x402 gateway as MCP tools: 17 free crypto/"
                         "web data tools, keyless vetted routing (verified_route "
                         "preview), and pre-flight plan pricing."),
-        "transport": {
-            "type": "stdio",
-            "command": "npx",
-            "args": ["-y", "@romudille/agentpay-mcp"],
-            "runtime": "node>=18",
-        },
+        "transports": [remote, stdio] if settings.MCP_UPSTREAM_URL else [stdio],
+        "transport": remote if settings.MCP_UPSTREAM_URL else stdio,
         "capabilities": {"tools": True, "resources": False, "prompts": False},
         "homepage": GATEWAY_URL,
         "registry": "https://www.npmjs.com/package/@romudille/agentpay-mcp",
@@ -740,6 +742,15 @@ def _stacks_networks() -> list[str]:
     """The Stacks network label when sBTC settlement is switched on."""
     from gateway import stacks as _stacks
     return [_stacks._network_label()] if _stacks.stacks_configured() else []
+
+
+def _remote_mcp_llms_line() -> str:
+    """The remote-connector line, only once the /mcp service is wired up."""
+    if not settings.MCP_UPSTREAM_URL:
+        return ""
+    return (f"- Remote MCP (claude.ai, ChatGPT, Perplexity, Grok custom connectors): "
+            f"{GATEWAY_URL}/mcp — Streamable HTTP, no auth, the keyless tool set. "
+            "Paid verdicts: local server or SDK.\n")
 
 
 def _stacks_llms_note() -> str:
@@ -819,7 +830,7 @@ Prompt to paste: Trading guardrail: before every Coinbase orders_create, call Ag
 - MCP server: npx @romudille/agentpay-mcp — keyless: 17 free tools + verified_route
   preview. Wallet mode: set AGENTPAY_BASE_KEY (EVM key) + AGENTPAY_MAX_SPEND to
   settle paid tools in-place (gasless EIP-3009 on Base, hard session cap).
-- npm: https://www.npmjs.com/package/@romudille/agentpay-mcp
+{_remote_mcp_llms_line()}- npm: https://www.npmjs.com/package/@romudille/agentpay-mcp
 - GitHub: https://github.com/romudille-bit/agentpay
 - Glama MCP: https://glama.ai/mcp/servers/romudille-bit/agentpay
 """

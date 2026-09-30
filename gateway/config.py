@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # Public gateway URL (used in faucet snippets, discovery endpoints)
     AGENTPAY_GATEWAY_URL: str = ""
 
+    # Remote MCP (AGE-127): base URL of the Node MCP service that /mcp proxies
+    # to (Railway private networking, e.g. http://mcp.railway.internal:8787).
+    # Empty = not deployed; /mcp answers 503.
+    MCP_UPSTREAM_URL: str = ""
+
     # Keepalive ping target. Empty = localhost (keeps the worker warm without
     # a round-trip through Railway's edge). Set to the public /health URL if
     # edge-traffic-based app sleeping is ever enabled on the service.

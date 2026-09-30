@@ -41,10 +41,14 @@
  *   AGENTPAY_BASE_KEY     — optional BYO EVM private key (implies paid mode)
  *   AGENTPAY_WALLET_PATH  — override the wallet file location (sandboxed hosts)
  *   AGENTPAY_MAX_SPEND    — session budget cap in USDC (default 0.10; paid mode only)
+ *   AGENTPAY_TRANSPORT    — "stdio" (default) or "http": Streamable HTTP at /mcp on $PORT.
+ *                           HTTP is the shared remote server: always keyless, never paid.
+ *   AGENTPAY_AGENT_ADDRESS — http only: the 0x identity remote calls carry (no key).
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -56,7 +60,7 @@ import { loadOrCreateWallet, paidModeEnabled } from './wallet.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.5.0';
+const VERSION = '2.6.0';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -71,8 +75,16 @@ const log = (...args) => process.stderr.write(args.join(' ') + '\n');
 // SPENDING is separate: paid tools settle in-place only in PAID mode —
 // AGENTPAY_ENABLE_PAID=1 (persisted wallet, once funded) or a BYO key
 // (explicit intent, preserves 2.4.x behaviour). Default: identity only.
+// AGE-127: one binary, two transports. The remote (http) server is shared by
+// every client that reaches it, so it never holds a key and never settles —
+// whatever the env says. Paid tools stay on the local stdio server or the SDK.
+const TRANSPORT = (process.argv.includes('--http') ||
+                   (process.env.AGENTPAY_TRANSPORT || '').trim().toLowerCase() === 'http')
+  ? 'http' : 'stdio';
+const REMOTE = TRANSPORT === 'http';
+
 const WALLET = loadOrCreateWallet(process.env, log);   // { key, address, source, path }
-const PAID = paidModeEnabled(process.env, WALLET.source);
+const PAID = !REMOTE && paidModeEnabled(process.env, WALLET.source);
 
 // Session budget guard (wallet mode). Tracked in micro-USDC integers so float
 // drift can never leak past the cap. Default $0.10 — the cap story, dogfooded.
@@ -91,7 +103,11 @@ const fundingHint = () => PAID
 
 // Agent identity — the wallet address in ALL modes, so free and paid calls
 // share one stable identity in payment_logs across restarts (AGE-139).
-const AGENT_ADDRESS = WALLET.address;
+// The remote server carries one configured identity for all callers (an
+// address, never a key); ephemeral otherwise, so free calls still get a receipt.
+const AGENT_ADDRESS = (REMOTE && /^0x[0-9a-fA-F]{40}$/.test(process.env.AGENTPAY_AGENT_ADDRESS || ''))
+  ? process.env.AGENTPAY_AGENT_ADDRESS
+  : WALLET.address;
 
 const USER_AGENT = `agentpay-mcp/${VERSION} (+https://agentpay.tools)`;
 
@@ -170,6 +186,15 @@ async function callTool(toolName, params) {
   if (!isFree) {
     // ── Paid tool: settle in-place when a wallet is configured (AGE-40) ──
     if (!PAID) {
+      if (REMOTE) {
+        throw new McpError(
+          ErrorCode.InvalidRequest,
+          `'${toolName}' is a paid tool ($${amountUsdc} USDC) and this is the shared remote ` +
+          `server, which never holds a wallet. Run it locally with paid mode ` +
+          `(npx @romudille/agentpay-mcp + AGENTPAY_ENABLE_PAID=1 or AGENTPAY_BASE_KEY), ` +
+          `use the agentpay-x402 SDK, or pay the HTTP 402 at ${url} directly.`,
+        );
+      }
       throw new McpError(
         ErrorCode.InvalidRequest,
         `'${toolName}' is a paid tool ($${amountUsdc} USDC). This install's wallet is ` +
@@ -566,10 +591,17 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
-const server = new Server(
-  { name: 'agentpay', version: VERSION },
-  { capabilities: { tools: {} } },
-);
+// Built per transport: stdio connects one server for the process lifetime;
+// stateless HTTP connects a fresh server + transport per request.
+function buildServer() {
+  const server = new Server(
+    { name: 'agentpay', version: VERSION },
+    { capabilities: { tools: {} } },
+  );
+  server.setRequestHandler(ListToolsRequestSchema, listTools);
+  server.setRequestHandler(CallToolRequestSchema, callToolRequest);
+  return server;
+}
 
 const VERIFIED_ROUTE_TOOL_DEF = {
   name: 'verified_route',
@@ -709,7 +741,7 @@ async function estimatePlanTool(steps, budget) {
   return res.json();
 }
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+async function listTools() {
   // An unreachable gateway must not take the three local tools with it:
   // verified_route and route need only Bazaar, and estimate_plan degrades on its
   // own. Returning an error here would leave the client with no tools at all.
@@ -758,9 +790,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [...gatewayTools, VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF],
   };
-});
+}
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+async function callToolRequest(request) {
   const { name, arguments: args = {} } = request.params;
 
   if (name === 'estimate_plan') {
@@ -850,7 +882,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       isError: true,
     };
   }
-});
+}
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -862,16 +894,58 @@ async function main() {
     const src = { env: 'AGENTPAY_BASE_KEY', file: WALLET.path, minted: `minted → ${WALLET.path}`,
                   ephemeral: 'EPHEMERAL (not persisted — see stderr above)' }[WALLET.source];
     log(`AgentPay MCP: wallet ${WALLET.address} (${src})`);
-    log(PAID
-      ? `AgentPay MCP: paid mode ON — paid tools settle in-place | session cap $${MAX_SPEND_USD} (AGENTPAY_MAX_SPEND)`
-      : 'AgentPay MCP: paid mode OFF — free tools only. Fund the wallet with USDC on Base and set AGENTPAY_ENABLE_PAID=1 to enable paid tools.');
+    log(REMOTE
+      ? 'AgentPay MCP: remote (http) mode — keyless by design; paid tools return the 402 handoff'
+      : PAID
+        ? `AgentPay MCP: paid mode ON — paid tools settle in-place | session cap $${MAX_SPEND_USD} (AGENTPAY_MAX_SPEND)`
+        : 'AgentPay MCP: paid mode OFF — free tools only. Fund the wallet with USDC on Base and set AGENTPAY_ENABLE_PAID=1 to enable paid tools.');
   } catch (err) {
     log(`AgentPay MCP v${VERSION}: could not pre-fetch tools (${err.message}) — will retry on first request`);
   }
 
+  if (REMOTE) return serveHttp();
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await buildServer().connect(transport);
   log('AgentPay MCP: server ready (stdio)');
+}
+
+// Streamable HTTP, stateless: no session ids, so any replica can answer any
+// request; a fresh server + transport per request is the SDK's stateless shape.
+async function serveHttp() {
+  const { default: express } = await import('express');
+  const app = express();
+  app.disable('x-powered-by');
+  app.use(express.json({ limit: '1mb' }));
+
+  app.get('/health', (_req, res) => {
+    res.json({ ok: true, service: 'agentpay-mcp', version: VERSION, transport: 'http', paid: false });
+  });
+
+  // No server-initiated streams and no sessions: GET (SSE) and DELETE are
+  // refused up front, which the spec allows, instead of holding a socket open.
+  app.get('/mcp', (_req, res) => res.set('Allow', 'POST').status(405).end());
+  app.delete('/mcp', (_req, res) => res.set('Allow', 'POST').status(405).end());
+
+  app.post('/mcp', async (req, res) => {
+    const server = buildServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on('close', () => { transport.close(); server.close(); });
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      log(`AgentPay MCP: /mcp request failed: ${err.message}`);
+      if (!res.headersSent) {
+        res.status(500).json({ jsonrpc: '2.0', id: null,
+                               error: { code: -32603, message: 'Internal error' } });
+      }
+    }
+  });
+
+  const port = Number(process.env.PORT) || 8787;
+  const host = process.env.HOST || '0.0.0.0';
+  await new Promise((resolve) => app.listen(port, host, resolve));
+  log(`AgentPay MCP: server ready (http) — POST /mcp on ${host}:${port}, keyless, identity ${AGENT_ADDRESS}`);
 }
 
 main().catch((err) => {

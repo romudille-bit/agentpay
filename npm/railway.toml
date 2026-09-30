@@ -1,0 +1,12 @@
+# Railway service "mcp" — the shared remote MCP endpoint (AGE-127).
+# Root directory: npm/. The gateway proxies https://agentpay.tools/mcp here
+# over private networking (MCP_UPSTREAM_URL). Keyless by construction.
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "sh -c 'AGENTPAY_TRANSPORT=http node bin/agentpay-mcp.js'"
+healthcheckPath = "/health"
+healthcheckTimeout = 60
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
