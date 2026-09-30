@@ -105,6 +105,7 @@ def _foot(gateway_url: str) -> str:
             f'<a href="{gateway_url}/probes">x402 delivery scores</a> · '
             f'<a href="{gateway_url}/ledger">Receipt ledger</a> · '
             f'<a href="{gateway_url}/guides">Guides</a> · '
+            f'<a href="{gateway_url}/connect">Connect</a> · '
             f'<a href="{gateway_url}/llms.txt">llms.txt</a> · '
             f'<a href="{gateway_url}/">AgentPay</a></div>')
 

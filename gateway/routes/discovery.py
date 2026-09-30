@@ -27,6 +27,7 @@ from gateway._limiter import limiter
 from gateway import radar
 from gateway.config import GATEWAY_URL, settings, stellar_caip2
 from gateway.guides import GUIDES, render_guide, render_guides_index
+from gateway.connect import HARNESSES, render_connect_index, render_connect_page
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -750,7 +751,7 @@ def _remote_mcp_llms_line() -> str:
         return ""
     return (f"- Remote MCP (claude.ai, ChatGPT, Perplexity, Grok custom connectors): "
             f"{GATEWAY_URL}/mcp — Streamable HTTP, no auth, the keyless tool set. "
-            "Paid verdicts: local server or SDK.\n")
+            f"Install steps per harness: {GATEWAY_URL}/connect. Paid verdicts: local server or SDK.\n")
 
 
 def _stacks_llms_note() -> str:
@@ -882,7 +883,9 @@ async def sitemap():
          # sitemap automatically on its first probe result, lastmod stamped.
          for u in sorted(scores) if service_has_probe_data(scores[u])] \
       + [(f"{GATEWAY_URL}/guides/{s}", g["published"])
-         for s, g in sorted(GUIDES.items())]
+         for s, g in sorted(GUIDES.items())] \
+      + [(f"{GATEWAY_URL}/connect", None)] \
+      + [(f"{GATEWAY_URL}/connect/{h}", None) for h in HARNESSES]
 
     loc_tags = "\n".join(
         f"  <url><loc>{u}</loc>" + (f"<lastmod>{lm}</lastmod>" if lm else "") + "</url>"
@@ -908,6 +911,19 @@ async def guide_page(slug: str):
     if slug not in GUIDES:
         raise HTTPException(status_code=404, detail="Guide not found")
     return Response(content=render_guide(slug, GATEWAY_URL), media_type="text/html")
+
+
+# ── Connector install pages — one remote MCP URL, one page per harness.
+@router.get("/connect", response_class=Response)
+async def connect_index():
+    return Response(content=render_connect_index(GATEWAY_URL), media_type="text/html")
+
+
+@router.get("/connect/{harness}", response_class=Response)
+async def connect_page(harness: str):
+    if harness not in HARNESSES:
+        raise HTTPException(status_code=404, detail="Unknown harness")
+    return Response(content=render_connect_page(harness, GATEWAY_URL), media_type="text/html")
 
 
 # ── Privacy policy — required for the Anthropic Connectors Directory + plugin

@@ -30,6 +30,15 @@ Every call is session-tracked. The cap is enforced **before** any payment is sig
 
 ---
 
+## Remote MCP (claude.ai, ChatGPT, Perplexity, Grok)
+
+No install: add `https://agentpay.tools/mcp` as a custom connector (Streamable HTTP, no auth). It
+serves the keyless set — 17 free tools, the `verified_route` preview and `estimate_plan`. Paid
+verdicts still need the local server with a wallet (below) or the SDK. Per-harness steps:
+[agentpay.tools/connect](https://agentpay.tools/connect).
+
+---
+
 ## Quickstart — MCP server (Claude Desktop / any MCP runtime)
 
 ```bash

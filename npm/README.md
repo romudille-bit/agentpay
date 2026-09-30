@@ -29,6 +29,15 @@ fresh key is minted next start. Sweep any USDC out first; the key never leaves t
 
 Gateway: `https://agentpay.tools`
 
+## Remote MCP (claude.ai, ChatGPT, Perplexity, Grok)
+
+No install: add `https://agentpay.tools/mcp` as a custom connector (Streamable HTTP, no auth). It
+serves the keyless set — 17 free tools, the `verified_route` preview and `estimate_plan`. Paid
+verdicts still need the local server with a wallet (below) or the SDK. Per-harness steps:
+[agentpay.tools/connect](https://agentpay.tools/connect).
+
+---
+
 ## Quick Start (zero config)
 
 ```bash
