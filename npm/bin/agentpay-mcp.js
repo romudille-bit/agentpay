@@ -943,9 +943,23 @@ async function serveHttp() {
   });
 
   const port = Number(process.env.PORT) || 8787;
-  const host = process.env.HOST || '0.0.0.0';
-  await new Promise((resolve) => app.listen(port, host, resolve));
-  log(`AgentPay MCP: server ready (http) — POST /mcp on ${host}:${port}, keyless, identity ${AGENT_ADDRESS}`);
+  // '::' is dual-stack: Railway's private network reaches services over IPv6.
+  // Hosts without IPv6 fall back to IPv4; any other bind error is fatal.
+  const { createServer } = await import('node:http');
+  const listen = (host) => new Promise((resolve, reject) => {
+    const srv = createServer(app);
+    srv.once('error', reject);
+    srv.listen(port, host, () => resolve(srv));
+  });
+  let srv;
+  try {
+    srv = await listen(process.env.HOST || '::');
+  } catch (err) {
+    if (process.env.HOST || err.code !== 'EAFNOSUPPORT') throw err;
+    srv = await listen('0.0.0.0');
+  }
+  const bound = srv.address();
+  log(`AgentPay MCP: server ready (http) — POST /mcp on ${bound.address}:${bound.port}, keyless, identity ${AGENT_ADDRESS}`);
 }
 
 main().catch((err) => {

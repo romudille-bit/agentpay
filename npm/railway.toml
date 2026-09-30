@@ -5,7 +5,7 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "sh -c 'AGENTPAY_TRANSPORT=http node bin/agentpay-mcp.js'"
+startCommand = "sh -c 'AGENTPAY_TRANSPORT=http PORT=${PORT:-8787} node bin/agentpay-mcp.js'"
 healthcheckPath = "/health"
 healthcheckTimeout = 60
 restartPolicyType = "on_failure"
