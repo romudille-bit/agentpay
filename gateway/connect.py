@@ -173,10 +173,10 @@ def render_connect_page(slug: str, gateway_url: str) -> str:
 <h1>Add AgentPay to {_e(h["name"])}</h1>
 <p class="meta">Steps checked against the vendor's docs on {VERIFIED} · {_e(h["plans"])}</p>
 {_tabs(gateway_url, slug)}
-<h2>The URL</h2>
-<code class="url">{gateway_url}/mcp</code>
 <h2>Steps</h2>
 <ol>{steps}</ol>
+<h2>The URL</h2>
+<code class="url">{gateway_url}/mcp</code>
 {notes}
 {_common(gateway_url)}
 <p class="meta">Source for the steps: <a href="{_e(h["source"])}">{_e(h["source"])}</a></p>
