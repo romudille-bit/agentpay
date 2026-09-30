@@ -1,18 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.romudille-bit/agentpay",
-  "description": "Budget-capped x402 payments for AI agents: verifiable receipts, trust routing, 17 free tools.",
+  "title": "AgentPay — trust routing + spend caps for x402 agents",
+  "description": "Buyer-side trust oracle + capped sessions for x402 agents: verified_route, receipts, 17 free tools.",
   "repository": {
     "url": "https://github.com/romudille-bit/agentpay",
     "source": "github"
   },
   "websiteUrl": "https://agentpay.tools",
-  "version": "2.4.3",
+  "version": "2.6.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@romudille/agentpay-mcp",
-      "version": "2.4.3",
+      "version": "2.6.0",
       "transport": {
         "type": "stdio"
       },
@@ -25,6 +26,13 @@
           "format": "string"
         },
         {
+          "name": "AGENTPAY_ENABLE_PAID",
+          "description": "Set to 1 to settle paid tools from the wallet the server mints on first run (fund it with USDC on Base first). Off by default.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
           "name": "AGENTPAY_MAX_SPEND",
           "description": "Hard per-session spend cap in USD when wallet mode is enabled (default 0.10).",
           "isRequired": false,
@@ -32,6 +40,12 @@
           "format": "string"
         }
       ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://agentpay.tools/mcp"
     }
   ]
 }
