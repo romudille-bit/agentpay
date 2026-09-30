@@ -60,7 +60,7 @@ import { loadOrCreateWallet, paidModeEnabled } from './wallet.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.7.1';
+const VERSION = '2.7.2';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -850,11 +850,13 @@ async function listTools() {
     }
 
     // Directory requirement: every tool carries a human title + read/destructive
-    // hint. Keyless (the default, and what the directory reviews): every tool is
-    // a read-only data/advice call. Wallet mode (AGE-44): a priced tool SPENDS
-    // USDC when called — declare it, so clients prompt before the first paid
-    // call instead of auto-approving a "read-only" tool that moves money.
-    const spends = PAID && parseFloat(t.price_usdc) > 0;
+    // hint. Keyless stdio (the default, and what the directory reviews): every
+    // tool is a read-only data/advice call. Wallet mode (AGE-44): a priced tool
+    // SPENDS USDC when called — declare it, so clients prompt before the first
+    // paid call instead of auto-approving a "read-only" tool that moves money.
+    // The remote (AGE-219) is the same from the client's side: a wallet-carrying
+    // client auto-pays the in-band 402, so a priced tool is not read-only there.
+    const spends = (PAID || REMOTE) && parseFloat(t.price_usdc) > 0;
     const title = t.name
       .split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     return {

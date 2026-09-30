@@ -37,7 +37,7 @@ HARNESSES: dict[str, dict] = {
     "chatgpt": {
         "name": "ChatGPT",
         "short": "ChatGPT",
-        "blurb": "Developer mode → custom MCP. Our keyless tool set is read-only, so Pro is enough.",
+        "blurb": "Developer mode → custom MCP. The free tool set is read-only, so Pro is enough.",
         "plans": "Pro (read/fetch tools), Business, Enterprise and Edu.",
         "steps": [
             "Settings → Apps → Advanced settings → turn on <b>Developer mode</b>. "
@@ -47,8 +47,9 @@ HARNESSES: dict[str, dict] = {
             "Click <b>Scan Tools</b> — the 22 tools appear.",
         ],
         "notes": [
-            "Pro accounts get read/fetch tools only. Every AgentPay remote tool is read-only "
-            "(<code>readOnlyHint: true</code>), so nothing is missing on Pro.",
+            "Pro accounts get read/fetch tools only. The 19 free AgentPay tools are read-only "
+            "(<code>readOnlyHint: true</code>); the three $0.01 tools are marked as spending and may be "
+            "hidden on Pro — ChatGPT has no wallet to pay them with anyway.",
         ],
         "source": "https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt",
     },

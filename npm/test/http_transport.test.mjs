@@ -120,8 +120,12 @@ test('http mode: initialize, list, free call, x402-over-MCP paid flow, server ne
     const list = await rpc(srv.base, 2, 'tools/list');
     const names = list.msg.result.tools.map((t) => t.name);
     assert.ok(names.includes('fear_greed_index') && names.includes('estimate_plan'));
-    // Keyless: every tool is advertised read-only, including the priced one.
-    assert.ok(list.msg.result.tools.every((t) => t.annotations.readOnlyHint === true));
+    // Free tools are read-only; the priced one is not — a wallet-carrying
+    // client pays the in-band 402, so the harness must prompt before calling it.
+    const byName = Object.fromEntries(list.msg.result.tools.map((t) => [t.name, t.annotations.readOnlyHint]));
+    assert.equal(byName.fear_greed_index, true);
+    assert.equal(byName.estimate_plan, true);
+    assert.equal(byName.pre_trade_check, false);
 
     const free = await rpc(srv.base, 3, 'tools/call', { name: 'fear_greed_index', arguments: {} });
     assert.equal(free.status, 200);
