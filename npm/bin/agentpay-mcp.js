@@ -60,7 +60,7 @@ import { loadOrCreateWallet, paidModeEnabled } from './wallet.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.6.0';
+const VERSION = '2.7.0';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -150,10 +150,84 @@ async function failureReason(resp) {
   return '';
 }
 
+// ── x402 over MCP (AGE-219) ───────────────────────────────────────────────────
+// Transport spec: an unpaid paid-tool call returns a RESULT with isError and the
+// PaymentRequired in both structuredContent and content[0].text; the client
+// retries with _meta["x402/payment"]; the data comes back with
+// _meta["x402/payment-response"]. The gateway already speaks x402 v2 over HTTP,
+// so this is a translation: PaymentRequired ← the 402 body, the payment → the
+// PAYMENT-SIGNATURE header (base64 JSON), the receipt ← the response body.
+
+const META_PAYMENT = 'x402/payment';
+const META_PAYMENT_RESPONSE = 'x402/payment-response';
+
+class PaymentRequiredError extends Error {
+  constructor(paymentRequired) {
+    super('Payment required');
+    this.paymentRequired = paymentRequired;
+  }
+}
+
+function paymentRequiredFrom(challenge, toolName, url) {
+  const hint = REMOTE
+    ? 'a wallet-carrying MCP client pays this in-band (_meta x402/payment); otherwise run the ' +
+      'local server with AGENTPAY_ENABLE_PAID=1 / AGENTPAY_BASE_KEY, use the agentpay-x402 SDK, ' +
+      `or pay the HTTP 402 at ${url}`
+    : 'pay in-band (_meta x402/payment), or set AGENTPAY_ENABLE_PAID=1 after funding ' +
+      `${WALLET.address} so this server settles it; capped by AGENTPAY_MAX_SPEND`;
+  return {
+    x402Version: 2,
+    error: `'${toolName}' costs $${challenge.amount_usdc} USDC — ${hint}`,
+    resource: challenge.resource ?? { url, mimeType: 'application/json' },
+    accepts: challenge.accepts ?? [],
+    ...(challenge.extensions ? { extensions: challenge.extensions } : {}),
+  };
+}
+
+function payerOf(payment) {
+  const from = payment?.payload?.authorization?.from;
+  return /^0x[0-9a-fA-F]{40}$/.test(from || '') ? from : AGENT_ADDRESS;
+}
+
+function paymentResult(payment, resp) {
+  return { content: [{ type: 'text', text: JSON.stringify(resp.result ?? resp, null, 2) }],
+           _meta: { [META_PAYMENT_RESPONSE]: {
+             success: true,
+             transaction: resp.payment?.tx_hash ?? null,
+             network: resp.payment?.network ?? payment?.accepted?.network ?? null,
+             payer: payerOf(payment),
+             ...(resp.session ? { session: resp.session } : {}),
+           } } };
+}
+
+async function payInBand(toolName, url, params, payment) {
+  const payer = payerOf(payment);
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': USER_AGENT,
+      'PAYMENT-SIGNATURE': Buffer.from(JSON.stringify(payment)).toString('base64'),
+      'X-Agent-Address': payer,
+    },
+    body: JSON.stringify({ parameters: params, agent_address: payer }),
+    signal: AbortSignal.timeout(90_000),
+  });
+  if (r.status === 402) {
+    // Rejected (or a fresh challenge): hand the client the new PaymentRequired.
+    const again = await r.json().catch(() => ({}));
+    throw new PaymentRequiredError(paymentRequiredFrom(
+      { ...again, amount_usdc: again.amount_usdc ?? '?' }, toolName, url));
+  }
+  if (!r.ok) throw new Error(`Paid call failed: ${r.status}${await failureReason(r)}`);
+  return paymentResult(payment, await r.json());
+}
+
 // ── x402 free-flow ────────────────────────────────────────────────────────────
 
-async function callTool(toolName, params) {
+async function callTool(toolName, params, payment = null) {
   const url = `${GATEWAY_URL}/tools/${encodeURIComponent(toolName)}/call`;
+  if (payment) return payInBand(toolName, url, params, payment);
   const body = JSON.stringify({ parameters: params, agent_address: AGENT_ADDRESS });
   const baseHeaders = {
     'Content-Type': 'application/json',
@@ -185,24 +259,7 @@ async function callTool(toolName, params) {
   const isFree = parseFloat(amountUsdc) === 0;
   if (!isFree) {
     // ── Paid tool: settle in-place when a wallet is configured (AGE-40) ──
-    if (!PAID) {
-      if (REMOTE) {
-        throw new McpError(
-          ErrorCode.InvalidRequest,
-          `'${toolName}' is a paid tool ($${amountUsdc} USDC) and this is the shared remote ` +
-          `server, which never holds a wallet. Run it locally with paid mode ` +
-          `(npx @romudille/agentpay-mcp + AGENTPAY_ENABLE_PAID=1 or AGENTPAY_BASE_KEY), ` +
-          `use the agentpay-x402 SDK, or pay the HTTP 402 at ${url} directly.`,
-        );
-      }
-      throw new McpError(
-        ErrorCode.InvalidRequest,
-        `'${toolName}' is a paid tool ($${amountUsdc} USDC). This install's wallet is ` +
-        `${WALLET.address} — fund it with USDC on Base and set AGENTPAY_ENABLE_PAID=1 ` +
-        `to settle paid tools in-place (gasless EIP-3009, no ETH needed). ` +
-        `Spending stays capped by AGENTPAY_MAX_SPEND (default $0.10).`,
-      );
-    }
+    if (!PAID) throw new PaymentRequiredError(paymentRequiredFrom(challenge, toolName, url));
     return settlePaid(toolName, url, body, baseHeaders, challenge);
   }
 
@@ -767,6 +824,9 @@ async function listTools() {
       description += `\nExample response: ${JSON.stringify(t.response_example)}`;
     }
     description += `\n\nPrice: $${t.price_usdc} USDC per call`;
+    if (!PAID && parseFloat(t.price_usdc) > 0) {
+      description += ' (x402 over MCP: an unpaid call returns PaymentRequired; pay via _meta x402/payment)';
+    }
     if (PAID && parseFloat(t.price_usdc) > 0) {
       description += ' (paid mode: settles in-place on Base, gasless; counts against AGENTPAY_MAX_SPEND)';
     }
@@ -794,6 +854,7 @@ async function listTools() {
 
 async function callToolRequest(request) {
   const { name, arguments: args = {} } = request.params;
+  const payment = request.params._meta?.[META_PAYMENT] ?? null;
 
   if (name === 'estimate_plan') {
     try {
@@ -823,12 +884,20 @@ async function callToolRequest(request) {
       }
       const budget = typeof args.budget_usd === 'number' ? args.budget_usd : DEFAULT_BUDGET;
       const chain = typeof args.chain === 'string' ? args.chain : '';
-      const result = PAID
-        ? await callTool('verified_route', { need, budget_usd: budget, ...(chain ? { chain } : {}) })
+      // Keyless: the free preview — unless the client brought a payment, in
+      // which case it is buying the paid tool in-band.
+      const result = (PAID || payment)
+        ? await callTool('verified_route', { need, budget_usd: budget, ...(chain ? { chain } : {}) }, payment)
         : await verifiedRouteTool(need, budget, chain);
+      if (result && result._meta?.[META_PAYMENT_RESPONSE]) return result;
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       if (err instanceof McpError) throw err;
+      if (err instanceof PaymentRequiredError) {
+        const pr = err.paymentRequired;
+        return { isError: true, structuredContent: pr,
+                 content: [{ type: 'text', text: JSON.stringify(pr) }] };
+      }
       return {
         content: [{ type: 'text', text: `AgentPay verified_route error: ${err.message}` }],
         isError: true,
@@ -872,11 +941,17 @@ async function callToolRequest(request) {
   }
 
   try {
-    const result = await callTool(name, args);
+    const result = await callTool(name, args, payment);
+    if (result && result._meta?.[META_PAYMENT_RESPONSE]) return result;
     const text = JSON.stringify(result, null, 2);
     return { content: [{ type: 'text', text }] };
   } catch (err) {
     if (err instanceof McpError) throw err;
+    if (err instanceof PaymentRequiredError) {
+      const pr = err.paymentRequired;
+      return { isError: true, structuredContent: pr,
+               content: [{ type: 'text', text: JSON.stringify(pr) }] };
+    }
     return {
       content: [{ type: 'text', text: `AgentPay error calling '${name}': ${err.message}` }],
       isError: true,
