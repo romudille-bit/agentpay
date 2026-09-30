@@ -867,9 +867,12 @@ async function listTools() {
     };
   });
 
-  return {
-    tools: [...gatewayTools, VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF],
-  };
+  const listed = [...gatewayTools, VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF];
+  // Remote: the priced tools are the point of the endpoint (AGE-219) and what
+  // x402 probers look for with a bounded number of unpaid calls — list them
+  // first so a client or scanner meets the in-band 402 before the 19 free tools.
+  if (REMOTE) listed.sort((a, b) => Number(b.annotations.readOnlyHint === false) - Number(a.annotations.readOnlyHint === false));
+  return { tools: listed };
 }
 
 async function callToolRequest(request) {

@@ -126,6 +126,7 @@ test('http mode: initialize, list, free call, x402-over-MCP paid flow, server ne
     assert.equal(byName.fear_greed_index, true);
     assert.equal(byName.estimate_plan, true);
     assert.equal(byName.pre_trade_check, false);
+    assert.equal(list.msg.result.tools[0].name, 'pre_trade_check', 'priced tools are listed first on the remote');
 
     const free = await rpc(srv.base, 3, 'tools/call', { name: 'fear_greed_index', arguments: {} });
     assert.equal(free.status, 200);
