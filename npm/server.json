@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://agentpay.tools",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@romudille/agentpay-mcp",
-      "version": "2.6.0",
+      "version": "2.7.0",
       "transport": {
         "type": "stdio"
       },
