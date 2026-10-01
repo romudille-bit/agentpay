@@ -275,8 +275,8 @@ _TOOLS: dict[str, Tool] = {
         triggers=["whale", "large transfer", "big move", "institutional", "smart money", "accumulation", "dump", "sell-off"],
         use_when="You need to detect large token transfers that may signal institutional moves, accumulation, or sell-offs.",
         avoid_when="you need one address's holdings — wallet_balance; exchange order-book size rather than on-chain transfers — orderbook_depth. Ethereum ERC-20 transfers only.",
-        returns="large_transfers[] with from, to, amount, usd_value, minutes_ago; total_volume_usd",
-        response_example={"token": "USDC", "large_transfers": [{"from": "0xabc...1234", "to": "0xdef...5678", "amount": 5000000.0, "usd_value": 5000000.0, "minutes_ago": 12}, {"from": "0x111...aaaa", "to": "0x222...bbbb", "amount": 2500000.0, "usd_value": 2500000.0, "minutes_ago": 34}], "total_volume_usd": 7500000.0, "source": "etherscan"},
+        returns="large_transfers[] with from, to (full addresses), amount, usd_value, minutes_ago, tx_hash; total_volume_usd",
+        response_example={"token": "USDC", "large_transfers": [{"from": "0xabababababababababababababababababababab", "to": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", "amount": 5000000.0, "usd_value": 5000000.0, "minutes_ago": 12, "tx_hash": "0x9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"}, {"from": "0x111...aaaa", "to": "0x222...bbbb", "amount": 2500000.0, "usd_value": 2500000.0, "minutes_ago": 34}], "total_volume_usd": 7500000.0, "source": "etherscan"},
     ),
     "yield_scanner": Tool(
         name="yield_scanner",

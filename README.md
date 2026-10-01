@@ -78,7 +78,7 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `fear_greed_index` | `limit` (days of history, default 1) | value 0–100, value_classification, history[] |
 | `token_market_data` | `token_a`, `token_b` | volume_24h_usd, market_cap_usd, price_usd |
 | `wallet_balance` | `address`, `chain` (ethereum/stellar) | token balances |
-| `whale_activity` | `token`, `min_usd` (default 100k) | large_transfers[] with direction, total_volume_usd |
+| `whale_activity` | `token`, `min_usd` (default 100k) | large_transfers[] (full from/to + tx_hash), total_volume_usd |
 | `defi_tvl` | `protocol` (optional, e.g. "uniswap") | tvl, change_1d, change_7d, chains[] |
 | `token_security` | `contract_address`, `chain` | risk_level, is_honeypot, buy_tax, sell_tax |
 | `open_interest` | `symbol` (BTC, ETH…) | total_oi_usd, oi_change_1h/24h_pct, long_short_ratio |

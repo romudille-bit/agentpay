@@ -5,8 +5,8 @@ Each `_fetch_*` function calls the upstream API for one tool and returns
 the response payload. `real_tool_response` dispatches by tool_name and
 applies per-tool TTL caching from services.cache.
 
-Constants live here because they're tool-runtime data — `_COINGECKO_IDS`,
-`_ERC20_CONTRACTS`, and `_EXCHANGE_WALLETS` only matter inside fetcher
+Constants live here because they're tool-runtime data — `_COINGECKO_IDS`
+and `_ERC20_CONTRACTS` only matter inside fetcher
 functions. Moving them anywhere else would force callers to import them
 from a separate constants module just to read them back here.
 """
@@ -44,109 +44,6 @@ _ERC20_CONTRACTS: dict[str, str] = {
     "AAVE": "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9",
     "SHIB": "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce",
 }
-
-# Known exchange hot wallet addresses (lowercase) → exchange name
-# Sources: Etherscan labels, publicly documented exchange addresses
-_EXCHANGE_WALLETS: dict[str, str] = {
-    # Binance
-    "0x28c6c06298d514db089934071355e5743bf21d60": "Binance",
-    "0x21a31ee1afc51d94c2efccaa2092ad1028285549": "Binance",
-    "0xdfd5293d8e347dfe59e90efd55b2956a1343963d": "Binance",
-    "0x56eddb7aa87536c09ccc2793473599fd21a8b17f": "Binance",
-    "0x9696f59e4d72e237be84ffd425dcad154bf96976": "Binance",
-    "0x4976a4a02f38326660d17bf34b431dc6e2eb2327": "Binance",
-    "0xf977814e90da44bfa03b6295a0616a897441acec": "Binance",  # Binance: Hot Wallet 20 — ~$25B on mainnet, EOA, active Jun 2026 (audit 2026-08-01)
-    # Coinbase
-    "0x71660c4005ba85c37ccec55d0c4493e66fe775d3": "Coinbase",
-    "0x503828976d22510aad0201ac7ec88293211d23da": "Coinbase",
-    "0xddfabcdc4d8ffc6d5beaf154f18b778f892a0740": "Coinbase",
-    "0x3cd751e6b0078be393132286c442345e5dc49699": "Coinbase",
-    "0xb5d85cbf7cb3ee0d56b3bb207d5fc4b82f43f511": "Coinbase",
-    "0xa090e606e30bd747d4e6245a1517ebe430f0057e": "Coinbase",
-    # Kraken
-    "0x2910543af39aba0cd09dbb2d50200b3e800a63d2": "Kraken",
-    "0x0a869d79a7052c7f1b55a8ebabbea3420f0d1e13": "Kraken",
-    "0xe853c56864a2ebe4576a807d26fdc4a0ada51919": "Kraken",
-    "0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0": "Kraken",
-    # OKX
-    "0x6cc5f688a315f3dc28a7781717a9a798a59fda7b": "OKX",
-    "0x236f9f97e0e62388479bf9e5ba4889e46b0273c3": "OKX",
-    "0xa7efae728d2936e78bda97dc267687568dd593f3": "OKX",
-    "0x559432e18b281731c054cd703d4b49872be4ed53": "OKX",     # OKX: Hot Wallet 5 — EOA, $211M/5 chains, 7.05M txs, last verified active 2026-09-01
-    "0xa9ac43f5b5e38155a288d1a01d2cbc4478e14573": "OKX",     # OKX: Hot Wallet 3 — EOA, $51M, 1.72M txs, last verified active 2026-09-01
-    # Bybit
-    "0xf89d7b9c864f589bbf53a82105107622b35eaa40": "Bybit",
-    "0x18e296053cbdf986196903e889b7dca7a73882f6": "Bybit",   # ByBit: Hot Wallet 5 — EOA, 1.0M nonce (audit 2026-08-01)
-    "0xa1abfa21f80ecf401bd41365adbb6fef6fefdf09": "Bybit",   # Bybit: Hot Wallet 12 — EOA, current-gen (first tx Jun 2025), last verified active 2026-09-01
-    "0x2b5634c42055806a59e9107ed44d43c426e58258": "KuCoin",  # was "Bybit" — Etherscan labels this "KuCoin 1"
-    # Bitfinex
-    "0x77134cbc06cb00b66f4c7e623d5fdbf6777635ec": "Bitfinex",
-    "0x742d35cc6634c0532925a3b844bc454e4438f44e": "Bitfinex",
-    # Gemini
-    "0xd24400ae8bfebb18ca49be86258a3c749cf46853": "Gemini",
-    "0x07ee55aa48bb72dcc6e9d78256648910de513eca": "Gemini",
-    # HTX (formerly Huobi — rebranded Sept 2023)
-    "0xab5c66752a9e8167967685f1450532fb96d5d24f": "HTX",
-    "0x6748f50f686bfbca6fe8ad62b22228b87f31ff2b": "HTX",
-    "0x1062a747393198f70f71ec65a582423dba7e5ab3": "HTX",   # HTX 80 — 1.9M+ txs
-    "0xfdb16996831753d5331ff813c29a93c76834a0ad": "HTX",   # HTX 23 — 1.8M+ txs
-    "0xcac725bef4f114f728cbcfd744a731c2a463c3fc": "HTX",   # HTX 28 — EOA, 349K nonce, active Jul 2026 (audit 2026-08-01)
-    # Gate.io
-    "0x0d0707963952f2fba59dd06f2b425ace40b492fe": "Gate.io",
-    "0x1c4b70a3968436b9a0a9cf5205c787eb81bb558c": "Gate.io",  # Gate Deposit — ~$145M, EOA, active Jul 2026 (audit 2026-08-01)
-    "0x94372cc8bf179d1797fe6e5a6dd3d724ff95d953": "Gate.io",  # Gate Deposit — EOA (audit 2026-08-01)
-    # KuCoin
-    "0x2933782b5a8d72f2754103d1489614f29bfa4625": "KuCoin",  # KuCoin: Wallet — $48M, active Feb 2026
-    "0xd6216fc19db775df9774a6e33526131da7d19a2c": "KuCoin",  # KuCoin 6 — EOA, $20M/8 chains, last verified active 2026-09-01
-    "0xf16e9b0d03470827a95cdfd0cb8a8a3b46969b91": "KuCoin",  # KuCoin 9 — $521K, active Apr 2026
-    "0x53f78a071d04224b8e254e243fffc6d9f2f3fa23": "KuCoin",  # KuCoin: Hot Wallet 2 — ~$16M, EOA, active Jun 2026 (audit 2026-08-01)
-    # Bitget
-    "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23": "Bitget",  # Bitget 6 — EOA, highly active, last verified active 2026-09-01
-    "0x0639556f03714a74a5feeaf5736a4a64ff70d206": "Bitget",  # Bitget 4 — $63M, active Jan 2026
-    # MEXC
-    "0x3cc936b795a188f0e246cbb2d74c5bd190aecf18": "MEXC",    # MEXC 3 — $595M, active 2025
-    "0x75e89d5979e4f6fba9f97c104c2f0afb3f1dcb88": "MEXC",    # MEXC 1 — primary hot wallet, ~$41M, EOA, 8.0M nonce (audit 2026-08-01)
-    "0x0211f3cedbef3143223d3acf0e589747933e8527": "MEXC",    # MEXC 2 — EOA (audit 2026-08-01)
-    # Crypto.com
-    "0xa023f08c70a23abc7edfc5b6b5e171d78dfc947e": "Crypto.com",  # Crypto.com 22 — EOA, $830M, last verified active 2026-09-01
-    "0x72a53cdbbcc1b9efa39c834a540550e23463aacb": "Crypto.com",  # Crypto.com 14 — EOA, $2.7M, last verified active 2026-09-01
-    "0x46340b20830761efd32832a74d7169b29feb9758": "Crypto.com",  # Crypto.com 12 — most active CDC wallet, EOA, 17.5M nonce (audit 2026-08-01)
-    "0x6262998ced04146fa42253a5c0af90ca02dfd2a3": "Crypto.com",  # Crypto.com 1 — ~$172M in ERC-20s, EOA (audit 2026-08-01)
-    # Bithumb
-    "0x17e5545b11b468072283cee1f066a059fb0dbf24": "Bithumb",  # Bithumb: Hot Wallet — $443M, active Dec 2025
-    "0x3052cd6bf951449a984fe4b5a38b46aef9455c8e": "Bithumb",  # Bithumb 2 — EOA, 110K nonce (audit 2026-08-01)
-    # Upbit (added 2026-08-01 — was the only absent top-10 CEX)
-    "0x390de26d772d2e2005c6d1d24afc902bae37a4bb": "Upbit",    # Upbit 1 — EOA, 475K nonce
-    "0xba826fec90cefdf6706858e5fbafcb27a290fbe0": "Upbit",    # Upbit 2 — EOA, 986K nonce
-    "0x5e032243d507c743b061ef021e2ec7fcc6d3ab89": "Upbit",    # Upbit 3 — EOA, 588K nonce
-    # Bitstamp (added 2026-09-01)
-    "0x00bdb5699745f5b860228c8f939abf1b9ae374ed": "Bitstamp",  # Bitstamp 1 — EOA, 2.18M txs over 9 yrs, last verified active 2026-09-01
-    # NOT added (Etherscan-labeled but CONTRACT addresses, verified via eth_getCode 2026-08-01):
-    #   0xa7a93fd0a276fc1c0197a5b5623ed117786eed06  Bybit: Hot Wallet 2
-    #   0xe6a421f24d330967a3af2f4cdb5c34067e7e4d75  Bitget: Hot Wallet 1
-    # NOT added (audit 2026-09-01):
-    #   0x4e7b110335511f662fdbb01bf958a7844118c0d4  OKX: Hot Wallet 2 — retired (last sent tx ~2023, $1.48 bal)
-    #   0xbaed383ede0e5d9d72430661f3285daa77e9439f  Bybit: Hot Wallet 6 — dormant since ~2023
-    #   0x48ec5560bfd59b95859965cce48cc244cfdf6b0c  Bitstamp: Wallet — CONTRACT (EIP-1167 proxy, verified via eth_getCode 2026-09-01)
-}
-
-
-def classify_transfer_direction(from_addr: str, to_addr: str) -> tuple[str, str | None]:
-    """Return (direction, exchange_name) for a transfer.
-
-    Direction is one of: 'exchange_inflow', 'exchange_outflow', 'wallet_to_wallet'.
-    exchange_name is the matched exchange or None.
-    """
-    from_lower = from_addr.lower()
-    to_lower = to_addr.lower()
-    to_exchange = _EXCHANGE_WALLETS.get(to_lower)
-    from_exchange = _EXCHANGE_WALLETS.get(from_lower)
-    if to_exchange:
-        return "exchange_inflow", to_exchange
-    if from_exchange:
-        return "exchange_outflow", from_exchange
-    return "wallet_to_wallet", None
-
 
 async def real_tool_response(tool_name: str, params: dict) -> dict:
     # Build cache key (include params for tools where they matter)
@@ -447,7 +344,6 @@ async def _fetch_whale_activity(client: httpx.AsyncClient, params: dict) -> dict
     now = time.time()
     large_moves = []
     total_volume = 0.0
-    direction_counts: dict[str, int] = {"exchange_inflow": 0, "exchange_outflow": 0, "wallet_to_wallet": 0}
 
     for tx in txs:
         try:
@@ -461,22 +357,15 @@ async def _fetch_whale_activity(client: httpx.AsyncClient, params: dict) -> dict
                 usd_value = None  # price unavailable — include with null
             total_volume += usd_value or 0
 
-            # Classify direction using full addresses before truncating
-            from_addr = tx.get("from", "")
-            to_addr = tx.get("to", "")
-            direction, exchange_name = classify_transfer_direction(from_addr, to_addr)
-            direction_counts[direction] = direction_counts.get(direction, 0) + 1
-
+            # Full addresses + tx hash, unlabelled: callers do their own exchange lookup.
             large_moves.append({
-                "from": from_addr[:10] + "..." if len(from_addr) > 10 else from_addr,
-                "to": to_addr[:10] + "..." if len(to_addr) > 10 else to_addr,
+                "from": tx.get("from", ""),
+                "to": tx.get("to", ""),
                 "amount": round(amount, 4),
                 "token": tx.get("tokenSymbol", token),
                 "usd_value": round(usd_value, 2) if usd_value else None,
-                "direction": direction,
-                "exchange_name": exchange_name,
                 "minutes_ago": round((now - int(tx.get("timeStamp", now))) / 60),
-                "tx_hash": tx.get("hash", "")[:18] + "...",
+                "tx_hash": tx.get("hash", ""),
             })
         except Exception:
             continue
@@ -487,7 +376,6 @@ async def _fetch_whale_activity(client: httpx.AsyncClient, params: dict) -> dict
         "price_usd": price_usd,
         "large_transfers": large_moves[:15],
         "total_volume_usd": round(total_volume, 2),
-        "direction_summary": direction_counts,
         "source": "etherscan",
     }
 
