@@ -631,6 +631,11 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
       calls30d: recommendation.calls30d,
       flags: recommendation.flags,
       why: `real schema; ${recommendation.payers30d} unique payers / ${recommendation.calls30d} calls in 30d; fits the $${budgetUsd} budget`,
+      // Typed like the paid tool's evidence[], minus refs; delivery probes are paid-only.
+      evidence: [
+        { type: 'third-party', source: 'coinbase-bazaar', metric: 'unique_payers_30d', value: recommendation.payers30d },
+        { type: 'third-party', source: 'coinbase-bazaar', metric: 'calls_30d', value: recommendation.calls30d },
+      ],
       provider_url: 'withheld — returned by the paid verified_route',
       ready_to_pay: 'withheld — returned by the paid verified_route',
     };
@@ -654,7 +659,8 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
       'exists, but withholds the provider URL + ready-to-pay x402 challenge.',
       'The PAID verified_route ($0.01) returns those AND runs the FULL multi-query',
       'catalog sweep + usage-based sybil-collapse (folds one-wallet factories) +',
-      'trust allowlist — the authoritative pick you can settle immediately.',
+      'trust allowlist + delivery evidence from paid probes — the authoritative pick',
+      'you can settle immediately.',
       'Get it with a wallet via the agentpay-x402 SDK:',
       '  pip install "agentpay-x402[base]"',
       '  s.call("verified_route", {"need": "' + need + '", "budget_usd": ' + budgetUsd + '})',

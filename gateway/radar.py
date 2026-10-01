@@ -860,9 +860,27 @@ EVIDENCE_TYPE = {
 }
 
 
+def _utc(ts) -> Optional[str]:
+    """Any ISO timestamp → 'YYYY-MM-DDTHH:MM:SSZ' (None passes through)."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(_ISO_FRACTION.sub(
+            lambda m: f"{m.group(1)}.{m.group(2)[:6].ljust(6, '0')}",
+            str(ts).replace("Z", "+00:00"), count=1))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return str(ts)
+
+
+_DUP_SOURCES = {"coinbase-bazaar", "agentpay-payer-depth"}
+
+
 def _ev(kind: str, source: str, metric: str, value, observed_at, ref=None, n=None) -> dict:
     item = {"type": EVIDENCE_TYPE[kind], "source": source, "metric": metric,
-            "value": value, "observed_at": observed_at, "ref": ref}
+            "value": value, "observed_at": _utc(observed_at), "ref": ref}
     if n is not None:
         item["n"] = n
     return item
@@ -890,7 +908,7 @@ def evidence_for(s: dict, scores: Optional[dict], swept_at: str) -> list[dict]:
     out.append(_ev("usage", "coinbase-bazaar", "calls_30d", s["calls30d"], swept_at))
     d = s.get("depth")
     if d:
-        src = d.get("source") or "onchain"
+        src = "agentpay-payer-depth"
         for metric in ("effective_payers", "retention", "legs_per_payer"):
             out.append(_ev("payer_depth", src, metric, d.get(metric), d.get("updated_at")))
         if d.get("fleet_shaped"):
@@ -946,8 +964,8 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
 
     def _pub(x: dict, full: bool = False) -> dict:
         ev = evidence_for(x, scores, swept_at)
-        if not full:  # survivors already carry payers30d/calls30d; keep the payload lean
-            ev = [e for e in ev if e["type"] != EVIDENCE_TYPE["usage"]]
+        if not full:  # survivors already carry payers30d/calls30d and depth{}; keep it lean
+            ev = [e for e in ev if e["source"] not in _DUP_SOURCES or e["metric"] == FLAG_FLEET_SHAPED]
         return {**_public(x), "evidence": ev}
 
     rec_pub = _pub(rec, full=True) if rec else None

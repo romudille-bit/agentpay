@@ -436,3 +436,19 @@ def test_no_delivery_flag_and_sybil_collapse_are_evidence():
 def test_slug_shared_with_prober_pages():
     from gateway.routes import prober
     assert prober.service_slug is radar.service_slug
+
+
+def test_timestamps_normalised_and_survivor_depth_not_repeated():
+    scores = {"https://exa.x/search": {"delivery_rate": 1.0, "paid_probes": 3,
+                                       "last_ok_at": "2026-09-30T05:37:24.751994+00:00", "flags": []}}
+    depth = {"0x52e29e0d2aa49b000000000000000000000000": {
+        "payers": 96, "effective_payers": 80, "payer_quality": 0.9, "retention": 0.4,
+        "legs": 300, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    out = radar.verified_route_from_payloads([SYNTHETIC], "data", Decimal("1"),
+                                             scores=scores, depth=depth, now=NOW)
+    exa = next(s for s in out["survivors"] if s["name"] == "Real Exa")
+    ev = _by_metric(exa["evidence"])
+    assert ev["delivery_rate"]["observed_at"] == "2026-09-30T05:37:24Z"
+    assert "effective_payers" not in ev and exa["depth"] is not None
+    fac = next(s for s in out["survivors"] if s["pay_to"] == FACTORY_WALLET)
+    assert "collapsed_siblings" in _by_metric(fac["evidence"])
