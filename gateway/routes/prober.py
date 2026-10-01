@@ -17,18 +17,17 @@ the secret gate is the same FLAGSHIP_INGEST_SECRET, reused per PROBER_SPEC.
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import html as _html
 import json as _json
 import logging
-import re
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from agents.prober.probe import need_leaderboard as _need_leaderboard
 from agents.prober.probe import score
+from gateway import radar
 from gateway._limiter import limiter
 from gateway.config import settings
 from gateway.services.supabase import (
@@ -43,17 +42,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def service_slug(url: str) -> str:
-    """Stable, readable, collision-safe slug for a scored service URL.
-
-    host-and-path words + 6-hex sha1 tail, e.g.
-    https://api.exa.ai/search → api-exa-ai-search-1a2b3c. Pure; the same
-    function feeds /scores.json ("page"), the /s/{slug} route, and the
-    sitemap, so links can never drift apart. (AGE-39 SEO pages.)"""
-    tail = hashlib.sha1(url.encode()).hexdigest()[:6]
-    base = re.sub(r"^https?://", "", url.strip().lower())
-    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:60].rstrip("-")
-    return f"{base}-{tail}"
+service_slug = radar.service_slug  # one slug function for /s/, scores.json, evidence refs
 
 
 # slug → resource_url for one scores snapshot. Keyed on the snapshot's identity

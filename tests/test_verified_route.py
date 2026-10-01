@@ -371,3 +371,68 @@ def test_solana_count_is_zero_when_none_swept():
     out = radar.verified_route_from_payloads([SYNTHETIC], "data", Decimal("1"))
     assert out["catalog"]["solana_swept"] == 0
     assert not any(k.startswith("solana") for k in out["catalog"]["networks"])
+
+
+# ── typed evidence[] ──────────────────────────────────────────────────────────
+from datetime import datetime, timezone  # noqa: E402
+
+NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+ALLOWED_TYPES = {"behavioral", "regulatory", "self-attested", "third-party",
+                 "cryptographic", "observational", "delivery"}
+
+
+def _by_metric(ev):
+    return {e["metric"]: e for e in ev}
+
+
+def test_pick_carries_usage_evidence_survivors_stay_lean():
+    out = radar.verified_route_from_payloads([SYNTHETIC], "data", Decimal("1"), now=NOW)
+    rec = out["recommendation"]
+    ev = _by_metric(rec["evidence"])
+    assert ev["unique_payers_30d"]["type"] == "third-party"
+    assert ev["unique_payers_30d"]["value"] == rec["payers30d"]
+    assert ev["calls_30d"]["observed_at"] == "2026-10-01T12:00:00Z"
+    assert set(rec["evidence"][0]) >= {"type", "source", "metric", "value", "observed_at", "ref"}
+    for s in out["survivors"]:
+        assert all(e["type"] in ALLOWED_TYPES - {"third-party"} for e in s["evidence"])
+
+
+def test_delivery_evidence_anchored_to_last_paid_check_with_page_ref():
+    scores = {"https://otto.x/dex": {
+        "delivery_factor": 1.0, "delivery_rate": 0.9, "paid_probes": 10,
+        "latency_p50_ms": 420, "last_ok_at": "2026-09-30T08:00:00Z",
+        "last_fail_at": "2026-09-20T08:00:00Z", "flags": [],
+    }}
+    out = radar.verified_route_from_payloads([SYNTHETIC], "data", Decimal("1"),
+                                             scores=scores, now=NOW)
+    ev = _by_metric(out["recommendation"]["evidence"])
+    d = ev["delivery_rate"]
+    assert (d["type"], d["value"], d["n"]) == ("delivery", 0.9, 10)
+    assert d["observed_at"] == "2026-09-30T08:00:00Z"
+    assert d["ref"] == f"/s/{radar.service_slug('https://otto.x/dex')}"
+    assert ev["latency_p50_ms"]["type"] == "observational"
+
+
+def test_unprobed_service_has_no_delivery_evidence():
+    out = radar.verified_route_from_payloads([SYNTHETIC], "data", Decimal("1"), now=NOW)
+    assert not any(e["type"] == "delivery" for e in out["recommendation"]["evidence"])
+
+
+def test_no_delivery_flag_and_sybil_collapse_are_evidence():
+    scores = {"https://otto.x/dex": {"delivery_rate": 0.0, "paid_probes": 2,
+                                     "last_fail_at": "2026-09-29T00:00:00Z",
+                                     "flags": [radar.FLAG_NO_DELIVERY]}}
+    out = radar.verified_route_from_payloads([SYNTHETIC], "data", Decimal("1"),
+                                             scores=scores, now=NOW)
+    otto = next(s for s in out["survivors"] if s["name"] == "Real Otto")
+    flag = _by_metric(otto["evidence"])[radar.FLAG_NO_DELIVERY]
+    assert flag["type"] == "delivery" and flag["value"] is True
+    fac = next(s for s in out["survivors"] if s["pay_to"] == FACTORY_WALLET)
+    ev = _by_metric(fac["evidence"])
+    assert ev["collapsed_siblings"]["type"] == "behavioral"
+    assert ev["collapsed_siblings"]["value"] == 4
+
+
+def test_slug_shared_with_prober_pages():
+    from gateway.routes import prober
+    assert prober.service_slug is radar.service_slug

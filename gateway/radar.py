@@ -21,6 +21,7 @@ Pipeline:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import urllib.parse
@@ -840,11 +841,74 @@ def _ready_to_pay(s: Optional[dict]) -> Optional[dict]:
     return out
 
 
+def service_slug(url: str) -> str:
+    """Slug for a scored service's public /s/ page (shared with routes/prober)."""
+    tail = hashlib.sha1(url.encode()).hexdigest()[:6]
+    base = re.sub(r"^https?://", "", url.strip().lower())
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:60].rstrip("-")
+    return f"{base}-{tail}"
+
+
+# Our evidence kinds → x402 Trust-Provider `evidenceType` (PR #2300).
+# The taxonomy isn't merged yet and `delivery` is a proposed type; retarget here.
+EVIDENCE_TYPE = {
+    "delivery": "delivery",           # settled paid probes (fallback: observational)
+    "latency": "observational",
+    "usage": "third-party",           # Bazaar facilitator stats
+    "payer_depth": "behavioral",
+    "sybil": "behavioral",
+}
+
+
+def _ev(kind: str, source: str, metric: str, value, observed_at, ref=None, n=None) -> dict:
+    item = {"type": EVIDENCE_TYPE[kind], "source": source, "metric": metric,
+            "value": value, "observed_at": observed_at, "ref": ref}
+    if n is not None:
+        item["n"] = n
+    return item
+
+
+def evidence_for(s: dict, scores: Optional[dict], swept_at: str) -> list[dict]:
+    """Machine-readable form of a candidate's `why`. Pure; no new data."""
+    out: list[dict] = []
+    row = (scores or {}).get(s["url"]) or {}
+    page = f"/s/{service_slug(s['url'])}" if row else None
+    n = row.get("paid_probes") or 0
+    if n and row.get("delivery_rate") is not None:
+        last = max((t for t in (row.get("last_ok_at"), row.get("last_fail_at")) if t),
+                   default=row.get("updated_at"))
+        out.append(_ev("delivery", "agentpay-prober", "delivery_rate",
+                       float(row["delivery_rate"]), last, page, n))
+    for f in (row.get("flags") or []):
+        if f in _NO_DELIVERY_FLAGS:
+            out.append(_ev("delivery", "agentpay-prober", f, True,
+                           row.get("last_fail_at"), page, row.get("no_delivery_probes")))
+    if isinstance(row.get("latency_p50_ms"), (int, float)) and n:
+        out.append(_ev("latency", "agentpay-prober", "latency_p50_ms",
+                       int(row["latency_p50_ms"]), row.get("last_ok_at"), page, n))
+    out.append(_ev("usage", "coinbase-bazaar", "unique_payers_30d", s["payers30d"], swept_at))
+    out.append(_ev("usage", "coinbase-bazaar", "calls_30d", s["calls30d"], swept_at))
+    d = s.get("depth")
+    if d:
+        src = d.get("source") or "onchain"
+        for metric in ("effective_payers", "retention", "legs_per_payer"):
+            out.append(_ev("payer_depth", src, metric, d.get(metric), d.get("updated_at")))
+        if d.get("fleet_shaped"):
+            out.append(_ev("payer_depth", src, FLAG_FLEET_SHAPED, True, d.get("updated_at")))
+    if s.get("collapsed_siblings"):
+        out.append(_ev("sybil", "agentpay-sweep", "collapsed_siblings",
+                       s["collapsed_siblings"], swept_at))
+    if "factory" in (s.get("flags") or []):
+        out.append(_ev("sybil", "agentpay-sweep", "factory_wallet", True, swept_at))
+    return out
+
+
 def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decimal,
                                  chain: Optional[str] = None,
                                  extra: Optional[Iterable[dict]] = None,
                                  scores: Optional[dict] = None,
-                                 depth: Optional[dict] = None) -> dict:
+                                 depth: Optional[dict] = None,
+                                 now: Optional[datetime] = None) -> dict:
     """Assemble the paid verified_route result from swept Bazaar payloads. Pure.
 
     DISCOVER (merge+dedup many queries) → FILTER (chain) → DECIDE (junk/factory/
@@ -878,7 +942,15 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     pool = relevant if relevant else kept
     rec = next((s for s in pool if not _NO_DELIVERY_FLAGS & set(s["flags"])), None)
 
-    rec_pub = _public(rec)
+    swept_at = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _pub(x: dict, full: bool = False) -> dict:
+        ev = evidence_for(x, scores, swept_at)
+        if not full:  # survivors already carry payers30d/calls30d; keep the payload lean
+            ev = [e for e in ev if e["type"] != EVIDENCE_TYPE["usage"]]
+        return {**_public(x), "evidence": ev}
+
+    rec_pub = _pub(rec, full=True) if rec else None
     if rec_pub:
         rec_pub["ready_to_pay"] = _ready_to_pay(rec)
 
@@ -902,7 +974,7 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
         "chain": chain,
         "budget_usd": str(budget),
         "recommendation": rec_pub,
-        "survivors": [_public(s) for s in kept],
+        "survivors": [_pub(s) for s in kept],
         "catalog": {
             "scanned": len(cands),
             "after_vetting": len(survivors),

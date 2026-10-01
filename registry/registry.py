@@ -541,7 +541,7 @@ _TOOLS: dict[str, Tool] = {
                   "find a real tool", "avoid scam tool", "best x402 tool", "trust score", "vetted route"],
         use_when="An agent is about to pay an unknown x402 tool and wants the real, used, non-sybil one under budget — not just the cheapest.",
         avoid_when="you already know which AgentPay tool you need — call it directly; you only want a free preview of the marketplace ranking — the MCP's keyless verified_route preview. This call settles $0.01 on-chain.",
-        returns="recommendation (with ready_to_pay), survivors[], catalog{scanned, real_providers, sybil_collapsed, biggest_factory}, vetting summary",
+        returns="recommendation (with ready_to_pay), survivors[] (each with typed evidence[]), catalog{scanned, real_providers, sybil_collapsed, biggest_factory}, vetting summary",
         response_example={
             "need": "dex pair liquidity",
             "chain": None,
@@ -551,6 +551,12 @@ _TOOLS: dict[str, Tool] = {
                 "price_usd": "0.001", "network": "eip155:8453",
                 "pay_to": "0x0e84ddedaae6a7", "payers30d": 200, "calls30d": 3246,
                 "quality": 3851, "flags": [],
+                "evidence": [
+                    {"type": "delivery", "source": "agentpay-prober", "metric": "delivery_rate",
+                     "value": 1.0, "n": 12, "observed_at": "2026-09-30T13:05:00Z", "ref": "/s/otto-example-dex-1a2b3c"},
+                    {"type": "third-party", "source": "coinbase-bazaar", "metric": "unique_payers_30d",
+                     "value": 200, "observed_at": "2026-10-01T12:00:00Z", "ref": None},
+                ],
                 "ready_to_pay": {"url": "https://otto.example/dex", "network": "eip155:8453",
                                  "price_usd": "0.001", "accepts": {"scheme": "exact", "network": "eip155:8453"}},
             },
