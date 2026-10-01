@@ -401,7 +401,8 @@ print(r.data["verdict"], r.tx)      # verdict + the sbtc-token::transfer txid
 | [PyPI](https://pypi.org/project/agentpay-x402/) | ✅ agentpay-x402 |
 | [x402scout](https://x402scout.com) | ✅ indexed, health-checked every 15min |
 | [Glama MCP](https://glama.ai/mcp/servers/romudille-bit/agentpay) | ✅ listed |
-| [awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed |
+| [xpaysh/awesome-x402](https://github.com/xpaysh/awesome-x402) | ✅ listed (list dormant since Nov 2025) |
+| [Merit-Systems/awesome-agentic-commerce](https://github.com/Merit-Systems/awesome-agentic-commerce/pull/712) | ⏳ PR #712 open since 2026-09-16 |
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
 | [skills CLI](https://github.com/vercel-labs/skills) | ✅ `npx skills add romudille-bit/agentpay` |
 | [402index.io](https://402index.io) | ✅ domain verified, 17 tools synced |
