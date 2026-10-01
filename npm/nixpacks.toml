@@ -1,0 +1,5 @@
+# Railway "mcp" service build (root: npm/). Nixpacks resolves engines ">=18" to
+# Node 18, whose fetch has no IPv4 fallback (autoSelectFamily is off before 20):
+# a stall on the outbound call to the gateway. Pin 22 for the service only.
+[variables]
+NIXPACKS_NODE_VERSION = "22"

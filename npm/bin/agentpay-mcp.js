@@ -988,7 +988,7 @@ async function main() {
   // Pre-fetch tools so the first list_tools responds instantly
   try {
     const tools = await getTools();
-    log(`AgentPay MCP v${VERSION}: loaded ${tools.length} tools from ${GATEWAY_URL} (+ verified_route, route, estimate_plan)`);
+    log(`AgentPay MCP v${VERSION} (node ${process.versions.node}): loaded ${tools.length} tools from ${GATEWAY_URL} (+ verified_route, route, estimate_plan)`);
     const src = { env: 'AGENTPAY_BASE_KEY', file: WALLET.path, minted: `minted → ${WALLET.path}`,
                   ephemeral: 'EPHEMERAL (not persisted — see stderr above)' }[WALLET.source];
     log(`AgentPay MCP: wallet ${WALLET.address} (${src})`);
