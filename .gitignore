@@ -184,3 +184,8 @@ tools/age128-repro/
 
 # Provider keypairs for directory claims (x402-trust.com etc.) — never commit
 keys/
+
+# Local one-offs and grant evidence (never commit)
+stacks M2 - files/
+run_tests.sh
+tools/settle_evidence.py
