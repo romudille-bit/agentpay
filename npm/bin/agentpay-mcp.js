@@ -56,7 +56,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { buildPaymentSignature } from './eip3009.js';
-import { loadOrCreateWallet, paidModeEnabled } from './wallet.js';
+import { loadOrCreateWallet, paidModeEnabled, remoteIdentity } from './wallet.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -83,7 +83,8 @@ const TRANSPORT = (process.argv.includes('--http') ||
   ? 'http' : 'stdio';
 const REMOTE = TRANSPORT === 'http';
 
-const WALLET = loadOrCreateWallet(process.env, log);   // { key, address, source, path }
+// { key, address, source, path }. The remote never signs, so it never loads or mints a key.
+const WALLET = REMOTE ? remoteIdentity(process.env) : loadOrCreateWallet(process.env, log);
 const PAID = !REMOTE && paidModeEnabled(process.env, WALLET.source);
 
 // Session budget guard (wallet mode). Tracked in micro-USDC integers so float
@@ -105,9 +106,7 @@ const fundingHint = () => PAID
 // share one stable identity in payment_logs across restarts (AGE-139).
 // The remote server carries one configured identity for all callers (an
 // address, never a key); ephemeral otherwise, so free calls still get a receipt.
-const AGENT_ADDRESS = (REMOTE && /^0x[0-9a-fA-F]{40}$/.test(process.env.AGENTPAY_AGENT_ADDRESS || ''))
-  ? process.env.AGENTPAY_AGENT_ADDRESS
-  : WALLET.address;
+const AGENT_ADDRESS = WALLET.address;
 
 const USER_AGENT = `agentpay-mcp/${VERSION} (+https://agentpay.tools)`;
 
@@ -989,9 +988,11 @@ async function main() {
   try {
     const tools = await getTools();
     log(`AgentPay MCP v${VERSION} (node ${process.versions.node}): loaded ${tools.length} tools from ${GATEWAY_URL} (+ verified_route, route, estimate_plan)`);
-    const src = { env: 'AGENTPAY_BASE_KEY', file: WALLET.path, minted: `minted → ${WALLET.path}`,
-                  ephemeral: 'EPHEMERAL (not persisted — see stderr above)' }[WALLET.source];
-    log(`AgentPay MCP: wallet ${WALLET.address} (${src})`);
+    if (!REMOTE) {
+      const src = { env: 'AGENTPAY_BASE_KEY', file: WALLET.path, minted: `minted → ${WALLET.path}`,
+                    ephemeral: 'EPHEMERAL (not persisted — see stderr above)' }[WALLET.source];
+      log(`AgentPay MCP: wallet ${WALLET.address} (${src})`);
+    }
     log(REMOTE
       ? 'AgentPay MCP: remote (http) mode — keyless by design; paid tools return the 402 handoff'
       : PAID

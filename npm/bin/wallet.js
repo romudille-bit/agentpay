@@ -87,6 +87,15 @@ export function loadOrCreateWallet(env = process.env, log = () => {}, homedir = 
   }
 }
 
+/** Remote server identity: an address, never a key on disk (it cannot pay). */
+export function remoteIdentity(env = process.env) {
+  const configured = (env.AGENTPAY_AGENT_ADDRESS || '').trim();
+  if (/^0x[0-9a-fA-F]{40}$/.test(configured)) {
+    return { key: null, address: configured, source: 'configured', path: null };
+  }
+  return { ...ephemeral(), key: null };
+}
+
 function ephemeral() {
   const key = generatePrivateKey();
   return { key, address: privateKeyToAddress(key), source: 'ephemeral', path: null };

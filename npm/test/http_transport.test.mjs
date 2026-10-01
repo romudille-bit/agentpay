@@ -86,7 +86,7 @@ async function startHttp(gatewayUrl) {
     await new Promise((r) => setTimeout(r, 100));
   }
   const stop = () => { child.kill(); fs.rmSync(dir, { recursive: true, force: true }); };
-  return { base, stop, stderr: () => err };
+  return { base, stop, stderr: () => err, walletPath: path.join(dir, 'w.json') };
 }
 
 async function rpc(base, id, method, params = {}) {
@@ -176,6 +176,8 @@ test('http mode: initialize, list, free call, x402-over-MCP paid flow, server ne
     assert.equal((await fetch(`${srv.base}/mcp`)).status, 405);
     assert.equal((await fetch(`${srv.base}/mcp`, { method: 'DELETE' })).status, 405);
     assert.match(srv.stderr(), /remote \(http\) mode/);
+    assert.ok(!fs.existsSync(srv.walletPath), 'remote mode never writes a wallet file');
+    assert.doesNotMatch(srv.stderr(), /AgentPay MCP: wallet /);
   } finally {
     srv.stop();
     gw.server.close();
