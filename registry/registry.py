@@ -276,7 +276,7 @@ _TOOLS: dict[str, Tool] = {
         use_when="You need to detect large token transfers that may signal institutional moves, accumulation, or sell-offs.",
         avoid_when="you need one address's holdings — wallet_balance; exchange order-book size rather than on-chain transfers — orderbook_depth. Ethereum ERC-20 transfers only.",
         returns="large_transfers[] with from, to (full addresses), amount, usd_value, minutes_ago, tx_hash; total_volume_usd",
-        response_example={"token": "USDC", "large_transfers": [{"from": "0xabababababababababababababababababababab", "to": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", "amount": 5000000.0, "usd_value": 5000000.0, "minutes_ago": 12, "tx_hash": "0x9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"}, {"from": "0x111...aaaa", "to": "0x222...bbbb", "amount": 2500000.0, "usd_value": 2500000.0, "minutes_ago": 34}], "total_volume_usd": 7500000.0, "source": "etherscan"},
+        response_example={"token": "USDC", "large_transfers": [{"from": "0xabababababababababababababababababababab", "to": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", "amount": 5000000.0, "usd_value": 5000000.0, "minutes_ago": 12, "tx_hash": "0x9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"}, {"from": "0x1111111111111111111111111111111111111111", "to": "0x2222222222222222222222222222222222222222", "amount": 2500000.0, "usd_value": 2500000.0, "minutes_ago": 34, "tx_hash": "0x7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a"}], "total_volume_usd": 7500000.0, "source": "etherscan"},
     ),
     "yield_scanner": Tool(
         name="yield_scanner",
@@ -540,7 +540,7 @@ _TOOLS: dict[str, Tool] = {
         triggers=["verified route", "which tool", "is this tool real", "vet tool", "trustworthy x402",
                   "find a real tool", "avoid scam tool", "best x402 tool", "trust score", "vetted route"],
         use_when="An agent is about to pay an unknown x402 tool and wants the real, used, non-sybil one under budget — not just the cheapest.",
-        avoid_when="you already know which AgentPay tool you need — call it directly; you only want a free preview of the marketplace ranking — the MCP's keyless verified_route preview. This call settles $0.01 on-chain.",
+        avoid_when="you already know which AgentPay tool you need — call it directly; you only want a free preview of the marketplace ranking — the MCP's free preview (verified_route_preview on the remote server). This call settles $0.01 on-chain.",
         returns="recommendation (with ready_to_pay), survivors[] (each with typed evidence[]), catalog{scanned, real_providers, sybil_collapsed, biggest_factory}, vetting summary",
         response_example={
             "need": "dex pair liquidity",

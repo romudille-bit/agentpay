@@ -12,7 +12,7 @@ from gateway.tool_pages import _CSS, _e, _foot
 
 VERIFIED = "2026-09-30"
 
-FIRST_PROMPT = ('Use AgentPay verified_route to find a real, actually-used x402 provider for '
+FIRST_PROMPT = ('Use AgentPay verified_route_preview to find a real, actually-used x402 provider for '
                 '"dex pair liquidity" with a $0.01 budget, and tell me why it picked that one.')
 
 HARNESSES: dict[str, dict] = {
@@ -44,10 +44,10 @@ HARNESSES: dict[str, dict] = {
             "(Enterprise/Edu: an admin first allows it under Permissions &amp; Roles → Connected Data.)",
             "Apps → <b>Create</b>.",
             "Name <b>AgentPay</b>, endpoint URL below, authentication <b>None</b>.",
-            "Click <b>Scan Tools</b> — the 22 tools appear.",
+            "Click <b>Scan Tools</b> — the 23 tools appear.",
         ],
         "notes": [
-            "Pro accounts get read/fetch tools only. The 19 free AgentPay tools are read-only "
+            "Pro accounts get read/fetch tools only. The 20 free AgentPay tools are read-only "
             "(<code>readOnlyHint: true</code>); the three $0.01 tools are marked as spending and may be "
             "hidden on Pro — ChatGPT has no wallet to pay them with anyway.",
         ],
@@ -134,15 +134,16 @@ def _tabs(gateway_url: str, current: str | None) -> str:
 def _common(gateway_url: str) -> str:
     return f"""
 <h2>What you get</h2>
-<p>The keyless AgentPay tool set: 17 free crypto and market-data tools, the <code>verified_route</code>
+<p>The keyless AgentPay tool set: 17 free crypto and market-data tools, the <code>verified_route_preview</code>
 trust preview (which x402 provider for a need is real and actually used), and <code>estimate_plan</code>
 (price a multi-tool plan before spending). No account, no key, nothing to fund.</p>
 <h2>First thing to try</h2>
 <pre>{_e(FIRST_PROMPT)}</pre>
 <h2>Paid verdicts</h2>
-<p class="note">The remote server never holds a wallet, so the three $0.01 tools
-(<code>pre_trade_check</code>, paid <code>verified_route</code>, <code>session_create</code>) answer with the
-x402 quote instead of settling. To pay them, run the local server with a small capped wallet
+<p class="note">The remote server never holds a wallet. The three $0.01 tools
+(<code>pre_trade_check</code>, <code>verified_route</code>, <code>session_create</code>) answer an unpaid
+call with the x402 PaymentRequired; an MCP client that carries a wallet pays it in-band and gets the
+result with a receipt. Without one, run the local server with a small capped wallet
 (<code>npx -y @romudille/agentpay-mcp</code> with <code>AGENTPAY_ENABLE_PAID=1</code> and
 <code>AGENTPAY_MAX_SPEND</code>) in Claude Desktop or Claude Code, or use the
 <code>agentpay-x402</code> Python SDK. Details: <a href="https://www.npmjs.com/package/@romudille/agentpay-mcp">npm README</a>.</p>

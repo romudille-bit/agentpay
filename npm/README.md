@@ -32,8 +32,10 @@ Gateway: `https://agentpay.tools`
 ## Remote MCP (claude.ai, ChatGPT, Perplexity, Grok)
 
 No install: add `https://agentpay.tools/mcp` as a custom connector (Streamable HTTP, no auth). It
-serves the keyless set — 17 free tools, the `verified_route` preview and `estimate_plan`. Paid
-verdicts still need the local server with a wallet (below) or the SDK. Per-harness steps:
+serves the keyless set — 17 free tools, `verified_route_preview` and `estimate_plan`. The three
+$0.01 tools (`pre_trade_check`, `verified_route`, `session_create`) answer an unpaid call with
+the x402 PaymentRequired, which a wallet-carrying MCP client pays in-band; without one, use the
+local server with a wallet (below) or the SDK. Per-harness steps:
 [agentpay.tools/connect](https://agentpay.tools/connect).
 
 ---

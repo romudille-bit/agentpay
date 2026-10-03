@@ -21,6 +21,7 @@ def test_each_harness_page_renders_with_steps_and_schema(client):
         assert '"@type":"HowTo"' in r.text
         assert f'<link rel="canonical" href="' in r.text
         assert "readOnlyHint" in r.text or "Paid verdicts" in r.text
+        assert "verified_route_preview" in r.text
 
 
 def test_unknown_harness_404(client):

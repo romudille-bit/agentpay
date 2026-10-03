@@ -709,7 +709,8 @@ async def mcp_server_card():
     MCP server: the remote Streamable-HTTP endpoint (keyless) and the local
     npm stdio server (wallet mode). `transport` stays for older readers."""
     remote = {"type": "streamable-http", "url": f"{GATEWAY_URL}/mcp", "auth": "none",
-              "note": "keyless: free tools, verified_route preview, estimate_plan"}
+              "note": ("keyless: free tools, verified_route_preview, estimate_plan; "
+                       "priced tools answer x402 PaymentRequired, payable in-band")}
     stdio = {"type": "stdio", "command": "npx", "args": ["-y", "@romudille/agentpay-mcp"],
              "runtime": "node>=18",
              "note": "wallet mode via AGENTPAY_ENABLE_PAID / AGENTPAY_BASE_KEY settles paid tools"}
@@ -751,7 +752,8 @@ def _remote_mcp_llms_line() -> str:
         return ""
     return (f"- Remote MCP (claude.ai, ChatGPT, Perplexity, Grok custom connectors): "
             f"{GATEWAY_URL}/mcp — Streamable HTTP, no auth, the keyless tool set. "
-            f"Install steps per harness: {GATEWAY_URL}/connect. Paid verdicts: local server or SDK.\n")
+            f"Install steps per harness: {GATEWAY_URL}/connect. Priced tools answer an x402 "
+            f"PaymentRequired a wallet-carrying client pays in-band; otherwise local server or SDK.\n")
 
 
 def _stacks_llms_note() -> str:
@@ -794,7 +796,7 @@ AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well
 2. GET  /tools → list tools
 3. POST /tools/{{name}}/call → {{ result, receipt }}  (free tools settle $0)
 
-Paid anchors (all $0.01, Bazaar-indexed): POST /v1/session/create (budget-capped session); pre_trade_check (one-call trade verdict — slippage at size, funding carry, OI crowding, security); verified_route (buyer-side trust oracle — sweeps the x402 marketplace, collapses sybils, returns one vetted, ready-to-pay provider). Each pick carries a typed `evidence[]` (x402 Trust-Provider evidenceType vocabulary).
+Paid anchors (all $0.01, Bazaar-indexed): POST /v1/session/create (budget-capped session); pre_trade_check (one-call trade verdict — slippage at size, funding carry, OI crowding, security); verified_route (buyer-side trust oracle — sweeps the x402 marketplace, collapses sybils, returns one vetted, ready-to-pay provider). Each pick carries a typed `evidence[]` (types follow the proposed x402 Trust-Provider evidenceType vocabulary).
 Price any multi-tool plan BEFORE spending: POST /v1/plan/estimate (free, no wallet).
 
 ## Gateway
