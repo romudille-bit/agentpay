@@ -238,6 +238,15 @@ test('an unknown tool name is a protocol error, not a gateway call', async () =>
   assert.equal(g.seen.filter((r) => r.method === 'POST').length, 0);
 });
 
+test('verified_route_preview is a remote-only name: stdio keeps one verified_route', async () => {
+  const g = await fakeGateway((req) => (req.url === '/tools'
+    ? { json: { tools: [...toolsList.tools, { name: 'verified_route', description: 'x', price_usdc: '0.01' }] } }
+    : { json: {} }));
+  const { replies } = await callOnce(g.url, { name: 'verified_route_preview', args: { need: 'x' } });
+  g.server.close();
+  assert.equal(replies[0].error.code, -32601);
+});
+
 test('a listing priced in decimal USD is not reported as free', async () => {
   // Bazaar listings carry either atomic units or an already-decimal figure;
   // reading "0.01" as atomic priced a real paid tool at $0.00 and then ranked it

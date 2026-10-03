@@ -159,6 +159,9 @@ async function failureReason(resp) {
 
 const META_PAYMENT = 'x402/payment';
 const META_PAYMENT_RESPONSE = 'x402/payment-response';
+// The free preview's name. On the remote `verified_route` is the gateway's paid
+// tool (an unpaid call answers PaymentRequired), so the preview is listed apart.
+const PREVIEW_TOOL = REMOTE ? 'verified_route_preview' : 'verified_route';
 
 class PaymentRequiredError extends Error {
   constructor(paymentRequired) {
@@ -711,10 +714,15 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
       'catalog sweep + usage-based sybil-collapse (folds one-wallet factories) +',
       'trust allowlist + delivery evidence from paid probes — the authoritative pick',
       'you can settle immediately.',
-      'Get it with a wallet via the agentpay-x402 SDK:',
-      '  pip install "agentpay-x402[base]"',
-      '  s.call("verified_route", {"need": "' + need + '", "budget_usd": ' + budgetUsd + '})',
-      'No payment happens in this MCP (it is keyless by design).',
+      ...(REMOTE ? [
+        'Get it here by calling verified_route (x402 in-band), or with the agentpay-x402 SDK.',
+        'This preview call is free.',
+      ] : [
+        'Get it with a wallet via the agentpay-x402 SDK:',
+        '  pip install "agentpay-x402[base]"',
+        '  s.call("verified_route", {"need": "' + need + '", "budget_usd": ' + budgetUsd + '})',
+        'No payment happens in this MCP (it is keyless by design).',
+      ]),
     ].join(' '),
   };
 }
@@ -734,7 +742,7 @@ function buildServer() {
 }
 
 const VERIFIED_ROUTE_TOOL_DEF = {
-  name: 'verified_route',
+  name: PREVIEW_TOOL,
   description: [
     'Buyer-side trust oracle for the x402 marketplace: "I need X, budget $Y — which',
     'tool is real?" Vets Coinbase Bazaar (discover → drop stubs/factory clones →',
@@ -751,9 +759,15 @@ const VERIFIED_ROUTE_TOOL_DEF = {
       '(name + usage stats + why) and survivor count to PROVE a real provider exists,',
       'but WITHHOLDS the provider URL + ready-to-pay x402 challenge. To get those —',
       'plus the full multi-query sweep + usage-based sybil-collapse + trust allowlist —',
-      'fund this install\'s wallet with USDC on Base and set AGENTPAY_ENABLE_PAID=1',
-      '(the paid verified_route costs $0.01), or use the agentpay-x402 SDK.',
-      'No payment happens while paid mode is off.',
+      ...(REMOTE ? [
+        'call verified_route ($0.01: an unpaid call returns the x402 PaymentRequired, which a',
+        'wallet-carrying client pays in-band), or use the agentpay-x402 SDK.',
+        'This preview never charges.',
+      ] : [
+        'fund this install\'s wallet with USDC on Base and set AGENTPAY_ENABLE_PAID=1',
+        '(the paid verified_route costs $0.01), or use the agentpay-x402 SDK.',
+        'No payment happens while paid mode is off.',
+      ]),
     ]),
     '',
     'Use when: "which x402 tool for X", "find a real/trustworthy paid API for X",',
@@ -885,10 +899,9 @@ async function listTools() {
     };
   }
 
-  // Drop the gateway's PAID verified_route — it's superseded by the keyless
-  // VERIFIED_ROUTE_TOOL_DEF preview below (otherwise the list has a duplicate
-  // name, and the paid entry would just throw "use the SDK" when called).
-  const gatewayTools = tools.filter((t) => t.name !== 'verified_route').map((t) => {
+  // The gateway's PAID verified_route: stdio reaches it through VERIFIED_ROUTE_TOOL_DEF
+  // (one name in the list); the remote lists it as itself, beside the preview.
+  const gatewayTools = tools.filter((t) => REMOTE || t.name !== 'verified_route').map((t) => {
     let description = t.description ?? '';
     if (t.use_when) description += `\n\nUse when: ${t.use_when}`;
     if (t.avoid_when) description += `\nNot for: ${t.avoid_when}`;
@@ -925,7 +938,7 @@ async function listTools() {
   const listed = [...gatewayTools, VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF];
   // Remote: the priced tools are the point of the endpoint (AGE-219) and what
   // x402 probers look for with a bounded number of unpaid calls — list them
-  // first so a client or scanner meets the in-band 402 before the 19 free tools.
+  // first so a client or scanner meets the in-band 402 before the free tools.
   if (REMOTE) listed.sort((a, b) => Number(b.annotations.readOnlyHint === false) - Number(a.annotations.readOnlyHint === false));
   return { tools: listed };
 }
@@ -954,7 +967,7 @@ async function callToolRequest(request) {
   // verified_route — keyless: thin trust preview; wallet mode: the PAID tool
   // ($0.01, settled in-place) with the full payload (provider URL + ready_to_pay,
   // multi-query sweep + usage-based sybil-collapse + trust allowlist).
-  if (name === 'verified_route') {
+  if (name === PREVIEW_TOOL) {
     try {
       const need = args.need;
       if (!need || typeof need !== 'string') {
@@ -962,9 +975,9 @@ async function callToolRequest(request) {
       }
       const budget = typeof args.budget_usd === 'number' ? args.budget_usd : DEFAULT_BUDGET;
       const chain = typeof args.chain === 'string' ? args.chain : '';
-      // Keyless: the free preview — unless the client brought a payment, in
-      // which case it is buying the paid tool in-band.
-      const result = (PAID || payment)
+      // Keyless stdio: the free preview — unless the client brought a payment, in
+      // which case it is buying the paid tool in-band. The remote preview never charges.
+      const result = (PAID || (payment && !REMOTE))
         ? await callTool('verified_route', { need, budget_usd: budget, ...(chain ? { chain } : {}) }, payment)
         : await verifiedRouteTool(need, budget, chain);
       if (result && result._meta?.[META_PAYMENT_RESPONSE]) return result;

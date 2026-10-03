@@ -22,6 +22,7 @@ const toolsList = { tools: [
   { name: 'fear_greed_index', description: 'x', price_usdc: '0.000', parameters: { type: 'object', properties: {} } },
   { name: 'pre_trade_check', description: 'x', price_usdc: '0.01', parameters: { type: 'object', properties: {} } },
   { name: 'token_price', description: 'x', price_usdc: '0.000', parameters: { type: 'object', properties: {} } },
+  { name: 'verified_route', description: 'x', price_usdc: '0.01', parameters: { type: 'object', properties: {} } },
 ] };
 
 // What the gateway answers once a payment has been presented and not delivered on.
@@ -85,6 +86,7 @@ async function startHttp(gatewayUrl) {
       AGENTPAY_BASE_KEY: KEY,            // must be ignored in http mode
       AGENTPAY_ENABLE_PAID: '1',         // must be ignored in http mode
       AGENTPAY_AGENT_ADDRESS: IDENTITY,
+      AGENTPAY_BAZAAR_URL: `${gatewayUrl}/discovery/search`,
       AGENTPAY_WALLET_PATH: path.join(dir, 'w.json'),
       PORT: String(port), HOST: '127.0.0.1',
     },
@@ -139,6 +141,10 @@ test('http mode: initialize, list, free call, x402-over-MCP paid flow, server ne
     assert.equal(byName.estimate_plan, true);
     assert.equal(byName.pre_trade_check, false);
     assert.equal(list.msg.result.tools[0].name, 'pre_trade_check', 'priced tools are listed first on the remote');
+    // verified_route is the gateway's paid tool; the free preview is listed beside it.
+    assert.equal(byName.verified_route, false);
+    assert.equal(byName.verified_route_preview, true);
+    assert.match(list.msg.result.tools.find((t) => t.name === 'verified_route_preview').description, /call verified_route \(\$0\.01/);
 
     const free = await rpc(srv.base, 3, 'tools/call', { name: 'fear_greed_index', arguments: {} });
     assert.equal(free.status, 200);
@@ -157,6 +163,18 @@ test('http mode: initialize, list, free call, x402-over-MCP paid flow, server ne
     assert.equal(pr.structuredContent.accepts[0].network, 'eip155:8453');
     assert.deepEqual(JSON.parse(pr.content[0].text), pr.structuredContent);
     assert.match(pr.structuredContent.error, /wallet-carrying MCP client/);
+
+    // An unpaid verified_route answers PaymentRequired; the preview never charges,
+    // even when a payment is attached.
+    const full = await rpc(srv.base, 41, 'tools/call', { name: 'verified_route', arguments: { need: 'dex liquidity' } });
+    assert.equal(full.msg.result.isError, true);
+    assert.equal(full.msg.result.structuredContent.accepts[0].network, 'eip155:8453');
+    assert.ok(gw.seen.some((r) => r.url === '/tools/verified_route/call'), 'it calls the gateway tool');
+    const preview = await rpcRaw(srv.base, { jsonrpc: '2.0', id: 42, method: 'tools/call',
+      params: { name: 'verified_route_preview', arguments: { need: 'dex liquidity' },
+                _meta: { 'x402/payment': { x402Version: 2, payload: { signature: '0xsig' } } } } });
+    assert.equal(preview.msg.result.structuredContent, undefined);
+    assert.match(preview.msg.result.content[0].text, /PREVIEW/);
     assert.ok(!gw.seen.some((r) => r.headers['payment-signature']), 'the server signed nothing');
 
     // The client pays in-band: _meta x402/payment → PAYMENT-SIGNATURE, receipt in _meta
