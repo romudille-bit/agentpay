@@ -703,6 +703,10 @@ async def auth_md():
                     headers={"Cache-Control": "public, max-age=3600"})
 
 
+# In lockstep with npm/package.json (tests/test_mcp_versions.py).
+MCP_SERVER_VERSION = "2.7.3"
+
+
 @router.get("/.well-known/mcp/server-card.json", response_class=JSONResponse)
 async def mcp_server_card():
     """MCP Server Card (SEP-1649, schema still stabilizing) for the AgentPay
@@ -715,7 +719,7 @@ async def mcp_server_card():
              "runtime": "node>=18",
              "note": "wallet mode via AGENTPAY_ENABLE_PAID / AGENTPAY_BASE_KEY settles paid tools"}
     return JSONResponse(content={
-        "serverInfo": {"name": "agentpay-mcp", "version": "2.6.0"},
+        "serverInfo": {"name": "agentpay-mcp", "version": MCP_SERVER_VERSION},
         "description": ("AgentPay x402 gateway as MCP tools: 17 free crypto/"
                         "web data tools, keyless vetted routing (verified_route "
                         "preview), and pre-flight plan pricing."),

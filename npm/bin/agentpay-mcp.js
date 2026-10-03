@@ -60,7 +60,7 @@ import { loadOrCreateWallet, paidModeEnabled, remoteIdentity } from './wallet.js
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.7.2';
+const VERSION = '2.7.3';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
