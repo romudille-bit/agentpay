@@ -183,10 +183,13 @@ function paymentRequiredFrom(challenge, toolName, url) {
   };
 }
 
-function payerOf(payment) {
+// The EIP-3009 signer, or null: a Stacks payload carries its payer inside the signed tx.
+function signerOf(payment) {
   const from = payment?.payload?.authorization?.from;
-  return /^0x[0-9a-fA-F]{40}$/.test(from || '') ? from : AGENT_ADDRESS;
+  return /^0x[0-9a-fA-F]{40}$/.test(from || '') ? from : null;
 }
+
+const payerOf = (payment) => signerOf(payment) ?? AGENT_ADDRESS;
 
 function paymentResult(payment, resp) {
   return { content: [{ type: 'text', text: JSON.stringify(resp.result ?? resp, null, 2) }],
@@ -194,24 +197,60 @@ function paymentResult(payment, resp) {
              success: true,
              transaction: resp.payment?.tx_hash ?? null,
              network: resp.payment?.network ?? payment?.accepted?.network ?? null,
-             payer: payerOf(payment),
+             payer: signerOf(payment),
              ...(resp.session ? { session: resp.session } : {}),
            } } };
 }
 
+// A paid call that fails once the payment has left the client must say what
+// happened to the money; a bare status invites a second payment.
+function paidFailure(toolName, payment, status, body) {
+  const tx = body.txid ?? body.payment_id ?? null;
+  const state = typeof body.payment_status === 'string' ? body.payment_status : 'unknown';
+  let text, success = false;
+  if (state === 'uncertain') {
+    text = `payment sent, not confirmed yet (${body.error_reason ?? 'unconfirmed'}). Do NOT sign a new ` +
+           `payment: retry this call with the same _meta x402/payment once transaction ${tx} confirms.`;
+  } else if (state.startsWith('refund_')) {
+    success = true;
+    text = `payment settled (transaction ${tx}) but the tool failed. ` + (state === 'refund_pending'
+      ? `A refund is queued (about ${body.refund_eta_seconds ?? 60}s).`
+      : 'No automatic refund on this rail: keep the transaction id and open an issue at ' +
+        'https://github.com/romudille-bit/agentpay/issues.');
+  } else {
+    text = `the gateway answered ${status} after the payment was sent, so whether it settled is ` +
+           'unknown. Check the payer\'s transactions before paying again.';
+  }
+  return { isError: true,
+           content: [{ type: 'text', text: `AgentPay '${toolName}': ${text}` }],
+           _meta: { [META_PAYMENT_RESPONSE]: {
+             success, ...(success ? {} : { errorReason: state }),
+             transaction: tx, network: payment?.accepted?.network ?? null, payer: signerOf(payment),
+           } } };
+}
+
+const rateLimited = (toolName) =>
+  new Error(`'${toolName}' is rate limited at the gateway — retry in up to a minute`);
+
 async function payInBand(toolName, url, params, payment) {
   const payer = payerOf(payment);
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': USER_AGENT,
-      'PAYMENT-SIGNATURE': Buffer.from(JSON.stringify(payment)).toString('base64'),
-      'X-Agent-Address': payer,
-    },
-    body: JSON.stringify({ parameters: params, agent_address: payer }),
-    signal: AbortSignal.timeout(90_000),
-  });
+  let r;
+  try {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': USER_AGENT,
+        'PAYMENT-SIGNATURE': Buffer.from(JSON.stringify(payment)).toString('base64'),
+        'X-Agent-Address': payer,
+      },
+      body: JSON.stringify({ parameters: params, agent_address: payer }),
+      signal: AbortSignal.timeout(90_000),
+    });
+  } catch (err) {
+    log(`AgentPay MCP: paid call to ${toolName} got no answer: ${err.message}`);
+    return paidFailure(toolName, payment, 'nothing', {});
+  }
   if (r.status === 402) {
     // Rejected. The gateway's rejection body is only {error, reason}, so
     // re-fetch the challenge: the client gets a complete PaymentRequired
@@ -224,7 +263,16 @@ async function payInBand(toolName, url, params, payment) {
     if (why) pr.error = `payment rejected (${why}) — ${pr.error}`;
     throw new PaymentRequiredError(pr);
   }
-  if (!r.ok) throw new Error(`Paid call failed: ${r.status}${await failureReason(r)}`);
+  if (r.status === 429) throw rateLimited(toolName);
+  // Other 4xx are refused before settlement (bad body, unknown tool).
+  if (r.status < 500 && !r.ok) throw new Error(`Paid call failed: ${r.status}${await failureReason(r)}`);
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    if (text) log(`AgentPay MCP: gateway ${r.status} body: ${text.slice(0, 1000)}`);
+    let body = {};
+    try { const j = JSON.parse(text); if (j && typeof j === 'object') body = j; } catch { /* edge error page */ }
+    return paidFailure(toolName, payment, r.status, body);
+  }
   return paymentResult(payment, await r.json());
 }
 
@@ -265,6 +313,7 @@ async function callTool(toolName, params, payment = null) {
     return data.result ?? data;
   }
 
+  if (r1.status === 429) throw rateLimited(toolName);
   if (r1.status !== 402) {
     throw new Error(`Unexpected status ${r1.status}${await failureReason(r1)}`);
   }
@@ -295,6 +344,7 @@ async function callTool(toolName, params, payment = null) {
     signal: AbortSignal.timeout(45_000),
   });
 
+  if (r2.status === 429) throw rateLimited(toolName);
   if (!r2.ok) {
     throw new Error(
       `Tool call failed after free proof: ${r2.status}${await failureReason(r2)}`);

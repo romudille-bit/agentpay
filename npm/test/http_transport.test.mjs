@@ -21,7 +21,18 @@ const IDENTITY = '0x' + 'ab'.repeat(20);
 const toolsList = { tools: [
   { name: 'fear_greed_index', description: 'x', price_usdc: '0.000', parameters: { type: 'object', properties: {} } },
   { name: 'pre_trade_check', description: 'x', price_usdc: '0.01', parameters: { type: 'object', properties: {} } },
+  { name: 'token_price', description: 'x', price_usdc: '0.000', parameters: { type: 'object', properties: {} } },
 ] };
+
+// What the gateway answers once a payment has been presented and not delivered on.
+const AFTER_PAYMENT = {
+  '0xbad': [402, { error: 'settlement failed', reason: 'invalid_signature' }],
+  '0xuncertain': [503, { error: 'Stacks settlement uncertain', payment_status: 'uncertain',
+                         error_reason: 'confirmation_timeout', payment_id: 'pid-1', txid: '0xstx1' }],
+  '0xtoolfail': [500, { error: 'Tool execution failed', payment_id: '0xtx2',
+                        payment_status: 'refund_disabled', error_reason: 'tool_exec_failed: boom' }],
+  '0xedge': [502, '<html>bad gateway</html>'],
+};
 
 function fakeGateway() {
   const seen = [];
@@ -33,9 +44,10 @@ function fakeGateway() {
     if (req.url === '/tools') json = toolsList;
     else if (req.url.startsWith('/tools/') && req.headers['payment-signature']) {
       const paid = JSON.parse(Buffer.from(req.headers['payment-signature'], 'base64').toString());
-      if (paid.payload?.signature === '0xbad') { status = 402; json = { error: 'settlement failed', reason: 'invalid_signature' }; }
+      if (AFTER_PAYMENT[paid.payload?.signature]) [status, json] = AFTER_PAYMENT[paid.payload.signature];
       else json = { tool: 'pre_trade_check', result: { verdict: 'ok' },
                     payment: { amount_usdc: '0.01', tx_hash: '0xtx1', network: 'base-mainnet' } };
+    } else if (req.url.includes('token_price')) { status = 429; json = { error: 'Rate limit exceeded' };
     } else if (req.url.startsWith('/tools/') && !req.headers['x-payment']) {
       const free = req.url.includes('fear_greed');
       status = 402;
@@ -178,6 +190,41 @@ test('http mode: initialize, list, free call, x402-over-MCP paid flow, server ne
     assert.match(srv.stderr(), /remote \(http\) mode/);
     assert.ok(!fs.existsSync(srv.walletPath), 'remote mode never writes a wallet file');
     assert.doesNotMatch(srv.stderr(), /AgentPay MCP: wallet /);
+  } finally {
+    srv.stop();
+    gw.server.close();
+  }
+});
+
+test('http mode: a paid call that fails after payment keeps the receipt; 429 reads as a rate limit', async () => {
+  const gw = await fakeGateway();
+  const srv = await startHttp(gw.url);
+  const pay = (id, signature) => rpcRaw(srv.base, { jsonrpc: '2.0', id, method: 'tools/call',
+    params: { name: 'pre_trade_check', arguments: {}, _meta: { 'x402/payment': {
+      x402Version: 2, accepted: { network: 'stacks:1' }, payload: { signature } } } } });
+  try {
+    // Broadcast but unconfirmed: the client is told to re-present, not to pay again.
+    const unc = (await pay(1, '0xuncertain')).msg.result;
+    assert.equal(unc.isError, true);
+    assert.equal(unc.structuredContent, undefined, 'not a PaymentRequired: nothing to pay again');
+    assert.match(unc.content[0].text, /Do NOT sign a new payment.*0xstx1/);
+    assert.deepEqual(unc._meta['x402/payment-response'],
+      { success: false, errorReason: 'uncertain', transaction: '0xstx1', network: 'stacks:1', payer: null });
+
+    // Settled, then the tool failed: the transaction id survives.
+    const failed = (await pay(2, '0xtoolfail')).msg.result;
+    assert.match(failed.content[0].text, /payment settled \(transaction 0xtx2\) but the tool failed/);
+    assert.doesNotMatch(failed.content[0].text, /boom/, 'gateway internals stay out of the reply');
+    assert.equal(failed._meta['x402/payment-response'].transaction, '0xtx2');
+    assert.equal(failed._meta['x402/payment-response'].success, true);
+
+    // An edge error page after the payment was sent: outcome unknown, said so.
+    const edge = (await pay(3, '0xedge')).msg.result;
+    assert.match(edge.content[0].text, /answered 502 after the payment was sent/);
+    assert.equal(edge._meta['x402/payment-response'].errorReason, 'unknown');
+
+    const limited = await rpc(srv.base, 4, 'tools/call', { name: 'token_price', arguments: {} });
+    assert.match(limited.msg.result.content[0].text, /rate limited at the gateway/);
   } finally {
     srv.stop();
     gw.server.close();
