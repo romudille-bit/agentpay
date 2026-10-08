@@ -1,0 +1,411 @@
+{
+  "summary": {
+    "runAt": "2026-10-08T21:05:04.577Z",
+    "network": "eip155:5042",
+    "dry": true,
+    "payer": null,
+    "payerUrl": null,
+    "anchor": null,
+    "anchorUrl": null,
+    "targets": 11,
+    "providers": 8,
+    "answered402": 11,
+    "validatedFirst": 0,
+    "paid": 0,
+    "delivered": 0,
+    "deliveredWithoutReceipt": 0,
+    "priceMismatch": 0,
+    "attested": 0,
+    "spentUsd": "0",
+    "proofTypes": {
+      "eip3009:tx": 0,
+      "gateway:tx": 0,
+      "gateway:transfer": 0,
+      "none": 11
+    }
+  },
+  "catalog": {
+    "pulledAt": "2026-10-08T21:04:48.969Z",
+    "listings": 2144,
+    "providers": 8,
+    "domains": {
+      "batched": 2056,
+      "eip3009": 90
+    }
+  },
+  "rows": [
+    {
+      "id": "exa_contents_batched",
+      "provider": "Exa",
+      "resource": "https://api.exa.ai/contents",
+      "method": "POST",
+      "domain": "batched",
+      "note": null,
+      "listed": {
+        "amount": "1000",
+        "usd": "0.001",
+        "payTo": "0xB98eF29eb2be19Ae646A8FC0248255B90A332dbC",
+        "siwx": false,
+        "lastUpdated": "2026-09-22T15:05:08.577Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 900,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "batched",
+            "usd": "0.001",
+            "payTo": "0xB98eF29eb2be19Ae646A8FC0248255B90A332dbC"
+          },
+          {
+            "domain": "eip3009",
+            "usd": "0.001",
+            "payTo": "0xB98eF29eb2be19Ae646A8FC0248255B90A332dbC"
+          }
+        ],
+        "challenged": "1000",
+        "challengedUsd": "0.001",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "exa_contents_eip3009",
+      "provider": "Exa",
+      "resource": "https://api.exa.ai/contents",
+      "method": "POST",
+      "domain": "eip3009",
+      "note": null,
+      "listed": {
+        "amount": "1000",
+        "usd": "0.001",
+        "payTo": "0xB98eF29eb2be19Ae646A8FC0248255B90A332dbC",
+        "siwx": false,
+        "lastUpdated": "2026-09-22T15:05:08.577Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 3313,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "batched",
+            "usd": "0.001",
+            "payTo": "0xB98eF29eb2be19Ae646A8FC0248255B90A332dbC"
+          },
+          {
+            "domain": "eip3009",
+            "usd": "0.001",
+            "payTo": "0xB98eF29eb2be19Ae646A8FC0248255B90A332dbC"
+          }
+        ],
+        "challenged": "1000",
+        "challengedUsd": "0.001",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "goldsky_eth_blocknumber",
+      "provider": "Goldsky",
+      "resource": "https://edge.goldsky.com/standard/evm/1",
+      "method": "POST",
+      "domain": "batched",
+      "note": null,
+      "listed": {
+        "amount": "5000",
+        "usd": "0.005",
+        "payTo": "0x87aB362fEF2106d24762289410a18e7c42304C68",
+        "siwx": false,
+        "lastUpdated": "2026-09-22T15:05:07.135Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 2388,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "batched",
+            "usd": "0.005",
+            "payTo": "0x87aB362fEF2106d24762289410a18e7c42304C68"
+          }
+        ],
+        "challenged": "5000",
+        "challengedUsd": "0.005",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "quicknode_base_blocknumber",
+      "provider": "Quicknode",
+      "resource": "https://x402.quicknode.com/base-mainnet/",
+      "method": "POST",
+      "domain": "batched",
+      "note": "listed with siwx=true (sign-in-with-wallet)",
+      "listed": {
+        "amount": "100",
+        "usd": "0.0001",
+        "payTo": "0xF46394adDdA95A3d5bCC1124605E3d15D204623C",
+        "siwx": true,
+        "lastUpdated": "2026-09-30T17:02:59.453Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 2321,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "batched",
+            "usd": "0.0001",
+            "payTo": "0xF46394adDdA95A3d5bCC1124605E3d15D204623C"
+          }
+        ],
+        "challenged": "100",
+        "challengedUsd": "0.0001",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "blockrun_nano_kalshi_markets",
+      "provider": "BlockRun.AI",
+      "resource": "https://nano.blockrun.ai/api/v1/pm/kalshi/markets?limit=1",
+      "method": "GET",
+      "domain": "batched",
+      "note": null,
+      "listed": {
+        "amount": "1000",
+        "usd": "0.001",
+        "payTo": "0x6E007731870EDe419CfB31889Cd5C4493CEcb04c",
+        "siwx": false,
+        "lastUpdated": "2026-09-22T15:05:10.593Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 799,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "batched",
+            "usd": "0.001",
+            "payTo": "0x6E007731870EDe419CfB31889Cd5C4493CEcb04c"
+          }
+        ],
+        "challenged": "1000",
+        "challengedUsd": "0.001",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "blockrun_arc_defillama_price",
+      "provider": "BlockRun.AI",
+      "resource": "https://arc.blockrun.ai/api/v1/defillama/prices/coingecko:ethereum",
+      "method": "GET",
+      "domain": "eip3009",
+      "note": null,
+      "listed": {
+        "amount": "2000",
+        "usd": "0.002",
+        "payTo": "0x634D274e67DafaF76C54153aa113906a606e1E0B",
+        "siwx": false,
+        "lastUpdated": "2026-09-28T18:37:40.767Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 560,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "eip3009",
+            "usd": "0.002",
+            "payTo": "0x634D274e67DafaF76C54153aa113906a606e1E0B"
+          }
+        ],
+        "challenged": "2000",
+        "challengedUsd": "0.002",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "orthogonal_findymail_technologies",
+      "provider": "Orthogonal",
+      "resource": "https://np.orthogonal.com/findymail/api/technologies/search?domain=arc.io",
+      "method": "GET",
+      "domain": "batched",
+      "note": null,
+      "listed": {
+        "amount": "1000",
+        "usd": "0.001",
+        "payTo": "0x24a5Ec14De5DBf0eD1e27784D63D22DC9451998F",
+        "siwx": false,
+        "lastUpdated": "2026-09-22T15:07:56.977Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 639,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "batched",
+            "usd": "0.001",
+            "payTo": "0x24a5Ec14De5DBf0eD1e27784D63D22DC9451998F"
+          }
+        ],
+        "challenged": "1000",
+        "challengedUsd": "0.001",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "lonestar_options_flow",
+      "provider": "LoneStarOracle",
+      "resource": "https://options.lonestaroracle.xyz/flow?symbol=AAPL",
+      "method": "GET",
+      "domain": "eip3009",
+      "note": null,
+      "listed": {
+        "amount": "10000",
+        "usd": "0.01",
+        "payTo": "0xeF2a4B6756895aAf1374640dcFCD4947959442ab",
+        "siwx": false,
+        "lastUpdated": "2026-09-29T17:37:07.348Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 828,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "eip3009",
+            "usd": "0.01",
+            "payTo": "0xeF2a4B6756895aAf1374640dcFCD4947959442ab"
+          }
+        ],
+        "challenged": "10000",
+        "challengedUsd": "0.01",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "lonestar_earnings_calendar",
+      "provider": "LoneStarOracle",
+      "resource": "https://earnings.lonestaroracle.xyz/calendar?tickers=AAPL,MSFT&days_soon=7",
+      "method": "GET",
+      "domain": "eip3009",
+      "note": "catalog schema marks `tickers` optional; the live API rejects with 400 (before any challenge) when it is missing",
+      "listed": {
+        "amount": "30000",
+        "usd": "0.03",
+        "payTo": "0xeF2a4B6756895aAf1374640dcFCD4947959442ab",
+        "siwx": false,
+        "lastUpdated": "2026-09-29T17:37:08.088Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 680,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "eip3009",
+            "usd": "0.03",
+            "payTo": "0xeF2a4B6756895aAf1374640dcFCD4947959442ab"
+          }
+        ],
+        "challenged": "30000",
+        "challengedUsd": "0.03",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "vangrid_spatial_query",
+      "provider": "Vangrid",
+      "resource": "https://data.vangrid.io/api/v1/spatial/query",
+      "method": "POST",
+      "domain": "eip3009",
+      "note": null,
+      "listed": {
+        "amount": "10000",
+        "usd": "0.01",
+        "payTo": "0x1a8b69A1338C6E829E1Ced4c3007C79E945E4E70",
+        "siwx": false,
+        "lastUpdated": "2026-09-30T15:18:40.446Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 942,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "eip3009",
+            "usd": "0.01",
+            "payTo": "0x1a8b69A1338C6E829E1Ced4c3007C79E945E4E70"
+          }
+        ],
+        "challenged": "10000",
+        "challengedUsd": "0.01",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    },
+    {
+      "id": "aisa_ahrefs_domain_rating",
+      "provider": "AIsa API",
+      "resource": "https://api.aisa.one/apis/v2/ahrefs/site-explorer/domain-rating?target=arc.io",
+      "method": "GET",
+      "domain": "batched",
+      "note": null,
+      "listed": {
+        "amount": "100000",
+        "usd": "0.1",
+        "payTo": "0xBd7b9f3e0CD3E1f6e698D0eeBb99F96E093BdeE3",
+        "siwx": false,
+        "lastUpdated": "2026-09-28T15:27:12.448Z"
+      },
+      "unpaid": {
+        "status": 402,
+        "ms": 2183,
+        "header402": true,
+        "arcOptions": [
+          {
+            "domain": "batched",
+            "usd": "0.1",
+            "payTo": "0xBd7b9f3e0CD3E1f6e698D0eeBb99F96E093BdeE3"
+          }
+        ],
+        "challenged": "100000",
+        "challengedUsd": "0.1",
+        "validatedFirst": false
+      },
+      "paid": null,
+      "proof": null,
+      "attestation": null
+    }
+  ]
+}

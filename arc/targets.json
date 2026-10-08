@@ -1,0 +1,97 @@
+[
+  {
+    "id": "exa_contents_batched",
+    "provider": "Exa",
+    "resource": "https://api.exa.ai/contents",
+    "method": "POST",
+    "body": { "urls": ["https://www.arc.io"] },
+    "domain": "batched",
+    "max": "0.002"
+  },
+  {
+    "id": "exa_contents_eip3009",
+    "provider": "Exa",
+    "resource": "https://api.exa.ai/contents",
+    "method": "POST",
+    "body": { "urls": ["https://www.arc.io"] },
+    "domain": "eip3009",
+    "max": "0.002"
+  },
+  {
+    "id": "goldsky_eth_blocknumber",
+    "provider": "Goldsky",
+    "resource": "https://edge.goldsky.com/standard/evm/1",
+    "method": "POST",
+    "body": { "jsonrpc": "2.0", "method": "eth_blockNumber", "id": 1 },
+    "domain": "batched",
+    "max": "0.01"
+  },
+  {
+    "id": "quicknode_base_blocknumber",
+    "provider": "Quicknode",
+    "resource": "https://x402.quicknode.com/base-mainnet/",
+    "method": "POST",
+    "body": { "jsonrpc": "2.0", "method": "eth_blockNumber", "id": 1 },
+    "domain": "batched",
+    "max": "0.001",
+    "note": "listed with siwx=true (sign-in-with-wallet)"
+  },
+  {
+    "id": "blockrun_nano_kalshi_markets",
+    "provider": "BlockRun.AI",
+    "resource": "https://nano.blockrun.ai/api/v1/pm/kalshi/markets?limit=1",
+    "method": "GET",
+    "domain": "batched",
+    "max": "0.002"
+  },
+  {
+    "id": "blockrun_arc_defillama_price",
+    "provider": "BlockRun.AI",
+    "resource": "https://arc.blockrun.ai/api/v1/defillama/prices/coingecko:ethereum",
+    "method": "GET",
+    "domain": "eip3009",
+    "max": "0.005"
+  },
+  {
+    "id": "orthogonal_findymail_technologies",
+    "provider": "Orthogonal",
+    "resource": "https://np.orthogonal.com/findymail/api/technologies/search?domain=arc.io",
+    "method": "GET",
+    "domain": "batched",
+    "max": "0.002"
+  },
+  {
+    "id": "lonestar_options_flow",
+    "provider": "LoneStarOracle",
+    "resource": "https://options.lonestaroracle.xyz/flow?symbol=AAPL",
+    "method": "GET",
+    "domain": "eip3009",
+    "max": "0.02"
+  },
+  {
+    "id": "lonestar_earnings_calendar",
+    "provider": "LoneStarOracle",
+    "resource": "https://earnings.lonestaroracle.xyz/calendar?tickers=AAPL,MSFT&days_soon=7",
+    "method": "GET",
+    "domain": "eip3009",
+    "max": "0.05",
+    "note": "catalog schema marks `tickers` optional; the live API rejects with 400 (before any challenge) when it is missing"
+  },
+  {
+    "id": "vangrid_spatial_query",
+    "provider": "Vangrid",
+    "resource": "https://data.vangrid.io/api/v1/spatial/query",
+    "method": "POST",
+    "body": { "aoi": { "type": "Point", "coordinates": [-58.3816, -34.6037] }, "radius_m": 1000, "limit": 5 },
+    "domain": "eip3009",
+    "max": "0.02"
+  },
+  {
+    "id": "aisa_ahrefs_domain_rating",
+    "provider": "AIsa API",
+    "resource": "https://api.aisa.one/apis/v2/ahrefs/site-explorer/domain-rating?target=arc.io",
+    "method": "GET",
+    "domain": "batched",
+    "max": "0.12"
+  }
+]

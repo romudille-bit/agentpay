@@ -1,0 +1,116 @@
+{
+  "pulledAt": "2026-10-08T21:04:48.969Z",
+  "network": "eip155:5042",
+  "listings": 2144,
+  "arcOnly": 73,
+  "domains": {
+    "batched": 2056,
+    "eip3009": 90
+  },
+  "priceUsd": {
+    "median": "0.1",
+    "atOrUnder1c": 340
+  },
+  "providers": [
+    {
+      "name": "AIsa API",
+      "hosts": [
+        "api.aisa.one"
+      ],
+      "listings": 1581,
+      "batched": 1581,
+      "eip3009": 0,
+      "minUsd": "0.1",
+      "medianUsd": "0.1"
+    },
+    {
+      "name": "Orthogonal",
+      "hosts": [
+        "np.orthogonal.com"
+      ],
+      "listings": 289,
+      "batched": 289,
+      "eip3009": 0,
+      "minUsd": "0.001",
+      "medianUsd": "0.03"
+    },
+    {
+      "name": "Quicknode",
+      "hosts": [
+        "x402.quicknode.com"
+      ],
+      "listings": 132,
+      "batched": 132,
+      "eip3009": 0,
+      "minUsd": "0.0001",
+      "medianUsd": "0.0001"
+    },
+    {
+      "name": "BlockRun.AI",
+      "hosts": [
+        "arc.blockrun.ai",
+        "nano.blockrun.ai"
+      ],
+      "listings": 114,
+      "batched": 41,
+      "eip3009": 73,
+      "minUsd": "0",
+      "medianUsd": "0.0085"
+    },
+    {
+      "name": "LoneStarOracle",
+      "hosts": [
+        "analyst.lonestaroracle.xyz",
+        "capitol.lonestaroracle.xyz",
+        "earnings.lonestaroracle.xyz",
+        "equity.lonestaroracle.xyz",
+        "insider.lonestaroracle.xyz",
+        "macro.lonestaroracle.xyz",
+        "options.lonestaroracle.xyz",
+        "portfolio.lonestaroracle.xyz",
+        "rwa.lonestaroracle.xyz",
+        "smartmoney.lonestaroracle.xyz",
+        "stable.lonestaroracle.xyz",
+        "ta.lonestaroracle.xyz"
+      ],
+      "listings": 12,
+      "batched": 0,
+      "eip3009": 12,
+      "minUsd": "0.01",
+      "medianUsd": "0.05"
+    },
+    {
+      "name": "Goldsky",
+      "hosts": [
+        "edge.goldsky.com"
+      ],
+      "listings": 11,
+      "batched": 11,
+      "eip3009": 0,
+      "minUsd": "0.005",
+      "medianUsd": "0.005"
+    },
+    {
+      "name": "Vangrid",
+      "hosts": [
+        "data.vangrid.io"
+      ],
+      "listings": 3,
+      "batched": 0,
+      "eip3009": 3,
+      "minUsd": "0.005",
+      "medianUsd": "0.01"
+    },
+    {
+      "name": "Exa",
+      "hosts": [
+        "api.exa.ai"
+      ],
+      "listings": 2,
+      "batched": 2,
+      "eip3009": 2,
+      "minUsd": "0.001",
+      "medianUsd": "0.007"
+    }
+  ]
+}

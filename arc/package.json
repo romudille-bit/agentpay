@@ -1,0 +1,26 @@
+{
+  "name": "agentpay-arc-receipts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pays live x402 listings on Arc mainnet and anchors what the buyer got on-chain.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "catalog": "node src/catalog.mjs",
+    "probe:dry": "node src/probe.mjs --dry",
+    "probe": "node --env-file-if-exists=.env src/probe.mjs",
+    "compile": "node scripts/compile.mjs",
+    "deploy": "node --env-file-if-exists=.env scripts/deploy.mjs",
+    "wallet": "node --env-file-if-exists=.env scripts/wallet.mjs"
+  },
+  "dependencies": {
+    "@circle-fin/x402-batching": "^3.5.0",
+    "@x402/core": "^2.28.0",
+    "@x402/evm": "^2.28.0",
+    "@x402/fetch": "^2.28.0",
+    "viem": "^2.57.0"
+  },
+  "devDependencies": {
+    "solc": "^0.8.37"
+  }
+}

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arc receipt check</title>
+<meta name="description" content="What an agent actually gets after paying x402 listings on Arc mainnet: delivery, price charged vs listed, latency, and the proof it holds.">
+<style>
+  :root{--bg:#f7f7f5;--fg:#17191c;--mut:#6b7079;--line:#dfe1e4;--card:#fff;--ok:#1f7a4d;--bad:#b3261e;--warn:#9a6700;--acc:#1f4fd8;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#111316;--fg:#e8e9eb;--mut:#9aa0a8;--line:#2a2e34;--card:#181b1f;--ok:#4cc38a;--bad:#ff6b63;--warn:#e2b340;--acc:#7aa2ff}}
+  :root[data-theme=dark]{--bg:#111316;--fg:#e8e9eb;--mut:#9aa0a8;--line:#2a2e34;--card:#181b1f;--ok:#4cc38a;--bad:#ff6b63;--warn:#e2b340;--acc:#7aa2ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  main{max-width:1180px;margin:0 auto;padding:40px 16px 64px}
+  h1{font-size:28px;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--mut);margin:0 0 24px}
+  a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:0 0 24px}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .tile b{display:block;font-size:24px;font-weight:600;letter-spacing:-.01em}
+  .tile span{color:var(--mut);font-size:13px}
+  .meta{color:var(--mut);font-size:13px;margin:0 0 20px}
+  .meta code{font-family:var(--mono);font-size:12px}
+  .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+  table{border-collapse:collapse;width:100%;min-width:980px;font-size:13.5px}
+  th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
+  th{font-weight:600;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em;background:var(--bg)}
+  tr:last-child td{border-bottom:0}
+  td.ep{max-width:320px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:12px}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.mut{color:var(--mut)}
+  .pill{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--line);font-size:12px}
+  h2{font-size:17px;margin:32px 0 8px}
+  .notes{color:var(--mut);font-size:14px;max-width:860px}
+  .notes dt{font-weight:600;color:var(--fg);margin-top:10px}
+  .notes dd{margin:2px 0 0}
+  .empty{padding:24px;color:var(--mut)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Arc receipt check</h1>
+  <p class="sub">What a buyer actually gets after paying x402 listings on Arc mainnet — delivery, price charged vs listed, latency, and the proof it holds. By <a href="https://agentpay.tools">AgentPay</a>.</p>
+  <div class="tiles" id="tiles"></div>
+  <p class="meta" id="meta"></p>
+  <div class="wrap"><table id="t"><thead><tr>
+    <th>Provider</th><th>Endpoint</th><th>Settlement</th><th>Listed</th><th>Challenged</th><th>Charged</th><th>Unpaid</th><th>Paid</th><th>Delivered</th><th>Receipt</th><th>Proof</th><th>Anchored</th>
+  </tr></thead><tbody></tbody></table></div>
+  <h2>What the columns mean</h2>
+  <dl class="notes">
+    <dt>Settlement</dt><dd><b>gateway</b> = Circle Gateway batched (an off-chain authorization, netted on-chain later; no per-call transaction). <b>eip3009</b> = plain USDC <code>transferWithAuthorization</code>, one transaction per call.</dd>
+    <dt>Listed / Challenged / Charged</dt><dd>Price in Circle's Agent Marketplace catalog, price in the live 402 challenge, and the amount the signed authorization carried.</dd>
+    <dt>Unpaid</dt><dd>Status and latency of the request before any payment. A non-402 here means the provider validated or served the request before asking for money.</dd>
+    <dt>Delivered</dt><dd>A 2xx with a non-empty, non-error body after payment.</dd>
+    <dt>Receipt</dt><dd>Whether the provider returned a <code>PAYMENT-RESPONSE</code> settlement receipt with the data.</dd>
+    <dt>Proof</dt><dd>What the buyer can point at afterwards: an Arc transaction, a Gateway transfer id, or nothing.</dd>
+    <dt>Anchored</dt><dd>The probe writes a hash of each receipt to the <a id="anchorlink" href="#">ReceiptAnchor</a> contract on Arc, so the row can be checked later even when settlement itself left no transaction.</dd>
+  </dl>
+  <p class="notes">Shape only: response bodies are never published, only their size and hash. Source and method: <a href="https://github.com/romudille-bit/agentpay/tree/main/arc">github.com/romudille-bit/agentpay/arc</a>.</p>
+</main>
+<script>
+(async () => {
+  const q = (s) => document.querySelector(s);
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  let L; try { L = await (await fetch("./ledger.json", { cache: "no-store" })).json(); } catch { q("#tiles").innerHTML = '<div class="empty">No ledger.json yet — run the probe.</div>'; return; }
+  const S = L.summary, C = L.catalog;
+  const tile = (v, k) => `<div class="tile"><b>${esc(v)}</b><span>${esc(k)}</span></div>`;
+  q("#tiles").innerHTML = [
+    tile(S.providers, "providers probed"), tile(S.paid, "paid calls"), tile(S.delivered, "delivered"),
+    tile(S.deliveredWithoutReceipt ?? 0, "delivered, no receipt"), tile(S.priceMismatch, "price ≠ listed"),
+    tile(S.validatedFirst, "validated before 402"), tile("$" + S.spentUsd, "USDC spent"), tile(S.attested, "anchored on Arc"),
+  ].join("");
+  const when = new Date(S.runAt).toUTCString().replace(" GMT", " UTC");
+  q("#meta").innerHTML = `Run ${esc(when)}${S.dry ? " (unpaid pass only)" : ""} · catalog ${esc(C.listings)} Arc listings from ${esc(C.providers)} providers (${esc(C.domains.batched)} gateway-batched, ${esc(C.domains.eip3009)} eip3009), pulled ${esc(new Date(C.pulledAt).toUTCString().replace(" GMT"," UTC"))}`
+    + (S.payer ? ` · payer <a href="${esc(S.payerUrl)}"><code>${esc(S.payer.slice(0,6))}…${esc(S.payer.slice(-4))}</code></a>` : "")
+    + (S.anchor ? ` · anchor <a href="${esc(S.anchorUrl)}"><code>${esc(S.anchor.slice(0,6))}…${esc(S.anchor.slice(-4))}</code></a>` : "");
+  if (S.anchorUrl) q("#anchorlink").href = S.anchorUrl;
+  const yn = (v, okText = "yes", badText = "no") => v ? `<span class="ok">${okText}</span>` : `<span class="bad">${badText}</span>`;
+  const st = (x) => x && x.status != null ? `${esc(x.status)} <span class="mut">${esc(x.ms)} ms</span>` : '<span class="mut">—</span>';
+  const proof = (p) => {
+    if (!p || p === "none") return '<span class="bad">none</span>';
+    const [kind, type, ref] = p.split(":");
+    if (type === "tx") return `<a href="https://explorer.arc.io/tx/${esc(ref)}">${esc(kind)} tx</a>`;
+    return `<span class="pill" title="${esc(ref)}">${esc(kind)} ${esc(type)}</span>`;
+  };
+  q("#t tbody").innerHTML = L.rows.map((r) => {
+    const u = r.unpaid, p = r.paid;
+    const url = r.resource.replace(/^https?:\/\//, "");
+    const charged = p?.chargedUsd ? ("$" + p.chargedUsd + (r.priceMatch === false ? ' <span class="warn">≠</span>' : "")) : '<span class="mut">—</span>';
+    return `<tr>
+      <td>${esc(r.provider)}${r.listed?.siwx ? ' <span class="pill" title="listing requires sign-in-with-wallet">siwx</span>' : ""}</td>
+      <td class="ep" title="${esc(r.resource)}${r.note ? " — " + esc(r.note) : ""}">${esc(r.method)} ${esc(url)}</td>
+      <td>${esc(r.domain === "batched" ? "gateway" : "eip3009")}</td>
+      <td>${r.listed ? "$" + esc(r.listed.usd) : '<span class="mut">—</span>'}</td>
+      <td>${u.challengedUsd ? "$" + esc(u.challengedUsd) : (u.status === 402 ? '<span class="warn">402, no Arc option</span>' : '<span class="mut">—</span>')}</td>
+      <td>${charged}</td>
+      <td>${st(u)}${u.validatedFirst ? ' <span class="warn" title="rejected or served before any payment challenge">pre-402</span>' : ""}</td>
+      <td>${p ? st(p) : '<span class="mut">not paid</span>'}${p?.error ? ` <span class="bad" title="${esc(p.error)}">!</span>` : ""}</td>
+      <td>${p ? yn(p.delivered) : '<span class="mut">—</span>'}</td>
+      <td>${p ? yn(p.receiptReturned, "yes", "none") : '<span class="mut">—</span>'}</td>
+      <td>${p ? proof(r.proof) : '<span class="mut">—</span>'}</td>
+      <td>${r.attestation?.txHash ? `<a href="https://explorer.arc.io/tx/${esc(r.attestation.txHash)}">tx</a>` : (r.attestation?.error ? '<span class="bad" title="' + esc(r.attestation.error) + '">failed</span>' : '<span class="mut">—</span>')}</td>
+    </tr>`;
+  }).join("");
+})();
+</script>
+</body>
+</html>
