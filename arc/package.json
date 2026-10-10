@@ -4,14 +4,17 @@
   "private": true,
   "description": "Pays live x402 listings on Arc mainnet and anchors what the buyer got on-chain.",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "catalog": "node src/catalog.mjs",
     "probe:dry": "node src/probe.mjs --dry",
-    "probe": "node --env-file-if-exists=.env src/probe.mjs",
+    "probe": "node --env-file=.env src/probe.mjs",
     "compile": "node scripts/compile.mjs",
-    "deploy": "node --env-file-if-exists=.env scripts/deploy.mjs",
-    "wallet": "node --env-file-if-exists=.env scripts/wallet.mjs"
+    "deploy": "node --env-file=.env scripts/deploy.mjs",
+    "wallet": "node --env-file=.env scripts/wallet.mjs",
+    "fund": "node --env-file-if-exists=../.env --env-file-if-exists=.env scripts/fund.mjs"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.5.0",
