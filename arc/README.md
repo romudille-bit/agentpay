@@ -5,7 +5,8 @@ price charged vs listed, latency, and the proof the buyer holds afterwards. Ever
 anchored on Arc through a small contract, because Gateway-batched payments leave no transaction of
 their own.
 
-Live ledger: https://romudille-bit.github.io/agentpay/ (published from `arc/docs` by `.github/workflows/arc-pages.yml`) · Contract: `ARC_ANCHOR_ADDRESS` in the ledger header.
+Live ledger: https://romudille-bit.github.io/agentpay/ (published from `arc/docs` by `.github/workflows/arc-pages.yml`)
+Contract: [`0xa3b3ac13b9582b99e13ba5939928f314ef60ec8d`](https://explorer.arc.io/address/0xa3b3ac13b9582b99e13ba5939928f314ef60ec8d?tab=contract) on Arc mainnet, source verified (exact match, Sourcify + Blockscout).
 
 ## Why
 
@@ -44,6 +45,8 @@ npm run wallet                 # balances
 npm run compile && npm run deploy   # ReceiptAnchor → copy ARC_ANCHOR_ADDRESS into .env
 npm run probe                  # pays, anchors, writes docs/ledger.json
 npm run probe:dry              # unpaid pass only, no key needed
+npm run probe -- --reconcile   # no payments: re-check published rows against Arc logs + the Gateway ledger
+npm test                       # unit tests for decoding, catalog summary, delivery rule, reconciliation
 ```
 
 Gas on Arc is USDC, so the same balance covers deposits, attestations, and payments.
@@ -104,5 +107,6 @@ src/pay.mjs                   two buyers: Gateway batched, plain EIP-3009
 src/anchor.mjs                attest() on Arc
 src/probe.mjs                 the run
 targets.json                  the sample, with per-call caps
+test/                         node --test: lib, catalog, pay, verify
 docs/                         GitHub Pages: index.html, ledger.json, catalog.json, runs/
 ```

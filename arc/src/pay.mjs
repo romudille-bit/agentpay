@@ -11,7 +11,7 @@ const bodyInit = (t) => (t.body === undefined ? {} : { body: JSON.stringify(t.bo
 const emptyResult = () => ({ paidAt: new Date().toISOString(), status: null, ms: null, charged: null, settle: null, delivered: false, bodyBytes: 0, bodySha256: null, errorBody: null, error: null });
 const atomic = (usd) => BigInt(Math.round(Number(usd) * 1e6));
 
-function deliveredFrom(status, text) {
+export function deliveredFrom(status, text) {
   if (status < 200 || status >= 300) return false;
   if (!text || !text.trim()) return false;
   try { const j = JSON.parse(text); return !(j && typeof j === "object" && "error" in j && Object.keys(j).length <= 2); } catch { return true; }
