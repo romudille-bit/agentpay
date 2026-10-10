@@ -22,11 +22,11 @@
   .meta{color:var(--mut);font-size:13px;margin:0 0 20px}
   .meta code{font-family:var(--mono);font-size:12px}
   .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
-  table{border-collapse:collapse;width:100%;min-width:980px;font-size:13.5px}
+  table{border-collapse:collapse;width:100%;min-width:900px;font-size:13.5px}
   th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
   th{font-weight:600;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em;background:var(--bg)}
   tr:last-child td{border-bottom:0}
-  td.ep{max-width:320px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:12px}
+  td.ep{max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:12px}
   .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.mut{color:var(--mut)}
   .pill{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--line);font-size:12px}
   h2{font-size:17px;margin:32px 0 8px}
@@ -43,15 +43,15 @@
   <div class="tiles" id="tiles"></div>
   <p class="meta" id="meta"></p>
   <div class="wrap"><table id="t"><thead><tr>
-    <th>Provider</th><th>Endpoint</th><th>Settlement</th><th>Listed</th><th>Challenged</th><th>Charged</th><th>Unpaid</th><th>Paid</th><th>Delivered</th><th>Receipt</th><th>Proof</th><th>Anchored</th>
+    <th>Provider</th><th>Endpoint</th><th>Settlement</th><th>Charged</th><th>Unpaid → paid</th><th>Delivered</th><th>Receipt</th><th>Proof</th><th>Anchored</th>
   </tr></thead><tbody></tbody></table></div>
   <h2>What the columns mean</h2>
   <dl class="notes">
     <dt>Settlement</dt><dd><b>gateway</b> = Circle Gateway batched (an off-chain authorization, netted on-chain later; no per-call transaction). <b>eip3009</b> = plain USDC <code>transferWithAuthorization</code>, one transaction per call.</dd>
-    <dt>Listed / Challenged / Charged</dt><dd>Price in Circle's Agent Marketplace catalog, price in the live 402 challenge, and the amount the signed authorization carried.</dd>
-    <dt>Unpaid</dt><dd>Status and latency of the request before any payment. A non-402 here means the provider validated or served the request before asking for money.</dd>
+    <dt>Charged</dt><dd>The amount the signed authorization carried; "no charge found" when neither a receipt nor an independent settlement record exists for it. Flagged when it differs from the price in Circle's Agent Marketplace catalog; the live 402 challenge is recorded in the JSON.</dd>
+    <dt>Unpaid → paid</dt><dd>Status and latency before any payment, then after paying. A non-402 on the left means the provider validated or served the request before asking for money; a "!" on the right carries the provider's error.</dd>
     <dt>Delivered</dt><dd>A 2xx with a non-empty, non-error body after payment.</dd>
-    <dt>Receipt</dt><dd>Whether the provider returned a <code>PAYMENT-RESPONSE</code> settlement receipt with the data.</dd>
+    <dt>Receipt</dt><dd>Whether the provider returned a <code>PAYMENT-RESPONSE</code> settlement receipt with the data. "settled" means the receipt was missing but the probe found the charge independently — in Arc's transfer logs (eip3009) or Circle Gateway's transfer ledger (gateway).</dd>
     <dt>Proof</dt><dd>What the buyer can point at afterwards: an Arc transaction, a Gateway transfer id, or nothing.</dd>
     <dt>Anchored</dt><dd>The probe writes a hash of each receipt to the <a id="anchorlink" href="#">ReceiptAnchor</a> contract on Arc, so the row can be checked later even when settlement itself left no transaction.</dd>
   </dl>
@@ -66,7 +66,7 @@
   const tile = (v, k) => `<div class="tile"><b>${esc(v)}</b><span>${esc(k)}</span></div>`;
   q("#tiles").innerHTML = [
     tile(S.providers, "providers probed"), tile(S.paid, "paid calls"), tile(S.delivered, "delivered"),
-    tile(S.deliveredWithoutReceipt ?? 0, "delivered, no receipt"), tile(S.priceMismatch, "price ≠ listed"),
+    tile(S.deliveredWithoutReceipt ?? 0, "delivered, no receipt"), tile(S.chargedNotDelivered ?? 0, "charged, not delivered"), tile(S.deliveredNotCharged ?? 0, "delivered, no charge found"), tile(S.priceMismatch, "price ≠ listed"),
     tile(S.validatedFirst, "validated before 402"), tile("$" + S.spentUsd, "USDC spent"), tile(S.attested, "anchored on Arc"),
   ].join("");
   const when = new Date(S.runAt).toUTCString().replace(" GMT", " UTC");
@@ -85,18 +85,23 @@
   q("#t tbody").innerHTML = L.rows.map((r) => {
     const u = r.unpaid, p = r.paid;
     const url = r.resource.replace(/^https?:\/\//, "");
-    const charged = p?.chargedUsd ? ("$" + p.chargedUsd + (r.priceMatch === false ? ' <span class="warn">≠</span>' : "")) : '<span class="mut">—</span>';
+    const price = (() => {
+      if (!p?.chargedUsd) return u.challengedUsd ? `<span class="mut">asked $${esc(u.challengedUsd)}</span>` : '<span class="mut">—</span>';
+      const listed = r.listed?.usd;
+      const tag = listed && listed !== p.chargedUsd ? ` <span class="warn" title="catalog listed $${esc(listed)}">≠ listed $${esc(listed)}</span>` : "";
+      const unsettled = !p.receiptReturned && !p.settled ? ' <span class="mut" title="authorization signed, but no settlement found in Arc logs or the Gateway ledger">· no charge found</span>' : "";
+      return "$" + esc(p.chargedUsd) + tag + unsettled;
+    })();
+    const flow = st(u) + (u.validatedFirst ? ' <span class="warn" title="rejected or served before any payment challenge">pre-402</span>' : "")
+      + ' <span class="mut">→</span> ' + (p ? st(p) : '<span class="mut">not paid</span>') + (p?.error ? ` <span class="bad" title="${esc(p.error)}">!</span>` : "");
     return `<tr>
       <td>${esc(r.provider)}${r.listed?.siwx ? ' <span class="pill" title="listing requires sign-in-with-wallet">siwx</span>' : ""}</td>
       <td class="ep" title="${esc(r.resource)}${r.note ? " — " + esc(r.note) : ""}">${esc(r.method)} ${esc(url)}</td>
       <td>${esc(r.domain === "batched" ? "gateway" : "eip3009")}</td>
-      <td>${r.listed ? "$" + esc(r.listed.usd) : '<span class="mut">—</span>'}</td>
-      <td>${u.challengedUsd ? "$" + esc(u.challengedUsd) : (u.status === 402 ? '<span class="warn">402, no Arc option</span>' : '<span class="mut">—</span>')}</td>
-      <td>${charged}</td>
-      <td>${st(u)}${u.validatedFirst ? ' <span class="warn" title="rejected or served before any payment challenge">pre-402</span>' : ""}</td>
-      <td>${p ? st(p) : '<span class="mut">not paid</span>'}${p?.error ? ` <span class="bad" title="${esc(p.error)}">!</span>` : ""}</td>
+      <td>${price}</td>
+      <td>${flow}</td>
       <td>${p ? yn(p.delivered) : '<span class="mut">—</span>'}</td>
-      <td>${p ? yn(p.receiptReturned, "yes", "none") : '<span class="mut">—</span>'}</td>
+      <td>${p ? (p.receiptReturned ? '<span class="ok">yes</span>' : (p.settled ? '<span class="bad">none</span> <span class="mut" title="no PAYMENT-RESPONSE, but the charge is visible in ' + (p.settled.via === "gateway" ? "Circle Gateway\'s transfer ledger" : "Arc transfer logs") + '">· settled</span>' : '<span class="bad">none</span>')) : '<span class="mut">—</span>'}</td>
       <td>${p ? proof(r.proof) : '<span class="mut">—</span>'}</td>
       <td>${r.attestation?.txHash ? `<a href="https://explorer.arc.io/tx/${esc(r.attestation.txHash)}">tx</a>` : (r.attestation?.error ? '<span class="bad" title="' + esc(r.attestation.error) + '">failed</span>' : '<span class="mut">—</span>')}</td>
     </tr>`;

@@ -4,7 +4,11 @@
     "provider": "Exa",
     "resource": "https://api.exa.ai/contents",
     "method": "POST",
-    "body": { "urls": ["https://www.arc.io"] },
+    "body": {
+      "urls": [
+        "https://www.arc.io"
+      ]
+    },
     "domain": "batched",
     "max": "0.002"
   },
@@ -13,7 +17,11 @@
     "provider": "Exa",
     "resource": "https://api.exa.ai/contents",
     "method": "POST",
-    "body": { "urls": ["https://www.arc.io"] },
+    "body": {
+      "urls": [
+        "https://www.arc.io"
+      ]
+    },
     "domain": "eip3009",
     "max": "0.002"
   },
@@ -22,7 +30,11 @@
     "provider": "Goldsky",
     "resource": "https://edge.goldsky.com/standard/evm/1",
     "method": "POST",
-    "body": { "jsonrpc": "2.0", "method": "eth_blockNumber", "id": 1 },
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "eth_blockNumber",
+      "id": 1
+    },
     "domain": "batched",
     "max": "0.01"
   },
@@ -31,7 +43,11 @@
     "provider": "Quicknode",
     "resource": "https://x402.quicknode.com/base-mainnet/",
     "method": "POST",
-    "body": { "jsonrpc": "2.0", "method": "eth_blockNumber", "id": 1 },
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "eth_blockNumber",
+      "id": 1
+    },
     "domain": "batched",
     "max": "0.001",
     "note": "listed with siwx=true (sign-in-with-wallet)"
@@ -66,7 +82,7 @@
     "resource": "https://options.lonestaroracle.xyz/flow?symbol=AAPL",
     "method": "GET",
     "domain": "eip3009",
-    "max": "0.02"
+    "max": "0.06"
   },
   {
     "id": "lonestar_earnings_calendar",
@@ -82,7 +98,17 @@
     "provider": "Vangrid",
     "resource": "https://data.vangrid.io/api/v1/spatial/query",
     "method": "POST",
-    "body": { "aoi": { "type": "Point", "coordinates": [-58.3816, -34.6037] }, "radius_m": 1000, "limit": 5 },
+    "body": {
+      "aoi": {
+        "type": "Point",
+        "coordinates": [
+          -58.3816,
+          -34.6037
+        ]
+      },
+      "radius_m": 1000,
+      "limit": 5
+    },
     "domain": "eip3009",
     "max": "0.02"
   },
@@ -92,6 +118,16 @@
     "resource": "https://api.aisa.one/apis/v2/ahrefs/site-explorer/domain-rating?target=arc.io",
     "method": "GET",
     "domain": "batched",
-    "max": "0.12"
+    "max": "0.12",
+    "note": "deliberately missing the `date` param AIsa requires; the catalog carries no input schema for this listing"
+  },
+  {
+    "id": "aisa_ahrefs_domain_rating_valid",
+    "provider": "AIsa API",
+    "resource": "https://api.aisa.one/apis/v2/ahrefs/site-explorer/domain-rating?target=arc.io&date=2026-10-01",
+    "method": "GET",
+    "domain": "batched",
+    "max": "0.12",
+    "note": "same listing with the params its OpenAPI spec requires"
   }
 ]

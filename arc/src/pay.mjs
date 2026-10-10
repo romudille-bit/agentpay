@@ -8,7 +8,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { ARC, BATCHED, USDC, sha256 } from "./lib.mjs";
 
 const bodyInit = (t) => (t.body === undefined ? {} : { body: JSON.stringify(t.body), headers: { "content-type": "application/json" } });
-const emptyResult = () => ({ status: null, ms: null, charged: null, settle: null, delivered: false, bodyBytes: 0, bodySha256: null, errorBody: null, error: null });
+const emptyResult = () => ({ paidAt: new Date().toISOString(), status: null, ms: null, charged: null, settle: null, delivered: false, bodyBytes: 0, bodySha256: null, errorBody: null, error: null });
 const atomic = (usd) => BigInt(Math.round(Number(usd) * 1e6));
 
 function deliveredFrom(status, text) {
@@ -50,7 +50,7 @@ export async function payBatched(payer, t) {
     out.delivered = deliveredFrom(r.status, text);
     if (!out.charged && r.amount) out.charged = r.amount.toString();
   } catch (e) {
-    out.error = out.error ?? e.message;
+    out.error = /^Payment failed: ./.test(e.message) ? e.message : (out.error ?? e.message);
     const m = /status (\d{3})/.exec(e.message);
     if (m) out.status = Number(m[1]);
   }

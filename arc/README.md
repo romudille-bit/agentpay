@@ -49,15 +49,41 @@ npm run probe:dry              # unpaid pass only, no key needed
 Gas on Arc is USDC, so the same balance covers deposits, attestations, and payments.
 `ARC_MAX_SPEND` (default 1.00) caps a whole run; each target carries its own `max`.
 
-## Findings
+## Findings — run of 10 Oct 2026
 
-Filled in after each run — see the ledger. Things already visible from the unpaid pass on 8 Oct 2026:
+Twelve paid calls across all eight providers, both settlement domains, $0.30 of USDC. Three full runs
+on the same day agreed with each other.
 
-- 10 of 11 targets answer 402 before touching the request body. LoneStarOracle's earnings calendar
-  validates first: the catalog marks `tickers` optional, the live API returns 400 without it, and says so.
-- Goldsky serves its RPC against a *signed* authorization before any settlement and returns no receipt
-  — its 402 describes the payment as a prepaid balance good for ~1000 requests.
-- Exa verifies funds at payment time (`insufficient_funds` on an empty wallet) and challenges $0 on an empty body, $0.001 on a real one.
+- **Every provider answered 402 before touching the request** (12/12), and every live challenge matched
+  the catalog price. Only one listed-vs-live gap, and it is in the schema, not the price: LoneStarOracle's
+  earnings calendar marks `tickers` optional, the live API rejects with 400 without it — before any
+  payment, and it says so in the body.
+- **Charged, not delivered: AIsa.** A call missing the `date` parameter was settled for $0.10 through
+  Circle Gateway (transfer visible in the Gateway ledger) and then rejected with 400 "missing argument
+  'date'". AIsa's own OpenAPI spec says 4xx/5xx are not charged; on the x402 path they are. The same
+  listing with the right parameters delivers in ~1.8 s.
+- **Delivered, no receipt.** Three deliveries came back without a `PAYMENT-RESPONSE`: BlockRun's nano
+  (Gateway) and arc (EIP-3009) endpoints, and Goldsky. The probe found BlockRun's two charges
+  independently — one in Arc's transfer logs, one in the Gateway ledger — so the buyer was charged and
+  simply not told. Goldsky is different: its $0.005 authorization is a prepaid balance "for ~1000
+  requests"; the first run was charged once, later runs were served with no charge at all. A buyer holding
+  only the HTTP response cannot tell these two cases apart.
+- **Validation after signature, before charge: Orthogonal.** The findymail proxy returned 400 "Missing
+  required parameters" after the payment was signed, and no settlement exists for it. Correct behaviour,
+  worth recording because it is the opposite of the AIsa case.
+- **Sign-in-with-wallet is not enforced for x402.** Quicknode's listings carry `siwx: true`; a plain
+  Gateway payment was served with a receipt.
+- **Latency by settlement domain.** Gateway-batched calls returned in 0.9–1.8 s; EIP-3009 calls took
+  4.0–4.7 s, which is the facilitator's on-chain settlement before the response. Unpaid 402s took
+  0.1–1.9 s.
+- **Proof.** Five calls left an Arc transaction, five a Gateway transfer id, two nothing. Twelve
+  attestations on `ReceiptAnchor`, including the failures, so the ledger can be checked against the
+  chain later.
+
+Things the probe had to learn: a fresh Gateway deposit is not spendable for ~10–20 s (Exa correctly
+rejected the first attempt with `insufficient_balance`); the Gateway transfer ledger lags the response
+by a few seconds; and the catalog itself moved during the day (2,144 → 2,195 listings, EIP-3009 options
+90 → 141).
 
 ## What's next
 
