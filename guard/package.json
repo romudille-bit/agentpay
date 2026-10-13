@@ -1,0 +1,39 @@
+{
+  "name": "@romudille/x402-guard",
+  "version": "0.1.0",
+  "description": "Delivery guard for the x402 client: checks a resource against AgentPay's paid-probe scores before a payment is signed.",
+  "license": "MIT",
+  "author": "romudille",
+  "homepage": "https://agentpay.tools",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/romudille-bit/agentpay",
+    "directory": "guard"
+  },
+  "type": "module",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "bin": {
+    "x402-guard": "./bin/x402-guard.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node bin/x402-guard.mjs check"
+  },
+  "keywords": [
+    "x402",
+    "agent-payments",
+    "delivery-verification",
+    "agentpay"
+  ]
+}

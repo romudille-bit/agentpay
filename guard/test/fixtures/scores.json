@@ -1,0 +1,61 @@
+{
+  "about": "synthetic fixture — shape of agentpay.tools/scores.json, invented providers",
+  "count": 7,
+  "services": [
+    {
+      "resource_url": "https://honest.example/v1/infer",
+      "name": "Honest Inference", "need": "llm inference", "network": "eip155:8453",
+      "paid_probes": 3, "delivery_rate": 1.0, "delivery_factor": 1.15, "confidence": "confirmed",
+      "no_delivery_probes": 0, "settle_failures": 0, "latency_p50_ms": 2100, "flags": [],
+      "price_usdc": 0.01, "last_ok_at": "2026-10-12T05:00:00+00:00", "last_fail_at": null,
+      "why": "probed 3× in 30d, 100% delivered"
+    },
+    {
+      "resource_url": "https://good.example/v1/search",
+      "name": "Good Search", "need": "web search", "network": "eip155:8453",
+      "paid_probes": 4, "delivery_rate": 1.0, "delivery_factor": 1.15, "confidence": "confirmed",
+      "no_delivery_probes": 0, "settle_failures": 0, "latency_p50_ms": 900, "flags": [],
+      "price_usdc": 0.01, "last_ok_at": "2026-10-12T05:00:00+00:00", "last_fail_at": null,
+      "why": "probed 4× in 30d, 100% delivered"
+    },
+    {
+      "resource_url": "https://new.example/api/price",
+      "name": "New Price", "need": "token price", "network": "eip155:8453",
+      "paid_probes": 1, "delivery_rate": 1.0, "delivery_factor": 1.07, "confidence": "provisional",
+      "no_delivery_probes": 0, "settle_failures": 0, "latency_p50_ms": 400, "flags": [],
+      "price_usdc": 0.001, "last_ok_at": "2026-10-12T05:00:00+00:00", "last_fail_at": null,
+      "why": "probed 1× in 30d"
+    },
+    {
+      "resource_url": "https://thief.example/v1/infer",
+      "name": "Thief Inference", "need": "llm inference", "network": "eip155:8453",
+      "paid_probes": 6, "delivery_rate": 0.5, "delivery_factor": 0.8, "confidence": "confirmed",
+      "no_delivery_probes": 3, "settle_failures": 0, "latency_p50_ms": 4000, "flags": ["took_payment_no_delivery"],
+      "price_usdc": 0.01, "last_ok_at": "2026-10-08T05:00:00+00:00", "last_fail_at": "2026-09-21T05:00:00+00:00",
+      "why": "⚠ took payment without delivering on 2026-09-21"
+    },
+    {
+      "resource_url": "https://recovered.example/v1/screen",
+      "name": "Recovered Screen", "need": "wallet screening", "network": "eip155:8453",
+      "paid_probes": 5, "delivery_rate": 0.8, "delivery_factor": 1.0, "confidence": "confirmed",
+      "no_delivery_probes": 1, "settle_failures": 0, "latency_p50_ms": 1200, "flags": ["took_payment_no_delivery"],
+      "price_usdc": 0.01, "last_ok_at": "2026-10-12T05:00:00+00:00", "last_fail_at": "2026-09-15T05:00:00+00:00",
+      "why": "⚠ took payment without delivering on 2026-09-15"
+    },
+    {
+      "resource_url": "https://latest-fail.example/v1/news",
+      "name": "Latest Fail News", "need": "news", "network": "eip155:8453",
+      "paid_probes": 4, "delivery_rate": 0.75, "delivery_factor": 1.0, "confidence": "confirmed",
+      "no_delivery_probes": 1, "settle_failures": 0, "latency_p50_ms": 800, "flags": ["took_payment_no_delivery"],
+      "price_usdc": 0.005, "last_ok_at": "2026-10-05T05:00:00+00:00", "last_fail_at": "2026-10-12T05:00:00+00:00",
+      "why": "⚠ took payment without delivering on 2026-10-12"
+    },
+    {
+      "resource_url": "https://unprobed.example/v1/ocr",
+      "name": "Unprobed OCR", "need": "pdf ocr", "network": "eip155:8453",
+      "paid_probes": 0, "delivery_rate": null, "delivery_factor": 1.0, "confidence": null,
+      "no_delivery_probes": 0, "settle_failures": 0, "latency_p50_ms": null, "flags": [],
+      "price_usdc": 0.02, "last_ok_at": null, "last_fail_at": null, "why": "unprobed"
+    }
+  ]
+}
