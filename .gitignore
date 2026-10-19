@@ -189,3 +189,6 @@ keys/
 stacks M2 - files/
 run_tests.sh
 tools/settle_evidence.py
+
+# Demo recordings — Drive only
+arc/*.mp4
