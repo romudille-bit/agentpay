@@ -865,7 +865,7 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
 
 
 async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
-    """Total open interest + 1h/24h change across Binance and Bybit. Free public APIs."""
+    """Total open interest + 1h/24h change across Binance, Bybit and OKX (fallback). Free public APIs."""
     # Registry schema uses "symbol" (e.g. "ETH" or "BTC"); fall back to "asset" for compat
     raw = params.get("symbol", params.get("asset", "BTC")).strip().upper()
     # Strip trailing USDT/BUSD if caller passed the full pair
@@ -924,6 +924,11 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
                 "oi_change_24h_pct": round((oi_now - oi_24h_ago) / oi_24h_ago * 100, 2) if oi_24h_ago else None,
                 "long_short_ratio":  ls_ratio,
             }
+        except httpx.HTTPStatusError as e:
+            # 403/451 = geo-block from the gateway's region; permanent, not worth a warning per cache miss
+            lvl = logger.debug if e.response.status_code in (403, 451) else logger.warning
+            lvl(f"open_interest Binance error: {e}")
+            return None
         except Exception as e:
             logger.warning(f"open_interest Binance error: {e}")
             return None
@@ -947,6 +952,11 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
                 "oi_contracts":       round(oi_now, 2),
                 "oi_change_5m_pct":   round((oi_now - oi_prev) / oi_prev * 100, 2) if oi_prev else None,
             }
+        except httpx.HTTPStatusError as e:
+            # 403/451 = geo-block from the gateway's region; permanent, not worth a warning per cache miss
+            lvl = logger.debug if e.response.status_code in (403, 451) else logger.warning
+            lvl(f"open_interest Bybit error: {e}")
+            return None
         except Exception as e:
             logger.warning(f"open_interest Bybit error: {e}")
             return None
@@ -966,28 +976,107 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
         except Exception:
             return 0.0
 
-    binance_res, bybit_res, price = await asyncio.gather(
-        _binance_oi(), _bybit_oi(), _price_usd()
+    # OKX fallback — Binance (451) and Bybit (403) geo-block US datacenter IPs,
+    # which is where the gateway runs. OKX answers from the same location.
+    async def _okx_oi() -> dict | None:
+        try:
+            inst_id = f"{asset}-USDT-SWAP"
+            r = await client.get(
+                "https://www.okx.com/api/v5/public/open-interest",
+                params={"instType": "SWAP", "instId": inst_id},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            items = r.json().get("data", [])
+            if not items:
+                return None
+            # `oiCcy` is base-coin units — same basis as Binance/Bybit `openInterest`.
+            # `oi` is in contracts (ctVal varies per instrument) and would not compare.
+            oi_now     = float(items[0].get("oiCcy") or 0)
+            oi_usd_now = float(items[0].get("oiUsd") or 0) or None
+
+            # Hourly per-instrument history, newest first, rows [ts, oi, oiCcy, oiUsd].
+            # Diff oiCcy (coin units) so a price move alone does not read as an OI swing —
+            # _ptc_crowding's 20%/24h threshold assumes coin-denominated change.
+            # series[0] is the in-progress hour, so "1h" lags by up to 60 min.
+            async def _history() -> tuple[float | None, float | None]:
+                try:
+                    h = await client.get(
+                        "https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-history",
+                        params={"instId": inst_id, "period": "1H", "limit": 25},
+                        timeout=10.0,
+                    )
+                    h.raise_for_status()
+                    series = h.json().get("data", [])
+                    def _pct(i: int) -> float | None:
+                        if len(series) > i:
+                            now_v, ago_v = float(series[0][2]), float(series[i][2])
+                            return round((now_v - ago_v) / ago_v * 100, 2) if ago_v else None
+                        return None
+                    return _pct(1), _pct(24)
+                except Exception as e:
+                    logger.warning(f"open_interest OKX history error: {e}")
+                    return None, None
+
+            # Long/short account ratio (all-accounts, same semantics as Binance's
+            # globalLongShortAccountRatio — levels differ per venue's user base)
+            async def _long_short() -> float | None:
+                try:
+                    ls = await client.get(
+                        "https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio",
+                        params={"ccy": asset, "period": "5m"},
+                        timeout=10.0,
+                    )
+                    if ls.status_code == 200:
+                        ls_data = ls.json().get("data", [])
+                        if ls_data:
+                            return round(float(ls_data[0][1]), 3)
+                except Exception as e:
+                    logger.warning(f"open_interest OKX long/short error: {e}")
+                return None
+
+            (oi_1h, oi_24h), ls_ratio = await asyncio.gather(_history(), _long_short())
+
+            return {
+                "exchange":           "OKX",
+                "oi_contracts":       round(oi_now, 2),
+                "oi_usd":             round(oi_usd_now, 0) if oi_usd_now else None,
+                "oi_change_1h_pct":   oi_1h,
+                "oi_change_24h_pct":  oi_24h,
+                "long_short_ratio":   ls_ratio,
+            }
+        except Exception as e:
+            logger.warning(f"open_interest OKX error: {e}")
+            return None
+
+    binance_res, bybit_res, okx_res, price = await asyncio.gather(
+        _binance_oi(), _bybit_oi(), _okx_oi(), _price_usd()
     )
 
-    exchanges = [e for e in [binance_res, bybit_res] if e]
+    exchanges = [e for e in [binance_res, bybit_res, okx_res] if e]
     if not exchanges:
         return {"error": f"Could not fetch open interest for {asset}"}
 
-    # Aggregate total OI in USD using Binance as primary (contracts × price)
+    # Binance is primary (contracts × price); OKX reports USD directly and is the fallback
+    primary = binance_res or okx_res
     total_oi_usd = None
     if binance_res and price:
         total_oi_usd = round(binance_res["oi_contracts"] * price, 0)
+    elif okx_res:
+        total_oi_usd = okx_res.get("oi_usd") or (
+            round(okx_res["oi_contracts"] * price, 0) if price else None
+        )
 
     return {
         "asset":              asset,
         "price_usd":          price or None,
         "total_oi_usd":       total_oi_usd,
-        "oi_change_1h_pct":   binance_res.get("oi_change_1h_pct") if binance_res else None,
-        "oi_change_24h_pct":  binance_res.get("oi_change_24h_pct") if binance_res else None,
-        "long_short_ratio":   binance_res.get("long_short_ratio") if binance_res else None,
+        "oi_change_1h_pct":   primary.get("oi_change_1h_pct") if primary else None,
+        "oi_change_24h_pct":  primary.get("oi_change_24h_pct") if primary else None,
+        "long_short_ratio":   primary.get("long_short_ratio") if primary else None,
         "exchanges":          exchanges,
-        "source":             "binance/bybit",
+        "source":             "binance/bybit/okx",
+        "primary":            primary["exchange"].lower() if primary else None,
     }
 
 
@@ -1008,11 +1097,17 @@ async def _fetch_orderbook_depth(client: httpx.AsyncClient, params: dict) -> dic
             )
             r.raise_for_status()
             data = r.json()
-            return {
+            book = {
                 "exchange": "Binance",
                 "bids": [[float(p), float(q)] for p, q in data.get("bids", [])],
                 "asks": [[float(p), float(q)] for p, q in data.get("asks", [])],
             }
+            return book if book["bids"] and book["asks"] else None
+        except httpx.HTTPStatusError as e:
+            # 403/451 = geo-block from the gateway's region; permanent, not worth a warning per cache miss
+            lvl = logger.debug if e.response.status_code in (403, 451) else logger.warning
+            lvl(f"orderbook Binance error: {e}")
+            return None
         except Exception as e:
             logger.warning(f"orderbook Binance error: {e}")
             return None
@@ -1026,11 +1121,17 @@ async def _fetch_orderbook_depth(client: httpx.AsyncClient, params: dict) -> dic
             )
             r.raise_for_status()
             result = r.json().get("result", {})
-            return {
+            book = {
                 "exchange": "Bybit",
                 "bids": [[float(p), float(q)] for p, q in result.get("b", [])],
                 "asks": [[float(p), float(q)] for p, q in result.get("a", [])],
             }
+            return book if book["bids"] and book["asks"] else None
+        except httpx.HTTPStatusError as e:
+            # 403/451 = geo-block from the gateway's region; permanent, not worth a warning per cache miss
+            lvl = logger.debug if e.response.status_code in (403, 451) else logger.warning
+            lvl(f"orderbook Bybit error: {e}")
+            return None
         except Exception as e:
             logger.warning(f"orderbook Bybit error: {e}")
             return None
@@ -1059,13 +1160,37 @@ async def _fetch_orderbook_depth(client: httpx.AsyncClient, params: dict) -> dic
         avg_fill = total_cost / total_qty
         return round((avg_fill - best_ask) / best_ask * 100, 4)
 
-    binance_book, bybit_book = await asyncio.gather(_binance_book(), _bybit_book())
+    # OKX fallback — Binance and Bybit geo-block the gateway's US datacenter IPs
+    async def _okx_book() -> dict | None:
+        try:
+            r = await client.get(
+                "https://www.okx.com/api/v5/market/books",
+                params={"instId": f"{asset}-USDT", "sz": 100},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            data = r.json().get("data", [])
+            if not data:
+                return None
+            # OKX rows are [price, size, liquidated_orders, order_count]
+            book = {
+                "exchange": "OKX",
+                "bids": [[float(row[0]), float(row[1])] for row in data[0].get("bids", [])],
+                "asks": [[float(row[0]), float(row[1])] for row in data[0].get("asks", [])],
+            }
+            return book if book["bids"] and book["asks"] else None
+        except Exception as e:
+            logger.warning(f"orderbook OKX error: {e}")
+            return None
+
+    binance_book, bybit_book, okx_book = await asyncio.gather(
+        _binance_book(), _bybit_book(), _okx_book()
+    )
 
     # Prefer exchange requested by caller; fall back to whichever is available
-    if exchange_pref == "bybit":
-        book = bybit_book or binance_book
-    else:
-        book = binance_book or bybit_book
+    books_by_name = {"binance": binance_book, "bybit": bybit_book, "okx": okx_book}
+    preferred = books_by_name.get(exchange_pref)
+    book = preferred or binance_book or bybit_book or okx_book
     if not book:
         return {"error": f"Could not fetch orderbook for {asset}"}
 
@@ -1087,7 +1212,7 @@ async def _fetch_orderbook_depth(client: httpx.AsyncClient, params: dict) -> dic
 
     # Also aggregate both exchanges for best_bid/ask comparison
     exchange_summary = []
-    for b in [binance_book, bybit_book]:
+    for b in [binance_book, bybit_book, okx_book]:
         if b and b.get("asks") and b.get("bids"):
             exchange_summary.append({
                 "exchange":  b["exchange"],
@@ -1104,7 +1229,7 @@ async def _fetch_orderbook_depth(client: httpx.AsyncClient, params: dict) -> dic
         "spread_pct":  spread_pct,
         "depth":       depth,
         "exchanges":   exchange_summary,
-        "source":      "binance/bybit",
+        "source":      "binance/bybit/okx",
     }
 
 
