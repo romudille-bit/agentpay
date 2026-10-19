@@ -865,7 +865,8 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
 
 
 async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
-    """Total open interest + 1h/24h change across Binance, Bybit and OKX (fallback). Free public APIs."""
+    """Total open interest + 1h/24h change (Binance primary, OKX fallback, Bybit) and the
+    median account long/short ratio across Binance/OKX/Gate.io/Bitget. Free public APIs."""
     # Registry schema uses "symbol" (e.g. "ETH" or "BTC"); fall back to "asset" for compat
     raw = params.get("symbol", params.get("asset", "BTC")).strip().upper()
     # Strip trailing USDT/BUSD if caller passed the full pair
@@ -1049,13 +1050,94 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
             logger.warning(f"open_interest OKX error: {e}")
             return None
 
-    binance_res, bybit_res, okx_res, price = await asyncio.gather(
-        _binance_oi(), _bybit_oi(), _okx_oi(), _price_usd()
+    # Long/short-only legs. Account L/S ratios differ by venue because user bases
+    # differ (retail-heavy venues skew long), so one venue's level is a poor
+    # stand-in for "positioning". These add two more readings; the headline
+    # `long_short_ratio` is the median of whatever answers, with per-venue
+    # values and the spread exposed so callers can see disagreement.
+    async def _gate_ls() -> dict | None:
+        try:
+            r = await client.get(
+                "https://api.gateio.ws/api/v4/futures/usdt/contract_stats",
+                params={"contract": f"{asset}_USDT", "interval": "5m", "limit": 1},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            rows = r.json()
+            if not rows:
+                return None
+            row = rows[0]
+            lsr = row.get("lsr_account")
+            if lsr is None:
+                return None
+            return {
+                "exchange":             "Gate.io",
+                "long_short_ratio":     round(float(lsr), 3),
+                "taker_long_short":     round(float(row["lsr_taker"]), 3) if row.get("lsr_taker") is not None else None,
+                "top_trader_long_short": round(float(row["top_lsr_size"]), 3) if row.get("top_lsr_size") is not None else None,
+            }
+        except httpx.HTTPStatusError as e:
+            # 400 CONTRACT_NOT_FOUND for assets Gate does not list
+            lvl = logger.debug if e.response.status_code == 400 else logger.warning
+            lvl(f"open_interest Gate.io error: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"open_interest Gate.io error: {e}")
+            return None
+
+    async def _bitget_ls() -> dict | None:
+        try:
+            r = await client.get(
+                "https://api.bitget.com/api/v2/mix/market/account-long-short",
+                params={"symbol": f"{asset}USDT", "period": "5m"},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            rows = r.json().get("data") or []
+            if not rows:
+                return None
+            row = rows[-1]  # ascending by ts
+            lsr = row.get("longShortAccountRatio")
+            if lsr is None:
+                return None
+            return {
+                "exchange":         "Bitget",
+                "long_short_ratio": round(float(lsr), 3),
+            }
+        except httpx.HTTPStatusError as e:
+            lvl = logger.debug if e.response.status_code == 400 else logger.warning
+            lvl(f"open_interest Bitget error: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"open_interest Bitget error: {e}")
+            return None
+
+    binance_res, bybit_res, okx_res, gate_res, bitget_res, price = await asyncio.gather(
+        _binance_oi(), _bybit_oi(), _okx_oi(), _gate_ls(), _bitget_ls(), _price_usd()
     )
 
-    exchanges = [e for e in [binance_res, bybit_res, okx_res] if e]
-    if not exchanges:
+    oi_venues = [e for e in [binance_res, bybit_res, okx_res] if e]
+    ls_only   = [e for e in [gate_res, bitget_res] if e]
+    exchanges = oi_venues + ls_only
+    if not oi_venues:
         return {"error": f"Could not fetch open interest for {asset}"}
+
+    # Median account L/S across every venue that reported one
+    ls_by_venue = {
+        e["exchange"]: e["long_short_ratio"]
+        for e in exchanges
+        if e.get("long_short_ratio") is not None
+    }
+    ls_median = ls_spread = ls_outlier = None
+    if ls_by_venue:
+        import statistics
+        vals = list(ls_by_venue.values())
+        ls_median = round(statistics.median(vals), 3)
+        if len(vals) > 1:
+            ls_spread = round(max(vals) - min(vals), 3)
+            name, val = max(ls_by_venue.items(), key=lambda kv: abs(kv[1] - ls_median))
+            ls_outlier = {"exchange": name, "long_short_ratio": val,
+                          "deviation": round(val - ls_median, 3)}
 
     # Binance is primary (contracts × price); OKX reports USD directly and is the fallback
     primary = binance_res or okx_res
@@ -1073,9 +1155,12 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
         "total_oi_usd":       total_oi_usd,
         "oi_change_1h_pct":   primary.get("oi_change_1h_pct") if primary else None,
         "oi_change_24h_pct":  primary.get("oi_change_24h_pct") if primary else None,
-        "long_short_ratio":   primary.get("long_short_ratio") if primary else None,
+        "long_short_ratio":   ls_median,
+        "long_short_ratios":  ls_by_venue,
+        "long_short_spread":  ls_spread,
+        "long_short_outlier": ls_outlier,
         "exchanges":          exchanges,
-        "source":             "binance/bybit/okx",
+        "source":             "binance/bybit/okx + gate/bitget (L/S)",
         "primary":            primary["exchange"].lower() if primary else None,
     }
 
@@ -1462,10 +1547,12 @@ def _ptc_carry(fr: dict, side: str) -> dict:
 def _ptc_crowding(oi: dict, side: str) -> dict:
     if oi.get("error"):
         return {"level": "unknown", "reason": "open interest unavailable"}
-    lsr  = oi.get("long_short_ratio")
+    lsr  = oi.get("long_short_ratio")   # median across venues that answered
     ch24 = oi.get("oi_change_24h_pct")
     out = {"long_short_ratio": lsr, "oi_change_24h_pct": ch24,
-           "total_oi_usd": oi.get("total_oi_usd")}
+           "total_oi_usd": oi.get("total_oi_usd"),
+           "long_short_venues": len(oi.get("long_short_ratios") or {}),
+           "long_short_spread": oi.get("long_short_spread")}
     crowded_same_side = (
         (side == "long" and lsr is not None and lsr > 2.5)
         or (side == "short" and lsr is not None and lsr < 0.5)
