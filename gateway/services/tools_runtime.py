@@ -13,6 +13,7 @@ from a separate constants module just to read them back here.
 
 import asyncio
 import logging
+import statistics
 
 import httpx
 
@@ -1130,7 +1131,6 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
     }
     ls_median = ls_spread = ls_outlier = None
     if ls_by_venue:
-        import statistics
         vals = list(ls_by_venue.values())
         ls_median = round(statistics.median(vals), 3)
         if len(vals) > 1:
