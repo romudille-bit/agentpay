@@ -1,0 +1,35 @@
+{
+  "gateway": "https://agentpay.tools",
+  "payer": "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",
+  "aibtc_payer": "SPPHWDRGN2E449TXZNX2KB66VG39P9ZH69N0D2EG",
+  "at": "2026-09-24T14:47:33.560Z",
+  "results": [
+    {
+      "client": "x402-stacks",
+      "version": "2.0.3",
+      "ok": true,
+      "txid": "0xc2eb736856c9b7fe8f5c6e3f9fff81d29ffc40e2798d83be3a239c627d5c32c1",
+      "network": "stacks-mainnet",
+      "binding": "echoed_payment_id",
+      "payer_protection": "none_allow_mode",
+      "amount_usdc": "0.01"
+    },
+    {
+      "client": "@aibtc/mcp-server",
+      "version": "1.71.0",
+      "ok": true,
+      "txid": "0x6e1ce0b4cb58e98cd311d766349a3b9a45e96debd79af2841c6115cc5e074019",
+      "network": "stacks-mainnet",
+      "binding": "echoed_payment_id",
+      "payer_protection": "deny_mode_exact_amount",
+      "amount_usdc": "0.01"
+    }
+  ],
+  "funding": [
+    "0x5c24eb8972b4e5dad6fe65736c1215b637af34fb2722650c26e2c8f0bcc71f81",
+    "0xc8a2a55bd2330c4b6508e0b2f81658edf6ed218687891cbc3b6d317195b6df3e"
+  ],
+  "sweep": [
+    "0xf1e6f199f9e415a943543e9a0a790c1cd835699489d6b3f08eca1ed62e9a698f"
+  ]
+}

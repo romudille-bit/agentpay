@@ -1,0 +1,71 @@
+{
+  "gateway": "https://agentpay.tools",
+  "gateway_commit": "7fef852",
+  "payer": "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",
+  "client": "x402-stacks 2.0.3",
+  "at": "2026-09-25T16:32Z",
+  "steps": [
+    {
+      "step": "session_create",
+      "session_id": "4e626f07-6063-4ead-a8ca-0127b67f3ef6",
+      "tx": "0x9dd155da0aec3961b004ed1c1388174fd3f26baa1da35be07d0270423e090378",
+      "max_spend": "0.02",
+      "ttl_seconds": 900
+    },
+    {
+      "step": "call_1",
+      "tool": "pre_trade_check",
+      "tx": "0x55938ea74497a85bdd975c44d70ec6b3fd53c2734693bbe6bf80138d6821b713",
+      "spent_after": "0.01"
+    },
+    {
+      "step": "call_2",
+      "tool": "pre_trade_check",
+      "tx": "0x035cd125df2b913b7ede8a5c971c391974ca242f0b42ebc81a41c2b1c5b58e65",
+      "spent_after": "0.02"
+    },
+    {
+      "step": "call_3_refused",
+      "note": "x402-stacks threw without an HTTP response object after the gateway's refusal; payer nonce 22 before and after, no mempool tx, session receipts unchanged at 2",
+      "nonce_before": 22,
+      "nonce_after": 22
+    }
+  ],
+  "verified_on_hiro": "all three txs success, sender SP27VC\u2026, u12 sats each",
+  "session_view": {
+    "session_id": "4e626f07-6063-4ead-a8ca-0127b67f3ef6",
+    "payer": "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",
+    "network": "stacks-mainnet",
+    "status": "exhausted",
+    "max_spend": "0.02",
+    "spent": "0.02",
+    "remaining": "0.00",
+    "label": "cap proof",
+    "created_at": "2026-09-25T16:32:35+00:00",
+    "expires_at": "2026-09-25T16:47:35+00:00",
+    "enforced_rails": [
+      "stacks",
+      "base"
+    ],
+    "receipts": [
+      {
+        "payment_id": "035cd125df2b913b7ede8a5c971c391974ca242f0b42ebc81a41c2b1c5b58e65",
+        "tool_name": "pre_trade_check",
+        "network": "stacks-mainnet",
+        "amount_usdc": "0.01",
+        "state": "payment_done",
+        "tx_hash": "035cd125df2b913b7ede8a5c971c391974ca242f0b42ebc81a41c2b1c5b58e65",
+        "created_at": "2026-09-25T16:33:23.878499+00:00"
+      },
+      {
+        "payment_id": "55938ea74497a85bdd975c44d70ec6b3fd53c2734693bbe6bf80138d6821b713",
+        "tool_name": "pre_trade_check",
+        "network": "stacks-mainnet",
+        "amount_usdc": "0.01",
+        "state": "payment_done",
+        "tx_hash": "55938ea74497a85bdd975c44d70ec6b3fd53c2734693bbe6bf80138d6821b713",
+        "created_at": "2026-09-25T16:33:04.53453+00:00"
+      }
+    ]
+  }
+}

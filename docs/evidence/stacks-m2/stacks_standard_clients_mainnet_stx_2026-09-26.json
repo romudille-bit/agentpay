@@ -1,0 +1,41 @@
+{
+  "gateway": "https://agentpay.tools",
+  "asset": "stx",
+  "payer": "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",
+  "aibtc_payer": "SP28D7ZPHJJFKDNMM26Q1K5P03T7VJB4BDW2QN07P",
+  "at": "2026-09-26T19:13:28.004Z",
+  "results": [
+    {
+      "client": "x402-stacks",
+      "version": "2.0.3",
+      "ok": true,
+      "txid": "0x7e3e8ef707ba1ecec4acbb4ea9aa88398f2e2cc69ca7024ff20ce54771a1396d",
+      "network": "stacks-mainnet",
+      "asset": "STX",
+      "binding": "echoed_payment_id",
+      "payer_protection": "fixed_amount_transfer",
+      "amount_usdc": "0.01",
+      "amount_ustx": 29565
+    },
+    {
+      "client": "@aibtc/mcp-server",
+      "version": "1.71.0",
+      "ok": true,
+      "txid": "0xda34fc59cc7530654374797a63e5f4173ff3165d115948bf2599d8c2514b06e4",
+      "network": "stacks-mainnet",
+      "asset": "STX",
+      "binding": "echoed_payment_id",
+      "payer_protection": "fixed_amount_transfer",
+      "amount_usdc": "0.01",
+      "amount_ustx": 29565
+    }
+  ],
+  "funding": [
+    "0xfafea1bbb8c556700ea6e35c45bbc5510951e72669c4adba6319555b92baa01a",
+    "0xffea2503f3b38d1ed79509adc73ea6bd7a2c18951e655adf2a1bcd67b1236571"
+  ],
+  "sweep": [
+    "0x9b1adba324d4da13014d6679ba03f6daf03d2ae9b3d6208f35426bb2ac5fcd6f",
+    "0x48497a864a28be8a4bebbc09d725f288f8b9f79ff8097767bafa088d7c4e2684"
+  ]
+}
