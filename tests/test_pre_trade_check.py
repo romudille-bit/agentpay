@@ -37,7 +37,11 @@ def _stub_components(monkeypatch, overrides=None):
     async def fake_rtr(tool_name, params):
         return data[tool_name]
 
+    async def no_stacks_token(client, symbol):
+        return None
+
     monkeypatch.setattr(tools_runtime, "real_tool_response", fake_rtr)
+    monkeypatch.setattr(tools_runtime.bitflow, "resolve", no_stacks_token)
     return data
 
 

@@ -88,7 +88,7 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `yield_scanner` | `token`, `chain` (optional), `min_tvl` | top 10 pools by APY with protocol, tvl_usd, risk_level |
 | `dune_query` | `query_id`, `limit`, `fast_only` | rows[], columns[], row_count from Dune Analytics |
 | `session_create` | `agent_address`, `max_spend`, `label` | session_id, budget config, gateway_url, receipt — **$0.01** |
-| `pre_trade_check` | `symbol`, `size_usd`, `side`, `token_address?` | one-call trade verdict (ok/caution/avoid): slippage at YOUR size, side-aware funding carry, OI crowding, optional security — **$0.01** |
+| `pre_trade_check` | `symbol`, `size_usd`, `side`, `venue?`, `token_address?` | one-call trade verdict (ok/caution/avoid): slippage at YOUR size, side-aware funding carry, OI crowding, optional security; Stacks tokens add the Bitflow venue (price impact at size, route, pool TVL) — **$0.01** |
 | `verified_route` | `need`, `budget_usd?`, `chain?` | buyer-side trust oracle: sweeps the x402 marketplace, collapses sybil/factory clusters, ranks real providers by usage × delivery scores → one vetted recommendation + ready_to_pay challenge — **$0.01** |
 
 ---
@@ -282,7 +282,10 @@ hard `max_spend` limit — for autonomous agents that need spend enforcement acr
 multiple calls. `pre_trade_check` is the first **outcome bundle**: one call returns
 an ok/caution/avoid trade verdict from live orderbook slippage at your size,
 side-aware funding carry, open-interest crowding, and an optional contract security
-scan — with the per-factor breakdown and raw components embedded. `verified_route`
+scan — with the per-factor breakdown and raw components embedded. For Stacks tokens
+it prices the swap on [Bitflow](https://bitflow.finance) instead of a CEX book: price
+impact at your size from a live route quote, the pools it crosses and their TVL
+(see [`docs/bitflow-venue.md`](docs/bitflow-venue.md)). `verified_route`
 is the **buyer-side trust oracle**: "I need X, budget $Y — which x402 tool is
 real?" It sweeps the whole marketplace, collapses sybil/factory clusters, keeps
 only providers relevant to *your need*, ranks them by real unique-payer usage ×

@@ -18,6 +18,7 @@ import statistics
 import httpx
 
 from gateway.config import settings
+from gateway.services import bitflow
 from gateway.services.cache import CACHE_TTL, cache_get, cache_set
 
 logger = logging.getLogger(__name__)
@@ -1594,6 +1595,26 @@ _PTC_NATIVE_ASSETS = frozenset({
 })
 
 
+# Stacks tokens that also trade as CEX perps: the Bitflow leg is added, the
+# perp legs stay. sBTC is 1:1 BTC, so its funding/OI/book are BTC's.
+_PTC_STACKS_CEX = {"STX": "STX", "SBTC": "BTC"}
+_PTC_STACKS_NATIVE = frozenset({"STX", "SBTC"})
+
+
+def _ptc_na(reason: str) -> dict:
+    return {"level": "n/a", "reason": reason}
+
+
+async def _ptc_stacks_token(symbol: str, raw: str) -> dict | None:
+    """Bitflow classification for symbols the CEX resolvers do not know."""
+    if symbol in _PTC_NATIVE_ASSETS or symbol in _PTC_KNOWN_TOKENS:
+        return None
+    if symbol not in _PTC_STACKS_CEX and symbol.lower() in _COINGECKO_IDS:
+        return None
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        return await bitflow.resolve(client, raw if "." in raw else symbol)
+
+
 def _ptc_security(sec: dict | None) -> dict:
     if sec is None:
         # Pre-AGE-84 sentinel — kept for tolerance, but _fetch_pre_trade_check
@@ -1617,13 +1638,27 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
 
     # "asset" is accepted as an alias: funding_rates and the C4A recipes use it,
     # and silently defaulting a SOL request to ETH is worse than taking both.
-    symbol   = ((params.get("symbol") or params.get("asset") or "ETH")
-                .strip().upper().replace("USDT", "") or "ETH")
+    raw      = (params.get("symbol") or params.get("asset") or "ETH").strip()
+    symbol   = (raw.upper().replace("USDT", "") or "ETH")
     size_usd = float(params.get("size_usd") or 10_000)
     side     = (params.get("side") or "long").lower()
     if side not in ("long", "short"):
         side = "long"
     token_address = (params.get("token_address") or "").strip()
+    venue = (params.get("venue") or "auto").lower()
+    if venue not in ("auto", "cex", "bitflow"):
+        venue = "auto"
+
+    # AGE-247: Stacks tokens get the Bitflow venue. STX/sBTC keep their CEX
+    # perp legs (and the CEX book in auto mode); DEX-only tokens get Bitflow
+    # alone, with the perp factors visibly n/a.
+    stacks = None if venue == "cex" else await _ptc_stacks_token(symbol, raw)
+    if stacks:
+        symbol = stacks["symbol"]
+    use_bitflow = stacks is not None
+    use_cex = not use_bitflow or (venue == "auto" and symbol in _PTC_STACKS_CEX)
+    perp_symbol = (_PTC_STACKS_CEX.get(symbol, symbol)
+                   if (not use_bitflow or symbol in _PTC_STACKS_CEX) else None)
 
     # AGE-84: resolve the security leg for EVERY call, not only when the caller
     # already knows the contract. Before this, the flagship passed symbols only,
@@ -1633,7 +1668,17 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
     #   explicit token_address > known-token map > native (n/a) > unknown.
     chain = params.get("chain", "ethereum")
     security_static: dict | None = None
-    if not token_address:
+    if use_bitflow and not token_address:
+        if symbol in _PTC_STACKS_NATIVE:
+            security_static = _ptc_na(f"{symbol} is a native Stacks asset — no contract "
+                                      "risk to screen")
+        else:
+            security_static = {
+                "level": "unknown",
+                "reason": f"contract risk NOT screened — GoPlus has no Stacks coverage "
+                          f"for {symbol} ({stacks['contract']})",
+            }
+    elif not token_address:
         known = _PTC_KNOWN_TOKENS.get(symbol)
         if known:
             chain, token_address = known
@@ -1654,29 +1699,46 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
                           "risk unscreened (pass token_address to screen)",
             }
 
-    jobs = {
-        "orderbook_depth": real_tool_response("orderbook_depth", {"symbol": symbol}),
-        "funding_rates":   real_tool_response("funding_rates",   {"asset": symbol}),
-        "open_interest":   real_tool_response("open_interest",   {"symbol": symbol}),
-    }
+    jobs = {}
+    if use_cex:
+        jobs["orderbook_depth"] = real_tool_response("orderbook_depth", {"symbol": perp_symbol})
+    if perp_symbol:
+        jobs["funding_rates"] = real_tool_response("funding_rates", {"asset": perp_symbol})
+        jobs["open_interest"] = real_tool_response("open_interest", {"symbol": perp_symbol})
     if token_address:
         jobs["token_security"] = real_tool_response(
             "token_security",
             {"contract_address": token_address, "chain": chain},
         )
+    if use_bitflow:
+        async def _bf():
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                return await bitflow.liquidity_factor(client, stacks, side, size_usd)
+        jobs["bitflow"] = _bf()
     values = await asyncio.gather(*jobs.values(), return_exceptions=True)
     comp = {
         k: (v if isinstance(v, dict) else {"error": str(v)[:120]})
         for k, v in zip(jobs.keys(), values)
     }
 
+    bf_factor = None
+    if use_bitflow:
+        bf_factor = comp.pop("bitflow")
+        if bf_factor.get("error"):
+            bf_factor = {"level": "unknown", "venue": "bitflow",
+                         "reason": f"Bitflow venue unavailable: {bf_factor['error']}"}
+    no_perp = _ptc_na(f"no perpetual market for {symbol} — funding and open interest "
+                      "do not exist for a DEX-only token")
     factors = {
-        "liquidity": _ptc_liquidity(comp["orderbook_depth"], size_usd),
-        "carry":     _ptc_carry(comp["funding_rates"], side),
-        "crowding":  _ptc_crowding(comp["open_interest"], side),
+        "liquidity": (_ptc_liquidity(comp["orderbook_depth"], size_usd) if use_cex
+                      else bf_factor),
+        "carry":     _ptc_carry(comp["funding_rates"], side) if perp_symbol else no_perp,
+        "crowding":  _ptc_crowding(comp["open_interest"], side) if perp_symbol else no_perp,
         "security":  (security_static if security_static is not None
                       else _ptc_security(comp.get("token_security"))),
     }
+    if use_cex and use_bitflow:
+        factors["dex_liquidity"] = bf_factor
     # n/a is excluded with a visible trace (native assets genuinely have no
     # contract); "unknown" COUNTS — missing data is never "ok". The old
     # "skipped" exclusion is kept for tolerance but no longer produced.
@@ -1689,8 +1751,10 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
         "symbol":     symbol,
         "side":       side,
         "size_usd":   size_usd,
+        "venue":      "+".join(v for v, on in (("cex", use_cex), ("bitflow", use_bitflow)) if on),
         "verdict":    verdict,
         "factors":    factors,
+        "not_checked": [k for k, f in factors.items() if f["level"] in ("n/a", "unknown")],
         "components": comp,
         "checked_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }

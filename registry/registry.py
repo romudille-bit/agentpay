@@ -595,7 +595,11 @@ _TOOLS: dict[str, Tool] = {
             "security n/a; an unrecognized token without token_address reads 'unknown' and caps "
             "the verdict at caution — an unscreened contract can never read 'ok'. Replaces four "
             "API integrations and the judgment layer on top of them. Raw component data embedded "
-            "so you can apply your own thresholds."
+            "so you can apply your own thresholds. Stacks tokens (STX, sBTC, USDCx, stSTX, ZEST, "
+            "LEO, USDh, aeUSDC, stBTC) add the Bitflow DEX venue: price impact at YOUR size from "
+            "a live route quote, the pools and bins the swap crosses, and their TVL; STX and sBTC "
+            "keep their CEX perp legs, DEX-only tokens report funding/OI n/a and contract risk "
+            "unscreened (no GoPlus coverage on Stacks)."
         ),
         endpoint="https://agentpay.tools/tools/pre_trade_check",
         price_usdc="0.01",
@@ -618,6 +622,14 @@ _TOOLS: dict[str, Tool] = {
                     "description": "Trade direction (funding carry is side-aware)",
                     "default": "long",
                 },
+                "venue": {
+                    "type": "string",
+                    "enum": ["auto", "cex", "bitflow"],
+                    "description": ("Where the trade executes. auto (default): CEX books for "
+                                    "majors, Bitflow for Stacks tokens, both for STX/sBTC. "
+                                    "bitflow: price the swap on Bitflow only; cex: skip Bitflow"),
+                    "default": "auto",
+                },
                 "token_address": {
                     "type": "string",
                     "description": ("Optional ERC-20 contract address for the GoPlus security "
@@ -632,16 +644,17 @@ _TOOLS: dict[str, Tool] = {
         triggers=["pre trade check", "should I trade", "is this trade sane", "trade check", "entry check", "before I buy", "slippage and funding", "trade readiness"],
         use_when="An agent (or human) is about to enter a position and wants one verdict covering liquidity, carry, crowding, and security — instead of four raw feeds plus its own synthesis.",
         avoid_when="you need a single raw factor — funding_rates, open_interest, orderbook_depth or token_security are free; you are not about to size a position. This call settles $0.01 on-chain.",
-        returns="verdict (ok/caution/avoid), factors{liquidity,carry,crowding,security} each with level + reason, components{orderbook_depth,funding_rates,open_interest}, symbol, side, size_usd",
+        returns="verdict (ok/caution/avoid), venue (cex | bitflow | cex+bitflow), factors{liquidity,carry,crowding,security[,dex_liquidity]} each with level + reason (Bitflow: price_impact_pct, route, pools[{pool_id,tvl_usd,volume_usd_1d}], hops, bins_traversed), not_checked[], components{orderbook_depth,funding_rates,open_interest}, symbol, side, size_usd",
         response_example={
-            "symbol": "ETH", "side": "long", "size_usd": 50000,
+            "symbol": "ETH", "side": "long", "size_usd": 50000, "venue": "cex",
             "verdict": "caution",
             "factors": {
                 "liquidity": {"level": "ok", "slippage_pct": 0.011, "bucket_usd": 50000, "reason": "fills within 0.011% of best ask"},
                 "carry": {"level": "caution", "median_funding_pct": 0.062, "annualized_pct": 67.9, "reason": "longs paying elevated funding"},
                 "crowding": {"level": "ok", "long_short_ratio": 1.4, "oi_change_24h_pct": 3.2, "reason": "positioning unremarkable"},
-                "security": {"level": "skipped", "reason": "no token_address provided"},
+                "security": {"level": "n/a", "reason": "ETH is a native chain asset — no token contract to screen"},
             },
+            "not_checked": ["security"],
         },
     ),
 }
