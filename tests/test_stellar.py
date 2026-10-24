@@ -663,6 +663,7 @@ class TestSendRefund:
         # Stellar SDK path.
         kp = Keypair.random()
         mock_settings.GATEWAY_SECRET_KEY = kp.secret
+        mock_settings.GATEWAY_PUBLIC_KEY = kp.public_key
         monkeypatch.setattr(gateway.stellar, "settings", mock_settings)
 
         # Real agent keypair — TransactionBuilder validates the destination
