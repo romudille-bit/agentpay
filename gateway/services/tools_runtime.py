@@ -1649,7 +1649,7 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
     if venue not in ("auto", "cex", "bitflow"):
         venue = "auto"
 
-    # AGE-247: Stacks tokens get the Bitflow venue. STX/sBTC keep their CEX
+    # Stacks tokens get the Bitflow venue. STX/sBTC keep their CEX
     # perp legs (and the CEX book in auto mode); DEX-only tokens get Bitflow
     # alone, with the perp factors visibly n/a.
     stacks = None if venue == "cex" else await _ptc_stacks_token(symbol, raw)
