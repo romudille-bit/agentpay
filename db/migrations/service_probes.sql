@@ -1,5 +1,5 @@
 -- service_probes + service_scores — the Active Prober's delivery telemetry
--- (PROBER_SPEC 2026-07-07 / AGE-6).
+-- (PROBER_SPEC 2026-07-07 /).
 --
 --   service_probes  — one row per probe (T0 free or T1 paid). Raw evidence,
 --                     PRIVATE: tx_hash + error snapshots back every negative
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS service_probes (
     x402_wellformed   boolean,
     price_matches     boolean,
     mpp_option        boolean,                  -- [MR-3] MPP/Tempo advertised (detection only)
-    usdg_option       boolean,                  -- AGE-18: USDG/Robinhood Chain advertised (detection only)
+    usdg_option       boolean,                  -- USDG/Robinhood Chain advertised (detection only)
     settle_ok         boolean,
     http_ok           boolean,
     latency_ms        integer,
@@ -51,13 +51,13 @@ CREATE TABLE IF NOT EXISTS service_scores (
     last_ok_at      timestamptz,
     last_fail_at    timestamptz,
     flags           jsonb DEFAULT '[]'::jsonb,
-    mpp_option      boolean DEFAULT false,   -- [MR-3] MPP/Tempo advertised (AGE-8)
-    usdg_option     boolean DEFAULT false,   -- USDG/Robinhood Chain advertised (AGE-18)
-    price_usdc      numeric,                 -- last-known advertised price (AGE-8)
+    mpp_option      boolean DEFAULT false,   -- [MR-3] MPP/Tempo advertised
+    usdg_option     boolean DEFAULT false,   -- USDG/Robinhood Chain advertised
+    price_usdc      numeric,                 -- last-known advertised price
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
--- AGE-8/AGE-18/AGE-20 addenda — idempotent for tables created before these columns.
+-- addenda — idempotent for tables created before these columns.
 ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS usdg_option boolean;
 ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS name text;   -- Bazaar serviceName
 ALTER TABLE service_probes ADD COLUMN IF NOT EXISTS need text;   -- discovery category
@@ -68,7 +68,7 @@ ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS name text;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS need text;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS network text;  -- settlement chain (CAIP-2)
 
--- AGE-83: a delivery verdict resting on ONE paid probe is not a verdict.
+-- a delivery verdict resting on ONE paid probe is not a verdict.
 --   confidence         — 'provisional' (1 paid probe) | 'confirmed' (>=2) | NULL
 --   no_delivery_probes — paid probes that settled and delivered nothing; the
 --                        count the took_payment_no_delivery flag is built from
@@ -76,13 +76,13 @@ ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS network text;  -- settlement
 -- _SCORE_COLUMNS_OPTIONAL in gateway/services/supabase.py): scores keep being
 -- written and read, minus these two fields. The re-probe queue is NOT affected —
 -- retest_queue() keys off paid_probes + delivery_rate, both of which predate
--- AGE-83. What is lost without this block is the public confidence tier on
+--. What is lost without this block is the public confidence tier on
 -- /scores.json and /probes: a verdict resting on one probe stops being labelled
 -- as one, which is the whole point of the field.
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS confidence text;
 ALTER TABLE service_scores ADD COLUMN IF NOT EXISTS no_delivery_probes integer;
 
--- AGE-86/87: delivery is a claim about what happens AFTER money moves.
+-- delivery is a claim about what happens AFTER money moves.
 -- Probe rows now record their outcome so an unscoreable probe is auditable
 -- from the database (2026-07-28: 8 of 13 paid probes left no trace anywhere),
 -- and scores publish settle failures as their own count instead of laundering

@@ -1,5 +1,5 @@
 /**
- * wallet.test.mjs — AGE-139 step 1: the four wallet/paid-mode states, plus
+ * wallet.test.mjs step 1: the four wallet/paid-mode states, plus
  * the failure modes that must never lose a key.
  *
  *   1. no key, no file        → mint + persist (0600), paid OFF

@@ -1,6 +1,6 @@
 """
 provider_map.py — hold provider rows discovered on the CUSTOMER path until the
-next batch flush (AGE-138).
+next batch flush.
 
 verified_route sweeps ~20 Bazaar queries per paid call and scores ~200
 candidates; every one of them resolves payTo → provider (host, URLs, need).

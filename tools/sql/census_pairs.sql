@@ -1,4 +1,4 @@
--- census_pairs.sql — AGE-140 multi-provider buyer census (payer × recipient pairs)
+-- census_pairs.sql multi-provider buyer census (payer × recipient pairs)
 --
 -- Same denominator as census_payers.sql (EIP-3009-settled USDC transfers on Base,
 -- last 30 days). Returns one row per (payer, recipient) pair, restricted to

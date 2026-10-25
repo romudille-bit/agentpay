@@ -27,7 +27,7 @@ Identity & config (env):
                              Stacks, even days on Base). Default: "stacks"
                              when FLAGSHIP_STACKS_KEY is set, else "base".
   AGENTPAY_GATEWAY_URL     — override gateway (default https://agentpay.tools)
-  LISTING_KEEPALIVE        — "off" disables the AGE-113 Bazaar listing keepalive
+  LISTING_KEEPALIVE        — "off" disables the Bazaar listing keepalive
                              (default on; free check, $0.01 only on a real miss)
 
 Exit codes: 0 = note published; 1 = run failed (Railway cron surfaces it).
@@ -77,7 +77,7 @@ def log(msg: str) -> None:
 
 
 def _keepalive_enabled() -> bool:
-    """AGE-113 keepalive is on unless explicitly switched off."""
+    """keepalive is on unless explicitly switched off."""
     return os.environ.get("LISTING_KEEPALIVE", "on").strip().lower() not in (
         "0", "off", "false", "no")
 
@@ -156,7 +156,7 @@ def run_backtest(symbol: str) -> dict | None:
 
 # ── Note composition (pure — unit-tested) ─────────────────────────────────────
 
-# AGE-85: a "crowded" call needs a real share of venues behind it, not a
+# a "crowded" call needs a real share of venues behind it, not a
 # plurality of the non-neutral few — 3 bullish vs 0 bearish out of 20 mostly
 # neutral rows used to print "crowded-short" with full conviction.
 _FUNDING_VOTE_SHARE = 1 / 3
@@ -186,7 +186,7 @@ def _funding_vote(rates: list[dict]) -> str | None:
 def regime_line(fear_greed: dict | None, funding: dict | None) -> str:
     """One-line market regime from free intel. Defensive on missing data.
 
-    AGE-85: the funding half is split into the CORE read (BTC/ETH — the
+    the funding half is split into the CORE read (BTC/ETH — the
     assets the note's verdicts are about) and the broad basket. The headline
     only claims a signal the core supports; a broad-only tilt is reported as
     exactly that. With symmetric thresholds + the vote-share floor, "funding
@@ -290,7 +290,7 @@ def compose_note(
     ]
     for sym, v in verdicts.items():
         factors = v.get("factors", {})
-        # AGE-84: "unknown" belongs here too — it caps the verdict at caution,
+        # "unknown" belongs here too — it caps the verdict at caution,
         # so the note must say WHY ("contract risk unscreened") instead of
         # printing an unexplained CAUTION. ("n/a" stays out: a native asset's
         # security leg is visibly n/a in the data but never drives verdicts.)
@@ -542,7 +542,7 @@ def _redeem_uncertain(s, exc, log_fn=log, *, wait_s: float = 300.0):
 
 
 def _funding_bias(funding: dict | None) -> str | None:
-    """AGE-85: same vote-share rule as the regime line — a bias needs
+    """same vote-share rule as the regime line — a bias needs
     ≥1/3 of rated venues behind it, not a plurality of the non-neutral few.
     This feeds /ledger regime findings and the strategy entry-bias gate, so
     it must not claim conviction a mostly-neutral basket doesn't have."""
@@ -717,7 +717,7 @@ def main() -> int:
     def _last(tool):
         return next((c["data"] for c in reversed(intel_calls) if c["tool"] == tool), None)
 
-    # AGE-113: keep our own Bazaar listing alive. The check is free; a $0.01
+    # keep our own Bazaar listing alive. The check is free; a $0.01
     # session_create settles ONLY if the listing has actually dropped out of
     # the index. Placed before the goal branches (which return) so it runs on
     # every goal kind, and wrapped so it can never cost us the run.

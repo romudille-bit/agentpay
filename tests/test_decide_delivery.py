@@ -1,5 +1,5 @@
 """
-tests/test_decide_delivery.py — AGE-7: the two decide() fixes.
+tests/test_decide_delivery.py: the two decide() fixes.
 
 1. [MR-2] usage reweighting: unique payers dominant
    (usage_q = payers×5 + min(calls, payers×20) + recency; single_payer_volume
@@ -177,7 +177,7 @@ def test_verified_route_skips_flagged_rec_and_carries_why():
 
 
 class TestMppLabel:
-    """AGE-8 [MR-3]: label rides the why line + public shape; never affects rank."""
+    """[MR-3]: label rides the why line + public shape; never affects rank."""
 
     def test_mpp_in_why_and_public(self):
         c = _cand("https://mpp.x/t", payers=10, calls=30)
@@ -207,7 +207,7 @@ class TestMppLabel:
 
 
 def test_usdg_label_in_why_and_public():
-    """AGE-18: rides the why line + public shape, never affects rank."""
+    """rides the why line + public shape, never affects rank."""
     c = _cand("https://rh.x/t", payers=10, calls=30)
     row = _score_row("https://rh.x/t", factor=1.0)
     row["https://rh.x/t"]["usdg_option"] = True
@@ -218,7 +218,7 @@ def test_usdg_label_in_why_and_public():
 
 
 def test_unconfirmed_no_delivery_drops_rec_without_public_accusation():
-    """AGE-11 split policy: an UNCONFIRMED no-delivery flag protects buyers
+    """split policy: an UNCONFIRMED no-delivery flag protects buyers
     (never recommended) but the why-line carries no accusation."""
     flaky = _cand("https://flaky.x/t", payers=100, calls=900, pay_to="0x111")
     modest = _cand("https://modest.x/t", payers=5, calls=10, pay_to="0x222")

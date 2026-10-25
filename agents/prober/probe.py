@@ -12,7 +12,7 @@ Pipeline (see PROBER_SPEC, 2026-07-07):
              settle_ok / http_ok / latency_ms / response_nonempty / schema_ok /
              paid_but_no_data  (paid, selected candidates)
     SCORE    score(probes) → per-service delivery_rate, delivery_factor, flags
-             (consumed by gateway/radar.py::decide() — AGE-7)
+             (consumed by gateway/radar.py::decide())
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ def call_spec(cand: dict | str | None) -> dict:
     old shotgun approach (sending both `q` and `query`, `symbol` and `token`)
     is exactly what a strict validator rejects.
 
-    AGE-83: on the 2026-07-27 sweep 10 of 12 paid settles were burned on
+    on the 2026-07-27 sweep 10 of 12 paid settles were burned on
     pre-delivery param rejections because every probe sent one generic guess
     per need and ignored the call shape the seller published.
     """
@@ -112,7 +112,7 @@ def call_spec(cand: dict | str | None) -> dict:
     spec = cand.get("input_spec")
     method, advertised = _spec_fields(spec)
     if not advertised:
-        # AGE-87: a spec that declares a METHOD but no fields is an
+        # a spec that declares a METHOD but no fields is an
         # instruction, not an omission — the seller says "call me with
         # nothing." Atlas Market Data declares {"method": "GET"} bare,
         # delivered 3/3 to a bare GET, and 4xx'd the sweep where we
@@ -121,9 +121,9 @@ def call_spec(cand: dict | str | None) -> dict:
             return {"method": method, "params": {}, "source": "advertised_empty"}
         return {"method": method, "params": guess,
                 "source": "need_guess" if guess else "none"}
-    # AGE-87 precedence flip (2026-07-28 regression): the SELLER's example
+    # precedence flip (2026-07-28 regression): the SELLER's example
     # wins — it is known-good by construction, the one request shape they
-    # tested. AGE-83 had this backwards (our need-guess first) and burned 5
+    # tested. The first version had this backwards (our need-guess first) and burned 5
     # of 8 wasted settles in one sweep on values the listing contradicted:
     # model "default" vs the declared "deepseek-v4-flash", username
     # "coinbase" vs the declared "bankrbot", symbol "ETH" vs the declared
@@ -155,7 +155,7 @@ def _is_placeholder(v: object) -> bool:
     return not s or any(m in s for m in _PLACEHOLDER_MARKERS)
 
 
-# AGE-87 (root cause 3): catalogue URLs with unsubstituted path params —
+# (root cause 3): catalogue URLs with unsubstituted path params —
 # https://x.1x402.sh/api/:name, …/user/:var1 — were probed LITERALLY, so those
 # probes could never succeed. Known param names get a plausible value; a URL
 # with any unresolvable segment left is unprobeable and must be skipped, not
@@ -214,7 +214,7 @@ FACTOR_BAD = 0.25           # rate < 0.5 — heavy downrank
 GOOD_RATE = 0.9
 BAD_RATE = 0.5
 
-# AGE-83 (gap 2): with N=1 a delivery_rate is 0.0 or 1.0 and NOTHING else —
+# (gap 2): with N=1 a delivery_rate is 0.0 or 1.0 and NOTHING else —
 # a one-off timeout is indistinguishable from a service that never delivers,
 # and a single lucky call is indistinguishable from a reliable one. So a
 # single probe moves the factor only halfway: fail-twice-to-bury,
@@ -245,7 +245,7 @@ FLAG_NO_DELIVERY = "took_payment_no_delivery"
 # probe window). It already hard-drops the service from recommendations —
 # buyers are protected immediately — but the PUBLIC accusation ("took payment
 # without delivering") waits for a second failure on a separate run.
-# AGE-11 decision (Valeria, 2026-07-11): protection immediate, accusation
+# decision (Valeria, 2026-07-11): protection immediate, accusation
 # confirmed.
 FLAG_NO_DELIVERY_UNCONFIRMED = "no_delivery_unconfirmed"
 
@@ -261,7 +261,7 @@ def _dedup_key(cand: dict) -> tuple[str, str]:
 def retest_queue(scores: Iterable[dict], limit: int = 6) -> list[dict]:
     """Services whose delivery verdict is not yet settled → re-probe first. PURE.
 
-    AGE-83 (gap 3): the old sweep was one-strike-and-rotate. "PDF to Text"
+    (gap 3): the old sweep was one-strike-and-rotate. "PDF to Text"
     failed once on 07-20, was never probed again, and the prober moved on to a
     different provider that is now "trusted" on a single 1/1 success. Neither
     verdict was ever tested twice, so neither is worth anything.
@@ -310,7 +310,7 @@ def _as_decimal(v: object) -> Optional[Decimal]:
 def _round_robin(ranked: dict[str, list[dict]], top_k: int) -> list[tuple[dict, str]]:
     """Interleave needs: every need's #1 candidate before any need's #2. PURE.
 
-    AGE-83 (gap 5): the old loop was `for need in sorted(ranked)` — strictly
+    (gap 5): the old loop was `for need in sorted(ranked)` — strictly
     alphabetical — so with 8 needs × top_k 3 against a 15-probe cap, the first
     five needs consumed every paid slot and "wallet screening" / "web search"
     never got a paid probe at all. A per-need delivery leaderboard is
@@ -391,7 +391,7 @@ def select_candidates(
             paid.append(cand)
 
     # Unsettled verdicts FIRST — a second data point on a service we already
-    # paid is worth more than a first on one we haven't (AGE-83 gap 2/3).
+    # paid is worth more than a first on one we haven't.
     for cand in retest:
         add(cand, need=cand.get("need") or "retest")
     # Recent recommendations next — the freshness guarantee outranks sweep order.
@@ -455,7 +455,7 @@ def _option_sane(opt: dict) -> bool:
 
 
 _MPP_MARKERS = ("mpp", "tempo")
-# AGE-83: `usdg_option` was structurally always False. The marker list said
+# `usdg_option` was structurally always False. The marker list said
 # "eip155:46630", but every live USDG listing (ArbiPulse, Agent402.tools,
 # Concierge Agent — 5 options in the 2026-07-27 catalog) advertises
 # `eip155:4663` with asset 0x5fc5360D…d168 and extra.name "Global Dollar".
@@ -479,7 +479,7 @@ def _option_hay(opt: dict) -> str:
 def _is_mpp_option(opt: dict) -> bool:
     """[MR-3] Does this option advertise MPP/Tempo? Detection only, never settled.
 
-    AGE-83 (gap 6) verified 2026-07-27: `mpp_options: 0` on every sweep is a
+    (gap 6) verified 2026-07-27: `mpp_options: 0` on every sweep is a
     REAL read, not a stubbed field. A catalog sweep of 96 unique listings /
     229 payment options across 14 networks (Base, Solana, Polygon, Arbitrum,
     World, Avalanche, Monad, Celo, Stellar, Algorand, XRPL, …) found ZERO
@@ -490,7 +490,7 @@ def _is_mpp_option(opt: dict) -> bool:
 
 
 def _is_usdg_option(opt: dict) -> bool:
-    """AGE-18: USDG / Robinhood Chain (eip155:46630) option. Detection only,
+    """USDG / Robinhood Chain (eip155:46630) option. Detection only,
     never settled — same rail-agnostic stance as the MPP label."""
     return any(m in _option_hay(opt) for m in _USDG_MARKERS)
 
@@ -597,7 +597,7 @@ def _schema_keys(out_schema: dict | list | None) -> list[str]:
     """Advertised top-level keys from an outputSchema-ish dict. Tolerant of the
     common shapes: JSON-schema {properties: {...}}, bazaar info.output {...},
     a plain example object — or an already-extracted list of key names, which
-    is what rank()'s `output_keys` hands us (AGE-83)."""
+    is what rank()'s `output_keys` hands us."""
     if isinstance(out_schema, list):
         return [k for k in out_schema if isinstance(k, str)]
     if not isinstance(out_schema, dict) or not out_schema:
@@ -615,7 +615,7 @@ def _schema_keys(out_schema: dict | list | None) -> list[str]:
 def paid_but_no_data(settle_ok: bool, http_ok: bool) -> bool:
     """The worst outcome: took money, gave nothing back at the HTTP level.
 
-    NOTE (AGE-83): this is the NARROW test — settled but no 200. It misses the
+    NOTE: this is the NARROW test — settled but no 200. It misses the
     other half of "took payment, delivered nothing": a 200 carrying an empty
     body or a payload that doesn't match the advertised schema. Use
     `took_payment_no_delivery()` for the flag; this stays for the raw
@@ -653,7 +653,7 @@ def delivery_factor(rate: Optional[float], probed: bool,
         ≥2 probes, < 0.5      → 0.25
 
     `n_probes` is optional for backwards compatibility; omitting it keeps the
-    pre-AGE-83 confirmed-tier behaviour.
+    earlier confirmed-tier behaviour.
     """
     if not probed or rate is None:
         return FACTOR_UNPROBED
@@ -702,7 +702,7 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
         # rejection before any payment) — raw evidence only, never delivery.
         paid = [p for p in group
                 if p.get("probe_type") == "paid" and not p.get("skipped")]
-        # AGE-86: DELIVERY IS A CLAIM ABOUT WHAT HAPPENS AFTER MONEY MOVES.
+        # DELIVERY IS A CLAIM ABOUT WHAT HAPPENS AFTER MONEY MOVES.
         # A probe that never settled — DNS failure, connection refused, a
         # payment the seller's facilitator rejected — says nothing about
         # whether the seller delivers, so it must never enter delivery_rate.
@@ -718,7 +718,7 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
         delivered = sum(1 for p in settled if _delivered(p))
         rate = (delivered / n) if n else None
         flags: list[str] = []
-        # AGE-83: same delivery definition as delivery_rate — a settled probe
+        # same delivery definition as delivery_rate — a settled probe
         # that returns 200-with-nothing is a non-delivery, not a clean run.
         no_delivery = sum(1 for p in settled if took_payment_no_delivery(p))
         if no_delivery >= MIN_PROBES_CONFIRMED:
@@ -754,7 +754,7 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
             "settle_failures": settle_failures,
             "delivery_rate": round(rate, 4) if rate is not None else None,
             "delivery_factor": delivery_factor(rate, probed=n > 0, n_probes=n),
-            # AGE-83: how much this row is worth believing. "provisional" = a
+            # how much this row is worth believing. "provisional" = a
             # single paid probe, so 0.0/1.0 carries no signal about whether the
             # next call would work; the re-probe queue targets these first.
             "confidence": (None if not n else
@@ -775,7 +775,7 @@ def need_leaderboard(scores: Iterable[dict],
                      min_probes: int = 1) -> dict[str, list[dict]]:
     """Per-need delivery ranking: "for pdf-ocr, A delivers and B doesn't". PURE.
 
-    AGE-83 (gap 5): usage ranking says what's popular; only a paid comparison
+    (gap 5): usage ranking says what's popular; only a paid comparison
     of two providers for the SAME need says what works. That comparison is
     exactly what a buyer pays verified_route for, and it was impossible while
     the sweep paid at most one provider per need.
@@ -814,7 +814,7 @@ def reconcile_settlements(entries: Iterable[dict],
     from the prober wallet. PURE — the I/O lives in
     tools/reconcile_prober_spend.py.
 
-    AGE-88: an `uncertain_settlement` entry means a signed EIP-3009 auth left
+    an `uncertain_settlement` entry means a signed EIP-3009 auth left
     the wire and the seller answered non-200 — the SDK fails closed and counts
     the spend, but nobody knows whether the seller actually settled. The
     answer IS payer-observable: `transferWithAuthorization` emits a normal

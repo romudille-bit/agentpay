@@ -1,9 +1,9 @@
-"""AGE-113: keep our own Bazaar listing alive — check free, pay only if needed.
+"""keep our own Bazaar listing alive — check free, pay only if needed.
 
 Bazaar re-indexes a resource from its LIVE 402 at settle time. A listing with
 no recurring paid traffic goes stale and drops out of the index entirely:
 measured 2026-08-09, `session_create` fell out within three days of its forced
-re-index (AGE-111), taking `budget cap`, `spend control` and `session` with it
+re-index, taking `budget cap`, `spend control` and `session` with it
 — the spend-governance category we deliberately chose to own. `verified_route`
 and `pre_trade_check` survived only because a real customer buys them every
 1-3h, which refreshes their records for free.
@@ -23,7 +23,7 @@ Design — check free, settle only on a miss:
     missing from it — and the brand query can never legitimately come back
     empty while eight rival "AgentPay" products exist, so an empty result is
     an API change or a degraded index, not absence.
-  * How often this has to fire IS the decay-rate measurement AGE-113 asks for.
+  * How often this has to fire IS the decay-rate measurement asks for.
     Every fire is logged, so the run log is the dataset.
 
 On honesty: the flagship analyst is a disclosed AgentPay-operated agent that
@@ -51,7 +51,7 @@ UA = "agentpay-keepalive/1.0 (+https://agentpay.tools)"
 # A head term could miss us for ranking reasons and trigger a pointless spend.
 PROBE_QUERY = "agentpay"
 
-# The canonical resource AGE-112 made both payable paths declare.
+# The canonical resource made both payable paths declare.
 SESSION_RESOURCE_URL = "https://agentpay.tools/v1/session/create"
 
 KEEPALIVE_PARAMS = {"max_spend": "0.10"}

@@ -1,4 +1,4 @@
--- ledger_leg_verifications — AGE-142 (2026-08-26)
+-- ledger_leg_verifications (2026-08-26)
 --
 -- Chain-verified evidence for the paid legs of receipt-derived ledger runs
 -- (probe sweeps and strategy runs that settle agent→seller, off gateway).

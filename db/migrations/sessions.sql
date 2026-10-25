@@ -1,4 +1,4 @@
--- Server-side session cap (AGE-207). Apply once in the Supabase SQL Editor
+-- Server-side session cap. Apply once in the Supabase SQL Editor
 -- before setting SESSION_ENFORCEMENT=true on a gateway. Idempotent.
 --
 -- A session belongs to the address that paid for it (payer, network). Every

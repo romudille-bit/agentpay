@@ -1,4 +1,4 @@
--- census_payers.sql — AGE-140 multi-provider buyer census (Base, per-payer aggregates)
+-- census_payers.sql multi-provider buyer census (Base, per-payer aggregates)
 --
 -- DENOMINATOR (state it in every report):
 --   USDC transfers on Base in the last 30 days that were settled through an

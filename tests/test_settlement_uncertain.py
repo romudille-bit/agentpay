@@ -1,5 +1,5 @@
 """
-test_settlement_uncertain.py — AGE-26.
+test_settlement_uncertain.py.
 
 The Stacks rail is sign-don't-broadcast: the gateway broadcasts and settlement
 confirms asynchronously (testnet blocks take minutes). A transmitted-but-not-
@@ -47,7 +47,7 @@ def test_catchable_as_payment_failed_with_tx():
 
 def test_public_session_forwards_governance_kwargs():
     # The public Session wrapper must forward per-tool caps / allowlists /
-    # rate limits to the internal session (AGE-26 — the M1 over-cap demo).
+    # rate limits to the internal session.
     from unittest.mock import MagicMock
     from decimal import Decimal
 

@@ -1,5 +1,5 @@
 """
-routes/prober.py — Active Prober ingest (AGE-6).
+routes/prober.py — Active Prober ingest.
 
 POST /v1/prober/run — the prober posts its raw probe rows (plus an optional
 flagship-style run summary for /ledger reasoning); the GATEWAY does the
@@ -8,7 +8,7 @@ storage work, because it holds the Supabase creds and the 30-day history:
     1. INSERT raw rows into service_probes (private evidence)
     2. SELECT the full 30d window back (this run + history)
     3. score() — the SAME pure function the runner uses — over the window
-    4. UPSERT service_scores (public, consumed by decide() — AGE-7)
+    4. UPSERT service_scores (public, consumed by decide())
     5. optionally insert_flagship_run(run) so /ledger shows the reasoning
 
 The prober stays a credential-free HTTP customer (flagship ingest pattern);
@@ -81,7 +81,7 @@ def service_has_probe_data(row: dict) -> bool:
 
 @router.get("/scores.json")
 async def scores_json():
-    """Public delivery scores — the Prober's findings (AGE-20 stage 1).
+    """Public delivery scores — the Prober's findings.
 
     One row per probed x402 service: delivery rate/factor over the 30d
     window, p50 latency, rail labels (MPP/USDG), flags, last-known price,
@@ -113,13 +113,13 @@ async def scores_json():
             "page": f"/s/{service_slug(url)}",
             "name": row.get("name") or url.split("//")[-1].split("/")[0],
             "need": row.get("need"),
-            # AGE-104 follow-up: normalize on read. Rows written before the
+            # follow-up: normalize on read. Rows written before the
             # Solana aliases existed stored a LOWERCASED base58 CAIP-2
             # ("solana:5eykt4usfv8p8…"), which is not a valid identifier —
             # base58 is case-sensitive. Normalizing here fixes the published
             # value for legacy rows without a data migration.
             "network": _norm_net(row.get("network")),
-            # AGE-104 follow-up: the honesty flag shipped on verified_route but
+            # follow-up: the honesty flag shipped on verified_route but
             # not here, so three Solana services sat on the public delivery
             # leaderboard with nothing saying we have never verified them and
             # currently cannot. Same note, same rule, every surface.
@@ -128,13 +128,13 @@ async def scores_json():
             "paid_probes": row.get("paid_probes"),
             "delivery_rate": row.get("delivery_rate"),
             "delivery_factor": row.get("delivery_factor"),
-            # AGE-83: "provisional" = a single paid probe, so 0.0/1.0 says
+            # "provisional" = a single paid probe, so 0.0/1.0 says
             # nothing about whether the next call would work. The prober's
             # re-probe queue targets these first. The prober also reads this
             # field back off /scores.json, so it must stay in the payload.
             "confidence": row.get("confidence"),
             "no_delivery_probes": row.get("no_delivery_probes"),
-            # AGE-86: payments of ours that did not settle — a different
+            # payments of ours that did not settle — a different
             # claim from delivery ("wouldn't take my payment" is not "took my
             # payment and gave nothing"), so it rides as its own field and
             # never touches delivery_rate or the factor.
@@ -155,7 +155,7 @@ async def scores_json():
                       "(factor 1.0); these scores feed verified_route ranking."),
             "count": len(services),
             "services": services,
-            # AGE-83: the head-to-head a buyer actually wants — "for pdf ocr,
+            # the head-to-head a buyer actually wants — "for pdf ocr,
             # A delivers and B doesn't". Only paid-probed services appear;
             # unprobed is neutral, not last.
             "by_need": _need_leaderboard(services),
@@ -168,7 +168,7 @@ async def scores_json():
                 "tools": own,
                 # Free tools never settle on-chain, so there is no payment
                 # evidence to show — surfaced as a count, not as rows that
-                # could be mistaken for paid demand (AGE-38).
+                # could be mistaken for paid demand.
                 "free_tools": {"count": free_count,
                                "note": "no payment needed, so no payment "
                                        "evidence to show"},
@@ -408,7 +408,7 @@ _PAGE_CSS = """
 
 @router.get("/s/{slug}", response_class=Response)
 async def service_page(slug: str):
-    """Per-service public page (AGE-39) — the SEO surface for one probed
+    """Per-service public page — the SEO surface for one probed
     x402 service. SERVER-rendered on purpose: /probes builds its table
     client-side, which crawlers without JS see as an empty shell (the exact
     trap that kept competitors' pages ranking while ours didn't). Everything
@@ -448,7 +448,7 @@ async def service_page(slug: str):
     if row.get("network"):
         chips.append(
             f'<span class="chip rail">{e(str(_norm_net(row["network"])))}</span>')
-    # AGE-104 follow-up: never render a non-Base service on the delivery board
+    # follow-up: never render a non-Base service on the delivery board
     # without saying we cannot verify its delivery. Same rule as scores.json
     # and verified_route — one helper, three surfaces.
     _cov = probe_coverage_note(row.get("network"))
@@ -566,7 +566,7 @@ async def prober_ingest(request: Request,
     if isinstance(run, dict) and run:
         run_stored = await insert_flagship_run(run)
 
-    # AGE-138: the sweep's payTo → provider resolution, once per sweep. The
+    # the sweep's payTo → provider resolution, once per sweep. The
     # runner posts what radar.rank() saw per need (providers_from_results);
     # the gateway merges it into provider_map. Best-effort like the rest.
     providers = payload.get("providers")

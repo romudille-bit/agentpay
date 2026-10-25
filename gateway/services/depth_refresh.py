@@ -1,5 +1,5 @@
 """
-depth_refresh.py — the gateway refreshes provider_depth ITSELF (AGE-138).
+depth_refresh.py — the gateway refreshes provider_depth ITSELF.
 
 The weekly `tools/payer_depth.py` run started as a laptop step because the
 extraction once needed a Dune key. It doesn't anymore: the x402scan public

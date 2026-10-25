@@ -197,7 +197,7 @@ class TestFreeIntelHelpers:
 
 
 class TestRegimeLineAGE85:
-    """AGE-85: the regime line printed "funding leans crowded-short (bullish
+    """the regime line printed "funding leans crowded-short (bullish
     signal)" verbatim on 6 of 6 run days — asymmetric thresholds (bearish gate
     5x wider than bullish), plurality voting over a mostly-neutral basket, and
     a headline carried by alts while BTC/ETH sat flat."""

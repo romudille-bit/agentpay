@@ -1,5 +1,5 @@
 """
-test_stacks_tx.py — AGE-22: the minimal Python Stacks signing lib.
+test_stacks_tx.py: the minimal Python Stacks signing lib.
 
 Oracle: fixtures generated with @stacks/transactions v7 (stacks.js, the
 canonical Stacks tooling) by tools/gen_stacks_fixtures.mjs. Both sides use

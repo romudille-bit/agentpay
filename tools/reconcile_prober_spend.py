@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-reconcile_prober_spend.py — AGE-88.
+reconcile_prober_spend.py.
 
 Resolves a prober sweep's `uncertain_settlement` entries against on-chain
-reality. The SDK fails closed (AGE-56): once a signed EIP-3009 authorization
+reality. The SDK fails closed: once a signed EIP-3009 authorization
 is transmitted, the spend is recorded even if the seller answers non-200 —
 so a sweep's receipt can carry spend nobody can substantiate.
 
@@ -17,7 +17,7 @@ Interpretation:
   confirmed           — the SDK already saw a 200; transfer anchored to it
   settled_on_chain    — seller SETTLED a payment for a request they rejected.
                         Money gone, nothing back: real took-payment evidence,
-                        currently discarded as buyer-side noise (AGE-87 RC4).
+                        currently discarded as buyer-side noise.
   no_onchain_evidence — no matching transfer: the auth was never settled;
                         the recorded spend for this entry was conservative.
 
@@ -191,10 +191,10 @@ def main() -> int:
 
     print(f"\n⚠ settled-but-rejected: {settled_anyway} — the seller took the "
           f"money for a request they refused. Real took-payment evidence; "
-          f"promote to scoring via AGE-86's payment_rejected outcome.")
+          f"promote to scoring via's payment_rejected outcome.")
     print(f"· no on-chain evidence: {unspent} — those auths were never "
           f"settled; the receipt over-counts by their sum (fail-closed by "
-          f"design, AGE-56).")
+          f"design).")
     return 0
 
 

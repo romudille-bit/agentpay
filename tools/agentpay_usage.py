@@ -344,7 +344,7 @@ def main():
     print(f"    unique agent wallets    : {len(agents)}   (note: quickstart mints a NEW wallet per run,")
     print(f"                                       so this overcounts distinct users)")
 
-    # ── MCP bucket (AGE-139): persisted-address identity ────────────────────
+    # ── MCP bucket: persisted-address identity ────────────────────
     # v2.5.0 mints one EVM key per install (~/.agentpay/mcp-wallet.json), so
     # the agent_address on agentpay-mcp/* UA rows is finally a stable install
     # id. Pre-2.5.0 rows carry mcp-free-<uuid>, regenerated per process start —
@@ -370,7 +370,7 @@ def main():
                      and r.get("state") not in ("payment_done", "verified")]
         wall_addrs = {(r.get("agent_address") or "").lower() for r in wall_rows}
         wall_addrs.discard("")
-        print(f"\n  MCP bucket (agentpay-mcp UA; persisted-address identity, AGE-139):")
+        print(f"\n  MCP bucket (agentpay-mcp UA; persisted-address identity):")
         print(f"    installs (distinct persisted addresses) : {len(installs)}"
               + (f"   (+{len(legacy)} legacy mcp-free ephemerals — pre-2.5.0, not installs)" if legacy else ""))
         print(f"    retained (seen in ≥2 ISO weeks)         : {len(retained)}")
@@ -407,7 +407,7 @@ PAID_TOOLS = {"session_create", "pre_trade_check", "verified_route"}
 def _generic_breakdown(generic):
     """Split the generic-runtime bucket into free vs PAID tools, with completion.
 
-    Added 2026-07-17 (AGE-49). This bucket is excluded from "likely real"
+    Added 2026-07-17. This bucket is excluded from "likely real"
     because bare runtimes are unattributed — but collapsing it to one count
     hid a growing, zero-converting cohort on the only revenue path we have.
     A cohort that keeps hitting PAID tools and never settles is either the
@@ -421,7 +421,7 @@ def _generic_breakdown(generic):
     rate = (len(done) / len(paid) * 100) if paid else 0.0
     by_ua = Counter((r.get("user_agent") or "—").strip().lower() for r in paid)
     top = ", ".join(f"{u}×{c}" for u, c in by_ua.most_common(3))
-    print(f"     ├─ on PAID tools      : {len(paid)}   ({len(done)} settled = {rate:.0f}% — see AGE-49)")
+    print(f"     ├─ on PAID tools: {len(paid)}   ({len(done)} settled = {rate:.0f}% — see)")
     print(f"     └─ top UAs on paid    : {top}")
 
 

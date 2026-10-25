@@ -1,4 +1,4 @@
-"""tests/test_prober_ingest.py — POST /v1/prober/run (AGE-6).
+"""tests/test_prober_ingest.py — POST /v1/prober/run.
 
 Route tests via TestClient with the Supabase helpers monkeypatched (same
 convention as test_ledger.py's ingest tests). Verifies the gate, the payload
@@ -132,7 +132,7 @@ def test_stores_probes_and_rescoreds_window(monkeypatch):
     s = body["scores"][0]
     assert s["paid_probes"] == 2
     assert s["delivery_rate"] == 0.5
-    # 1 no-delivery in the window → unconfirmed (AGE-11 split policy)
+    # 1 no-delivery in the window → unconfirmed
     assert "no_delivery_unconfirmed" in s["flags"]
     # And the upsert got the same rows.
     assert calls["scores"][0]["delivery_rate"] == 0.5
@@ -148,7 +148,7 @@ def test_scores_this_run_when_window_unreadable(monkeypatch):
     assert body["window_rows"] == 0
     assert len(body["scores"]) == 1
     assert body["scores"][0]["paid_probes"] == 1     # fell back to run rows
-    # AGE-83: one paid probe earns the PROVISIONAL boost, not the full 1.15 —
+    # one paid probe earns the PROVISIONAL boost, not the full 1.15 —
     # succeed-twice-to-trust.
     assert body["scores"][0]["delivery_factor"] == 1.05
     assert body["scores"][0]["confidence"] == "provisional"
@@ -183,7 +183,7 @@ def test_non_dict_probe_rows_are_skipped(monkeypatch):
     assert len(calls["probes"]) == 1
 
 
-# ── GET /scores.json (AGE-20 stage 1) ────────────────────────────────────────
+# ── GET /scores.json ────────────────────────────────────────
 
 def test_scores_json_public_shape(monkeypatch):
     async def _fake_scores():
@@ -236,7 +236,6 @@ def test_probes_page_serves_html():
     assert r.headers["cache-control"] == "no-store"
 
 
-# ---------------------------------------------------------------- AGE-38
 # amount_usdc is a TEXT column: PostgREST "gt.0" compares strings, so
 # "0.000000" (free-flow receipts) sneaks past the server-side filter.
 # _group_paid_receipts is the authoritative Python-side paid/free split.
@@ -273,7 +272,7 @@ def test_group_paid_receipts_empty():
 
 
 def test_scores_json_own_tools_enriched(monkeypatch):
-    """AGE-38 redesign: own paid tools carry the registry price; free tools
+    """redesign: own paid tools carry the registry price; free tools
     surface as a count, never as rows mistakable for paid demand."""
     async def _empty_scores():
         return {}
@@ -298,7 +297,6 @@ def test_probes_page_self_section_copy():
     assert "Receipted paid calls" not in r.text     # old table header gone
 
 
-# ---------------------------------------------------------------- AGE-39
 # Per-service SEO pages: server-rendered /s/{slug} from service_scores.
 
 _ROW = {
@@ -357,7 +355,7 @@ def test_sitemap_includes_service_pages(monkeypatch):
     assert "/s/" + prober.service_slug(_ROW["resource_url"]) in r.text
 
 
-# ── AGE-104 follow-up: probe-coverage honesty on the Prober's own surfaces ────
+# ── follow-up: probe-coverage honesty on the Prober's own surfaces ────
 # The "Base only — on-chain delivery unverified" caveat shipped on
 # verified_route but NOT on scores.json or the /probes leaderboard, so three
 # Solana services sat on our public delivery board with no indication we have
@@ -441,7 +439,7 @@ def test_scores_json_carries_coverage_caveat_and_normalized_network(monkeypatch)
     assert base["network"] == "eip155:8453"
 
 
-# ── AGE-138: providers in the ingest payload ─────────────────────────────────
+# ── providers in the ingest payload ─────────────────────────────────
 
 def test_ingest_upserts_providers_once_per_sweep(monkeypatch):
     monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")

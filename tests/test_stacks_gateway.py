@@ -1,5 +1,5 @@
 """
-test_stacks_gateway.py — AGE-23: gateway/stacks.py verify + settle.
+test_stacks_gateway.py: gateway/stacks.py verify + settle.
 
 The gateway is the BROADCASTER on the Stacks rail: the client hands over a
 fully signed, unbroadcast sBTC transfer; every failure mode between broadcast
@@ -70,7 +70,7 @@ def stacks_settings(monkeypatch):
     stacks_pay._used_stacks_txids.clear()
     stacks_pay._rate_cache["rate"] = None
     stacks_pay._rate_cache["at"] = 0.0
-    # AGE-135: cancel any in-flight background rate refresh so it can't write
+    # cancel any in-flight background rate refresh so it can't write
     # into another test's cache.
     if stacks_pay._rate_refresh_task is not None:
         stacks_pay._rate_refresh_task.cancel()
@@ -203,7 +203,7 @@ class TestVerify:
         assert auth["authorized"], auth["reason"]
 
     async def test_short_memo_does_not_bind_a_longer_id(self):
-        # AGE-153: a 1-byte memo used to satisfy the prefix rule for any
+        # a 1-byte memo used to satisfy the prefix rule for any
         # challenge id starting with that byte. Exact match on the
         # truncated id now.
         tx = _signed_tx(payment_id="c")
@@ -404,7 +404,7 @@ class TestSettle:
 
     async def test_durable_consume_outage_fails_closed_as_rejected(self, monkeypatch):
         """Infra outage → refuse to broadcast, release the in-memory hold,
-        report "rejected" with a re-sign hint (AGE-153): nothing reached a
+        report "rejected" with a re-sign hint: nothing reached a
         node, and the SDK confirms that on Hiro before zeroing the leg."""
         monkeypatch.setattr(sb, "sb_enabled", lambda: True)
         async def _outage(txh, net):
@@ -458,7 +458,7 @@ class TestSettle:
         assert res["reason"] == "broadcast_accepted_pending_confirmation"
 
     async def test_settle_deadline_answers_uncertain(self, monkeypatch):
-        # AGE-150: the whole broadcast+confirm is bounded; past the deadline
+        # the whole broadcast+confirm is bounded; past the deadline
         # the reply is a structured "uncertain", never an empty edge 524.
         monkeypatch.setattr(settings, "STACKS_SETTLE_DEADLINE_S", 0.05)
         monkeypatch.setattr(settings, "STACKS_CONFIRM_POLL_S", 0.5)
@@ -474,7 +474,7 @@ class TestSettle:
         assert txid_of(tx) in stacks_pay._used_stacks_txids   # consume stands
 
     async def test_dropped_is_not_definitive(self):
-        # AGE-152 (adjacent): dropped_* bytes are still valid; keep polling
+        # (adjacent): dropped_* bytes are still valid; keep polling
         # and end uncertain rather than telling the SDK to zero the leg.
         tx = _signed_tx()
         with respx.mock:
@@ -603,7 +603,7 @@ class TestLiveRate:
         assert cg.call_count == 1   # second call served from cache
 
     async def test_cache_expires_stale_while_revalidate(self, monkeypatch):
-        # AGE-135: an EXPIRED cache no longer blocks the caller on CoinGecko —
+        # an EXPIRED cache no longer blocks the caller on CoinGecko —
         # the stale value is served immediately and a single-flight background
         # task refreshes the cache.
         monkeypatch.setattr(settings, "STACKS_RATE_CACHE_S", 0.0)  # never fresh
@@ -647,7 +647,7 @@ class TestQuoteStableAcrossFxMove:
     """The sats quoted at 402-issuance ride on the challenge and are what
     settle verifies against — a BTC move between issue and settle must not
     fail the amount check, and the quote survives a restart because the
-    challenge row carries it (AGE-95)."""
+    challenge row carries it."""
 
     class _Tool:
         name = "verified_route"
@@ -764,7 +764,7 @@ class TestSettleStacksPath:
         assert auth["network"] == "stacks-testnet"
 
     async def test_requotes_when_challenge_has_no_quote(self):
-        # Challenge issued without a Stacks quote (pre-AGE-95 row, or the
+        # Challenge issued without a Stacks quote (earlier row, or the
         # option was omitted): settle re-quotes at the live rate.
         self.challenge.pop("stacks_sats")
         self.challenge.pop("stacks_rate")
@@ -904,7 +904,7 @@ class TestRoute402CarriesQuote:
         assert _pending_challenges[body["payment_id"]]["stacks_sats"] is None
 
 
-# ── fee suggestion (AGE-151) ─────────────────────────────────────────────────
+# ── fee suggestion ─────────────────────────────────────────────────
 
 
 def _hiro_fees(*fees):
@@ -915,7 +915,7 @@ def _hiro_fees(*fees):
 
 class TestFeeSuggestion:
     async def test_offers_medium_tier_when_above_floor(self):
-        # AGE-153: the middle of Hiro's three tiers, not the fast one.
+        # the middle of Hiro's three tiers, not the fast one.
         with respx.mock:
             _mock_coingecko(100000)
             _hiro_fees(300, 7590, 50850)
@@ -960,7 +960,7 @@ class TestFeeSuggestion:
         assert opt["fee_microstx"] == 3000
 
 
-# ── uncertain settle: row + redemption (AGE-147) ─────────────────────────────
+# ── uncertain settle: row + redemption ─────────────────────────────
 
 
 class TestUncertainRedemption:

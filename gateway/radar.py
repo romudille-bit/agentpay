@@ -56,7 +56,7 @@ CHAIN_NETWORKS: dict[str, set[str]] = {
     # The headline group: every Arbitrum-stack chain (Arbitrum One + Sepolia +
     # Robinhood Chain). This is what `GET /discovery/arbitrum` surfaces.
     "arbitrum-stack":    {"eip155:42161", "eip155:421614", "eip155:46630"},
-    # AGE-104: Solana — DISCOVERY ONLY. Listings are swept, junk-filtered and
+    # Solana — DISCOVERY ONLY. Listings are swept, junk-filtered and
     # usage-ranked identically to Base, but the SDK cannot sign SVM and the
     # Prober settles paid probes on Base only, so Solana picks carry an
     # explicit probe-coverage flag (see _public). CAIP-2 references are the
@@ -78,7 +78,7 @@ _NETWORK_ALIASES: dict[str, str] = {
     "arbitrum-sepolia": "eip155:421614",
     "robinhood": "eip155:46630",
     "robinhood-testnet": "eip155:46630",
-    # AGE-104: Solana friendly names (x402 accepts.network uses "solana" /
+    # Solana friendly names (x402 accepts.network uses "solana" /
     # "solana-devnet") plus the LOWERCASED CAIP-2 forms — normalize_network
     # lowercases before lookup, and base58 refs are case-sensitive, so the
     # lowercased spelling must map back to the canonical one.
@@ -153,7 +153,7 @@ def parse_resources(data: dict) -> list[dict]:
         # How the seller says to CALL it: {method, type, queryParams|body,
         # bodyType}. Sellers publish this on the Bazaar listing and they mean
         # it — a GET-with-?url= service rejects a POSTed JSON body.
-        # AGE-83: the prober used to send one generic guess per need and burned
+        # the prober used to send one generic guess per need and burned
         # 10 of 12 paid settles (2026-07-27 sweep) on pre-delivery param
         # rejections; carrying the advertised input spec is what turns those
         # into scoreable delivery probes.
@@ -162,14 +162,14 @@ def parse_resources(data: dict) -> list[dict]:
         out.append({
             "name": r.get("serviceName") or rd.get("serviceName") or url.rsplit("/", 1)[-1],
             "url": url,
-            # Searchable text for the relevance tier (AGE-43); Bazaar carries a
+            # Searchable text for the relevance tier; Bazaar carries a
             # description on the listing, the resource dict, or the extension.
             "description": (r.get("description") or rd.get("description")
                             or (ext.get("info") or {}).get("description") or ""),
             "price_usd": price,
             "network": a.get("network", ""),
             "network_caip2": normalize_network(a.get("network", "")),
-            # AGE-104: EVERY advertised rail, not just accepts[0]. A dual-rail
+            # EVERY advertised rail, not just accepts[0]. A dual-rail
             # listing (Base + Solana in one `accepts` list) is payable on both;
             # filter_chain matches on any rail and re-points the primary to the
             # matching entry so ready_to_pay is actually payable on the
@@ -189,13 +189,13 @@ def parse_resources(data: dict) -> list[dict]:
             # Raw first `accepts` entry so verified_route can hand the buyer a
             # ready-to-pay x402 challenge without a second fetch.
             "accepts": a,
-            # Advertised call shape (AGE-83). None when the seller published
+            # Advertised call shape. None when the seller published
             # none — callers fall back to their own guess.
             "input_spec": in_spec if isinstance(in_spec, dict) and in_spec else None,
             # Top-level keys the seller says come BACK — the cheap half of the
             # output schema, and the only part a delivery check needs. Without
             # it a paid call answering {"error": "bad request"} with HTTP 200
-            # is merely "non-empty", so it scored as DELIVERED (AGE-83).
+            # is merely "non-empty", so it scored as DELIVERED.
             "output_keys": _schema_top_keys(out_schema),
         })
     return out
@@ -226,7 +226,7 @@ def _schema_top_keys(out_schema: object) -> list[str]:
 
 def _repoint_rail(c: dict, nets: set[str]) -> dict:
     """Copy of candidate `c` with its primary rail switched to the accepts
-    entry matching `nets`. AGE-104: a Base-first dual-rail listing asked for
+    entry matching `nets`. A Base-first dual-rail listing asked for
     with chain='solana' must hand back the SOLANA accepts blob in ready_to_pay,
     not the Base one. Falls back to `c` unchanged when no raw accepts are
     available (e.g. crawler-injected candidates carry only network_caip2)."""
@@ -251,7 +251,7 @@ def filter_chain(cands: Iterable[dict], chain: Optional[str]) -> list[dict]:
 
     `chain=None` (or unknown-empty) returns everything. Matching is on the
     normalized CAIP-2 id, so "arbitrum", "arbitrum-one", and "eip155:42161"
-    all behave the same. AGE-104: a candidate matches on ANY advertised rail
+    all behave the same. A candidate matches on ANY advertised rail
     (`networks_all`), not just its primary — a dual-rail Base+Solana listing IS
     a Solana option — and when only a secondary rail matches, the primary is
     re-pointed to the matching accepts entry. Candidates without `networks_all`
@@ -285,7 +285,7 @@ def _recency_days(iso: Optional[str]) -> Optional[int]:
     try:
         s = str(iso).replace("Z", "+00:00")
         # py<3.11 fromisoformat only takes 0/3/6 fractional digits; PostgREST
-        # and Bazaar emit any length — normalise to 6 (AGE-142 lesson).
+        # and Bazaar emit any length — normalise to 6.
         s = _ISO_FRACTION.sub(lambda m: f"{m.group(1)}.{m.group(2)[:6].ljust(6, '0')}", s, count=1)
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
@@ -297,7 +297,7 @@ def _recency_days(iso: Optional[str]) -> Optional[int]:
 
 # Delivery-failure flags from the Prober's score rows (mirrors of
 # agents/prober/probe.py constants — kept literal so radar.py stays importable
-# without the agents package). AGE-11 policy: BOTH hard-drop a service from
+# without the agents package). policy: BOTH hard-drop a service from
 # recommendation (buyer protection is immediate), but only the CONFIRMED flag
 # (>= 2 paid_but_no_data on separate runs) carries the public accusation in
 # why-text — a single failure may be a transient outage.
@@ -325,7 +325,7 @@ def _usage_q(payers: int, calls: int, rec_days: Optional[int]) -> int:
     return q
 
 
-# ── AGE-138 phase 0: on-chain payer depth (provider_depth, per payTo) ────────
+# ── phase 0: on-chain payer depth (provider_depth, per payTo) ────────
 # Bazaar's payers30d is per LISTING and self-reported by the facilitator; a
 # provider's `payer_quality` (Σ payer_weight ÷ payers, from tools/payer_depth.py
 # via x402scan) is per PAYTO and says how many of those payers were more than a
@@ -339,7 +339,7 @@ def _usage_q(payers: int, calls: int, rec_days: Optional[int]) -> int:
 DEPTH_MAX_AGE_DAYS = 7
 # legs/payer in 30d at which a provider is "fleet-shaped": organic sellers run
 # 12–44, closed fleets 455–18,000, Cluster 174. Informational flag in `why`
-# only — heavy legitimate users exist; the funding graph (AGE-133) decides.
+# only — heavy legitimate users exist; the funding graph decides.
 FLEET_LEGS_PER_PAYER = 100
 FLAG_FLEET_SHAPED = "fleet_shaped"
 
@@ -425,7 +425,7 @@ def _delivery_why(row: dict) -> str:
             lat = f", median {int(p50)}ms" if isinstance(p50, (int, float)) else ""
             parts.append(f"probed {n}× in {row.get('window_days', 30)}d, "
                          f"{pct} delivered{lat}")
-            # AGE-83: never let one probe read like a track record. A single
+            # never let one probe read like a track record. A single
             # data point is stated as one data point.
             if row.get("confidence") == "provisional":
                 parts.append("single probe so far — not yet confirmed")
@@ -460,7 +460,7 @@ def decide(cands: list[dict], remaining: Decimal,
     staying listed + flagged. The function stays pure — callers fetch the
     dict (gateway: services.supabase.fetch_service_scores).
 
-    `depth` (AGE-138): {pay_to: provider_depth row}. A fresh row scales the
+    `depth`: {pay_to: provider_depth row}. A fresh row scales the
     listing's payer term by the provider's payer_quality and adds the
     fleet_shaped flag + a why line; missing/stale rows change nothing."""
     scores = scores or {}
@@ -499,7 +499,7 @@ def decide(cands: list[dict], remaining: Decimal,
                 f"{c['price_usd']} > budget {remaining}"
                 if c["price_usd"] is not None else "no usable price")
 
-        # Stage 3 — usage quality ([MR-2] payers dominant; AGE-138 payer_quality)
+        # Stage 3 — usage quality ([MR-2] payers dominant; payer_quality)
         rec_days = _recency_days(c["last_called"])
         drow = fresh_depth(depth, pt)
         eff_payers = c["payers30d"]
@@ -594,7 +594,7 @@ def rank(need: str, budget: Decimal, chain: Optional[str] = None,
                              scores=scores)
 
 
-# AGE-104: the Prober settles paid probes on Base only. A listing on any other
+# the Prober settles paid probes on Base only. A listing on any other
 # rail is swept, junk-filtered and usage-ranked identically, but its
 # delivery-after-payment has never been verified by us — say so on every such
 # pick. (Honest, and the flag itself markets the paid probe tier.)
@@ -645,21 +645,21 @@ def _public(s: Optional[dict]) -> Optional[dict]:
     if s.get("collapsed_siblings"):
         out["collapsed_siblings"] = s["collapsed_siblings"]
     if s.get("relevance"):
-        # AGE-43: which of the buyer's need concepts this listing matched.
+        # which of the buyer's need concepts this listing matched.
         out["matches_need"] = s.get("relevance_matched") or []
     if s.get("why"):
         out["why"] = s["why"]
     if s.get("delivery"):
         out["delivery"] = s["delivery"]
     if s.get("depth"):
-        # AGE-138: the on-chain payer shape behind payers30d (per payTo).
+        # the on-chain payer shape behind payers30d (per payTo).
         out["depth"] = s["depth"]
         out["effective_payers"] = s.get("effective_payers")
     if s.get("mpp_option"):
         out["mpp_option"] = True   # [MR-3] label only — never settled by us
     if s.get("usdg_option"):
-        out["usdg_option"] = True  # AGE-18 label only — never settled by us
-    # AGE-83: how to call it and what comes back. This projection is what the
+        out["usdg_option"] = True  # label only — never settled by us
+    # how to call it and what comes back. This projection is what the
     # prober consumes from rank(), and dropping these was why probes guessed
     # their params and never checked the response against the advertised shape.
     # Both are small; the full accepts blob stays off the public payload.
@@ -682,7 +682,7 @@ def _public(s: Optional[dict]) -> Optional[dict]:
 SWEEP_QUERIES = [
     "api", "data", "crypto", "price", "ai", "search", "weather", "stock",
     "news", "image", "trade", "defi", "token", "finance", "llm", "agent",
-    "solana",  # AGE-104: catch Solana-native listings the generic terms miss
+    "solana",  # catch Solana-native listings the generic terms miss
 ]
 
 # Sybil/spam detection is USAGE-based, not endpoint-count based. A trustworthy
@@ -763,7 +763,7 @@ def collapse_sybils(survivors: list[dict]) -> tuple[list[dict], dict]:
     return kept, stats
 
 
-# ── Relevance tier (AGE-43) ───────────────────────────────────────────────────
+# ── Relevance tier ───────────────────────────────────────────────────
 # The catalog-wide usage rank answered "what's most used, period" — an email
 # tool with 873 payers won "dex pair liquidity". verified_route now recommends
 # within the NEED-RELEVANT tier first (usage × delivery still ranks inside it)
@@ -833,7 +833,7 @@ def _ready_to_pay(s: Optional[dict]) -> Optional[dict]:
     out = {"url": s["url"], "network": s["network_caip2"] or s["network"],
            "price_usd": (str(s["price_usd"]) if s["price_usd"] is not None else None),
            "accepts": s.get("accepts") or {}}
-    # AGE-83: hand the buyer the seller's advertised call shape (method +
+    # hand the buyer the seller's advertised call shape (method +
     # query/body params) alongside the payment block. "Ready to pay" is only
     # half the answer if the buyer still has to guess how to call it.
     if s.get("input_spec"):
@@ -931,7 +931,7 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
 
     DISCOVER (merge+dedup many queries) → FILTER (chain) → DECIDE (junk/factory/
     rank over the FULL set, delivery factor joined from `scores`) → COLLAPSE
-    (sybil clusters → one entry) → RELEVANCE tier (AGE-43: need-matching
+    (sybil clusters → one entry) → RELEVANCE tier (need-matching
     providers outrank the catalog; usage × delivery ranks within the tier;
     empty tier falls back catalog-wide with `relevance_fallback`) →
     recommend (never a service flagged took_payment_no_delivery — listed,
@@ -946,7 +946,7 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     survivors = [s for s in scored if not s["dropped"]]
     kept, stats = collapse_sybils(survivors)
 
-    # ── Relevance tier (AGE-43) ────────────────────────────────────────────
+    # ── Relevance tier ────────────────────────────────────────────
     tokens = _need_tokens(need)
     for s in kept:
         s["relevance"], s["relevance_matched"] = _relevance(s, tokens)
@@ -972,7 +972,7 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     if rec_pub:
         rec_pub["ready_to_pay"] = _ready_to_pay(rec)
 
-    # AGE-104: per-network rail counts over the scanned catalog. Counted per
+    # per-network rail counts over the scanned catalog. Counted per
     # RAIL, not per listing (a dual-rail Base+Solana listing contributes to
     # both), so the sum can exceed `scanned`. `solana_swept` counts LISTINGS
     # payable on Solana — the discovery-coverage number the Solana grant's
@@ -1016,7 +1016,7 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     }
 
 
-# ── AGE-138: provider_map rows from a sweep ──────────────────────────────────
+# ── provider_map rows from a sweep ──────────────────────────────────
 # Every sweep resolves payTo → provider (names, hosts, URLs, needs) and used to
 # keep only the pick. These pure helpers turn candidates / public results into
 # provider_map rows; the gateway upserts them in BATCH (prober ingest, rollup

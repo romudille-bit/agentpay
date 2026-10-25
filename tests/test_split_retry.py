@@ -45,7 +45,7 @@ def _patch_stellar_plumbing(submit_side_effect):
 @pytest.mark.asyncio
 async def test_split_retries_then_succeeds():
     # Fail twice (transient TIMEOUTS where the tx did NOT land), succeed on the
-    # third attempt. AGE-68: a 504 now triggers an on-chain poll first; here the
+    # third attempt. A 504 now triggers an on-chain poll first; here the
     # poll reports not-found, so the retry is correct.
     server, builder = _patch_stellar_plumbing(
         submit_side_effect=[
@@ -77,7 +77,7 @@ async def test_split_retries_then_succeeds():
 
 @pytest.mark.asyncio
 async def test_split_timeout_confirmed_onchain_does_not_retry():
-    """AGE-68: a submit that times out but actually LANDED on-chain must NOT be
+    """a submit that times out but actually LANDED on-chain must NOT be
     retried (that would double-send the dev share). The on-chain poll confirms
     it, so we stop after one submit and return the confirmed hash."""
     server, builder = _patch_stellar_plumbing(

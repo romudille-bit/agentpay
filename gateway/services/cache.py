@@ -6,7 +6,7 @@ prices. Cache misses fall through to the live API. Tools not in CACHE_TTL
 are never cached. State dies with the worker — Tier 2 will move this to
 Supabase or Redis along with the replay tables.
 
-AGE-70: the cache is BOUNDED. Keys include caller-supplied params (e.g.
+the cache is BOUNDED. Keys include caller-supplied params (e.g.
 verified_route by need+budget+chain), so without a cap an outsider cycling
 unique params grew the dict without limit → OOM/restart (which also wiped
 replay state). Expired entries are evicted on access; a full cache evicts

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AGE-111: settle one paid call per listing so Bazaar re-indexes the new
+"""settle one paid call per listing so Bazaar re-indexes the new
 serviceName. Bazaar reads the resource off the live 402 at settle time, so a
 deploy alone changes nothing. $0.01 each, capped at $0.05.
 

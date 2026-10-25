@@ -101,7 +101,7 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
             elif tool_name == "verified_route":
                 result = await _fetch_verified_route(client, params)
             elif tool_name == "session_create":
-                # AGE-42: the registry lists session_create, so standards-pure
+                # the registry lists session_create, so standards-pure
                 # x402 clients (and the npm MCP) pay it via /tools/session_create/
                 # call — which used to charge and then return "no implementation".
                 # Mirror the /v1/session/create response (the payment envelope +
@@ -120,7 +120,7 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
 
 
 def _make_session_create(params: dict) -> dict:
-    """Build the session_create result for the generic tools route (AGE-42).
+    """Build the session_create result for the generic tools route.
 
     Mirrors POST /v1/session/create's Step-3 response: session creation is a
     pure response builder (session_id + endpoints; the payment lifecycle rows
@@ -597,7 +597,7 @@ async def _fetch_token_security(client: httpx.AsyncClient, params: dict) -> dict
     address = params.get("contract_address", "").strip().lower()
     chain   = params.get("chain", "ethereum").lower()
 
-    # AGE-84: pre_trade_check now auto-resolves majors on their HOME chains
+    # pre_trade_check now auto-resolves majors on their HOME chains
     # (ARB lives on Arbitrum, OP on Optimism), so the GoPlus chain map has to
     # cover more than mainnet+BSC. GoPlus uses plain EVM chain ids.
     chain_id = {
@@ -740,7 +740,7 @@ async def _fetch_yield_scanner(client: httpx.AsyncClient, params: dict) -> dict:
     }
 
 
-# AGE-85: symmetric ±0.02 band around the +0.01%/8h perp-funding EQUILIBRIUM
+# symmetric ±0.02 band around the +0.01%/8h perp-funding EQUILIBRIUM
 # (the default rate a balanced book settles at — plain 0 is not the neutral
 # point). The old gates were −0.01/+0.05: the bearish side sat 4bp from
 # equilibrium while the bullish side sat 2bp, so in a near-zero-funding week
@@ -1570,7 +1570,7 @@ def _ptc_crowding(oi: dict, side: str) -> dict:
     return out
 
 
-# AGE-84: symbol → (chain, contract) for tokens the flagship's rotation — and
+# symbol → (chain, contract) for tokens the flagship's rotation — and
 # any caller passing just a symbol — should get screened WITHOUT having to know
 # the address. GoPlus is keyed by contract, so before this map the security leg
 # ran 0% of the time on symbol-only calls: every flagship "ok" this July was
@@ -1617,7 +1617,7 @@ async def _ptc_stacks_token(symbol: str, raw: str) -> dict | None:
 
 def _ptc_security(sec: dict | None) -> dict:
     if sec is None:
-        # Pre-AGE-84 sentinel — kept for tolerance, but _fetch_pre_trade_check
+        # Pre- sentinel — kept for tolerance, but _fetch_pre_trade_check
         # no longer produces it: every path now yields ran / n/a / unknown.
         return {"level": "skipped", "reason": "no token_address provided"}
     if sec.get("error"):
@@ -1660,7 +1660,7 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
     perp_symbol = (_PTC_STACKS_CEX.get(symbol, symbol)
                    if (not use_bitflow or symbol in _PTC_STACKS_CEX) else None)
 
-    # AGE-84: resolve the security leg for EVERY call, not only when the caller
+    # resolve the security leg for EVERY call, not only when the caller
     # already knows the contract. Before this, the flagship passed symbols only,
     # so security was skipped on 100% of runs — and "skipped" was then silently
     # dropped from the verdict, printing "ok" on tokens whose contract risk was
@@ -1805,7 +1805,7 @@ async def _fetch_verified_route(client: httpx.AsyncClient, params: dict) -> dict
         budget = Decimal("1")
 
     # Bias the sweep toward the need: lead with the whole need + the agent's own
-    # topical terms (same tokenizer the relevance tier uses — AGE-43), then the
+    # topical terms (same tokenizer the relevance tier uses), then the
     # broad default set (deduped, order-preserving) for full-catalog coverage.
     need_terms = ([need.lower()] if need else []) + radar._need_tokens(need)[:4]
     queries = list(dict.fromkeys(need_terms + radar.SWEEP_QUERIES))
@@ -1814,16 +1814,16 @@ async def _fetch_verified_route(client: httpx.AsyncClient, params: dict) -> dict
     if not payloads:
         return {"error": "Bazaar discovery unavailable — no queries returned"}
 
-    # Delivery scores from the Prober (AGE-6/7): unprobed = neutral factor 1.0;
+    # Delivery scores from the Prober: unprobed = neutral factor 1.0;
     # a service flagged took_payment_no_delivery is listed but never recommended.
     from gateway.services.supabase import fetch_provider_depth, fetch_service_scores
     scores = await fetch_service_scores()
-    # AGE-138: on-chain payer depth per payTo (cached; {} = unweighted).
+    # on-chain payer depth per payTo (cached; {} = unweighted).
     depth = await fetch_provider_depth()
 
     result = radar.verified_route_from_payloads(payloads, need=need, budget=budget,
                                                 chain=chain, scores=scores, depth=depth)
-    # AGE-138: keep what the sweep resolved (payTo → host/URLs/need) for the
+    # keep what the sweep resolved (payTo → host/URLs/need) for the
     # map — held in memory, written by the rollup flush, never from here.
     try:
         from gateway.services import provider_map

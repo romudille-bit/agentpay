@@ -1,5 +1,5 @@
 """
-AGE-142 — the SDK reads the x402 settlement header on external paid calls.
+— the SDK reads the x402 settlement header on external paid calls.
 
 Third-party sellers return the settlement as PAYMENT-RESPONSE (v2) /
 X-PAYMENT-RESPONSE (v1): base64 JSON {success, transaction, network, payer}.

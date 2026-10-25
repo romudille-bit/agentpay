@@ -1,15 +1,15 @@
-"""AGE-108: audit OUR OWN discovery surface on every prober sweep.
+"""audit OUR OWN discovery surface on every prober sweep.
 
 The Prober never scores our own tools — that fairness rule is right and stays.
 But "never score" quietly became "never look", and two contract bugs shipped
-unnoticed until an outside agent reported one (AGE-107, AGE-112). This is
+unnoticed until an outside agent reported one. This is
 monitoring, not scoring: nothing here touches service_scores or any ranking.
 
 Free and read-only. Unpaid POSTs stop at the 402 challenge; nothing settles.
 
 Checks, each mapped to a bug it would have caught:
-  discovery_fields  every active tool has endpoint/description/price/params  (AGE-107)
-  canonical_402     all payable paths for a tool declare the SAME resource   (AGE-112)
+  discovery_fields  every active tool has endpoint/description/price/params
+  canonical_402     all payable paths for a tool declare the SAME resource
   unknown_404       a bogus tool name 404s — negative control
   well_known        llms.txt / manifests / sitemap reachable
 
@@ -81,7 +81,7 @@ def audit(gateway: str, get=_get, post=_post) -> dict:
     failures: list[str] = []
     checks: dict = {}
 
-    # ── /tools completeness (AGE-107) ────────────────────────────────────────
+    # ── /tools completeness ────────────────────────────────────────
     status, raw = get(f"{gateway}/tools")
     tools = []
     if status != 200:
@@ -102,7 +102,7 @@ def audit(gateway: str, get=_get, post=_post) -> dict:
             failures.append(f"{t.get('name')} missing {missing}")
     checks["discovery_fields"] = {"tools": len(tools), "incomplete": incomplete}
 
-    # ── paid tools: every payable path declares the same resource (AGE-112) ──
+    # ── paid tools: every payable path declares the same resource ──
     report = []
     for t in tools:
         try:
@@ -147,7 +147,7 @@ def audit(gateway: str, get=_get, post=_post) -> dict:
 
         if not payable:
             failures.append(f"{name}: no payable path returned a 402")
-        # The AGE-112 bug in one assertion: disagreeing paths for one product.
+        # The bug in one assertion: disagreeing paths for one product.
         urls = {p["resource_url"] for p in payable if p["resource_url"]}
         names = {p["serviceName"] for p in payable if p["serviceName"]}
         if len(urls) > 1:
@@ -190,17 +190,17 @@ def summarize(result: dict) -> str:
     return f"SELF-AUDIT FAILED ({len(fails)}): " + "; ".join(fails[:3])
 
 
-# ── AGE-108 phase 2: timed method-matrix (the AGE-135 instrument) ────────────
+# ── phase 2: timed method-matrix ────────────
 # fuchss's EU vantage reads our paid tools' 402s at ~1.5s median with a
 # 5s–130s failure tail, while session_create reads 333ms — and a one-off US
 # vantage could not reproduce the gap. Nobody on our side was measuring our
 # own challenge latency per METHOD and per RESOURCE from outside; this is
 # that instrument. Monitoring only — results never enter service_scores.
 #
-# Every cell is an UNPAID request that must return 402 (AGE-134 pinned that
+# Every cell is an UNPAID request that must return 402 (the payment gate pinned that
 # for every shape). Failures = wrong status / network error. Warnings =
 # latency anomalies (slow samples, or a tools-vs-session differential — the
-# AGE-135-class signature) — warnings never fail the audit, they surface in
+# -class signature) — warnings never fail the audit, they surface in
 # the sweep note so a drift is seen the week it starts, not when an external
 # scorer prices it in.
 
@@ -298,7 +298,7 @@ def latency_matrix(gateway: str, samples: int = 3,
                 "statuses": statuses,
             }
 
-    # The AGE-135-class signature: a paid tool's challenge consistently slower
+    # The-class signature: a paid tool's challenge consistently slower
     # than session_create's for the same method. Same vantage, same moment —
     # a ratio here is a real differential, not an RTT artifact.
     for method in MATRIX_METHODS:
@@ -313,7 +313,7 @@ def latency_matrix(gateway: str, samples: int = 3,
                 warnings.append(
                     f"latency_matrix: {method} {path} p50 {p50:.2f}s vs "
                     f"session_create {base:.2f}s ({p50 / base:.1f}x) — "
-                    f"AGE-135-class differential, investigate before an "
+                    f"-class differential, investigate before an "
                     f"external scorer prices it in")
 
     return {"ok": not failures, "failures": failures,

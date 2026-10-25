@@ -206,7 +206,7 @@ class TestScore:
         assert r["latency_p50_ms"] == 500
 
     def test_single_no_delivery_is_unconfirmed(self):
-        # AGE-11 policy: 1 paid_but_no_data → unconfirmed flag (rec-drop only,
+        # policy: 1 paid_but_no_data → unconfirmed flag (rec-drop only,
         # no public accusation — could be a transient outage).
         rows = probe.score([
             probe_row(),
@@ -250,7 +250,7 @@ class TestScore:
         assert rows[0]["delivery_factor"] == 1.0  # unprobed = neutral
 
     def test_last_ok_and_fail_timestamps(self):
-        # AGE-86: last_fail_at marks a SETTLED probe that didn't deliver.
+        # last_fail_at marks a SETTLED probe that didn't deliver.
         # An unsettled probe (settle_ok=False) is not the seller's failure
         # and must set neither timestamp.
         rows = probe.score([
@@ -286,7 +286,7 @@ def test_paid_but_no_data(settle, http, expected):
 
 
 class TestScoreMppAndPrice:
-    """AGE-8: [MR-3] mpp label + last-known price aggregate into score rows."""
+    """[MR-3] mpp label + last-known price aggregate into score rows."""
 
     def test_mpp_aggregates_from_free_probes(self):
         rows = probe.score([
@@ -314,7 +314,7 @@ class TestScoreMppAndPrice:
 
 
 class TestUsdgLabel:
-    """AGE-18: USDG/Robinhood Chain label — exact mirror of the MPP label."""
+    """USDG/Robinhood Chain label — exact mirror of the MPP label."""
 
     def test_usdg_detected_by_network(self):
         body = {"accepts": [WELLFORMED_402["accepts"][0],
@@ -389,7 +389,7 @@ def test_score_ignores_skipped_rows():
 
 
 class TestNameAndNeed:
-    """AGE-20: readable identity — Bazaar serviceName + discovery need flow
+    """readable identity — Bazaar serviceName + discovery need flow
     from selection through score rows."""
 
     def test_select_annotates_need(self):
@@ -469,7 +469,7 @@ class TestSelfExclusion:
         assert all("agentpay.tools" not in c["url"] for c in sel["t0"])
 
 
-# ── AGE-83: delivery-verification coverage ─────────────────────────────────────
+# ── delivery-verification coverage ─────────────────────────────────────
 
 class TestCallSpec:
     """The seller publishes how to call it; use that instead of one generic
@@ -683,7 +683,7 @@ class TestNeedLeaderboard:
 
 
 class TestRailDetection:
-    """AGE-83 gap 6: mpp_options: 0 is a real read (verified 2026-07-27 against
+    """gap 6: mpp_options: 0 is a real read (verified 2026-07-27 against
     96 live listings / 229 options — nobody advertises MPP or Tempo). The USDG
     label, though, was structurally dead: it looked for eip155:46630 while
     every live USDG listing advertises eip155:4663."""
@@ -709,7 +709,7 @@ class TestRailDetection:
 class TestOutputKeysDeliveryCheck:
     """rank()'s projection dropped the advertised response shape, so a paid
     call answering {"error": "..."} with HTTP 200 counted as DELIVERED — it
-    was merely non-empty. AGE-83."""
+    was merely non-empty."""
 
     KEYS = ["url", "pages", "word_count", "text"]
 
@@ -731,7 +731,7 @@ class TestRetestDedup:
     def test_a_retest_row_without_pay_to_is_not_probed_twice(self):
         # /scores.json publishes no pay_to, so the retest row's dedup key was
         # (host, "") while today's ranking had (host, "0xabc") — the sweep paid
-        # DeepSeek twice in one run (AGE-83 dry run, 2026-07-27).
+        # DeepSeek twice in one run.
         ranked = {"llm inference": [cand(url="https://api.deepseek/x402",
                                          pay_to="0xabc")]}
         retest = [{"url": "https://api.deepseek/x402", "name": "DeepSeek",
@@ -742,7 +742,7 @@ class TestRetestDedup:
         assert sel["t1"][0]["pay_to"] == "0xabc"   # enriched from the ranking
 
 
-# ── AGE-86: only settled payments are delivery evidence ────────────────────────
+# ── only settled payments are delivery evidence ────────────────────────
 
 class TestSettledOnlyScoring:
     """delivery_rate is a claim about what happens AFTER money moves. Before
@@ -799,7 +799,7 @@ class TestSettledOnlyScoring:
 
 
 class TestProbePaidClassification:
-    """AGE-86 in run.py: every T1 outcome is classified, and only verifiable
+    """in run.py: every T1 outcome is classified, and only verifiable
     settles produce scoreable rows. Fail closed — no proof of payment, no
     claim about the seller."""
 
@@ -950,11 +950,11 @@ class TestProbePaidClassification:
         assert s.called_url == "https://x.1x402.sh/api/coinbase"
 
 
-# ── AGE-87: send what the seller published ─────────────────────────────────────
+# ── send what the seller published ─────────────────────────────────────
 
 class TestSellerExampleWins:
     """The seller's published example is the one request shape they tested.
-    AGE-83 had precedence backwards and burned 5 of 8 wasted settles in one
+    had precedence backwards and burned 5 of 8 wasted settles in one
     sweep on values the listing contradicted."""
 
     def test_deepseek_regression_seller_model_wins(self):
@@ -1017,7 +1017,7 @@ class TestFillPathTemplate:
             "https://a.com:8443/t"
 
 
-# ── AGE-88: on-chain reconciliation of uncertain settlements ───────────────────
+# ── on-chain reconciliation of uncertain settlements ───────────────────
 
 class TestReconcileSettlements:
     ENTRIES = [

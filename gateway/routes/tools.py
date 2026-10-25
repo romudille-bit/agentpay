@@ -1667,7 +1667,7 @@ async def _execute_and_log(
                 await insert_task
             except Exception as e:
                 logger.warning(
-                    f"[AGE-58] tx-keyed row insert failed for {payment_id[:16]}…: {e}"
+                    f"tx-keyed row insert failed for {payment_id[:16]}…: {e}"
                 )
 
     try:

@@ -126,11 +126,11 @@ async def discovery_arbitrum(
         raise HTTPException(status_code=502, detail="discovery upstream returned unexpected payload")
 
     try:
-        # Prober delivery scores (AGE-7): best-effort — {} = every service
+        # Prober delivery scores: best-effort — {} = every service
         # unprobed = neutral factor, so a Supabase blip never breaks discovery.
         from gateway.services.supabase import fetch_provider_depth, fetch_service_scores
         scores = await fetch_service_scores()
-        depth = await fetch_provider_depth()     # AGE-138: cached, {} on blip
+        depth = await fetch_provider_depth()     # cached, {} on blip
         result = radar.rank_from_payload(data, need, budget_dec, chain=chain,
                                          scores=scores, depth=depth)
     except Exception as e:
@@ -242,7 +242,7 @@ async def radar_verify(body: RadarVerifyRequest, request: Request):
         if recorded is False:
             return {"success": False, "reason": "already_verified (replay)", "tx_hash": tx_hash}
         if recorded is None:
-            # AGE-60 fail-closed: durable consume unconfirmed — reject
+            # fail-closed: durable consume unconfirmed — reject
             # retryably and release the in-memory hold.
             _consumed_radar_txs.pop(tx_hash, None)
             return {"success": False, "tx_hash": tx_hash,
@@ -527,7 +527,7 @@ async def well_known_x402():
                 "minAmount": str(min(prices)),
                 "maxAmount": str(max(prices)),
             },
-            # AGE-128: this entry previously claimed scheme "exact" on
+            # this entry previously claimed scheme "exact" on
             # stellar CAIP-2 + the OZ facilitator. That was FALSE advertising:
             # our Stellar rail is a classic payment + text memo verified via
             # Horizon — NOT the standard @x402/stellar Soroban scheme (null-
@@ -855,7 +855,7 @@ async def sitemap():
     from gateway.services.supabase import fetch_service_scores
 
     tools = registry.list_tools()
-    try:                      # per-service SEO pages (AGE-39); [] on blip
+    try:                      # per-service SEO pages; [] on blip
         scores = await fetch_service_scores()
     except Exception:
         scores = {}

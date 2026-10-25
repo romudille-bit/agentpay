@@ -1,4 +1,4 @@
-"""Server-side session cap (AGE-207) under the session_enforcement fixture.
+"""Server-side session cap under the session_enforcement fixture.
 
 The cap is bound to the address that paid for session_create. On Stacks and
 Base a priced call is reserved before anything settles and refused past the

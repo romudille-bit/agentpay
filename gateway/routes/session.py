@@ -595,7 +595,7 @@ async def create_session(
         try:
             await insert_task
         except Exception as e:
-            logger.warning(f"[AGE-58] tx-keyed row insert failed for {payment_id[:16]}…: {e}")
+            logger.warning(f"tx-keyed row insert failed for {payment_id[:16]}…: {e}")
     await update_payment_log_state(
         payment_id,
         "payment_done",

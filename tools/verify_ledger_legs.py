@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-verify_ledger_legs.py — AGE-142: backfill / re-run chain verification of the
+verify_ledger_legs.py: backfill / re-run chain verification of the
 ledger's off-gateway receipt legs from a laptop.
 
 The gateway runs the same verifier in the background every 6h

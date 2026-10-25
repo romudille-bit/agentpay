@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-tools/bazaar_visibility.py — AGE-111: how discoverable are we to buyer AGENTS?
+tools/bazaar_visibility.py: how discoverable are we to buyer AGENTS?
 
 Asks Coinbase Bazaar the 22 questions a buyer agent would actually ask and
 reports which of AgentPay's paid listings come back. This is the measurement
-that closed the AGE-36 experiment: head terms are won by keyword-in-serviceName,
+that closed the experiment: head terms are won by keyword-in-serviceName,
 not by tags or description.
 
 Baseline 2026-08-06, before the rename (commit 8efe500): 7/22.
@@ -23,7 +23,7 @@ for it, and Bazaar only refreshes a record at settle time. pre_trade_check and
 verified_route held only because a real customer buys them every 1-3h. If you
 see a drop here, check the BRAND query first — if the brand term doesn't return
 a listing, it is de-indexed rather than out-ranked, which is a different
-problem with a different fix (AGE-113: agents/analyst/listing_keepalive.py).
+problem with a different fix.
 
 Bazaar re-indexes from the live 402 at settle time, so re-run this only AFTER
 at least one paid call per tool has settled post-deploy — otherwise you are

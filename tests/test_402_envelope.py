@@ -1,5 +1,5 @@
 """
-AGE-123 — the 402 JSON BODY must carry the resource-info block (and
+— the 402 JSON BODY must carry the resource-info block (and
 extensions.bazaar) that previously lived ONLY inside the base64
 PAYMENT-REQUIRED header.
 
@@ -7,8 +7,8 @@ Why this file exists: x402 trust validators (x402.fuchss.app) parse the 402
 BODY. With the resource block header-only, every probe for 30 days was flagged
 `envelope:missing-resource-info` (envelopeValid30d 0/793) → specComplianceScore
 30 → grade C "avoid" → buyers steered to a competitor. This is the THIRD bug in
-the header/body dialect-drift family (AGE-48: standard accepts[] header-only;
-AGE-112: per-path envelope divergence), so beyond point assertions these tests
+the header/body dialect-drift family (standard accepts[] header-only;
+per-path envelope divergence), so beyond point assertions these tests
 pin the structural invariant:
 
     body ⊇ header for the envelope core (resource, extensions.bazaar)
@@ -36,7 +36,7 @@ def _assert_body_superset_of_header_envelope(resp):
     body = resp.json()
     header = _decode_header(resp)
 
-    assert "resource" in body, "402 body lacks the resource-info block (AGE-123)"
+    assert "resource" in body, "402 body lacks the resource-info block"
     assert body["resource"] == header["resource"], (
         "402 body resource block drifted from the PAYMENT-REQUIRED header — "
         "both must come from gateway.base.build_resource_block"
@@ -162,7 +162,7 @@ class TestSessionPath402BodyEnvelope:
 
     def test_tool_path_and_session_path_declare_same_resource(
             self, client, monkeypatch):
-        """AGE-112 companion: both payable paths for session_create must expose
+        """companion: both payable paths for session_create must expose
         the SAME canonical resource block in the body (not just the header)."""
         import gateway.routes.tools as rt
         import gateway.routes.session as sess
@@ -215,7 +215,7 @@ class TestSharedBuilder:
         )
         payload = json.loads(base64.b64decode(header + "=" * (-len(header) % 4)))
         assert payload["resource"] == block
-        # canonical-URL override (AGE-112) applied identically on both sides
+        # canonical-URL override applied identically on both sides
         assert block["url"] == "https://agentpay.tools/v1/session/create"
 
     def test_build_resource_block_minimal(self):

@@ -1,5 +1,5 @@
 """
-test_stacks_sdk.py — AGE-25: the SDK's Stacks payment path.
+test_stacks_sdk.py: the SDK's Stacks payment path.
 
 chain="stacks" is sign-don't-broadcast: the SDK signs a complete sBTC
 transfer (agentpay._stacks_tx, fixture-validated in test_stacks_tx.py) and
@@ -101,7 +101,7 @@ HIRO_TX_ANY = r"https://api\.testnet\.hiro\.so/extended/v1/tx/0x[0-9a-f]+"
 
 
 def _mock_tx_absent():
-    """AGE-152: the honest-gateway case — Hiro has never seen the txid."""
+    """the honest-gateway case — Hiro has never seen the txid."""
     return respx.get(url__regex=HIRO_TX_ANY).mock(return_value=httpx.Response(404))
 
 
@@ -552,7 +552,7 @@ class TestSpendRecordedNoFallback:
         httpx.Response(503),
     ])
     def test_rejected_but_chain_disagrees_keeps_spend(self, hiro):
-        # AGE-152: a gateway that broadcast and then said "rejected" must
+        # a gateway that broadcast and then said "rejected" must
         # not produce unrecorded spend. Anything but 404/abort_* on Hiro
         # keeps the leg at its amount.
         client = AgentPayClient(wallet=_make_wallet(), gateway_url=GATEWAY)
@@ -711,7 +711,7 @@ class TestStacksOnlyWallet:
         assert w.stacks_address
 
 
-# ── redemption after an uncertain settle (AGE-147) ───────────────────────────
+# ── redemption after an uncertain settle ───────────────────────────
 
 HIRO_TX = r"https://api\.testnet\.hiro\.so/extended/v1/tx/0x[0-9a-f]+"
 
@@ -899,7 +899,7 @@ class TestRedeem:
         assert s.spent_usd() == 0
 
 
-# ── fee clamp (AGE-151) ──────────────────────────────────────────────────────
+# ── fee clamp ──────────────────────────────────────────────────────
 
 
 class TestFeeClamp:

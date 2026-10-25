@@ -1,5 +1,5 @@
 // tools/gen_stacks_fixtures.mjs — fixture generator for agentpay/_stacks_tx.py
-// (AGE-22). Oracle: @stacks/transactions v7 — serialized txs must match
+//. Oracle: @stacks/transactions v7 — serialized txs must match
 // byte-for-byte (RFC6979 deterministic signatures on both sides).
 //
 // Usage:
@@ -172,7 +172,7 @@ await addTx('testnet_transfer_memo34_large', {
   contract: SBTC_TESTNET,
 });
 
-// 5. raw 64-hex key => uncompressed pubkey, key-encoding 0x01 (AGE-146)
+// 5. raw 64-hex key => uncompressed pubkey, key-encoding 0x01
 await addTx('testnet_transfer_uncompressed_key', {
   contractAddress: tContract,
   contractName: tName,

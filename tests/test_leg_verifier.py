@@ -1,5 +1,5 @@
 """
-AGE-142 — chain verification of off-gateway receipt legs.
+— chain verification of off-gateway receipt legs.
 
 Covers the PURE parts: the matcher (hash → amount+payTo → amount, consuming
 transfers), needs_check, and the ledger view's three-way label + totals.
@@ -165,7 +165,7 @@ def test_view_ignores_chain_row_with_mismatched_amount():
 
 
 def test_view_checked_run_marks_unmatched_leg_no_settlement_found():
-    """AGE-142: once the verifier has checked a run (marker row -1 present),
+    """once the verifier has checked a run (marker row -1 present),
     an unmatched paid leg is 'no_settlement_found' — booked fail-closed, never
     settled — not 'agent_attested' (which now means 'not checked yet')."""
     chain = {-1: {"method": "checked"},
@@ -220,7 +220,7 @@ def test_totals_split_gateway_chain_attested_unsettled():
     assert t["verified_share_of_settled"] == "0.800"
 
 
-# ── Stacks legs (AGE-148) ────────────────────────────────────────────────────
+# ── Stacks legs ────────────────────────────────────────────────────
 
 import httpx
 import pytest

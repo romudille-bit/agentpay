@@ -5,7 +5,7 @@ own three scored endpoints ($0.005 each, USDC EIP-3009 on Base) and print the
 full component breakdown, so we see exactly WHAT their probes record as failures
 (timeout vs 5xx vs envelope) behind the public Grade C / ~84% uptime.
 
-Diagnostic for the AGE-108 fuchss investigation (2026-08-12). Paid via our own
+Diagnostic for the fuchss investigation (2026-08-12). Paid via our own
 SDK — an AgentPay session with a $0.02 cap buys a competitor-adjacent trust
 report over x402. Dogfood both ways.
 

@@ -1,5 +1,5 @@
 """
-AGE-129 — documented error responses in the agent-ready metadata.
+— documented error responses in the agent-ready metadata.
 
 CDP's Bazaar curation requirements list "complete input schema … per-call
 pricing, supported networks, documented error responses" as the agent-ready
@@ -10,7 +10,7 @@ These tests pin that every curated resource's live 402 documents its error
 responses in BOTH places an agent reads:
 
   1. the PAYMENT-REQUIRED header's accepts[0].outputSchema.errors
-  2. the body's extensions.bazaar.info.errors (mirrored header/body, AGE-123)
+  2. the body's extensions.bazaar.info.errors (mirrored header/body)
 
 and that the catalogue itself covers the statuses the gateway actually
 returns (402/422/404/429/500/503 — see gateway.base.build_error_responses).

@@ -1,5 +1,5 @@
 """
-AGE-138 — the gateway's own provider_depth refresh (services/depth_refresh.py).
+— the gateway's own provider_depth refresh (services/depth_refresh.py).
 
 The pure math must match tools/payer_depth.py exactly (same weight CASE, same
 aggregates) — the laptop tool and the gateway loop write the same table.

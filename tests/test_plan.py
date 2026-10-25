@@ -88,7 +88,7 @@ class TestEstimatePlan:
 
 
 class TestExternalSteps:
-    """AGE-8: external x402 URLs annotated (and priced) from Prober telemetry."""
+    """external x402 URLs annotated (and priced) from Prober telemetry."""
 
     URL = "https://api.ext.example/tools/search"
 

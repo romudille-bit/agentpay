@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tools/sweep_solana_count.py — AGE-104 live sweep smoke + grant-evidence counter.
+tools/sweep_solana_count.py live sweep smoke + grant-evidence counter.
 
 Runs the exact verified_route sweep (bare query + SWEEP_QUERIES) against live
 Bazaar, then prints the catalog breakdown: total scanned, per-network rail

@@ -111,14 +111,14 @@ between 0.4.0 (testnet) and this release.
   5xx without a body on redeem keeps the redeem context instead of failing.
 - **Refund contract reply was a 502** — the same Cloudflare replacement as
   above hid the `refund_pending` body from the SDK on `agentpay.tools`; it
-  is a 500 now (`payment_status` unchanged). AGE-155.
+  is a 500 now (`payment_status` unchanged).
 - **A gateway's `rejected` alone no longer zeroes a Stacks leg** — the SDK
   checks Hiro first; unless the tx is unknown or aborted on-chain the spend
   stays recorded and the call ends `SettlementUncertain` (redeemable).
-  AGE-152. The gateway also stops treating `dropped_*` as definitive.
+  The gateway also stops treating `dropped_*` as definitive.
 - **Stacks settle wall time is bounded** — `STACKS_SETTLE_DEADLINE_S`
   (75 s) turns a slow broadcast+confirm into a structured `uncertain`
-  before the edge's 100 s cut can strip the body. AGE-150.
+  before the edge's 100 s cut can strip the body.
 - `LEDGER_FLAGSHIP_ADDRESSES` rejected Stacks addresses (`SP…`/`ST…`), so a
   Stacks payer's receipts could never reach `/ledger`.
 - **Stacks signing with a raw 64-hex key** — the presign sighash cleared the
@@ -163,7 +163,7 @@ between 0.4.0 (testnet) and this release.
 - The STX fee a 402 suggests is clamped to `STACKS_MAX_FEE_MICROSTX`
   (0.05 STX; env can only lower it) before signing — a gateway cannot name
   the payer's fee freely.
-- **Review lows (AGE-153):** the memo must equal the challenge id cut to 34
+- **Review lows:** the memo must equal the challenge id cut to 34
   bytes (a prefix rule let a 1-byte memo bind any id); the client floor
   rate is $20,000 on mainnet ($10,000 testnet, raise-only); the gateway
   quotes Hiro's medium fee tier capped at 20,000 µSTX; a replay-store
@@ -208,8 +208,8 @@ between 0.4.0 (testnet) and this release.
   plausible substitutes by name too.
 
 ### Fixed
-- **`accepted` now echoes the seller's accepts entry verbatim** (AGE-90,
-  HIGH — unblocks ~half the paid x402 marketplace). The X-PAYMENT envelope's
+- **`accepted` now echoes the seller's accepts entry verbatim** (HIGH —
+  unblocks ~half the paid x402 marketplace). The X-PAYMENT envelope's
   `accepted` block was reconstructed — normalized network, stringified
   amount, clamped timeout, plus injected `resource`/`mimeType` keys. Strict
   v2 middlewares deep-compare `accepted` against their own advertised entry;
@@ -220,12 +220,12 @@ between 0.4.0 (testnet) and this release.
   PAYMENT-REQUIRED header, which error truncation never surfaced. Root-caused
   live 2026-07-28: echoing the entry verbatim flips the rejecting sellers
   from matcher rejection straight to signature verification. Normalization
-  (CAIP-2 network, amount-key tolerance, AGE-67 timeout clamp) still applies
+  (CAIP-2 network, amount-key tolerance, timeout clamp) still applies
   to the SIGNED authorization — only the declarative echo is verbatim, which
   tolerant subset-matchers accept identically. Note: `accepted.network` now
   carries the seller's own vocabulary (e.g. `"base"`), not normalized CAIP-2.
-- **GET-served x402 resources were being called with no arguments** (AGE-83,
-  HIGH). When the seller's 402 declared `input.method: GET`, the SDK retried
+- **GET-served x402 resources were being called with no arguments** (HIGH).
+  When the seller's 402 declared `input.method: GET`, the SDK retried
   with `client.get(url, headers=…)` and silently dropped the caller's `params`
   — so the resource was paid for, then called with nothing. Sellers answered
   with an error or an empty body and looked like non-deliverers. Live evidence:
@@ -243,7 +243,7 @@ review follow-up (findings F1/F2/F7). No API changes.
 
 ### Fixed
 - **Tight budgets no longer fail deterministically** (F1, HIGH — regression
-  introduced by the AGE-53 cap in 0.3.0). The client-side cap was computed
+  introduced by the cap in 0.3.0). The client-side cap was computed
   *after* this call's own budget hold was placed, and `remaining_usd()`
   subtracts that hold — so the cap double-counted it:
   `min(remaining_before − price, 1.05·price)`. Exact-fit budgets
@@ -275,33 +275,33 @@ below hardens the pay path against overspend, double-pay, and hostile 402s.
 Callers on `>=0.2` that relied on the budget cap silently clamping the amount
 must now handle `BudgetExceeded`. This is the first release to raise it.
 
-### Security / Fixed — Gateway Code Review 2026-07, SDK cluster (AGE-53..57)
-- **Budget cap now binds the amount actually paid** (AGE-53, CRITICAL).
+### Security / Fixed — Gateway Code Review 2026-07, SDK cluster
+- **Budget cap now binds the amount actually paid** (CRITICAL).
   `Session.call()` passes `max_spend = min(remaining budget, quoted price
   × 1.05)` into the client, which hard-fails **before** paying or signing if
   the 402 demands more. A gateway advertising $0.001 and demanding $0.50 in
   the 402 is now refused instead of paid. The Base `payment_options` amount
   is bound by the same cap before signing.
-- **Spend is recorded at broadcast/auth-transmission time, not at HTTP 200**
-  (AGE-54). A payment whose tool call then fails still counts against
+- **Spend is recorded at broadcast/auth-transmission time, not at HTTP 200**.
+  A payment whose tool call then fails still counts against
   `spent()`/`remaining()` (call-log `state`: `paid_no_result`,
   `uncertain_settlement`, `refund_pending`). Pay-then-fail loops can no
   longer overspend the cap.
-- **No fallback after funds move** (AGE-55). `Session.call()` only retries a
+- **No fallback after funds move**. `Session.call()` only retries a
   fallback tool on the new typed `PrePaymentError` (nothing moved, no auth
   transmitted). Post-payment failures propagate — one `session.call()` can
   no longer pay twice.
-- **Transmitted EIP-3009 authorizations are treated as potentially spent**
-  (AGE-56). A non-200 after the signed auth left the wire no longer claims
+- **Transmitted EIP-3009 authorizations are treated as potentially spent**.
+  A non-200 after the signed auth left the wire no longer claims
   "no payment settled", never re-pays on Stellar, and records the spend as
   `uncertain_settlement`. Signing failures (pre-transmission) still fall
   back to Stellar as before.
 - **`allowed_tools` / `max_per_tool` / `rate_limit` now apply to external
-  x402 URLs** (AGE-57). Policy checks run in `Session.call()` before any
+  x402 URLs**. Policy checks run in `Session.call()` before any
   routing, so URL targets (and `discover_and_call`) can no longer bypass the
   allowlist or per-tool caps.
-- Server-controlled `maxTimeoutSeconds` is clamped to 600s before signing
-  (AGE-67): a hostile 402 can no longer request a year-long `validBefore`.
+- Server-controlled `maxTimeoutSeconds` is clamped to 600s before signing:
+  a hostile 402 can no longer request a year-long `validBefore`.
 
 ### Changed (breaking)
 - `AgentPayClient.call_tool` raises `BudgetExceeded` (was `ValueError`) when
@@ -311,22 +311,22 @@ must now handle `BudgetExceeded`. This is the first release to raise it.
   "…settlement uncertain, spend recorded…" (prober matcher updated).
 
 ### Added
-- **x402 v2 `PAYMENT-REQUIRED` header fallback** (AGE-9). The SDK now reads the
+- **x402 v2 `PAYMENT-REQUIRED` header fallback**. The SDK now reads the
   v2 header form in addition to the JSON body; an endpoint it cannot score is
   rejected rather than paid blindly.
 
-### Concurrency / Fixed (AGE-66, AGE-68)
-- **Budget is reserved before payment under a re-entrant lock** (AGE-66). Two
+### Concurrency / Fixed
+- **Budget is reserved before payment under a re-entrant lock**. Two
   concurrent `session.call()`s can no longer both clear the cap check and jointly
   overspend — each reserves its slice up front. This also fixes a double-release
   bug: a failed fallback re-reservation returned the hold twice and drove the
   reserved total negative, letting concurrent calls exceed the cap
   (regression-tested).
-- **Timed-out submits are polled for their result, not blindly retried**
-  (AGE-68). A slow settle that lands after the client gives up is detected on
+- **Timed-out submits are polled for their result, not blindly retried**.
+  A slow settle that lands after the client gives up is detected on
   poll instead of triggering a second send.
 - Base settlement records the **signed** amount, not the amount advertised in the
-  402 body (AGE-53/56 follow-up).
+  402 body.
 
 ## [0.2.7] — 2026-06-17
 

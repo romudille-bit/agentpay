@@ -12,9 +12,9 @@ default, mainnet with STACKS_NETWORK=mainnet:
   2. the same tool, under a per-tool cap below its price, is REJECTED
      client-side before any value moves.
 
-The rail: token_price is priced $0.01 on gateway-testnet (AGE-77), quoted to
-sats at 402-issuance (AGE-24), signed sign-don't-broadcast by the SDK (AGE-25)
-and broadcast by the gateway (AGE-23).
+The rail: token_price is priced $0.01 on gateway-testnet, quoted to
+sats at 402-issuance, signed sign-don't-broadcast by the SDK
+and broadcast by the gateway.
 
 Run (payer key stays in your environment, never in the repo):
 

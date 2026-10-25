@@ -61,7 +61,7 @@ def _cheapest_alternative(tool) -> Optional[dict]:
 
 def _external_step(url: str, score_row: Optional[dict]) -> tuple[dict, Optional[Decimal]]:
     """Annotate an external x402 URL step from the Prober's service_scores
-    (AGE-8 / [MR-3]). Returns (entry, price) — price only when the Prober has
+    ([MR-3]). Returns (entry, price) — price only when the Prober has
     seen the live 402 (last-known advertised amount), letting a plan cover
     external legs the registry can't price."""
     entry: dict = {"tool": url, "exists": True, "external": True}

@@ -1,5 +1,5 @@
 """
-test_mcp_proxy.py — /mcp reverse proxy to the remote MCP service (AGE-127).
+test_mcp_proxy.py — /mcp reverse proxy to the remote MCP service.
 
 A real local HTTP server stands in for the Node service so the relay is
 tested end to end: status, body, SSE content-type and the MCP headers must

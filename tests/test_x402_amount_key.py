@@ -112,7 +112,7 @@ class TestBuildBaseSignatureExternalCompat:
         }
         header = w.build_base_payment_signature(accept, "https://svc.example/tool")
         decoded = json.loads(base64.b64decode(header))
-        # AGE-90: `accepted` echoes the seller's entry VERBATIM — their key
+        # `accepted` echoes the seller's entry VERBATIM — their key
         # (maxAmountRequired), their values. The signed authorization still
         # carries the parsed amount.
         assert decoded["accepted"] == accept
@@ -130,10 +130,10 @@ class TestBuildBaseSignatureExternalCompat:
             "asset": w.BASE_USDC,
             "maxTimeoutSeconds": 60,
         }
-        # Before the AGE-78 fix: "Unsupported network format: base". Now it
+        # Before the fix: "Unsupported network format: base". Now it
         # signs (CAIP-2 normalization feeds the SIGNER), while the accepted
         # echo keeps the seller's own vocabulary — a strict matcher compares
-        # it against what THEY advertised, so 'base' must stay 'base' (AGE-90).
+        # it against what THEY advertised, so 'base' must stay 'base'.
         header = w.build_base_payment_signature(accept, "https://svc.example/tool")
         decoded = json.loads(base64.b64decode(header))
         assert decoded["accepted"]["network"] == "base"
@@ -149,7 +149,7 @@ class TestBuildBaseSignatureExternalCompat:
 
 
 class TestAcceptedEchoAGE90:
-    """AGE-90: the accepted block must echo the seller's accepts entry
+    """the accepted block must echo the seller's accepts entry
     VERBATIM. Strict v2 middlewares deep-compare it against what they
     advertised; our injected resource/mimeType keys made 7 sellers answer
     every paid retry with 'No matching payment requirements' → fresh 402 {}
@@ -205,7 +205,7 @@ class TestAcceptedEchoAGE90:
     def test_timeout_clamp_still_applies_to_the_signature(self):
         # A hostile year-long maxTimeoutSeconds is echoed verbatim (that is
         # the seller's own claim) but the SIGNED validBefore stays clamped —
-        # AGE-67 unchanged by the echo.
+        # unchanged by the echo.
         pytest.importorskip("x402")
         import time
         accept = {"scheme": "exact", "network": "eip155:8453", "amount": "1000",

@@ -1,4 +1,4 @@
-"""AGE-108: the self-audit must catch the two bugs that shipped unnoticed.
+"""the self-audit must catch the two bugs that shipped unnoticed.
 
 Injected fetchers — no network, no payments.
 """
@@ -55,7 +55,7 @@ def test_clean_surface_passes():
 
 
 def test_catches_empty_discovery_field():
-    """AGE-107: gas_tracker et al. served endpoint='' for weeks."""
+    """gas_tracker et al. served endpoint='' for weeks."""
     broken = {**GOOD_TOOL, "name": "gas_tracker", "endpoint": "",
               "price_usdc": "0"}
     get, post = _fakes([broken], {})
@@ -66,7 +66,7 @@ def test_catches_empty_discovery_field():
 
 
 def test_catches_disagreeing_payable_paths():
-    """AGE-112 exactly as it shipped: session_create payable on two paths, the
+    """exactly as it shipped: session_create payable on two paths, the
     /tools one declaring its own url and no serviceName — so a settle there
     indexed a second, unnamed resource and never refreshed the real listing."""
     t = {**GOOD_TOOL, "name": "session_create",
@@ -120,7 +120,7 @@ def test_free_tools_are_not_402_probed():
     assert r["checks"]["canonical_402"] == []
 
 
-# ── AGE-108 phase 2: latency matrix (the AGE-135 instrument) ─────────────────
+# ── phase 2: latency matrix ─────────────────
 
 def _matrix_requester(status=402, secs=0.4, per_path_secs=None,
                       per_call=None):
@@ -171,7 +171,7 @@ class TestLatencyMatrix:
         assert any("7.50s" in w for w in r["warnings"])
 
     def test_tools_vs_session_differential_warns(self):
-        """The AGE-135-class signature: paid-tool 402s consistently slower
+        """The-class signature: paid-tool 402s consistently slower
         than session_create's for the same method, same vantage."""
         req = _matrix_requester(per_path_secs={
             "/v1/session/create": 0.3,
@@ -180,7 +180,7 @@ class TestLatencyMatrix:
         })
         r = self_audit.latency_matrix("https://g.test", samples=3, request=req)
         assert r["ok"]  # differential is a warning, never a failure
-        assert any("AGE-135-class differential" in w for w in r["warnings"])
+        assert any("-class differential" in w for w in r["warnings"])
 
     def test_small_absolute_gap_does_not_warn(self):
         """3x ratio but only 0.3s absolute — below the 0.5s floor, no noise."""

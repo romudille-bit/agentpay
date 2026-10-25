@@ -1,5 +1,5 @@
 """
-test_unsupported_chain.py — AGE-80.
+test_unsupported_chain.py.
 
 The prober kept meeting live paid x402 sellers on chains our Base/Stellar
 wallet can't settle (Avalanche C-Chain eip155:43114, 2026-07-23 sweep:
@@ -118,7 +118,7 @@ class TestBuildBaseGuardRefusesUnsettleable:
         }
         header = w.build_base_payment_signature(accept, "https://svc.example/tool")
         decoded = json.loads(base64.b64decode(header))
-        # AGE-90: accepted echoes the seller's vocabulary verbatim ('base'
+        # accepted echoes the seller's vocabulary verbatim ('base'
         # stays 'base'); the CAIP-2 normalization feeds the signer, and the
         # settleable-chain guard proves it ran (an unsettleable chain raises).
         assert decoded["accepted"]["network"] == "base"

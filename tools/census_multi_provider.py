@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-census_multi_provider.py — AGE-140: how many x402 payer wallets on Base pay
+census_multi_provider.py: how many x402 payer wallets on Base pay
 ≥3 distinct providers, and what share of the dollars do they carry?
 
 Why
@@ -47,7 +47,7 @@ Or export the two result sets as CSV from the Dune UI and pass
 Provider resolution (optional): if SUPABASE_URL/SUPABASE_KEY are in .env the
 script pulls the distinct pay_to set from service_probes and reports what share
 of the ≥3-recipient buyers' recipients (by wallet and by dollar) we can already
-name. That number is the baseline for AGE-138's weekly map-coverage metric.
+name. That number is the baseline for's weekly map-coverage metric.
 
 Output
 ------
@@ -429,7 +429,7 @@ def analyse(payers: list[dict], pairs: list[dict], days: int, full: bool,
     L: list[str] = []
     L.append(f"# Multi-provider buyer census — Base, last {days} days ({today})")
     L.append("")
-    L.append("**AGE-140 · internal · reviews/ is untracked — do not commit. Addresses "
+    L.append("** · internal · reviews/ is untracked — do not commit. Addresses "
              + ("shown in full." if full else "truncated; run with --full-addresses for internal use.") + "**")
     L.append("")
     L.append("## Denominator (v2, x402-scoped)")
@@ -445,7 +445,7 @@ def analyse(payers: list[dict], pairs: list[dict], days: int, full: bool,
              "65k wallets in 30d, ~25x the x402 market as x402scan and fuchss measure it. **Deliberately "
              "excluded:** Bitrefill-style commerce ($136/payer), $1+ inference sellers (Cluster, CheapTokens), "
              "sellers with <5 payers, and Solana. Wallet ≠ operator (rotation reads as N single-recipient "
-             "wallets; fanout shape partially corrects, the funding graph — AGE-133 — would fully correct). "
+             "wallets; fanout shape partially corrects, the funding graph — would fully correct). "
              "Our own flagship and prober wallets are excluded from the population and reported separately.")
     L.append("")
     L.append("## Headline")
@@ -468,7 +468,7 @@ def analyse(payers: list[dict], pairs: list[dict], days: int, full: bool,
         L.append(f"- Provider resolution on the buyers' recipients: **{resolved_w}/{len(rec_wallets)} wallets "
                  f"({pct(resolved_w, len(rec_wallets)):.0f}%)** and **{pct(resolved_usd, buyers_rec_usd):.0f}% of their dollars** "
                  f"resolve to a payTo we already hold in `service_probes` (+ our own gateway). "
-                 "This is the AGE-138 map-coverage baseline.")
+                 "This is the map-coverage baseline.")
     L.append("")
     verdict = (f"{len(multi):,} wallets pay ≥3 providers; they send {pct(m_usd, total_usd):.1f}% of "
                f"x402-scoped Base USDC (facilitator-relayed, metered sellers); of those, {len(buyers):,} look like buyers (fanout ≫1, "
@@ -546,13 +546,13 @@ def analyse(payers: list[dict], pairs: list[dict], days: int, full: bool,
     for r in self_rows:
         L.append(f"- Own wallet `{_short(r['payer'], full)}`: {r['legs']} legs / ${r['usd']:.2f} / {r['recipients']} providers (excluded from population).")
     L.append("")
-    L.append("## Reading the result (decision this feeds — AGE-140)")
+    L.append("## Reading the result (decision this feeds)")
     L.append("")
     L.append("- If multi-provider **buyers** number in the hundreds and carry a majority of dollars, the "
              "ledger/\"total\" thesis is a real, small, **named** market: go-to-market is the list above, not a funnel.")
     L.append("- If they carry a small share, the ledger is a wallet feature; keep receipts inside the July "
-             "session spec and spend the effort on AGE-138 / verified_route.")
-    L.append("- Either way the provider-resolution % is the number to move (AGE-138).")
+             "session spec and spend the effort on / verified_route.")
+    L.append("- Either way the provider-resolution % is the number to move.")
     L.append("")
     L.append("## Caveats")
     L.append("")

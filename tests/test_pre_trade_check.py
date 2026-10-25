@@ -56,7 +56,7 @@ class TestPreTradeCheck:
         assert r["factors"]["liquidity"]["level"] == "ok"
         assert r["factors"]["carry"]["level"] == "ok"
         assert r["factors"]["crowding"]["level"] == "ok"
-        # AGE-84: ETH is a native asset — the security factor is explicitly
+        # ETH is a native asset — the security factor is explicitly
         # n/a (no contract exists), never a silent "skipped".
         assert r["factors"]["security"]["level"] == "n/a"
         assert "native" in r["factors"]["security"]["reason"]
@@ -143,7 +143,7 @@ class TestPreTradeCheck:
 
 
 class TestSecurityLegResolution:
-    """AGE-84: the security leg was skipped on 100% of symbol-only calls —
+    """the security leg was skipped on 100% of symbol-only calls —
     by construction, not by chance — and 'skipped' then vanished from the
     verdict. Every flagship 'ok' in July was 3-of-4 factors with contract
     screening silently off, on a public ledger. Now every call resolves to
@@ -191,7 +191,7 @@ class TestSecurityLegResolution:
 
     @pytest.mark.asyncio
     async def test_dangerous_known_token_flips_the_verdict(self, monkeypatch):
-        # The whole point of AGE-84: a honeypot alt must NOT get "ok" just
+        # The whole point: a honeypot alt must NOT get "ok" just
         # because the caller sent a symbol instead of an address.
         self._stub_with_capture(monkeypatch, {
             "token_security": {"risk_level": "danger", "is_honeypot": 1}})

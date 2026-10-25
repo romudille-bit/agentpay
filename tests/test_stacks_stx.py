@@ -1,4 +1,4 @@
-"""Native STX alongside sBTC for standard Stacks clients (AGE-208).
+"""Native STX alongside sBTC for standard Stacks clients.
 
 The 402 carries a second stacks:1 accepts[] entry (asset "STX", amount in
 µSTX — the dialect x402-stacks, the AIBTC wallet and stx402.com share); a

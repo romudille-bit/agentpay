@@ -666,7 +666,7 @@ class TestUncertainSettleRecovery:
 
 
 class TestNonceBoundRecovery:
-    """AGE-65: when the signed authorization's nonce is known, recovery matches
+    """when the signed authorization's nonce is known, recovery matches
     the USDC AuthorizationUsed(payer, nonce) event — binding it to THIS exact
     authorization — then verifies the Transfer inside that tx. A payer's other
     transfer to the gateway in the window is no longer grabbable."""
@@ -750,7 +750,7 @@ class TestNonceBoundRecovery:
         branch — CDP returns HTTP 200 with {"success": false, uncertain reason} —
         must bind recovery to the nonce too. It previously omitted auth_nonce and
         fell back to the broad amount-only Transfer filter, re-opening the
-        double-charge that AGE-65 closed. Assert eth_getLogs is nonce-scoped."""
+        double-charge that closed. Assert eth_getLogs is nonce-scoped."""
         import gateway.base as base_mod
         if not base_mod._AUTH_USED_SIG:
             pytest.skip("eth_utils unavailable — nonce match disabled")

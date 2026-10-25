@@ -21,7 +21,7 @@
  *
  * route(need, budget) — MCP-2 (legacy alias kept for back-compat).
  *
- * Wallet identity (v2.5.0 — AGE-139): every install mints ONE EVM key on
+ * Wallet identity (v2.5.0): every install mints ONE EVM key on
  * first run, persisted at ~/.agentpay/mcp-wallet.json (0600); the address is
  * the stable agent_address across restarts. SPENDING IS OFF BY DEFAULT: paid
  * tools settle x402 in-place (gasless EIP-3009 Mode A, same PAYMENT-SIGNATURE
@@ -67,7 +67,7 @@ const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools
 // All diagnostic output goes to stderr. (Declared before wallet init uses it.)
 const log = (...args) => process.stderr.write(args.join(' ') + '\n');
 
-// ── Wallet identity + paid mode (AGE-40 → AGE-139) ───────────────────────────
+// ── Wallet identity + paid mode ───────────────────────────
 // EVERY install has a wallet now: AGENTPAY_BASE_KEY if set (BYO), else a key
 // minted on first run and persisted at ~/.agentpay/mcp-wallet.json (override:
 // AGENTPAY_WALLET_PATH). The address is the stable agent identity across
@@ -75,7 +75,7 @@ const log = (...args) => process.stderr.write(args.join(' ') + '\n');
 // SPENDING is separate: paid tools settle in-place only in PAID mode —
 // AGENTPAY_ENABLE_PAID=1 (persisted wallet, once funded) or a BYO key
 // (explicit intent, preserves 2.4.x behaviour). Default: identity only.
-// AGE-127: one binary, two transports. The remote (http) server is shared by
+// one binary, two transports. The remote (http) server is shared by
 // every client that reaches it, so it never holds a key and never settles —
 // whatever the env says. Paid tools stay on the local stdio server or the SDK.
 const TRANSPORT = (process.argv.includes('--http') ||
@@ -103,7 +103,7 @@ const fundingHint = () => PAID
     'set AGENTPAY_ENABLE_PAID=1 to settle paid tools in-place (gasless, no ETH needed).';
 
 // Agent identity — the wallet address in ALL modes, so free and paid calls
-// share one stable identity in payment_logs across restarts (AGE-139).
+// share one stable identity in payment_logs across restarts.
 // The remote server carries one configured identity for all callers (an
 // address, never a key); ephemeral otherwise, so free calls still get a receipt.
 const AGENT_ADDRESS = WALLET.address;
@@ -149,7 +149,7 @@ async function failureReason(resp) {
   return '';
 }
 
-// ── x402 over MCP (AGE-219) ───────────────────────────────────────────────────
+// ── x402 over MCP ───────────────────────────────────────────────────
 // Transport spec: an unpaid paid-tool call returns a RESULT with isError and the
 // PaymentRequired in both structuredContent and content[0].text; the client
 // retries with _meta["x402/payment"]; the data comes back with
@@ -327,7 +327,7 @@ async function callTool(toolName, params, payment = null) {
 
   const isFree = parseFloat(amountUsdc) === 0;
   if (!isFree) {
-    // ── Paid tool: settle in-place when a wallet is configured (AGE-40) ──
+    // ── Paid tool: settle in-place when a wallet is configured ──
     if (!PAID) throw new PaymentRequiredError(paymentRequiredFrom(challenge, toolName, url));
     return settlePaid(toolName, url, body, baseHeaders, challenge);
   }
@@ -357,7 +357,7 @@ async function callTool(toolName, params, payment = null) {
   return result.result ?? result;
 }
 
-// ── Paid settle — EIP-3009 Mode A via PAYMENT-SIGNATURE (AGE-40) ─────────────
+// ── Paid settle — EIP-3009 Mode A via PAYMENT-SIGNATURE ─────────────
 //
 // Mirrors agentpay/_client.py:_settle_base: sign the challenge's Base option
 // off-chain, retry with PAYMENT-SIGNATURE ONLY (sending the same payload in
@@ -795,7 +795,7 @@ const VERIFIED_ROUTE_TOOL_DEF = {
   annotations: {
     // Paid mode runs the PAID tool ($0.01 settles on call) — not read-only.
     // A persisted wallet WITHOUT AGENTPAY_ENABLE_PAID stays read-only: the
-    // "read-only tool that moves money" case must remain impossible (AGE-44).
+    // "read-only tool that moves money" case must remain impossible.
     title: PAID
       ? 'Verified Route (x402 trust oracle, paid $0.01)'
       : 'Verified Route (x402 trust oracle, preview)',
@@ -919,10 +919,10 @@ async function listTools() {
 
     // Directory requirement: every tool carries a human title + read/destructive
     // hint. Keyless stdio (the default, and what the directory reviews): every
-    // tool is a read-only data/advice call. Wallet mode (AGE-44): a priced tool
+    // tool is a read-only data/advice call. Wallet mode: a priced tool
     // SPENDS USDC when called — declare it, so clients prompt before the first
     // paid call instead of auto-approving a "read-only" tool that moves money.
-    // The remote (AGE-219) is the same from the client's side: a wallet-carrying
+    // The remote is the same from the client's side: a wallet-carrying
     // client auto-pays the in-band 402, so a priced tool is not read-only there.
     const spends = (PAID || REMOTE) && parseFloat(t.price_usdc) > 0;
     const title = t.name
@@ -936,7 +936,7 @@ async function listTools() {
   });
 
   const listed = [...gatewayTools, VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF];
-  // Remote: the priced tools are the point of the endpoint (AGE-219) and what
+  // Remote: the priced tools are the point of the endpoint and what
   // x402 probers look for with a bounded number of unpaid calls — list them
   // first so a client or scanner meets the in-band 402 before the free tools.
   if (REMOTE) listed.sort((a, b) => Number(b.annotations.readOnlyHint === false) - Number(a.annotations.readOnlyHint === false));

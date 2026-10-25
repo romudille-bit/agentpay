@@ -429,7 +429,7 @@ class TestBaseDisabledReason:
 
 
 class TestPaymentRequiredHeaderDecode:
-    """AGE-9: _decode_payment_required_header — x402 v2 header fallback for
+    """_decode_payment_required_header — x402 v2 header fallback for
     external 402s whose body carries no accepts."""
 
     def test_base64_header(self):
@@ -453,7 +453,7 @@ class TestPaymentRequiredHeaderDecode:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Gateway Code Review 2026-07 — SDK cluster regression tests (AGE-53..57)
+# Gateway Code Review 2026-07 — SDK cluster regression tests
 # ═════════════════════════════════════════════════════════════════════════════
 
 from decimal import Decimal
@@ -485,7 +485,7 @@ TOOLS_LIST = {"tools": [
 
 
 class TestBudgetCapBindsActualAmount:
-    """AGE-53: the cap must bind the amount the 402 ACTUALLY demands,
+    """the cap must bind the amount the 402 ACTUALLY demands,
     not the registry-advertised price."""
 
     def test_client_refuses_402_above_cap_before_paying(self, fake_wallet):
@@ -539,7 +539,7 @@ class TestBudgetCapBindsActualAmount:
 
 
 class TestSpendRecordedOnBroadcast:
-    """AGE-54: a broadcast payment counts against the budget even when the
+    """a broadcast payment counts against the budget even when the
     tool call then fails — spent() must never under-report."""
 
     def test_client_records_spend_when_retry_fails(self, fake_wallet):
@@ -598,7 +598,7 @@ class TestSpendRecordedOnBroadcast:
 
 
 class TestNoFallbackAfterPayment:
-    """AGE-55: fallback only on pre-payment failures — a post-payment
+    """fallback only on pre-payment failures — a post-payment
     failure must never trigger a second payment."""
 
     def test_post_payment_failure_does_not_pay_fallback(self):
@@ -648,7 +648,7 @@ class TestNoFallbackAfterPayment:
 
 
 class TestSignedAuthNotTreatedAsUnspent:
-    """AGE-56: once the signed EIP-3009 auth is transmitted, a non-200 must
+    """once the signed EIP-3009 auth is transmitted, a non-200 must
     NOT be treated as 'no payment settled' — no Stellar re-pay, spend
     recorded as uncertain."""
 
@@ -711,7 +711,7 @@ class TestSignedAuthNotTreatedAsUnspent:
 
 
 class TestUrlCallsRespectPolicies:
-    """AGE-57: allowed_tools / max_per_tool / rate_limit apply to external
+    """allowed_tools / max_per_tool / rate_limit apply to external
     x402 URLs exactly as they do to registry tools."""
 
     EVIL = "https://evil.example/x402/steal"
@@ -743,7 +743,7 @@ class TestUrlCallsRespectPolicies:
 
 
 class TestExternalUrlSpendRecording:
-    """AGE-54/56 for the external-URL path in Session._call_x402_url."""
+    """for the external-URL path in Session._call_x402_url."""
 
     URL = "https://ext.example/tool"
 
@@ -847,7 +847,7 @@ class TestExternalUrlSpendRecording:
 
 
 class TestFallbackRespectsPolicies:
-    """AGE-57 follow-up: a FALLBACK tool must satisfy the same session
+    """follow-up: a FALLBACK tool must satisfy the same session
     policies — the SDK picking it doesn't exempt it from the allowlist
     or a per-tool cap."""
 
@@ -916,7 +916,7 @@ class TestBaseLegRecordsSignedAmount:
 
 
 class TestBudgetReservationLock:
-    """AGE-66: the budget check→reserve→spend sequence is lock-guarded so two
+    """the budget check→reserve→spend sequence is lock-guarded so two
     concurrent call()s can't both pass would_exceed and double-pay."""
 
     def test_failed_fallback_rereserve_does_not_double_release(self):
@@ -1028,7 +1028,7 @@ class TestBudgetReservationLock:
 
 
 class TestSubmitTimeoutPoll:
-    """AGE-68: a Stellar submit that times out but actually landed must be
+    """a Stellar submit that times out but actually landed must be
     reported as success (with the precomputed hash), not a failure the caller
     would retry into a double-pay."""
 
@@ -1111,7 +1111,7 @@ class _Builder:
 
 
 class TestPerToolCapWouldExceed:
-    """AGE-74 #6: the per-tool cap blocks the call that WOULD CROSS the cap,
+    """#6: the per-tool cap blocks the call that WOULD CROSS the cap,
     not just the next call after it's already exceeded."""
 
     def test_call_that_crosses_cap_is_blocked(self):
@@ -1142,7 +1142,7 @@ class TestPerToolCapWouldExceed:
 
 
 class TestBudgetPromptCtrlC:
-    """AGE-74 #3 / AGE-120: Ctrl-C or EOF at the attended budget prompt must
+    """#3 / Ctrl-C or EOF at the attended budget prompt must
     NOT silently authorize the default cap — both re-raise."""
 
     def test_keyboardinterrupt_reraises(self, monkeypatch):
@@ -1169,7 +1169,7 @@ class TestBudgetPromptCtrlC:
 
 
 class TestKeyParseConstantMessage:
-    """AGE-74 #4: a bad key raises a constant message, never echoing the key."""
+    """#4: a bad key raises a constant message, never echoing the key."""
 
     def test_bad_stellar_secret_constant_message(self):
         from agentpay._wallet import AgentWallet
@@ -1236,7 +1236,7 @@ class TestCapExcludesOwnHold:
         assert s.remaining_usd() == Decimal("0")
 
     def test_concurrent_exact_fit_loser_fails_closed(self):
-        """The fix must NOT weaken AGE-66: with another call's hold in
+        """The fix must NOT weaken with another call's hold in
         flight consuming the whole budget, a second exact-fit call still
         fails closed — no payment, nothing recorded."""
         w = _session_wallet()
@@ -1361,7 +1361,7 @@ class TestVersionMatchesPyproject:
 
 
 class TestFallbackOptIn:
-    """AGE-118: tool substitution is opt-in; a typo is not a budget problem.
+    """tool substitution is opt-in; a typo is not a budget problem.
 
     - Unknown tool → typed ToolNotFound, NEVER substituted (even with
       fallback="auto" — the old code silently billed the cheapest
@@ -1419,7 +1419,7 @@ class TestFallbackOptIn:
 
     def test_pre_payment_failure_default_does_not_reroute(self):
         """Default fallback="off": a 503 before payment surfaces instead of
-        silently billing a sibling tool (AGE-55 path, now gated)."""
+        silently billing a sibling tool."""
         w = _session_wallet()
         s = Session(w, gateway_url=GATEWAY, max_spend="1.00")
         with respx.mock:

@@ -11,9 +11,9 @@ Verified on Hiro (2026-09-08):
 
 | # | txid | block | fee (µSTX) | settle path |
 |---|------|-------|-----------:|-------------|
-| 1 | `30689b5ee9f779fe571f0b7797e2453b21cf7d220cadf4f1881586757347387f` | 8937021 | 100,000 | uncertain → redeemed from the txid alone (AGE-147) |
+| 1 | `30689b5ee9f779fe571f0b7797e2453b21cf7d220cadf4f1881586757347387f` | 8937021 | 100,000 | uncertain → redeemed from the txid alone |
 | 2 | `d1de1a792e2a23f5a0b22651eec4f3f00a49f3e9ca15c70c2a19fc8fb474dd8e` | 8938646 | 3,910 | inline |
-| 3 | `59ce70146da57ffd8c71cd67eea9169373ad11b7298e77a88e5f946a0064e325` | 8944701 | 50,850 | inline, on the settle-deadline build (AGE-150) |
+| 3 | `59ce70146da57ffd8c71cd67eea9169373ad11b7298e77a88e5f946a0064e325` | 8944701 | 50,850 | inline, on the settle-deadline build |
 
 Each is `SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::transfer`
 (amount u13, sender SP27VC…, recipient SP23XK…, memo = the challenge id),

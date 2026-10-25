@@ -22,7 +22,7 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"]  # required from env; never hardcode (
 
 # ── DDL ───────────────────────────────────────────────────────────────────────
 
-# `tools` is an OVERRIDE LAYER, not a mirror of the live surface (AGE-114).
+# `tools` is an OVERRIDE LAYER, not a mirror of the live surface.
 # registry.py is the source of truth for which tools EXIST; a Supabase row only
 # overrides fields for a tool that already exists there, and gateway/main.py
 # appends any seed tool missing from this table. As of 2026-08-09 that means 14
@@ -30,7 +30,7 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"]  # required from env; never hardcode (
 # PAID tools (session_create, verified_route, pre_trade_check) have no row here
 # and are served entirely from the seed. Consequence worth remembering: an audit
 # that reads only this table sees two thirds of the surface, which is exactly
-# the blind spot that let AGE-107 ship. Audit /tools, not `tools`.
+# the blind spot that let ship. Audit /tools, not `tools`.
 #
 # `endpoint` is NOT NULL + non-blank and carries NO default, deliberately: a
 # blank endpoint makes a tool unaddressable (session_create is served at

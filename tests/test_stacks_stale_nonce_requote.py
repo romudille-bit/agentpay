@@ -64,7 +64,7 @@ def _stacks_wallet():
 def test_stale_nonce_requests_fresh_402_then_new_payment_id():
     wallet = _stacks_wallet()
     with respx.mock:
-        # AGE-152: the SDK asks Hiro before trusting "rejected"; the honest
+        # the SDK asks Hiro before trusting "rejected"; the honest
         # case is a txid the chain has never seen.
         respx.get(url__regex=r".*/extended/v1/tx/0x.*").mock(
             return_value=httpx.Response(404))
@@ -94,7 +94,7 @@ def test_overcap_requote_refused():
     overcap["amount_usdc"] = "0.50"
     overcap["payment_options"]["stacks"]["amount_usdc"] = "0.50"
     with respx.mock:
-        # AGE-152: the SDK asks Hiro before trusting "rejected"; the honest
+        # the SDK asks Hiro before trusting "rejected"; the honest
         # case is a txid the chain has never seen.
         respx.get(url__regex=r".*/extended/v1/tx/0x.*").mock(
             return_value=httpx.Response(404))

@@ -197,7 +197,7 @@ def test_extra_respects_chain_filter():
     assert "https://base.example/extra" not in {r["url"] for r in out["results"]}
 
 
-# ── AGE-83: the seller's advertised call shape ─────────────────────────────────
+# ── the seller's advertised call shape ─────────────────────────────────
 
 def test_parse_resources_carries_the_advertised_input_spec():
     """Bazaar listings publish {method, queryParams|body} — without it the

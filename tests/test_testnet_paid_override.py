@@ -1,5 +1,5 @@
 """
-test_testnet_paid_override.py — AGE-77.
+test_testnet_paid_override.py.
 
 The testnet M1 demo needs a nonzero-priced tool, but the registry price is
 shared with mainnet (where the free-funnel keeps data tools at $0). So

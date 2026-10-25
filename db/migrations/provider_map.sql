@@ -1,4 +1,4 @@
--- provider_map + provider_depth — AGE-138 (2026-08-27)
+-- provider_map + provider_depth (2026-08-27)
 --
 -- The map is ours or it is nothing: every sweep resolves payTo → provider
 -- (names, hosts, URLs, needs) and every verified_route call scores ~200
@@ -24,7 +24,7 @@
 --                     by tools/payer_depth.py). Aggregates ONLY — no payer
 --                     wallets are stored (those stay in Dune). This is what
 --                     turns "23 unique payers" into "23 payers, 11 weighted
---                     after the prober discount, 4 came back": AGE-133 phase 0.
+--                     after the prober discount, 4 came back": phase 0.
 --                     PUBLIC read: the numbers appear in verified_route's why.
 --
 -- Apply once in the Supabase SQL Editor (same convention as service_probes.sql;

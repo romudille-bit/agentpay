@@ -1,4 +1,4 @@
--- census_pairs_x402.sql — AGE-140 multi-provider buyer census, x402-SCOPED version (v2)
+-- census_pairs_x402.sql multi-provider buyer census, x402-SCOPED version (v2)
 --
 -- v1 (census_payers.sql / census_pairs.sql) used every EIP-3009 USDC transfer on
 -- Base as the denominator and came back with $35M / 10.4M legs / 65k wallets in

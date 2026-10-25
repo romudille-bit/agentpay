@@ -1,11 +1,11 @@
 """
-test_receipt_race.py — AGE-58 regression: the Base-path receipt-write race.
+test_receipt_race.py regression: the Base-path receipt-write race.
 
 The tx-hash-keyed 'verified' row used to be inserted with a fire-and-forget
 asyncio.create_task while the terminal `await update_payment_log_state(...,
 "payment_done")` ran right after. If the PATCH won the race it no-op'd on the
 missing row, then the insert landed 'verified' — and the row never advanced
-(the "stuck in verified / phantom-abandon" class, AGE-52). It hit both
+(the "stuck in verified / phantom-abandon" class). It hit both
 /tools/{name}/call (Base) and /v1/session/create (the KPI).
 
 These tests make the insert SLOW (several event-loop ticks) and assert the
@@ -83,7 +83,7 @@ def _v2_sig():
 
 
 def _assert_insert_lands_before_terminal_write(events, tx_key: str):
-    """The core AGE-58 invariant: for the tx-keyed row, the insert must have
+    """The core invariant: for the tx-keyed row, the insert must have
     LANDED before any terminal state write on that key starts."""
     tx_events = [e for e in events if e[1] == tx_key]
     landed = [i for i, e in enumerate(tx_events) if e[0] == "insert_landed"]
@@ -91,7 +91,7 @@ def _assert_insert_lands_before_terminal_write(events, tx_key: str):
     assert landed, f"tx-keyed insert never landed; events: {events}"
     assert updates, f"no terminal write on the tx key; events: {events}"
     assert landed[0] < updates[0], (
-        f"terminal write raced ahead of the row insert (AGE-58): {tx_events}"
+        f"terminal write raced ahead of the row insert: {tx_events}"
     )
 
 

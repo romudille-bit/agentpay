@@ -1,5 +1,5 @@
 """
-AGE-138 phase 0b — on-chain payer depth in ranking, fleet flag, provider_map
+phase 0b — on-chain payer depth in ranking, fleet flag, provider_map
 aggregation, holding dict + flush, prober ingest of providers.
 
 Control numbers are the 2026-08-27 calibration (x402scan source):

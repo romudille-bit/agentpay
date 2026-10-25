@@ -33,10 +33,10 @@ def mocked_refund_deps(monkeypatch):
         "send_results": [],   # popped one per call to send_refund
         "attempts":   {},     # payment_id → increment CALL count
         "initial_attempts": {},  # payment_id → refund_attempts on the claimed row
-        "increment_unconfirmed": False,  # True → fake_increment returns None (AGE-61)
+        "increment_unconfirmed": False,  # True → fake_increment returns None
         "done_calls": [],     # (payment_id, tx_hash) tuples
         "failed_calls": [],   # (payment_id, reason) tuples
-        # AGE-76 two-phase claim + stale sweep
+        # two-phase claim + stale sweep
         "sending_claims": [],        # payment_ids claimed to refund_sending
         "claim_sending_fails": False,  # True → claim unconfirmed (no send)
         "released": [],              # payment_ids released back to refund_pending
@@ -58,7 +58,7 @@ def mocked_refund_deps(monkeypatch):
         return []
 
     async def fake_increment(payment_id):
-        # AGE-61 contract: return the confirmed NEW total attempt count,
+        # contract: return the confirmed NEW total attempt count,
         # or None when the increment could not be confirmed.
         if state["increment_unconfirmed"]:
             return None
@@ -321,7 +321,7 @@ async def test_refund_worker_base_refund_used_when_key_configured(
 
 @pytest.mark.asyncio
 async def test_refund_worker_unconfirmed_increment_skips_send(mocked_refund_deps):
-    """AGE-61: when increment_refund_attempt cannot CONFIRM the new count
+    """when increment_refund_attempt cannot CONFIRM the new count
     (read blip / missing row / failed write → None), the worker must NOT
     send a refund this sweep. The old code defaulted a failed read to 0,
     resetting the counter and letting duplicate refunds blow past the
@@ -354,7 +354,7 @@ async def test_refund_worker_unconfirmed_increment_skips_send(mocked_refund_deps
     assert mocked_refund_deps["failed_calls"] == []
 
 
-# ── AGE-76: send → mark_refund_done idempotency (two-phase + on-chain check) ──
+# ── send → mark_refund_done idempotency (two-phase + on-chain check) ──
 
 ROW = {
     "payment_id":      "pid-76",
@@ -368,7 +368,7 @@ ROW = {
 
 @pytest.mark.asyncio
 async def test_send_requires_confirmed_sending_claim(mocked_refund_deps):
-    """AGE-76: no USDC send without a CONFIRMED refund_pending →
+    """no USDC send without a CONFIRMED refund_pending →
     refund_sending transition."""
     mocked_refund_deps["rows"] = [dict(ROW)]
     mocked_refund_deps["claim_sending_fails"] = True
@@ -409,7 +409,7 @@ async def test_failed_send_releases_row_back_to_pending(mocked_refund_deps):
 async def test_stale_sending_row_with_onchain_refund_marks_done_no_resend(
     mocked_refund_deps,
 ):
-    """The core AGE-76 scenario: a previous sweep sent the refund but the
+    """The core scenario: a previous sweep sent the refund but the
     terminal PATCH was lost (row stuck in refund_sending). The stale sweep
     finds the refund on-chain via the memo and marks the row done — WITHOUT
     a second send."""

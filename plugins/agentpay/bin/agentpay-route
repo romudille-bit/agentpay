@@ -44,7 +44,7 @@ CHAIN_NETWORKS = {
     "robinhood":         {"eip155:46630"},
     "robinhood-testnet": {"eip155:46630"},
     "arbitrum-stack":    {"eip155:42161", "eip155:421614", "eip155:46630"},
-    # AGE-104: Solana — discovery only (no SVM signing, no paid probes). The
+    # Solana — discovery only (no SVM signing, no paid probes). The
     # CAIP-2 refs are base58 and case-sensitive; lowercased forms alias back.
     "solana":            {"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"},
     "solana-devnet":     {"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"},

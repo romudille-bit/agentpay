@@ -8,7 +8,7 @@
 # @noble/curves + @noble/hashes and a hardcoded list shipped a bundle that
 # crashed on launch with ERR_MODULE_NOT_FOUND), smoke-tests the staged
 # server, and packs a .mcpb. For the Anthropic Connectors Directory
-# (Desktop Extension path, AGE-137).
+# (Desktop Extension path).
 #
 # Usage:  cd mcpb && ./build.sh
 set -euo pipefail

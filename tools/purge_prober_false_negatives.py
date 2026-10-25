@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-purge_prober_false_negatives.py — AGE-86 remediation.
+purge_prober_false_negatives.py remediation.
 
 Deletes service_probes rows whose "failure" was provably OURS, then triggers
 a window rescore so /probes and /scores.json stop publishing false negatives
@@ -9,16 +9,16 @@ against named third parties.
 What gets deleted (and why it is safe):
 
   1. Paid rows with settle_ok = false.
-     Under the AGE-86 scoring model these are NEVER delivery evidence — money
+     Under the scoring model these are NEVER delivery evidence — money
      didn't verifiably move, so they say nothing about whether the seller
      delivers. Every known false negative is in this set: X (Twitter) JSON
      API's six DNS failures (no payment ever transmitted), DeepSeek's 502
      relaying the 400 WE caused with model="default", completions' pre-fix
-     row. Post-AGE-86 code stores such rows with skipped/outcome labels;
+     row. Post- code stores such rows with skipped/outcome labels;
      these legacy rows have no labels and only mislead.
 
   2. Paid rows for https://x402.shizu.me/pdf (PDF to Text) probed before
-     2026-07-28. Those settled — but the pre-AGE-83 SDK dropped all params
+     2026-07-28. Those settled — but the earlier SDK dropped all params
      on GET-served resources, so we paid and then called the service with
      NO ARGUMENTS. A working service scored 0.0 three times on our bug.
 
@@ -51,7 +51,7 @@ TARGETS = [
     ("paid rows that never settled (settle_ok=false) — includes X (Twitter) "
      "JSON API's 6 DNS failures, DeepSeek's relayed-400, completions",
      "probe_type=eq.paid&settle_ok=eq.false"),
-    ("PDF to Text settled rows from before the AGE-83 GET fix "
+    ("PDF to Text settled rows from before the GET fix "
      "(paid, then called with zero arguments)",
      "probe_type=eq.paid&probed_at=lt.2026-07-28"
      "&resource_url=eq." + urllib.parse.quote(
@@ -113,7 +113,7 @@ def main() -> int:
         return 1
     execute = "--execute" in sys.argv
 
-    print(f"\nAGE-86 purge — {'EXECUTE' if execute else 'DRY RUN (pass --execute to delete)'}\n")
+    print(f"\nProber false-negative purge — {'EXECUTE' if execute else 'DRY RUN (pass --execute to delete)'}\n")
     total = 0
     for label, filt in TARGETS:
         rows = preview(filt)

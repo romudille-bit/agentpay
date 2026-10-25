@@ -1,5 +1,5 @@
 /**
- * http_transport.test.mjs — the remote (Streamable HTTP) transport, AGE-127.
+ * http_transport.test.mjs — the remote (Streamable HTTP) transport,.
  *
  * The shared server must stay keyless whatever the env says: a key and
  * AGENTPAY_ENABLE_PAID=1 are deliberately passed here and must not turn paid

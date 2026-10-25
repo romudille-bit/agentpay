@@ -19,7 +19,7 @@ Each run:
   5. PUBLISH — probe receipts are real receipts; the run posts to the existing
                flagship ingest with goal="probe_sweep" so /ledger shows the
                reasoning. (Raw service_probes/service_scores Supabase rows
-               land with AGE-6.)
+               land with.)
 
 Identity & config (env):
   PROBER_BASE_KEY         — funded Base/EVM key (~$10) — the only funded key
@@ -29,7 +29,7 @@ Identity & config (env):
   PROBER_MAX_PAID_PROBES  — cap on paid probes per run (default 15)
   PROBER_MAX_PROBE_USD    — per-probe price ceiling (default "0.05"); above it
                             a service stays T0-only, so one premium endpoint
-                            can't eat the run cap (AGE-83)
+                            can't eat the run cap
   PROBER_RETEST_MAX       — unsettled verdicts to re-probe per run (default 6;
                             0 disables re-probing)
   PROBER_NEEDS            — comma list overriding the canonical needs
@@ -204,7 +204,7 @@ def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
     """T1: settle a real payment via the SDK, judge delivery. The Session cap
     is the only spend authority — would_exceed() gates before every call.
 
-    AGE-86 contract: the ONLY rows this returns un-skipped are ones where a
+    contract: the ONLY rows this returns un-skipped are ones where a
     payment verifiably settled (success or RefundPending). Everything else is
     classified into an `outcome` and marked skipped — raw evidence, never a
     delivery observation. Fail closed: when we cannot prove money moved, we
@@ -227,7 +227,7 @@ def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
         return _probe_row(cand, "paid", error="skipped: cap reached",
                           skipped=True, outcome="cap_reached")
 
-    # AGE-87: URLs with unsubstituted path params (…/api/:name) were probed
+    # URLs with unsubstituted path params (…/api/:name) were probed
     # LITERALLY — X (Twitter) JSON API accumulated six "failures" against a
     # template that was never a real endpoint. Fill known params; refuse to
     # pay for an unresolvable one.
@@ -244,7 +244,7 @@ def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
     error = None
     data = None
     # The seller's own advertised call shape when it published one, a
-    # per-need guess otherwise (AGE-83/AGE-87 — seller's example wins).
+    # per-need guess otherwise.
     spec = probe.call_spec(cand)
     t0 = time.monotonic()
     try:
@@ -258,7 +258,7 @@ def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
         # eip155:43114). Unmet demand on an unsupported chain, NOT a delivery
         # failure — record the chain (authoritative, from the live 402) and
         # mark the row unscoreable so it never enters delivery_rate or the
-        # FATAL 0/N denominator. Surfaced as a grant signal by AGE-81.
+        # FATAL 0/N denominator. Surfaced as a grant signal by.
         latency_ms = int((time.monotonic() - t0) * 1000)
         _chains = list(getattr(e, "offered_networks", None) or [])
         return _probe_row(
@@ -268,7 +268,7 @@ def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
             outcome="unsupported_chain",
         )
     except PrePaymentError as e:
-        # AGE-86: nothing was paid — DNS failure, connection refused, a non-402
+        # nothing was paid — DNS failure, connection refused, a non-402
         # response, an unparseable 402. This is a statement about reachability
         # (ours or theirs), never about delivery. Before this clause the
         # generic handler scored these 0.0 against the seller: X (Twitter)
@@ -295,10 +295,10 @@ def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
         # Post-transmission rejections land here ("settlement uncertain,
         # spend recorded: 4xx/5xx…"): the signed auth left the wire, the
         # seller answered non-200, and we cannot prove whether they settled.
-        # AGE-86: fail closed — unscoreable, whatever the status code. The
+        # fail closed — unscoreable, whatever the status code. The
         # old guard matched only "spend recorded): 4", so DeepSeek's 502
         # (relaying a 400 WE caused with model="default") fell through and
-        # was scored 0.0 against them. AGE-88 reconciles these on-chain;
+        # was scored 0.0 against them. This reconciles these on-chain;
         # if one settled AND returned nothing, THAT is a took-payment case
         # to promote — with evidence, not by default.
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -313,7 +313,7 @@ def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
 
     # What the seller said comes BACK. rank()'s public projection carries
     # `output_keys`; ledger-sourced recommendations carry a raw `accepts`.
-    # Before AGE-83 ranked candidates had neither, so nearly every paid probe
+    # Before ranked candidates had neither, so nearly every paid probe
     # judged delivery on "non-empty" alone — and a 200 carrying
     # {"error": "…"} passed as delivered.
     out_schema = (cand.get("output_keys")
@@ -361,7 +361,7 @@ def publish_run(probes: list[dict], run: dict,
         req = urllib.request.Request(
             f"{GATEWAY}/v1/prober/run",
             data=json.dumps({"probes": probes, "run": run,
-                             # AGE-138: payTo → provider rows from this
+                             # payTo → provider rows from this
                              # sweep's rank() results, merged into
                              # provider_map by the gateway (batch).
                              "providers": providers or []}, default=str).encode(),
@@ -434,7 +434,7 @@ def main() -> int:
     log(f"run start {run_at} | wallet {wallet.base_address} | cap ${max_spend} | "
         f"max paid probes {max_paid} | needs {len(needs)}")
 
-    # 0. SELF-AUDIT (AGE-108) — our own surface, before anyone else's. Free,
+    # 0. SELF-AUDIT — our own surface, before anyone else's. Free,
     # read-only, never enters service_scores. Runs first so a broken contract
     # of ours is reported even if the sweep later fails.
     self_audit = audit_self(GATEWAY)
@@ -444,7 +444,7 @@ def main() -> int:
         log("SELF-AUDIT FAILED — our own discovery contract is broken:")
         for f in self_audit["failures"]:
             log(f"  ! {f}")
-    # AGE-108 phase 2 / AGE-135 instrument: timed method-matrix from THIS
+    # phase 2 / instrument: timed method-matrix from THIS
     # external vantage. Failures (non-402) are contract breaks; warnings are
     # latency anomalies (slow samples, tools-vs-session differential) — the
     # drift an external scorer would price in weeks later. Monitoring only.
@@ -487,7 +487,7 @@ def main() -> int:
     # 3. T1 — paid probes, cap-gated. EVERY row is logged, skipped or not —
     # on 2026-07-28, 8 of 13 paid settles left no trace anywhere (not logged,
     # not stored), and the entire post-mortem had to be reconstructed by
-    # inference from the run receipt (AGE-87 root cause 4).
+    # inference from the run receipt.
     paid_rows: list[dict] = []
     for cand in sel["t1"]:
         row = probe_paid(s, cand, max_probe)
@@ -505,7 +505,7 @@ def main() -> int:
     # Systemic buyer-side guard: if payments were attempted and NONE settled,
     # the problem is almost certainly ours (SDK, wallet, funds, network) —
     # abort without publishing rather than scoring 15 innocent sellers 0.0.
-    # (Under AGE-86 skipped rows can't hurt sellers anyway; this guard now
+    # (Under skipped rows can't hurt sellers anyway; this guard now
     # protects the SPEND, not the scores.)
     attempted = [r for r in paid_rows
                  if r.get("outcome") in ("settled", "payment_rejected",
@@ -516,9 +516,9 @@ def main() -> int:
         return 1
     probes.extend(paid_rows)
 
-    # AGE-80: sellers that only settle on chains we can't (e.g. Avalanche
+    # sellers that only settle on chains we can't (e.g. Avalanche
     # eip155:43114) are recorded, never scored. Surface them as unmet demand —
-    # a discovery/grant signal (persisted + shown on /probes by AGE-81).
+    # a discovery/grant signal (persisted + shown on /probes by).
     _unsupported = [r for r in paid_rows if r.get("unsupported_chain")]
     if _unsupported:
         _uchains = sorted({c for r in _unsupported for c in r["unsupported_chain"]})
@@ -555,7 +555,7 @@ def main() -> int:
     # The note is what a human skims on /ledger, so it has to carry the bad
     # news too — and label failures by WHOSE failure they were. "The seller
     # rejected the request after settlement" turned out to describe our own
-    # bad params relayed back to us (AGE-86/AGE-87).
+    # bad params relayed back to us.
     note = (f"AgentPay prober — {run_at}\n"
             f"Probed {len(sel['t0'])} services ({scoreable} settled+scoreable "
             f"paid probes) across {len(needs)} needs; {t0_wf} well-formed 402s; "
@@ -587,7 +587,7 @@ def main() -> int:
     log(f"run done | spent {receipt['spent']} of {receipt['budget']} "
         f"across {receipt['calls']} calls")
 
-    # AGE-87: skipped rows ARE stored now — with `skipped`/`outcome`/`error`
+    # skipped rows ARE stored now — with `skipped`/`outcome`/`error`
     # columns, so an unscoreable probe is auditable from the database instead
     # of reconstructed from the receipt. score() excludes skipped rows from
     # every metric, and the gateway falls back to dropping them entirely if
@@ -603,9 +603,9 @@ def main() -> int:
             "scores": scores,
             "t0": {"total": len(sel["t0"]), "alive": t0_alive,
                    "wellformed": t0_wf, "mpp_options": t0_mpp},
-            # AGE-83: paid coverage is the differentiator, so it gets reported
+            # paid coverage is the differentiator, so it gets reported
             # as a first-class number instead of being inferred from `scores`.
-            # AGE-86: `outcomes` breaks the attempts down by WHAT happened —
+            # `outcomes` breaks the attempts down by WHAT happened —
             # settled / payment_rejected / unreachable / settle_failed /
             # unfilled_path_template / cap_reached — so a bad sweep is
             # diagnosable from the ledger alone.
@@ -615,9 +615,9 @@ def main() -> int:
                    "over_price_ceiling": len(sel["too_expensive"]),
                    "price_ceiling_usd": str(max_probe)},
             "need_leaderboard": board,
-            # AGE-108: monitoring only — never enters service_scores.
+            # monitoring only — never enters service_scores.
             "self_audit": self_audit,
-            # AGE-108 phase 2: timed method-matrix (the AGE-135 instrument).
+            # phase 2: timed method-matrix.
             "self_matrix": self_matrix,
         }},
         "receipt": receipt, "note": note,

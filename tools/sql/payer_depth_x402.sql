@@ -1,4 +1,4 @@
--- payer_depth_x402.sql — AGE-138 repeat-depth ranking (AGE-133 phase 0).
+-- payer_depth_x402.sql repeat-depth ranking.
 --
 -- Per x402 seller on Base, 30d: how many payers came BACK (a second leg to the
 -- SAME recipient), and how many payers look like verification bots (one leg
@@ -11,7 +11,7 @@
 -- ≥2 distinct payers and mean leg ≤ $5 — so small sellers (us: 9 payers) and
 -- the $1–5 inference tier are in the map too. ~1–2k rows.
 --
--- Per (recipient, payer) weight — the "payer_weight" of AGE-138:
+-- Per (recipient, payer) weight — the "payer_weight":
 --   legs_here >= 2                → 1.0   (came back: a customer)
 --   legs_here == 1                → 0.2 + 0.8 * (1 - fanout)
 --     fanout = distinct recipients ÷ legs, over ALL this payer's x402 legs in

@@ -153,7 +153,7 @@ def install(monkeypatch, fake: FakeSupabase) -> None:
     # part of the contract and would poll the fake forever.
 
 
-# ── sessions (AGE-207) ───────────────────────────────────────────────────────
+# ── sessions ───────────────────────────────────────────────────────
 # PostgREST routes mirroring db/migrations/sessions.sql, mounted on respx so
 # the service's real HTTP layer runs.
 

@@ -1,5 +1,5 @@
 /**
- * eip3009.test.mjs — node --test suite for the in-MCP EIP-3009 signer (AGE-40).
+ * eip3009.test.mjs — node --test suite for the in-MCP EIP-3009 signer.
  *
  * The signature vector below is cross-checked against the Python SDK's signer
  * (x402[evm] ExactEvmScheme via eth_account) — same key, same authorization,

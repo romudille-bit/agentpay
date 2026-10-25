@@ -671,7 +671,7 @@ class TestVerifyAndFulfill:
     async def test_partial_consume_rolls_back_and_retry_succeeds(
         self, patched_x402, mock_settings, monkeypatch,
     ):
-        """AGE-60 follow-up: tx row lands but the payment_id insert blips.
+        """follow-up: tx row lands but the payment_id insert blips.
         The half-consume must be rolled back (unrecord_tx_hash) so the SAME
         proof retries successfully — instead of bouncing off the orphan row
         with a false 'replay attack' on money that never fulfilled."""

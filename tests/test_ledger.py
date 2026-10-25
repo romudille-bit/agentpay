@@ -244,7 +244,7 @@ def test_reconcile_adds_offgateway_cmc_legs_from_receipt():
         },
     }
     assert ledger.attach_reasoning(out["runs"], [meta]) == 1
-    # AGE-63: only the gateway-settled leg (0xroutehash @ $0.01, in
+    # only the gateway-settled leg (0xroutehash @ $0.01, in
     # payment_logs) is verifiable; the two direct CMC legs are agent-attested.
     from collections import Counter
     verified_legs = Counter({("0xroutehash", Decimal("0.01")): 1})
@@ -332,7 +332,7 @@ def test_ledger_html_served(monkeypatch):
 
 
 def test_ledger_json_shape(monkeypatch):
-    ledger._invalidate_ledger_cache()          # AGE-72: isolate from other tests
+    ledger._invalidate_ledger_cache()          # isolate from other tests
     async def _fake_rows():
         return RUN_A + RUN_B
     monkeypatch.setattr(ledger, "_fetch_flagship_rows", _fake_rows)
@@ -345,12 +345,12 @@ def test_ledger_json_shape(monkeypatch):
     assert d["totals"]["runs"] == 2
     assert d["wallets"]["base"].startswith("0x")
     assert d["wallets"]["stellar"].startswith("G")
-    # AGE-72: short public cache instead of no-store.
+    # short public cache instead of no-store.
     assert resp.headers.get("cache-control") == "public, max-age=60"
 
 
 def test_ledger_json_is_cached_and_invalidated(monkeypatch):
-    """AGE-72: the built payload is cached for a window (no re-query on the
+    """the built payload is cached for a window (no re-query on the
     next hit) and dropped when a new run is ingested."""
     ledger._invalidate_ledger_cache()
     calls = {"n": 0}
@@ -379,7 +379,7 @@ def test_ledger_disabled_404(monkeypatch):
     assert c.get("/ledger.json").status_code == 404
 
 
-# ── synthesize_offgateway_runs (AGE-10: probe_sweep runs on the ledger) ───────
+# ── synthesize_offgateway_runs ───────
 
 def _probe_meta(run_at="2026-07-10T18:40:00+00:00", breakdown=None):
     return {
@@ -445,7 +445,7 @@ def test_synthesize_handles_empty_breakdown():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# AGE-62: /ledger row-cap freeze (order desc + re-sort asc)
+# /ledger row-cap freeze (order desc + re-sort asc)
 # ═════════════════════════════════════════════════════════════════════════════
 
 import httpx
@@ -454,7 +454,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_fetch_flagship_rows_orders_desc_and_resorts_asc(monkeypatch):
-    """AGE-62: the Supabase query must order created_at DESC (so the 2000-row
+    """the Supabase query must order created_at DESC (so the 2000-row
     cap keeps the NEWEST runs), then hand rows back chronologically. Regression
     for the freeze where asc+limit returned the oldest 2000 forever."""
     monkeypatch.setattr(ledger, "sb_enabled", lambda: True)
@@ -490,7 +490,7 @@ async def test_fetch_flagship_rows_orders_desc_and_resorts_asc(monkeypatch):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# AGE-63: /ledger must not present agent-posted hashes as on-chain-verified
+# /ledger must not present agent-posted hashes as on-chain-verified
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_run_view_labels_verified_vs_attested():
@@ -518,7 +518,7 @@ def test_run_view_labels_verified_vs_attested():
 
 
 def test_run_view_reused_real_hash_credited_once():
-    """AGE-63 residual: a holder of the ingest secret reuses ONE real gateway
+    """residual: a holder of the ingest secret reuses ONE real gateway
     hash across three legs at a fabricated $0.05 each. Only the single real
     settlement ($0.01) may show on-chain; the rest are agent-attested — a real
     hash can't be replayed to inflate verified spend."""
@@ -605,7 +605,7 @@ def test_ledger_html_marks_attested_legs(monkeypatch):
 def test_ledger_html_names_the_rail(monkeypatch):
     """A Stacks leg must not look like a Base leg until the explorer is opened:
     the page names the rail on each paid step and on the run header, and a
-    vetting run says where the sellers it found live (AGE-214)."""
+    vetting run says where the sellers it found live."""
     monkeypatch.setattr(ledger.settings, "LEDGER_ENABLED", True)
     from gateway.main import app
     html = TestClient(app).get("/ledger").text
@@ -615,7 +615,7 @@ def test_ledger_html_names_the_rail(monkeypatch):
     assert '"eip155:8453":"Base"' in html and 'stacks:"Stacks"' in html
 
 
-# ── AGE-63 ingest idempotency ────────────────────────────────────────────────
+# ── ingest idempotency ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_insert_flagship_run_skips_duplicate_run_at(monkeypatch):

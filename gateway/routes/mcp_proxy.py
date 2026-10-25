@@ -1,5 +1,5 @@
 """
-routes/mcp_proxy.py — https://agentpay.tools/mcp → the remote MCP service (AGE-127).
+routes/mcp_proxy.py — https://agentpay.tools/mcp → the remote MCP service.
 
 The Streamable-HTTP MCP server is the Node package running as its own Railway
 service (npm/railway.toml). This route keeps the public URL on the gateway's

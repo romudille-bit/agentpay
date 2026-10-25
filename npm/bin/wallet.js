@@ -1,5 +1,5 @@
 /**
- * wallet.js — persisted MCP wallet identity (AGE-139 step 1).
+ * wallet.js — persisted MCP wallet identity.
  *
  * The keyless MCP used to introduce itself as `mcp-free-<uuid>`, regenerated
  * on every process start — 26 paid-tool reaches could be 26 people or one

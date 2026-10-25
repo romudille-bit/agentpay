@@ -1,5 +1,5 @@
 """
-test_refund_onchain.py — AGE-76: find_refund_on_chain idempotency check.
+test_refund_onchain.py: find_refund_on_chain idempotency check.
 
 The stale-refund_sending resolver asks Horizon whether a refund for a
 payment_id already settled, by matching the deterministic memo

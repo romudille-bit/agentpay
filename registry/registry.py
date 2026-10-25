@@ -4,7 +4,7 @@ registry.py — Tool registry for AgentPay.
 Stores tool metadata: name, endpoint, price, developer wallet.
 
 The in-memory `_TOOLS` dict is the live, hot-path source of truth (seeded below).
-Durability is layered on around it (AGE-71):
+Durability is layered on around it:
   - At startup, `_hydrate_tools_from_supabase` (gateway/main.py) merges the
     Supabase `tools` table onto this seed via `reload_tools`.
   - On runtime registration, `POST /tools/register` calls

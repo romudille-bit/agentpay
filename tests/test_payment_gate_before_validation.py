@@ -1,5 +1,5 @@
 """
-AGE-134 — the 402 challenge must come BEFORE request-body validation.
+— the 402 challenge must come BEFORE request-body validation.
 
 Why this file exists: FastAPI's declarative body binding (`body: Model`)
 validated the request body before the route handler ran. An unpaid caller
@@ -26,7 +26,7 @@ HEAD /v1/session/create → 405, HEAD /tools/{name}/call → 200 (not 402).
 import pytest
 
 
-# The three indexed resources probed in AGE-134, minus session (own path):
+# The three indexed resources probed in, minus session (own path):
 PAID_TOOL_PATHS = [
     "/tools/pre_trade_check/call",
     "/tools/verified_route/call",
@@ -70,7 +70,7 @@ class TestUnpaidAlways402:
     @pytest.mark.parametrize("path", ALL_402_PATHS)
     def test_bare_post_402_body_is_a_real_challenge(self, client, path):
         """The lenient path must produce the same envelope as a well-formed
-        402 — resource-info block included (the AGE-123 lesson: validators
+        402 — resource-info block included (the lesson: validators
         parse the body)."""
         r = client.post(path)
         assert r.status_code == 402

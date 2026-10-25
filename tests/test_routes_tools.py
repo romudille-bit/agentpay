@@ -134,7 +134,7 @@ class TestGetTool:
         assert r.json()["name"] == "token_market_data"
 
     def test_head_preflight_returns_pricing_headers(self, client):
-        # AGE-134: HEAD answers 402 (mirroring the GET probe) so external
+        # HEAD answers 402 (mirroring the GET probe) so external
         # probers never score a healthy resource as "not returning 402".
         # The pre-flight pricing headers are preserved; only the status
         # changed (200 → 402).
@@ -283,7 +283,7 @@ class TestCallWithPayment:
         assert r.status_code == 402
         assert "replay" in r.json()["reason"].lower()
 
-    # ── AGE-42: paid tool errors must refund, not charge ──────────────────
+    # ── paid tool errors must refund, not charge ──────────────────
 
     def _pay(self, client, tool, error_result=None):
         """Drive the paid Stellar flow for `tool`; executor returns error_result
@@ -313,7 +313,7 @@ class TestCallWithPayment:
         monkeypatch.setattr(rt, "real_tool_response", erroring)
 
         r = self._pay(client, "pre_trade_check")   # $0.01 — a paid tool
-        assert r.status_code == 500   # AGE-155: never 502 (Cloudflare swallows it)
+        assert r.status_code == 500   # never 502 (Cloudflare swallows it)
         body = r.json()
         assert body["payment_status"] in ("refund_pending", "refund_disabled")
         assert "upstream exploded" in body["error_reason"]
@@ -335,7 +335,7 @@ class TestCallWithPayment:
     def test_session_create_via_tools_route_returns_session(
         self, client, patch_route_verify
     ):
-        """AGE-42 part 2: session_create now has a real executor on the generic
+        """part 2: session_create now has a real executor on the generic
         tools route — paying it returns a session, not 'no implementation'."""
         r = self._pay(client, "session_create")
         assert r.status_code == 200
@@ -368,7 +368,7 @@ class TestCallWithPayment:
 # ── POST /tools/register ─────────────────────────────────────────────────────
 
 class TestRegisterTool:
-    """AGE-59: /tools/register is secret-gated + validated. 404 with no
+    """/tools/register is secret-gated + validated. 404 with no
     secret configured, 401 on a bad secret, 422 on invalid fields."""
 
     SECRET = "test-register-secret-0123456789abcdef"
@@ -433,7 +433,7 @@ class TestRegisterTool:
         assert r.status_code == 409
 
     def test_register_persists_and_reports_true(self, client, monkeypatch):
-        """AGE-71: a successful registration is pushed to Supabase and the
+        """a successful registration is pushed to Supabase and the
         response tells the caller it will survive a restart."""
         import gateway.routes.tools as rt
 
@@ -450,7 +450,7 @@ class TestRegisterTool:
         assert r.json()["persisted"] is True
 
     def test_register_survives_persist_failure_but_flags_it(self, client, monkeypatch):
-        """AGE-71: a Supabase blip must NOT fail the registration (the tool is
+        """a Supabase blip must NOT fail the registration (the tool is
         live in-memory) — but the response must flag persisted=False so the
         caller knows it won't outlive a redeploy."""
         import gateway.routes.tools as rt
@@ -509,7 +509,7 @@ class TestRegisterTool:
 
 
 class TestEndpointSafety:
-    """AGE-59: _endpoint_is_safe — the shared registration/call-time guard."""
+    """_endpoint_is_safe — the shared registration/call-time guard."""
 
     def test_blocks_non_https_and_private(self):
         from gateway.routes.tools import _endpoint_is_safe
@@ -812,7 +812,7 @@ class TestLifecycleStateMachine:
         payment_done (PATCH). split_done is fired from inside split_payment
         which is mocked at the routes layer; covered by test_x402 for the
         x402.py side. Disk-IO fix #2 trail: NO insert at 402 time; at settle
-        an INSERT with state='verified' (AGE-58 barrier), then the terminal
+        an INSERT with state='verified', then the terminal
         payment_done PATCH lands on it.
         Paid tool — the free happy path is single-INSERT, tested below."""
         first = client.post("/tools/pre_trade_check/call", json={"parameters": {"symbol": "ETH"}})
@@ -1114,7 +1114,7 @@ class TestPreTradeCheckBazaar:
 
     def test_session_create_tool_path_declares_canonical_resource(
             self, client, monkeypatch):
-        """AGE-112: session_create is payable at /tools/session_create/call AND
+        """session_create is payable at /tools/session_create/call AND
         /v1/session/create. The tool path used to publish no serviceName and its
         own resource url, so paying it settled a second, unnamed resource and
         never refreshed the real listing. Both paths must declare the same one."""
@@ -1145,7 +1145,7 @@ class TestPreTradeCheckBazaar:
         header = r.headers.get("PAYMENT-REQUIRED")
         assert header, "PAYMENT-REQUIRED header missing"
         payload = json.loads(base64.b64decode(header + "=" * (-len(header) % 4)))
-        # AGE-36 readout: head terms are won by keyword-in-name, so the
+        # readout: head terms are won by keyword-in-name, so the
         # Bazaar serviceName must carry what the tool DOES, not just the brand
         # (which 8 rival "AgentPay" products share). Pinned per-tool.
         assert payload["resource"]["serviceName"] == "AgentPay Pre-Trade Risk Check"
@@ -1652,7 +1652,7 @@ class TestGetProbeBooksNoPendingRow:
     health-checks every 15 min). It must issue the 402 WITHOUT the
     fail-closed pending INSERT — mirroring session_create_probe —
     or every paid tool accrues perpetual phantom 402-abandonments
-    (the AGE-52 pollution class) and a Supabase blip 503s crawlers."""
+    and a Supabase blip 503s crawlers."""
 
     def test_get_probe_skips_pending_insert(
         self, client, supabase_lifecycle_capture

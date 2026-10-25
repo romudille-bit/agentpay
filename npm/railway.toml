@@ -1,4 +1,4 @@
-# Railway service "mcp" — the shared remote MCP endpoint (AGE-127).
+# Railway service "mcp" — the shared remote MCP endpoint.
 # Root directory: npm/. The gateway proxies https://agentpay.tools/mcp here
 # over private networking (MCP_UPSTREAM_URL). Keyless by construction.
 [build]

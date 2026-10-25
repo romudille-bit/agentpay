@@ -1,5 +1,5 @@
 """
-test_get_params.py — AGE-83.
+test_get_params.py.
 
 A GET-served x402 resource takes its arguments in the URL. The SDK used to
 call `client.get(url, headers=...)` and drop the caller's params entirely, so

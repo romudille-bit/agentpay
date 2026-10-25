@@ -1,4 +1,4 @@
-# Railway config for the PROBER service ONLY (AGE-9).
+# Railway config for the PROBER service ONLY.
 # Same pattern as agents/analyst/railway.toml (run-and-exit cron: no port,
 # no healthcheck, never restart — a completed run must not re-spend), with
 # ONE difference: this service builds from the REPO ROOT, not this subdir,

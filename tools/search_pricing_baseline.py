@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-search_pricing_baseline.py — AGE-141: what does web_search / url_reader traffic
+search_pricing_baseline.py: what does web_search / url_reader traffic
 look like BEFORE (and during) the two-week $0.005 pricing test?
 
 Two sources, because the 2026-08-20 disk-IO fix moved unpaid 402s out of
@@ -12,7 +12,7 @@ payment_logs:
 
 Reports, per tool, for the window:
   completions by UA bucket (own MCP, flagship/SDK, third-party), distinct
-  identities, share with non-null parameters (= real intent, AGE-49 rule),
+  identities, share with non-null parameters (= real intent, rule),
   402s by kind and top UAs, and — once the tools are priced — settles by wallet.
 
 stdlib only (runs on the Mac venv or the Cowork VM's python3). Reads
@@ -118,7 +118,7 @@ def main() -> None:
         "tool_name": tool_in, "day": f"gte.{since.isoformat()}"})
 
     out: dict = {"since": since.isoformat(), "tools": {}}
-    lines = [f"# web_search / url_reader baseline — since {since.isoformat()} (AGE-141)", ""]
+    lines = [f"# web_search / url_reader baseline — since {since.isoformat()}", ""]
     for tool in TOOLS:
         L = [r for r in logs if r.get("tool_name") == tool]
         R = [r for r in roll if r.get("tool_name") == tool]

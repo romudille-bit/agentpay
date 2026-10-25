@@ -1,6 +1,6 @@
 -- tools.endpoint: forbid NULL and '' at the database level.
 --
--- Why (AGE-107 / AGE-110, 2026-08-06): three tools shipped `endpoint: ""` in
+-- Why: three tools shipped `endpoint: ""` in
 -- GET /tools for weeks. An external audit agent (Circadian) found it, not us.
 -- Root cause was two-layered:
 --   1) code — the Supabase->seed hydration fallback in gateway/main.py repaired
@@ -76,7 +76,7 @@ WHERE conname = 'tools_endpoint_not_blank';
 --                       violates not-null constraint
 --   14 rows before, 14 rows after, 0 blank endpoints.
 --
--- FOLLOW-UP (AGE-114): the column still carries `DEFAULT ''` from the original
+-- FOLLOW-UP: the column still carries `DEFAULT ''` from the original
 -- CREATE TABLE, which the CHECK now makes unusable — any INSERT omitting
 -- `endpoint` hard-fails. Fail-loud is the behaviour we want, but a default the
 -- table always rejects is a schema contradicting itself. Drop it:

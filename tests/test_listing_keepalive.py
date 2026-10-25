@@ -1,7 +1,7 @@
-"""AGE-113: the Bazaar listing keepalive.
+"""the Bazaar listing keepalive.
 
 Measured 2026-08-09: session_create fell out of the Bazaar index within three
-days of its AGE-111 re-index, because nothing pays for it. verified_route and
+days of its last re-index, because nothing pays for it. verified_route and
 pre_trade_check survived on a real customer's traffic. These tests pin the two
 properties that matter — we pay when the listing is genuinely gone, and we do
 NOT pay for any other reason, least of all a flaky index.
@@ -84,7 +84,7 @@ def test_indexed_listing_costs_nothing():
 
 
 def test_missing_listing_is_refreshed():
-    """The AGE-113 case exactly: brand query returns our other two tools and
+    """The case exactly: brand query returns our other two tools and
     not the session resource."""
     s = _Session()
     out, log = _logs()

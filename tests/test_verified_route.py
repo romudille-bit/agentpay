@@ -144,7 +144,7 @@ def test_against_live_fixture_if_present():
     assert out["recommendation"] is not None
 
 
-# ── Relevance tier (AGE-43) ───────────────────────────────────────────────────
+# ── Relevance tier ───────────────────────────────────────────────────
 # Regression for the live miss: paid verified_route for "dex pair liquidity"
 # recommended an EMAIL tool — the highest-usage real provider catalog-wide —
 # because `need` never touched the ranking.
@@ -272,7 +272,7 @@ def test_agentpay_own_tools_rankable_never_factory_flagged():
     assert out["recommendation"]["url"] == "https://rival.x/t"
 
 
-# ── AGE-104: Solana in the sweep — discovery only ─────────────────────────────
+# ── Solana in the sweep — discovery only ─────────────────────────────
 # Solana listings are swept, filtered and ranked identically to Base, but the
 # Prober settles on Base only: every Solana pick carries the probe-coverage
 # flag, ready_to_pay passes the seller's accepts through as-is (the SDK cannot

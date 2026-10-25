@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-payer_depth.py — AGE-138 repeat-depth ranking (AGE-133 phase 0): pull the
+payer_depth.py repeat-depth ranking: pull the
 per-seller payer shape from Dune (tools/sql/payer_depth_x402.sql), write the
 calibration report, and (optionally) upsert `provider_depth` in Supabase so
 verified_route can weight payers by whether they came back.
@@ -11,7 +11,7 @@ Two sources, same output shape:
     (Merit-Systems/x402scan, open source): per-recipient transfers with the
     real payer (`public.transfers.list`, 30d, Base) + batched buyer stats
     (`public.buyers.all.list`: tx_count + unique_sellers → market-wide fanout).
-    Same denominator as the AGE-140 census v2 (facilitator-relayed USDC
+    Same denominator as the census v2 (facilitator-relayed USDC
     transfers; their registry IS our relayer list). Runs for the payTos we
     care about: Bazaar sweep ∪ service_probes ∪ our own ∪ --top N market head.
     ~2 requests per payTo, self-throttled. No account, no credits — Dune's
@@ -58,7 +58,7 @@ except ImportError:  # pragma: no cover
 OUR_PAYTO = "0xe8b25a72dd6aef69515452a61ad231c7df2843b7"   # AgentPay gateway (Base)
 NETWORK = "eip155:8453"
 
-# Calibration controls (AGE-133): host substrings → label. Cluster is the
+# Calibration controls: host substrings → label. Cluster is the
 # known-synthetic positive; ApiToll / Otto are credible organic. Extra ones via
 # --control label=0xaddress. Resolution is by Bazaar host when we can sweep.
 CONTROL_HOSTS = {
@@ -69,7 +69,7 @@ CONTROL_HOSTS = {
     "stableenrich": "StableEnrich",
 }
 # Off-catalog sellers we can name (public on x402scan; identified in the
-# AGE-140 census by payers/dollars). Same convention as radar.KNOWN_TRUSTED.
+# census by payers/dollars). Same convention as radar.KNOWN_TRUSTED.
 KNOWN_SELLERS = {
     "0xe9030014f5dae217d0a152f02a043567b16c1abf": "BlockRun",
     "0x68396bd35874695ad86cd29410bd80a550991a2b": "Cluster (synthetic)",
@@ -240,7 +240,7 @@ def x402scan_buyer_shape(senders: list[str], chain: str = "base") -> dict[str, d
 
 
 def payer_weight(legs_here: int, fanout: float) -> float:
-    """AGE-138 payer weight — identical to the CASE in payer_depth_x402.sql."""
+    """payer weight — identical to the CASE in payer_depth_x402.sql."""
     if legs_here >= 2:
         return 1.0
     return 0.2 + 0.8 * (1.0 - min(max(fanout, 0.0), 1.0))
@@ -322,7 +322,7 @@ def depth_from_x402scan(paytos: list[str], chain: str = "base", max_legs: int = 
     return rows
 
 
-# ── scoring preview (mirrors radar.decide() once AGE-138 lands) ──────────────
+# ── scoring preview (mirrors radar.decide() once it lands) ──────────────
 
 def score_multiplier(row: dict) -> float:
     """What the depth row does to a listing's usage score:
@@ -433,7 +433,7 @@ def report(depth: list[dict], names: dict[str, tuple[str, str]], known: set[str]
            "legs/payer 30d | top payer | score × |\n"
            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 
-    # resolvability — the weekly metric hook from AGE-138
+    # resolvability — the weekly metric hook from
     res_w = sum(1 for d in depth if d["pay_to"] in names or d["pay_to"] in known)
     res_usd = sum(d["usd"] for d in depth if d["pay_to"] in names or d["pay_to"] in known)
 

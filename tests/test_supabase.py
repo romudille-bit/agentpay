@@ -102,7 +102,7 @@ class TestReplayProtection:
 
     @pytest.mark.asyncio
     async def test_record_payment_id_5xx_fails_closed(self):
-        """AGE-60: Supabase is the PRIMARY replay store (in-memory dies on
+        """Supabase is the PRIMARY replay store (in-memory dies on
         every restart). A 5xx means the consume could NOT be confirmed —
         return None so callers reject retryably instead of authorizing a
         potentially-replayed payment."""
@@ -115,7 +115,7 @@ class TestReplayProtection:
 
     @pytest.mark.asyncio
     async def test_record_tx_hash_network_error_fails_closed(self):
-        """AGE-60: same for transport-level failures on the tx-hash side."""
+        """same for transport-level failures on the tx-hash side."""
         with respx.mock:
             respx.post(f"{SB}/rest/v1/replay_tx_hashes").mock(
                 side_effect=httpx.ConnectError("supabase down")
@@ -125,7 +125,7 @@ class TestReplayProtection:
 
     @pytest.mark.asyncio
     async def test_replay_store_sustained_failures_escalate(self, caplog):
-        """AGE-60: 3+ consecutive record_* failures log CRITICAL so a broken
+        """3+ consecutive record_* failures log CRITICAL so a broken
         table/RLS at cutover is loud, not silent."""
         import logging
         import gateway.services.supabase as sb_module
@@ -216,7 +216,7 @@ class TestPendingChallenges:
         # request_data is jsonb — passed as a dict, not a string
         assert captured["body"]["request_data"] == {"symbol": "ETH"}
 
-    # ── AGE-122: the mirror write retries once and reports honestly ────────
+    # ── the mirror write retries once and reports honestly ────────
 
     @staticmethod
     def _challenge_kwargs(**over):
@@ -234,7 +234,7 @@ class TestPendingChallenges:
 
     @pytest.mark.asyncio
     async def test_store_challenge_retries_once_after_timeout(self, monkeypatch, caplog):
-        """AGE-122 shape: first attempt times out (the observed prod failure
+        """shape: first attempt times out (the observed prod failure
         mode), the retry lands. No ERROR/WARNING, one INFO noting the retry."""
         import gateway.services.supabase as sb_module
         monkeypatch.setattr(sb_module, "_CHALLENGE_RETRY_DELAY", 0)
@@ -259,7 +259,7 @@ class TestPendingChallenges:
     async def test_store_challenge_both_attempts_fail_warns_with_blast_radius(self, monkeypatch, caplog):
         """Final failure is a WARNING (not ERROR) and states what is actually
         lost — the durable mirror — so log readers don't treat it as an
-        incident (AGE-122's original confusion)."""
+        incident."""
         import gateway.services.supabase as sb_module
         monkeypatch.setattr(sb_module, "_CHALLENGE_RETRY_DELAY", 0)
 
@@ -638,11 +638,11 @@ class TestRefundORM:
             new_count = await increment_refund_attempt("test-uuid")
 
         assert write_payload == {"refund_attempts": 4}
-        assert new_count == 4  # AGE-61: confirmed new total returned
+        assert new_count == 4  # confirmed new total returned
 
     @pytest.mark.asyncio
     async def test_increment_refund_attempt_read_blip_returns_none(self):
-        """AGE-61: a failed read must NOT default to current=0 (which reset
+        """a failed read must NOT default to current=0 (which reset
         the counter from e.g. 4 back to 1 and let the worker blow past the
         5-attempt cap — each attempt a real USDC send). It returns None and
         performs NO write."""
@@ -662,7 +662,7 @@ class TestRefundORM:
 
     @pytest.mark.asyncio
     async def test_increment_refund_attempt_missing_row_returns_none(self):
-        """AGE-61: an empty read (row gone/filtered) is also a hard stop."""
+        """an empty read (row gone/filtered) is also a hard stop."""
         with respx.mock:
             respx.get(f"{SB}/rest/v1/payment_logs").mock(
                 return_value=httpx.Response(200, json=[])
@@ -671,7 +671,7 @@ class TestRefundORM:
 
     @pytest.mark.asyncio
     async def test_increment_refund_attempt_failed_write_returns_none(self):
-        """AGE-61: an unconfirmed write must not authorize a send either."""
+        """an unconfirmed write must not authorize a send either."""
         with respx.mock:
             respx.get(f"{SB}/rest/v1/payment_logs").mock(
                 return_value=httpx.Response(200, json=[{"refund_attempts": 2}])
@@ -684,7 +684,7 @@ class TestRefundORM:
     @pytest.mark.asyncio
     async def test_mark_refund_done_uses_state_guard(self):
         """Terminal happy-path PATCH must filter to the in-flight states
-        (refund_sending from AGE-76's two-phase claim, refund_pending for
+        (refund_sending from's two-phase claim, refund_pending for
         pre-deploy rows) so it can't accidentally overwrite a refund_failed
         row (which would happen if a delayed worker comes back to a row
         we'd already given up on)."""
@@ -711,7 +711,7 @@ class TestRefundORM:
     @pytest.mark.asyncio
     async def test_mark_refund_failed_idempotent_via_in_filter(self):
         """The terminal-sad PATCH includes the in-flight states
-        ('refund_pending', 'refund_sending' — AGE-76 two-phase claim) AND
+        ('refund_pending', 'refund_sending' two-phase claim) AND
         'refund_failed' in its state filter so a second call to
         mark_refund_failed (e.g. a retry of the worker's give-up
         logic) lands as a no-op rather than a 0-row update. Otherwise
@@ -864,7 +864,7 @@ class TestSweepAbandonedPending:
 
     @pytest.mark.asyncio
     async def test_sweep_returns_count_from_content_range(self):
-        # AGE-75: count=exact + return=minimal — the affected count comes from
+        # count=exact + return=minimal — the affected count comes from
         # the Content-Range header, NOT an echoed body of every row.
         seen = {}
 
@@ -991,7 +991,7 @@ class TestCrossCutting:
     async def test_network_error_logs_but_does_not_raise(self):
         # httpx raises ConnectError on network failure. Our functions
         # must catch + log + return a safe value — for record_* that is
-        # None (AGE-60 fail-closed: consume unconfirmed), never a raise.
+        # None, never a raise.
         with respx.mock:
             respx.post(f"{SB}/rest/v1/replay_payment_ids").mock(
                 side_effect=httpx.ConnectError("dns fail")
@@ -1001,7 +1001,7 @@ class TestCrossCutting:
 
 
 class TestAge60FollowUps:
-    """Compensating rollback + cap-exhausted sweep (AGE-60/61 follow-ups)."""
+    """Compensating rollback + cap-exhausted sweep."""
 
     @pytest.mark.asyncio
     async def test_unrecord_tx_hash_deletes_by_composite_key(self):
@@ -1057,7 +1057,7 @@ class TestAge60FollowUps:
 
 
 class TestTwoPhaseRefundClaim:
-    """AGE-76: claim_refund_sending / release_refund_sending / list_refund_sending."""
+    """claim_refund_sending / release_refund_sending / list_refund_sending."""
 
     @pytest.mark.asyncio
     async def test_claim_confirmed_only_on_exactly_one_row(self):
@@ -1125,10 +1125,10 @@ class TestTwoPhaseRefundClaim:
         assert seen["params"]["state"] == "eq.refund_sending"
 
 
-# ── Tool registry persistence (AGE-71) ───────────────────────────────────────
+# ── Tool registry persistence ───────────────────────────────────────
 
 class TestPersistToolRegistration:
-    """AGE-71: runtime tool registrations must be pushed to Supabase so they
+    """runtime tool registrations must be pushed to Supabase so they
     survive the next restart (hydration already merges them back at boot)."""
 
     def _tool(self, **overrides):
@@ -1410,7 +1410,7 @@ class TestHydrationEndpointFallback:
     @pytest.mark.asyncio
     async def test_startup_warning_names_tools_with_blank_fields(
             self, monkeypatch, caplog):
-        """AGE-107 invariant: if a blank discovery field ever survives the
+        """invariant: if a blank discovery field ever survives the
         merge again, the boot log must say so — silence is how this shipped."""
         import logging
         import gateway.main as main_module
