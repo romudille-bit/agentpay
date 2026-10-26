@@ -982,10 +982,8 @@ async def _issue_402(
         ),
         # Structured options for multi-chain clients
         "payment_options": {
-            # Scheme named honestly: a classic Stellar payment with a text
-            # memo verified via Horizon, not the standard @x402/stellar
-            # Soroban scheme. Standard @x402/stellar clients cannot pay this
-            # option; the AgentPay SDK and manual payments can.
+            # Classic payment + memo for the AgentPay SDK and manual payers;
+            # standard @x402/stellar clients take the stellar:* accepts entry.
             "stellar": {
                 "scheme":      "agentpay-classic-memo",
                 "payment_id":  challenge.payment_id,
@@ -998,9 +996,9 @@ async def _issue_402(
                 "note": (
                     "Classic Stellar payment + text memo (the payment_id's "
                     "first 28 bytes, which is all a text memo holds), verified "
-                    "via Horizon — not the standard @x402/stellar Soroban "
-                    "scheme. Pay with the AgentPay SDK (pip install "
-                    "agentpay-x402) or manually per instructions."
+                    "via Horizon, for the AgentPay SDK (pip install "
+                    "agentpay-x402) or a manual payment. Standard "
+                    "@x402/stellar clients use the exact entry in accepts[]."
                 ),
             },
             **({"base": base_option} if base_option else {}),

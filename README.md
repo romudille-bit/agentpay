@@ -331,13 +331,13 @@ AgentPay is an x402 payment gateway and economic intelligence layer — agents c
 CDP facilitator) — **any standard x402 client can pay AgentPay on Base**, no AgentPay
 SDK required.
 
-**Stellar** settles as a **classic payment + text memo** verified directly on Horizon.
-It is supported by the AgentPay SDK (`pip install agentpay-x402`) and by manual
-payment per the 402 instructions — but it is **not** the standard `@x402/stellar`
-scheme (which uses Soroban null-account templates, signed auth entries, and
-facilitator settlement). A standard `@x402/stellar` client cannot pay AgentPay's
-Stellar rail today; migrating to the standard Soroban scheme is on the v2 roadmap.
-Standard clients should pay on Base — Circle CCTP bridges USDC 1:1 between the two.
+**Stellar** settles via the standard x402 `exact` scheme too: Soroban USDC, auth
+entries signed by the payer, verified and submitted by the Built on Stellar
+(OpenZeppelin) facilitator with the network fee sponsored — **any standard
+`@x402/stellar` client can pay AgentPay on Stellar** (see
+`docs/stellar-standard-scheme.md`). The AgentPay SDK (`pip install agentpay-x402`)
+and manual payers can also use the classic payment + text memo path, verified
+directly on Horizon. Circle CCTP bridges USDC 1:1 between Stellar and Base.
 
 ```
 agent (Python SDK)

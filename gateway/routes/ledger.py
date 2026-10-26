@@ -1002,9 +1002,9 @@ _LEDGER_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgentPay — How an Agent Decides What to Spend</title>
-<meta name="description" content="The public receipt ledger: autonomous agents running on AgentPay daily under hard budget caps, with a verifiable on-chain receipt for every paid call. Plans, spend, and reasoning — live.">
+<meta name="description" content="The public receipt ledger: an autonomous agent running on AgentPay daily, with a verifiable on-chain receipt for every paid call and a session cap on every run. Plans, spend, and reasoning — live.">
 <meta property="og:title" content="AgentPay Receipt Ledger — how an agent decides what to spend">
-<meta property="og:description" content="Autonomous agents spending real USDC and sBTC under hard caps, leaving on-chain receipts. Live and public.">
+<meta property="og:description" content="An autonomous agent spending real USDC and sBTC under a session cap, leaving on-chain receipts. Live and public.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://agentpay.tools/ledger">
 <meta property="og:image" content="https://agentpay.tools/og.png">
@@ -1121,8 +1121,8 @@ capital the strategy trades.</p>
 
 <p class="foot">
   Each run is one decision cycle. Paid calls are real settlements — USDC on
-  Base or sBTC on Stacks, each linked to its explorer; free intel calls settle
-  $0 on Stellar but still produce a receipt. Source of truth: the durable <code>payment_logs</code> +
+  Base or Stellar, sBTC on Stacks — each linked to its explorer; free intel
+  calls settle $0 but still produce a receipt. Source of truth: the durable <code>payment_logs</code> +
   <code>flagship_runs</code> ledger.<br>
   <a href="/ledger.json">/ledger.json</a> · <a href="https://github.com/romudille-bit/agentpay">github.com/romudille-bit/agentpay</a>
 </p>
