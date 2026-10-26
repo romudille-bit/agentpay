@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     STELLAR_FACILITATOR_URL: str = "https://channels.openzeppelin.com/x402"
     STELLAR_FACILITATOR_ENABLED: bool = False
 
+    # Standard x402 `exact` on Stellar (Soroban USDC, payer-signed auth
+    # entries, settled by the facilitator). Off until a key is configured;
+    # the classic payment+memo rail is unaffected. docs/stellar-standard-scheme.md
+    STELLAR_STANDARD_CLIENTS: bool = False
+    STELLAR_FACILITATOR_API_KEY: str = ""
+    STELLAR_FACILITATOR_TESTNET_URL: str = "https://channels.openzeppelin.com/x402/testnet"
+    STELLAR_FACILITATOR_TIMEOUT_S: float = 45.0
+    STELLAR_USDC_SAC: str = ""               # override of the per-network USDC contract id
+    STELLAR_MAX_TIMEOUT_S: int = 300
+
     # ── Stacks / sBTC settlement ────────────────────────────────────────────
     # Inert by default: with STACKS_ENABLED false (or no gateway address) the
     # 402 never offers a stacks option and the settle path 503s.

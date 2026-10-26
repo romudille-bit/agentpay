@@ -13,6 +13,8 @@ four stages, each its own function:
   _issue_402         — no payment header → 402 with Stellar + Base options
   _settle_stellar    — X-Payment header → verify Stellar tx
   _settle_base_path  — PAYMENT-SIGNATURE header → settle Base (CDP / JSON-RPC)
+  _settle_stellar_standard_path — PAYMENT-SIGNATURE with a stellar:* payload →
+                       verify + settle through the Stellar facilitator
   _settle_free_v2    — PAYMENT-SIGNATURE on a $0 tool → accept standard x402
                        payload as the free proof, no on-chain settlement
   _execute_and_log   — run the tool, write the payment lifecycle, build response
@@ -43,6 +45,7 @@ from decimal import Decimal
 
 from gateway import base as base_pay
 from gateway import stacks as stacks_pay
+from gateway import stellar_x402
 from gateway._limiter import limiter, wallet_or_ip
 from gateway.config import GATEWAY_URL, settings
 from gateway.services.supabase import (
@@ -927,6 +930,18 @@ async def _issue_402(
             payment_required_header, entry, resource_url, tool.description,
         )
 
+    # Standard Stellar entry last; a stock @x402/stellar client cannot sign a
+    # $0 transfer, so free tools keep the free-proof path only.
+    stellar_entries = []
+    if stellar_x402.configured() and not is_free:
+        stellar_entries.append(base_pay.build_accepts_entry(
+            stellar_x402.payment_requirements(tool.price_usdc, resource_url, tool.description),
+            resource_url, tool.description,
+        ))
+        payment_required_header = _append_accepts_to_header(
+            payment_required_header, stellar_entries[0], resource_url, tool.description,
+        )
+
     headers = build_402_headers(challenge)
     if payment_required_header:
         headers["PAYMENT-REQUIRED"] = payment_required_header
@@ -946,7 +961,7 @@ async def _issue_402(
         "resource":    resource_block,
         # Standard x402 accepts[] in the body (not just the PAYMENT-REQUIRED
         # header) so generic payers find the Base path.
-        "accepts":     ([accepts_entry] if accepts_entry else []) + stacks_entries,
+        "accepts":     ([accepts_entry] if accepts_entry else []) + stacks_entries + stellar_entries,
         # Stellar option (backward-compatible top-level fields)
         "payment_id":  challenge.payment_id,
         "amount_usdc": challenge.amount_usdc,
@@ -1190,6 +1205,98 @@ async def _settle_base_path(
         "tx_hash":    result["tx_hash"],
         "payer":      result["payer"],
         "network":    result["network"],
+        "session":    hold,
+    }
+
+
+def _stellar_reject(reason: str, status: int = 402) -> JSONResponse:
+    return JSONResponse(
+        status_code=status,
+        content={"error": "Stellar payment settlement failed",
+                 "payment_status": "rejected", "error_reason": reason},
+    )
+
+
+def _stellar_uncertain(reason: str, tx_hash: str = "") -> JSONResponse:
+    return JSONResponse(status_code=503, content={
+        "error": "Stellar settlement uncertain",
+        "payment_status": "uncertain",
+        "error_reason": reason,
+        "tx_hash": tx_hash,
+        "redeem": "do not sign a new payment; retry with the same payment-signature",
+    })
+
+
+async def _settle_stellar_standard_path(
+    tool, tool_name: str, payload: dict, resource_url: str,
+) -> Union[dict, JSONResponse]:
+    """Standard stellar:* payload → facilitator /verify, session hold, /settle.
+
+    The facilitator enforces amount, recipient, asset and auth-entry expiry
+    (specs/schemes/exact/scheme_exact_stellar.md); the gateway binds the
+    session to the verified payer and consumes the settled tx hash.
+    """
+    if not stellar_x402.configured():
+        raise HTTPException(status_code=503,
+                            detail="Stellar standard scheme not configured on this gateway")
+    requirements = stellar_x402.payment_requirements(
+        tool.price_usdc, resource_url, tool.description)
+    if stellar_x402.payload_network(payload) != requirements["network"]:
+        return _stellar_reject("network_mismatch")
+
+    logger.info(f"[PAYMENT] tool={tool_name} network=stellar verifying standard payment-signature")
+    vr = await stellar_x402.verify(payload, requirements)
+    if not vr["ok"]:
+        logger.info(f"[PAYMENT] tool={tool_name} network=stellar status=FAILED reason={vr['reason']}")
+        return _stellar_reject(vr["reason"], status=503 if vr["unavailable"] else 402)
+    payer = vr["payer"]
+
+    hold = None
+    creating = ""
+    if sessions.is_session_tool(tool):
+        dup = await sessions.refuse_duplicate_create(payer)
+        if dup is not None:
+            return JSONResponse(status_code=402, content={
+                **dup, "payment_status": "rejected", "error_reason": dup.get("reason", "")})
+        creating = payer
+    else:
+        hold = await sessions.reserve(payer, str(tool.price_usdc or "0"),
+                                     stellar_x402.network_label())
+        if hold is not None and hold.refused:
+            return JSONResponse(status_code=402, content={
+                **sessions.refusal_body(hold, tool_name),
+                "payment_status": "rejected", "error_reason": hold.refused})
+
+    async def _give_back():
+        await sessions.release(hold)
+        if creating:
+            sessions.abandon_create(creating)
+
+    try:
+        settle = await stellar_x402.settle(payload, requirements)
+    except BaseException:
+        await _give_back()
+        raise
+    if not settle["success"]:
+        status = "REPLAY_ATTACK" if settle["reason"] == "replay_attack" else "FAILED"
+        logger.info(f"[PAYMENT] tool={tool_name} network=stellar status={status} "
+                    f"reason={settle['reason']}")
+        if settle["uncertain"]:
+            # The hold stays: the transfer may be live and the same payload
+            # is the only thing that can prove it.
+            return _stellar_uncertain(settle["reason"], settle["tx_hash"])
+        await _give_back()
+        return _stellar_reject(settle["reason"])
+    if settle["payer"] != payer:
+        logger.warning(f"[PAYMENT] network=stellar settle payer {settle['payer'][:8]} "
+                       f"!= verified payer {payer[:8]}")
+    logger.info(f"[PAYMENT] tool={tool_name} network=stellar agent={payer[:8]}... "
+                f"status=OK tx={settle['tx_hash'][:16]}")
+    return {
+        "authorized": True,
+        "tx_hash":    settle["tx_hash"],
+        "payer":      settle["payer"] or payer,
+        "network":    stellar_x402.network_label(),
         "session":    hold,
     }
 
@@ -1909,7 +2016,15 @@ async def call_tool(
                            if settings.STACKS_STANDARD_CLIENTS
                            else str(_ps_payload.get("network") or ""))
         _is_stacks = not _is_free_tool and _ps_network.startswith("stacks")
-        if _is_stacks:
+        _is_stellar = (not _is_free_tool and isinstance(_ps_payload, dict)
+                       and stellar_x402.is_standard_payload(_ps_payload))
+        if _is_stellar:
+            auth = await _settle_stellar_standard_path(
+                tool, tool_name, _ps_payload, resource_url)
+            if isinstance(auth, JSONResponse):
+                return auth
+            agent_address = auth["payer"] or agent_address
+        elif _is_stacks:
             auth = await _settle_stacks_path(tool, tool_name, payment_signature,
                                              _ps_payload, parameters=body.parameters)
             if isinstance(auth, JSONResponse):
