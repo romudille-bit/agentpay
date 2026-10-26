@@ -258,7 +258,7 @@ def probe_paid(session, cand: dict, max_probe: Decimal | None = None) -> dict:
         # eip155:43114). Unmet demand on an unsupported chain, NOT a delivery
         # failure — record the chain (authoritative, from the live 402) and
         # mark the row unscoreable so it never enters delivery_rate or the
-        # FATAL 0/N denominator. Surfaced as a grant signal by.
+        # FATAL 0/N denominator. Surfaced as a discovery signal.
         latency_ms = int((time.monotonic() - t0) * 1000)
         _chains = list(getattr(e, "offered_networks", None) or [])
         return _probe_row(
@@ -518,7 +518,7 @@ def main() -> int:
 
     # sellers that only settle on chains we can't (e.g. Avalanche
     # eip155:43114) are recorded, never scored. Surface them as unmet demand —
-    # a discovery/grant signal (persisted + shown on /probes by).
+    # a discovery signal (persisted + shown on /probes).
     _unsupported = [r for r in paid_rows if r.get("unsupported_chain")]
     if _unsupported:
         _uchains = sorted({c for r in _unsupported for c in r["unsupported_chain"]})

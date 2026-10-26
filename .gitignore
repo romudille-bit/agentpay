@@ -118,7 +118,7 @@ strategy_spec_latest.json
 SUBMISSION_BNB.md
 SUBMISSION_BNB.docx
 
-# Held for pre-publish review — see Linear
+# Held for pre-publish review
 examples/README.md
 
 # ── Local working files — never commit (Drive-only docs + local scratch) ──
@@ -185,8 +185,7 @@ tools/age128-repro/
 # Provider keypairs for directory claims (x402-trust.com etc.) — never commit
 keys/
 
-# Local one-offs and grant evidence (never commit)
-stacks M2 - files/
+# Local one-offs (never commit)
 run_tests.sh
 tools/settle_evidence.py
 

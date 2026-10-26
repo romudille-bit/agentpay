@@ -20,8 +20,7 @@ Each is `SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::transfer`
 result `(ok true)`. Explorer:
 `https://explorer.hiro.so/txid/0x<txid>?chain=mainnet`.
 
-The over-cap refusal (Endowment's four-point interpretation, confirmed
-2026-07-14) is in block 2 of every run: (a) the attempted call
+The over-cap refusal is in block 2 of every run: (a) the attempted call
 `pre_trade_check`, (b) the configured per-tool cap $0.005, (c) the
 rejection `BudgetExceeded`, (d) `calls: 0 / spent: $0` — no settlement.
 

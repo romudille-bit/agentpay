@@ -1617,7 +1617,7 @@ async def _ptc_stacks_token(symbol: str, raw: str) -> dict | None:
 
 def _ptc_security(sec: dict | None) -> dict:
     if sec is None:
-        # Pre- sentinel — kept for tolerance, but _fetch_pre_trade_check
+        # Legacy sentinel — kept for tolerance, but _fetch_pre_trade_check
         # no longer produces it: every path now yields ran / n/a / unknown.
         return {"level": "skipped", "reason": "no token_address provided"}
     if sec.get("error"):

@@ -549,6 +549,11 @@ def _validate_config() -> None:
     wallet keys would advertise an empty pay_to on every 402 and fail every
     split/refund. Refuse to boot instead.
     """
+    # After a signer rotation the secret no longer derives the account id,
+    # so the public key is required wherever a secret is configured.
+    if settings.GATEWAY_SECRET_KEY and not settings.GATEWAY_PUBLIC_KEY:
+        raise RuntimeError("GATEWAY_SECRET_KEY is set but GATEWAY_PUBLIC_KEY is not — "
+                           "the gateway loads its account from the public key.")
     if settings.STELLAR_NETWORK != "mainnet":
         return
     missing = [k for k in ("GATEWAY_PUBLIC_KEY", "GATEWAY_SECRET_KEY")

@@ -174,6 +174,16 @@ class TestValidateConfig:
         monkeypatch.setattr(gw_main.settings, "GATEWAY_SECRET_KEY", "")
         gw_main._validate_config()  # no raise
 
+    def test_secret_without_public_key_refuses_boot_on_any_network(self, monkeypatch):
+        # After a signer rotation the secret no longer derives the account id.
+        from gateway import main as gw_main
+        monkeypatch.setattr(gw_main.settings, "STELLAR_NETWORK", "testnet")
+        monkeypatch.setattr(gw_main.settings, "GATEWAY_PUBLIC_KEY", "")
+        monkeypatch.setattr(gw_main.settings, "GATEWAY_SECRET_KEY", "S" + "A" * 55)
+        import pytest as _pytest
+        with _pytest.raises(RuntimeError, match="GATEWAY_PUBLIC_KEY"):
+            gw_main._validate_config()
+
     def test_mainnet_with_keys_boots(self, monkeypatch):
         from gateway import main as gw_main
         monkeypatch.setattr(gw_main.settings, "STELLAR_NETWORK", "mainnet")

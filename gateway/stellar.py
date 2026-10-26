@@ -362,7 +362,7 @@ async def split_payment(
             # Re-load the account inside the loop: a retry after a failed submit
             # needs a fresh sequence number, otherwise it'd fail with tx_bad_seq.
             gateway_account = await asyncio.to_thread(
-                server.load_account, settings.GATEWAY_PUBLIC_KEY or gateway_keypair.public_key
+                server.load_account, settings.GATEWAY_PUBLIC_KEY
             )
 
             tx = (
@@ -496,7 +496,7 @@ async def send_refund(
 
     try:
         gateway_account = await asyncio.to_thread(
-            server.load_account, settings.GATEWAY_PUBLIC_KEY or gateway_keypair.public_key
+            server.load_account, settings.GATEWAY_PUBLIC_KEY
         )
 
         tx = (

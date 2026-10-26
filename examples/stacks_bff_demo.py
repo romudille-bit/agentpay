@@ -37,10 +37,14 @@ def pago():
     print("tope de sesión: $" + str(s.max_spend), "| pagando pre_trade_check en sBTC ...")
     r = s.call("pre_trade_check", PARAMS)
     liq = r.data["factors"]["liquidity"]
-    print("veredicto:", r.data["verdict"], "| venue:", r.data["venue"], "| no medido:", ", ".join(r.data["not_checked"]))
-    print("Bitflow:", liq["reason"], "| ruta:", " → ".join(c.split(".")[-1] for c in liq["route"]))
-    for pool in liq["pools"]:
-        print(f"  pool {pool['pool_id']}: TVL ${pool['tvl_usd']:,.0f} | volumen 24h ${pool['volume_usd_1d']:,.0f}")
+    print("veredicto:", r.data["verdict"], "| venue:", r.data["venue"], "| no medido:", ", ".join(r.data.get("not_checked", [])) or "-")
+    print("Bitflow:", liq["reason"])
+    if liq.get("route"):   # solo cuando Bitflow cotizó la ruta
+        print("  ruta:", " → ".join(c.split(".")[-1] for c in liq["route"]))
+    for pool in liq.get("pools", []):
+        tvl, vol = pool.get("tvl_usd"), pool.get("volume_usd_1d")
+        print(f"  pool {pool['pool_id']}: TVL " + (f"${tvl:,.0f}" if tvl is not None else "n/d")
+              + " | volumen 24h " + (f"${vol:,.0f}" if vol is not None else "n/d"))
     print("tx: https://explorer.hiro.so/txid/0x" + r.tx + "?chain=mainnet")
     print(s.spending_summary())
 

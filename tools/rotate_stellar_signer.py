@@ -8,8 +8,10 @@ and listings stay the same; only GATEWAY_SECRET_KEY changes.
     python tools/rotate_stellar_signer.py --network mainnet
 
 Run locally. Reads GATEWAY_SECRET_KEY from env or prompts; prints the new
-secret once, writes nothing to disk. Needs the gateway to load its account
-from settings.GATEWAY_PUBLIC_KEY (stellar.py / faucet.py), not from the secret.
+secret once, writes nothing to disk. --dry-run only inspects the account and
+describes the ops; nothing is signed, so nothing printed can be submitted.
+Needs the gateway to load its account from settings.GATEWAY_PUBLIC_KEY
+(stellar.py / faucet.py), not from the secret.
 """
 import argparse
 import getpass
@@ -41,7 +43,7 @@ def describe(server: Server, account_id: str) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--network", choices=list(HORIZON), required=True)
-    ap.add_argument("--dry-run", action="store_true", help="build + sign, print XDR, do not submit")
+    ap.add_argument("--dry-run", action="store_true", help="inspect the account and describe the ops; sign nothing")
     args = ap.parse_args()
 
     old_secret = os.environ.get("GATEWAY_SECRET_KEY") or getpass.getpass(
@@ -72,8 +74,25 @@ def main() -> int:
         if input("Continue anyway? [y/N] ").strip().lower() != "y":
             return 1
 
+    if args.dry_run:
+        print("\n[dry-run] would submit one tx from this account: add a fresh ed25519 "
+              "signer (weight 1), set master weight 0, thresholds 1/1/1. Nothing signed.")
+        return 0
+
     new = Keypair.random()
 
+    # Show the new secret BEFORE building or submitting. Once the tx lands the
+    # old key is dead; losing the new secret would lock the account forever.
+    print(f"\nNew signer: {new.public_key}")
+    print("\n" + "=" * 72)
+    print("SAVE THIS NOW (password manager), then confirm below:")
+    print(f"GATEWAY_SECRET_KEY (NEW)       : {new.secret}")
+    print("=" * 72)
+    if input("Type the last 4 characters of the new secret to confirm it is saved: ").strip() != new.secret[-4:]:
+        print("Mismatch — nothing submitted. Old key still active.", file=sys.stderr)
+        return 1
+
+    # Build after the confirm so the time bound starts now, not during it.
     account = server.load_account(old.public_key)
     tx = (
         TransactionBuilder(
@@ -83,27 +102,10 @@ def main() -> int:
         )
         .append_set_options_op(signer=Signer.ed25519_public_key(new.public_key, 1))
         .append_set_options_op(master_weight=0, low_threshold=1, med_threshold=1, high_threshold=1)
-        .set_timeout(120)
+        .set_timeout(300)
         .build()
     )
     tx.sign(old)
-
-    print(f"\nNew signer: {new.public_key}")
-    if args.dry_run:
-        print("\n[dry-run] signed XDR (not submitted):\n")
-        print(tx.to_xdr())
-        print("\nNew secret NOT shown in dry-run. Re-run without --dry-run to rotate.")
-        return 0
-
-    # Show the new secret BEFORE submitting. Once the tx lands the old key is
-    # dead; losing the new secret would lock the account forever.
-    print("\n" + "=" * 72)
-    print("SAVE THIS NOW (password manager), then confirm below:")
-    print(f"GATEWAY_SECRET_KEY (NEW)       : {new.secret}")
-    print("=" * 72)
-    if input(f"Type the last 4 characters of the new secret to confirm it is saved: ").strip() != new.secret[-4:]:
-        print("Mismatch — nothing submitted. Old key still active.", file=sys.stderr)
-        return 1
 
     print("\nSubmitting...")
     resp = server.submit_transaction(tx)

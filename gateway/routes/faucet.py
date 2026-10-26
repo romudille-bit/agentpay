@@ -113,7 +113,7 @@ async def _provision_wallet(base_url: str) -> dict:
     logger.info(f"[FAUCET] step=4/5 checking gateway balance and sending 0.05 USDC")
     gateway_keypair = Keypair.from_secret(settings.GATEWAY_SECRET_KEY)
     from gateway.stellar import get_usdc_balance
-    raw_balance = await get_usdc_balance(settings.GATEWAY_PUBLIC_KEY or gateway_keypair.public_key)
+    raw_balance = await get_usdc_balance(settings.GATEWAY_PUBLIC_KEY)
     if raw_balance is None:
         # Unknown balance (Horizon unreachable) is not the same as empty.
         raise HTTPException(
@@ -130,7 +130,7 @@ async def _provision_wallet(base_url: str) -> dict:
             ),
         )
     gateway_account = await asyncio.to_thread(
-        server.load_account, settings.GATEWAY_PUBLIC_KEY or gateway_keypair.public_key
+        server.load_account, settings.GATEWAY_PUBLIC_KEY
     )
     pay_tx = (
         TransactionBuilder(
