@@ -25,7 +25,7 @@ const CALL = ["/tools/pre_trade_check/call", { parameters: { symbol: "BTC", side
 
 if (!SECRET) { console.error("STELLAR_PAYER_SECRET is required"); process.exit(2); }
 const signer = createEd25519Signer(SECRET, NETWORK);
-const rpcConfig = process.env.STELLAR_RPC_URL ? { rpcUrl: process.env.STELLAR_RPC_URL } : undefined;
+const rpcConfig = process.env.STELLAR_RPC_URL ? { url: process.env.STELLAR_RPC_URL } : undefined;
 const fetchWithPayment = wrapFetchWithPaymentFromConfig(fetch, {
   schemes: [{ network: NETWORK, client: new ExactStellarScheme(signer, rpcConfig) }],
 });

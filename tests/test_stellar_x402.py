@@ -332,3 +332,64 @@ class Test402Entry:
         monkeypatch.setattr(settings, "STELLAR_STANDARD_CLIENTS", False)
         r = client.post("/tools/pre_trade_check/call", json={"parameters": {"symbol": "ETH"}})
         assert not [e for e in r.json()["accepts"] if e["network"].startswith("stellar:")]
+
+
+# ── session_create + discovery surfaces ──────────────────────────────────────
+
+
+class TestSessionAndDiscovery:
+    def test_session_402_advertises_stellar_after_base(self, client, monkeypatch):
+        import gateway.routes.session as rs
+        monkeypatch.setattr(rs.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        r = client.get("/v1/session/create")
+        assert r.status_code == 402
+        body = r.json()["accepts"]
+        hdr = json.loads(base64.b64decode(r.headers["PAYMENT-REQUIRED"]))["accepts"]
+        assert [e["network"] for e in body] == ["eip155:8453", "stellar:testnet"]
+        assert [e["network"] for e in hdr] == ["eip155:8453", "stellar:testnet"]
+        assert body[1]["amount"] == "100000" and body[1]["payTo"] == GW
+        # Bazaar still reads the Base entry at index 0 with its extension.
+        assert "bazaar" in r.json()["extensions"]
+
+    def test_session_402_without_base_leads_with_stellar_entry(self, client, monkeypatch):
+        import gateway.routes.session as rs
+        monkeypatch.setattr(rs.settings, "BASE_GATEWAY_ADDRESS", "")
+        r = client.get("/v1/session/create")
+        assert [e["network"] for e in r.json()["accepts"]] == ["stellar:testnet"]
+        assert "PAYMENT-REQUIRED" in r.headers
+
+    def test_session_create_settles_a_standard_stellar_payload(self, client, monkeypatch):
+        import gateway.routes.session as rs
+        monkeypatch.setattr(rs.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        sig = base64.b64encode(json.dumps(_payload()).encode()).decode()
+        with respx.mock:
+            v, s = _verify_ok(), _settle_ok()
+            r = client.post("/v1/session/create",
+                            json={"max_spend_usdc": "0.10"},
+                            headers={"PAYMENT-SIGNATURE": sig})
+        assert r.status_code == 200, r.text
+        assert v.called and s.called
+        body = r.json()
+        assert body.get("session_id")
+        assert (body.get("receipt") or body.get("payment") or {}).get("tx_hash") == TX
+
+    def test_well_known_x402_lists_exact_on_stellar(self, client):
+        r = client.get("/.well-known/x402")
+        schemes = [(a["scheme"], a["network"]) for a in r.json()["accepts"]]
+        assert ("exact", "stellar:testnet") in schemes
+        assert ("agentpay-classic-memo", "stellar:testnet") in schemes
+        assert schemes.index(("exact", "stellar:testnet")) < schemes.index(("agentpay-classic-memo", "stellar:testnet"))
+
+    def test_well_known_x402_hides_exact_when_off(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "STELLAR_STANDARD_CLIENTS", False)
+        r = client.get("/.well-known/x402")
+        assert ("exact", "stellar:testnet") not in [(a["scheme"], a["network"]) for a in r.json()["accepts"]]
+
+    def test_manifest_primary_network_is_base_when_configured(self, client, monkeypatch):
+        import gateway.routes.discovery as rd
+        monkeypatch.setattr(rd.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        m = client.get("/.well-known/agentpay.json").json()
+        assert m["payment_network"].startswith("eip155:")
+        assert [n["via"] for n in m["payment_networks"][:2]] == ["x402-exact", "x402-exact"]
+        monkeypatch.setattr(rd.settings, "BASE_GATEWAY_ADDRESS", "")
+        assert client.get("/.well-known/agentpay.json").json()["payment_network"] == "stellar:testnet"

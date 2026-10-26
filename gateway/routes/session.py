@@ -3,7 +3,8 @@ routes/session.py — Session creation endpoint.
 
   POST /v1/session/create — Register a budget-capped agent session.
                             Priced at $0.01 USDC via x402 (Base = standard
-                            x402 `exact`; Stellar = classic payment + memo
+                            x402 `exact`; Stellar = standard x402 `exact`
+                            via the facilitator, or classic payment + memo
                             via the AgentPay SDK).
                             Returns session_id + budget config.
                             Indexed on Base Bazaar via CDP Facilitator.
@@ -26,7 +27,9 @@ from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+import registry
 from gateway import base as base_pay
+from gateway import stellar_x402
 from gateway._limiter import limiter
 from gateway.config import GATEWAY_URL, settings
 from gateway.services import probe_rollup
@@ -179,6 +182,15 @@ class SessionCreateRequest(BaseModel):
 
 # ── 402 challenge builder (shared by POST no-payment branch + GET probe) ──────
 
+def _decoded_signature(header: str) -> dict:
+    payload, _ = base_pay._decode_payment_signature(header)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _is_stellar_standard(header: str) -> bool:
+    return stellar_x402.is_standard_payload(_decoded_signature(header))
+
+
 def _session_402_payload(challenge) -> tuple[dict, dict]:
     """
     Build the (content, headers) for a session_create 402 challenge.
@@ -232,16 +244,26 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
             description=_SESSION_DESCRIPTION,
         )
 
+    # Standard Stellar entry after Base (index 0 is what Bazaar reads).
+    stellar_entries = []
+    if stellar_x402.configured():
+        from gateway.routes.tools import _append_accepts_to_header
+        stellar_entries.append(base_pay.build_accepts_entry(
+            requirements=stellar_x402.payment_requirements(
+                SESSION_PRICE_USDC, resource_url, _SESSION_DESCRIPTION),
+            resource_url=resource_url,
+            description=_SESSION_DESCRIPTION,
+        ))
+        payment_required_header = _append_accepts_to_header(
+            payment_required_header, stellar_entries[0], resource_url, _SESSION_DESCRIPTION,
+        )
+
     headers = build_402_headers(challenge)
     if payment_required_header:
         headers["PAYMENT-REQUIRED"] = payment_required_header
 
-    # Stellar option (always available as a fallback / secondary chain).
-    # The scheme name and note are deliberately explicit: this is a classic
-    # Stellar payment with a text memo verified via Horizon, not the standard
-    # @x402/stellar Soroban scheme (null-account template + signed auth
-    # entries + facilitator settlement). A standard @x402/stellar client
-    # cannot pay this option; the AgentPay SDK and manual payments can.
+    # Classic payment + memo for the AgentPay SDK and manual payers; standard
+    # @x402/stellar clients take the stellar:* accepts entry instead.
     stellar_option = {
         "scheme":      "agentpay-classic-memo",
         "payment_id":  challenge.payment_id,
@@ -252,9 +274,9 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
         "header":      f"X-Payment: tx_hash=<hash>,from=<addr>,id={challenge.payment_id}",
         "note": (
             "Classic Stellar payment + text memo (payment_id), verified via "
-            "Horizon — not the standard @x402/stellar Soroban scheme. Pay "
-            "with the AgentPay SDK (pip install agentpay-x402) or manually "
-            "per instructions."
+            "Horizon, for the AgentPay SDK (pip install agentpay-x402) or a "
+            "manual payment. Standard @x402/stellar clients use the exact "
+            "entry in accepts[] instead."
         ),
     }
     stellar_instructions = (
@@ -275,7 +297,7 @@ def _session_402_payload(challenge) -> tuple[dict, dict]:
         ),
         # Standard x402 accepts[] in the body (not just the PAYMENT-REQUIRED
         # header) so generic payers find the Base path.
-        "accepts":     [accepts_entry] if accepts_entry else [],
+        "accepts":     ([accepts_entry] if accepts_entry else []) + stellar_entries,
         # extensions.bazaar mirrored for body/header parity (additive).
         "extensions":  {"bazaar": _SESSION_BAZAAR_EXTENSION},
     }
@@ -478,7 +500,19 @@ async def create_session(
         # No 'verified' PATCH here — no pending row exists; the state='verified'
         # row is INSERTed below (Step 3) for every settle, Stellar included.
 
-    # ── Step 2b: Base/EVM payment ─────────────────────────────────────────────
+    # ── Step 2b: standard Stellar payment ─────────────────────────────────────
+    elif payment_signature and _is_stellar_standard(payment_signature):
+        from gateway.routes.tools import _settle_stellar_standard_path
+        logger.info("[SESSION] verifying standard Stellar PAYMENT-SIGNATURE")
+        auth = await _settle_stellar_standard_path(
+            registry.get_tool(SESSION_TOOL_NAME), SESSION_TOOL_NAME,
+            _decoded_signature(payment_signature), resource_url)
+        if isinstance(auth, JSONResponse):
+            return auth
+        agent_address = auth["payer"] or agent_address
+        logger.info(f"[SESSION] stellar OK payer={auth['payer'][:8]}... tx={auth['tx_hash'][:16]}")
+
+    # ── Step 2c: Base/EVM payment ─────────────────────────────────────────────
     elif payment_signature:
         if not settings.BASE_GATEWAY_ADDRESS:
             raise HTTPException(status_code=503, detail="Base payment not configured on this gateway")

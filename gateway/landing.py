@@ -23,7 +23,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="talentapp:project_verification" content="66b96b96aeaf7290a818df11aeb312fcb16df2354b18a06a97ead06556829383a1e1831fc259cc5e6b34a8a83c6af2a13f3bae5035d1a2b6822769fc4cb90989">
 <title>AgentPay — the economic intelligence layer for AI agents</title>
-<meta name="description" content="AgentPay is the economic intelligence layer for MCP servers and AI agents. Hard budget caps enforced at the payment layer. Cost awareness before every call. Full session receipts. 20 tools, 17 free.">
+<meta name="description" content="AgentPay is the trust layer for AI agents that pay per call: verified delivery before the payment, a capped session during it, and a receipt the agent holds after. 20 x402 tools, 17 free. USDC on Base or Stellar from any standard x402 client.">
 <meta property="og:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
 <meta property="og:description" content="Agents spend money. Most don't know how much until the session ends. AgentPay gives agents the ability to reason about cost while they work, not after.">
 <meta property="og:url" content="GATEWAY_URL_PLACEHOLDER">
@@ -35,7 +35,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="GATEWAY_URL_PLACEHOLDER/og.png">
 <meta name="twitter:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
-<meta name="twitter:description" content="Hard budget caps, cost awareness before every call, on-chain receipts. 20 x402 tools, 17 free. Public delivery scores for the whole x402 market.">
+<meta name="twitter:description" content="Verified delivery, capped sessions, on-chain receipts. 20 x402 tools, 17 free, payable by any standard x402 client on Base or Stellar. Public delivery scores for the whole x402 market.">
 <link rel="canonical" href="GATEWAY_URL_PLACEHOLDER">
 <script type="application/ld+json">
 {
@@ -45,7 +45,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
   "url": "GATEWAY_URL_PLACEHOLDER",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Web",
-  "description": "The economic intelligence layer for MCP servers and AI agents: x402 payment gateway with hard budget caps, pre-flight plan pricing, on-chain receipts, and public delivery scores for the x402 marketplace. USDC on Base (standard x402) and Stellar, sBTC or STX on Stacks (any Stacks x402 client; the AgentPay SDK pays sBTC).",
+  "description": "The trust layer for AI agents that pay per call: an x402 gateway with public delivery scores for the x402 marketplace, pre-flight plan pricing, capped sessions and on-chain receipts. USDC on Base or Stellar (standard x402, any client), sBTC or STX on Stacks (any Stacks x402 client).",
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD",
              "description": "17 free tools; paid tools from $0.01 USDC per call"},
   "sameAs": [
@@ -333,7 +333,7 @@ TOOLS_ROWS_PLACEHOLDER
     <div class="how-step">
       <span class="num">03</span>
       <h3>Paid tools use x402</h3>
-      <p>Gateway returns HTTP 402 with payment instructions. Agent pays USDC on-chain and retries with proof. Base settles via the standard x402 <code>exact</code> scheme; Stellar settles as a classic payment + memo via the AgentPay SDK.</p>
+      <p>Gateway returns HTTP 402 with payment instructions. Agent pays USDC on-chain and retries with proof. Base and Stellar settle via the standard x402 <code>exact</code> scheme — any standard x402 client can pay; Stacks settles from any Stacks x402 client.</p>
     </div>
   </div>
 </section>
@@ -369,7 +369,7 @@ TOOLS_ROWS_PLACEHOLDER
     </div>
     <div class="network-card">
       <h3>Stellar mainnet</h3>
-      <p>Native USDC, sub-cent fees (~$0.000001 per tx), Horizon-verified classic payments — supported via the AgentPay SDK or a manual payment + memo. Not yet the standard <code>@x402/stellar</code> Soroban scheme (that migration is on the v2 roadmap), so standard x402 clients should pay on Base. Circle's CCTP is live on Stellar, so funds bridge 1:1 to and from Base.</p>
+      <p>Native USDC, sub-cent fees, settled through the standard x402 <code>exact</code> scheme via the Built on Stellar (OpenZeppelin) facilitator — any <code>@x402/stellar</code> client can pay, with the network fee sponsored. The AgentPay SDK's classic payment + memo path, verified on Horizon, still works. Next: verified-delivery probes on Stellar x402 services, and Stellar USDC buying any verified endpoint in the catalog — Circle's CCTP is live on Stellar, so USDC moves 1:1 to and from Base.</p>
     </div>
   </div>
 </section>
@@ -378,10 +378,10 @@ TOOLS_ROWS_PLACEHOLDER
 
 <footer>
   <div class="alignment">
-    AgentPay is the economic intelligence layer for MCP servers and AI agents — x402-v2 payment protocol,
+    AgentPay is the trust layer for AI agents that pay per call — x402-v2 payment protocol,
     CDP Facilitator settlement on Base with
     <a href="https://www.coinbase.com/en-gb/developer-platform/discover/launches/introducing-bazaar">Bazaar</a> auto-indexing,
-    Horizon-verified classic Stellar settlement and sBTC or STX settlement on Stacks from any Stacks x402 client.
+    Built on Stellar facilitator settlement on Stellar, and sBTC or STX settlement on Stacks from any Stacks x402 client.
   </div>
   <ul>
     <li><a href="GATEWAY_URL_PLACEHOLDER/probes">Delivery scores</a></li>
