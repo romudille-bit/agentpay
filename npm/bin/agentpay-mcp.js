@@ -41,6 +41,11 @@
  *   AGENTPAY_BASE_KEY     — optional BYO EVM private key (implies paid mode)
  *   AGENTPAY_WALLET_PATH  — override the wallet file location (sandboxed hosts)
  *   AGENTPAY_MAX_SPEND    — session budget cap in USDC (default 0.10; paid mode only)
+ *   AGENTPAY_STACKS_KEY   — optional Stacks private key: paid tools settle in sBTC on Stacks
+ *                           (sponsored/gasless when the gateway offers it). Implies paid mode.
+ *   AGENTPAY_STACKS_NETWORK — mainnet (default) | testnet
+ *   AGENTPAY_STACKS_SPONSORED — auto (default: sponsored when offered) | 1 (require) | 0 (pay own fee)
+ *   AGENTPAY_PREFER_CHAIN — "stacks" (default when a Stacks key is set) | "base"
  *   AGENTPAY_TRANSPORT    — "stdio" (default) or "http": Streamable HTTP at /mcp on $PORT.
  *                           HTTP is the shared remote server: always keyless, never paid.
  *   AGENTPAY_AGENT_ADDRESS — http only: the 0x identity remote calls carry (no key).
@@ -56,11 +61,12 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { buildPaymentSignature } from './eip3009.js';
-import { loadOrCreateWallet, paidModeEnabled, remoteIdentity } from './wallet.js';
+import { loadOrCreateWallet, loadStacksWallet, paidModeEnabled, remoteIdentity } from './wallet.js';
+import * as stacksTx from './stacks_tx.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.7.3';
+const VERSION = '2.8.0';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -85,7 +91,24 @@ const REMOTE = TRANSPORT === 'http';
 
 // { key, address, source, path }. The remote never signs, so it never loads or mints a key.
 const WALLET = REMOTE ? remoteIdentity(process.env) : loadOrCreateWallet(process.env, log);
-const PAID = !REMOTE && paidModeEnabled(process.env, WALLET.source);
+// Optional Stacks wallet ({ keypair, address, network } or null). A BYO Stacks
+// key is explicit intent, so it switches paid mode on like AGENTPAY_BASE_KEY.
+const STACKS = REMOTE ? null : loadStacksWallet(process.env, log);
+const PAID = !REMOTE && (paidModeEnabled(process.env, WALLET.source) || Boolean(STACKS));
+const PREFER_CHAIN = (() => {
+  const raw = (process.env.AGENTPAY_PREFER_CHAIN || '').trim().toLowerCase();
+  if (raw === 'base' || raw === 'stacks') return raw;
+  return STACKS ? 'stacks' : 'base';
+})();
+// null = sponsored whenever the 402 offers it; true requires it; false pays its own fee.
+const STACKS_SPONSORED = (() => {
+  const raw = (process.env.AGENTPAY_STACKS_SPONSORED || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'always', 'required'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'never'].includes(raw)) return false;
+  return null;
+})();
+const STACKS_API = (process.env.AGENTPAY_STACKS_API ||
+  (STACKS?.network === 'testnet' ? 'https://api.testnet.hiro.so' : 'https://api.hiro.so')).replace(/\/$/, '');
 
 // Session budget guard (wallet mode). Tracked in micro-USDC integers so float
 // drift can never leak past the cap. Default $0.10 — the cap story, dogfooded.
@@ -94,13 +117,54 @@ const MAX_SPEND_USD = (() => {
   return Number.isFinite(raw) && raw >= 0 ? raw : 0.10;
 })();
 const MAX_SPEND_MICRO = Math.round(MAX_SPEND_USD * 1_000_000);
+// The cap in force. AGENTPAY_MAX_SPEND is the ceiling; `session_cap` can only
+// lower it (and restore it), never raise it above the configured value.
+let capMicro = MAX_SPEND_MICRO;
 let spentMicro = 0;
+const usd = (micro) => (micro / 1e6).toFixed(6).replace(/\.?0+$/, '') || '0';
 
-const fundingHint = () => PAID
-  ? `To settle paid tools, fund ${WALLET.address} with USDC on Base mainnet ` +
-    '(gasless EIP-3009 — no ETH needed).'
-  : `This install's wallet is ${WALLET.address} — fund it with USDC on Base and ` +
-    'set AGENTPAY_ENABLE_PAID=1 to settle paid tools in-place (gasless, no ETH needed).';
+const fundingHint = () => {
+  const stacks = STACKS
+    ? ` For Stacks: fund ${STACKS.address} with sBTC (and a little STX for fees unless the ` +
+      'gateway sponsors them).'
+    : '';
+  return (PAID
+    ? `To settle paid tools, fund ${WALLET.address} with USDC on Base mainnet ` +
+      '(gasless EIP-3009 — no ETH needed).'
+    : `This install's wallet is ${WALLET.address} — fund it with USDC on Base and ` +
+      'set AGENTPAY_ENABLE_PAID=1 to settle paid tools in-place (gasless, no ETH needed).') + stacks;
+};
+
+// Every paid result carries its receipt: the on-chain proof and the session
+// spend against the cap, never only in this server's log.
+function explorerUrl(network, tx) {
+  if (!tx) return null;
+  if (String(network).startsWith('stacks')) {
+    const chain = String(network).includes('testnet') || STACKS?.network === 'testnet' ? 'testnet' : 'mainnet';
+    return `https://explorer.hiro.so/txid/0x${String(tx).replace(/^0x/, '')}?chain=${chain}`;
+  }
+  return `https://basescan.org/tx/${tx}`;
+}
+
+function withReceipt(resp, receipt) {
+  const data = resp?.result ?? resp;
+  const full = {
+    ...receipt,
+    explorer_url: explorerUrl(receipt.network, receipt.tx_hash),
+    session_spent_usd: usd(spentMicro),
+    session_cap_usd: usd(capMicro),
+    session_remaining_usd: usd(Math.max(capMicro - spentMicro, 0)),
+  };
+  return (data && typeof data === 'object' && !Array.isArray(data))
+    ? { ...data, receipt: full } : { result: data, receipt: full };
+}
+
+const budgetRefusal = (toolName, amountUsdc) => new McpError(
+  ErrorCode.InvalidRequest,
+  `Budget cap: '${toolName}' costs $${amountUsdc} but the session has spent ` +
+  `$${usd(spentMicro)} of its $${usd(capMicro)} cap. Raise it with session_cap (up to the ` +
+  `configured $${MAX_SPEND_USD}) or restart with a higher AGENTPAY_MAX_SPEND.`,
+);
 
 // Agent identity — the wallet address in ALL modes, so free and paid calls
 // share one stable identity in payment_logs across restarts.
@@ -109,6 +173,14 @@ const fundingHint = () => PAID
 const AGENT_ADDRESS = WALLET.address;
 
 const USER_AGENT = `agentpay-mcp/${VERSION} (+https://agentpay.tools)`;
+
+// How a paid call settles in this process, for descriptions and the receipt.
+const PAID_RAIL = STACKS && PREFER_CHAIN === 'stacks'
+  ? `sBTC on Stacks ${STACKS.network}${STACKS_SPONSORED === false ? '' : ' (sponsored/gasless when the gateway offers it)'}, Base USDC as fallback`
+  : `USDC on Base (gasless)${STACKS ? ', sBTC on Stacks when a 402 offers no Base option' : ''}`;
+const CAP_RULE = `Session cap $${MAX_SPEND_USD} (AGENTPAY_MAX_SPEND). Before the first paid call, tell the ` +
+  'user the cap and offer to lower it with session_cap; every paid result carries a `receipt` ' +
+  '(tx, network, amount, session spend vs cap) — show it to the user.';
 
 // ── Tool registry cache ───────────────────────────────────────────────────────
 
@@ -370,13 +442,19 @@ async function settlePaid(toolName, url, body, baseHeaders, challenge) {
   const amountUsdc = challenge.amount_usdc;
 
   const baseOpt = (challenge.payment_options || {}).base;
+  const stacksOpt = (challenge.payment_options || {}).stacks;
+  if (STACKS && stacksOpt && (PREFER_CHAIN === 'stacks' || !baseOpt)) {
+    return serializedStacks(() => settleStacks(toolName, url, JSON.parse(body).parameters ?? {}, challenge, stacksOpt));
+  }
   if (!baseOpt) {
     throw new McpError(
       ErrorCode.InvalidRequest,
-      `'${toolName}' offered no Base payment option — the MCP wallet settles on Base only. ` +
-      `Use the agentpay-x402 Python SDK for Stellar settlement.`,
+      `'${toolName}' offered no Base payment option` +
+      (STACKS ? ' and no Stacks option' : ' — set AGENTPAY_STACKS_KEY to settle in sBTC on Stacks') +
+      '. Use the agentpay-x402 Python SDK for Stellar settlement.',
     );
   }
+  if (STACKS && PREFER_CHAIN === 'stacks') log(`AgentPay MCP: '${toolName}' offers no Stacks option — settling on Base`);
 
   // Charge the cap for the amount that will actually be signed. The headline
   // amount_usdc is advisory; the Base option's atomic amount is what goes into
@@ -400,14 +478,7 @@ async function settlePaid(toolName, url, body, baseHeaders, challenge) {
   }
 
   // Budget guard — refuse BEFORE signing anything.
-  if (spentMicro + amountMicro > MAX_SPEND_MICRO) {
-    throw new McpError(
-      ErrorCode.InvalidRequest,
-      `Budget cap: '${toolName}' costs $${amountUsdc} but the session has spent ` +
-      `$${(spentMicro / 1e6).toFixed(6).replace(/\.?0+$/, '')} of its ` +
-      `$${MAX_SPEND_USD} cap (AGENTPAY_MAX_SPEND). Raise the cap and restart to proceed.`,
-    );
-  }
+  if (spentMicro + amountMicro > capMicro) throw budgetRefusal(toolName, amountUsdc);
 
   log(`AgentPay MCP: settling '${toolName}' on Base (EIP-3009, gasless) — $${amountUsdc} USDC`);
   const { header } = buildPaymentSignature(baseOpt, url, WALLET.key, WALLET.address);
@@ -435,8 +506,8 @@ async function settlePaid(toolName, url, body, baseHeaders, challenge) {
     let msg = `Paid settle failed for '${toolName}' (${r2.status}${reason ? `: ${reason}` : ''}).`;
     // The authorization was already transmitted, so the amount stays booked and
     // the caller needs to know the cap moved without a result.
-    msg += ` $${(amountMicro / 1e6).toFixed(6).replace(/\.?0+$/, '')} stays counted against the ` +
-           `$${MAX_SPEND_USD} cap: the signed authorization is settleable until it expires.`;
+    msg += ` $${usd(amountMicro)} stays counted against the ` +
+           `$${usd(capMicro)} cap: the signed authorization is settleable until it expires.`;
     // Underfunded errors name the fundable address (matches the SDK's copy).
     msg += ` If the wallet is underfunded: ${fundingHint()}`;
     throw new Error(msg);
@@ -445,8 +516,150 @@ async function settlePaid(toolName, url, body, baseHeaders, challenge) {
   const result = await r2.json();
   const tx = (result.payment || {}).tx_hash || r2.headers.get('x-tx-hash') || '';
   log(`AgentPay MCP: '${toolName}' settled${tx ? ` | tx ${tx.slice(0, 18)}…` : ''} | ` +
-      `session spend $${(spentMicro / 1e6).toFixed(6).replace(/\.?0+$/, '')} / $${MAX_SPEND_USD}`);
-  return result.result ?? result;
+      `session spend $${usd(spentMicro)} / $${usd(capMicro)}`);
+  return withReceipt(result, {
+    tx_hash: tx || null, network: (result.payment || {}).network || 'base-mainnet',
+    amount_usdc: amountUsdc, payer: WALLET.address, sponsored: false,
+  });
+}
+
+// ── Paid settle — Stacks sBTC, sign-don't-broadcast ──────────────────────────
+//
+// Mirrors agentpay/_client.py:_settle_stacks: the gateway broadcasts (or its
+// relay does, for a sponsored tx), so the spend is booked when the header
+// leaves. One in-flight tx per wallet: nonces are sequential.
+
+let stacksNextNonce = null;
+// Uncertain settles by tool: the same header is re-presented on the next call
+// instead of signing a second payment.
+const pendingStacks = new Map();
+// Nonces are sequential, so Stacks settles run one at a time.
+let stacksQueue = Promise.resolve();
+function serializedStacks(fn) {
+  const run = stacksQueue.then(fn, fn);
+  stacksQueue = run.catch(() => {});
+  return run;
+}
+
+async function fetchStacksNonce() {
+  const r = await fetch(`${STACKS_API}/v2/accounts/${STACKS.address}?proof=0`,
+                        { signal: AbortSignal.timeout(10_000) });
+  if (!r.ok) throw new Error(`Hiro nonce read failed (${r.status})`);
+  const chain = Number((await r.json()).nonce);
+  if (!Number.isInteger(chain)) throw new Error('Hiro nonce read returned no nonce');
+  return stacksNextNonce === null ? chain : Math.max(chain, stacksNextNonce);
+}
+
+async function stacksTxAbsent(built) {
+  // True only when Hiro cannot find the tx (by txid, or by nonce for a
+  // sponsored tx whose relayed txid we never learned). Errors keep the leg.
+  try {
+    if (!built.sponsored) {
+      const r = await fetch(`${STACKS_API}/extended/v1/tx/0x${built.txid}`, { signal: AbortSignal.timeout(10_000) });
+      if (r.status === 404) return true;
+      if (!r.ok) return false;
+      return String((await r.json()).tx_status || '').startsWith('abort_');
+    }
+    for (const path of ['/mempool?limit=50', '/transactions?limit=50']) {
+      const r = await fetch(`${STACKS_API}/extended/v1/address/${STACKS.address}${path}`, { signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) return false;
+      for (const row of (await r.json()).results || []) {
+        const tx = row.tx ?? row;
+        if (Number(tx.nonce) === built.nonce) return String(tx.tx_status || '').startsWith('abort_');
+      }
+    }
+    return true;
+  } catch { return false; }
+}
+
+async function postStacksPayment(url, built, params) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT,
+               'payment-signature': built.header, 'x-agent-address': STACKS.address },
+    body: JSON.stringify({ parameters: params, agent_address: STACKS.address }),
+    signal: AbortSignal.timeout(120_000),
+  });
+}
+
+async function settleStacks(toolName, url, params, challenge, stacksOpt) {
+  const amountUsdc = challenge.amount_usdc;
+
+  // Redeem first: an earlier uncertain settle for this tool may have confirmed.
+  const pending = pendingStacks.get(toolName);
+  if (pending) {
+    const r = await postStacksPayment(url, pending.built, pending.params);
+    if (r.status === 200) {
+      pendingStacks.delete(toolName);
+      const result = await r.json();
+      return withReceipt(result, pending.receipt(result));
+    }
+    let b = {}; try { b = await r.json(); } catch { /* non-JSON */ }
+    if (String(b.payment_status || '') === 'uncertain') {
+      throw new Error(`'${toolName}': the earlier payment (tx ${pending.txid(b)}) is still unconfirmed — ` +
+                      'not paying again; call once more in a minute.');
+    }
+    pendingStacks.delete(toolName); // rejected or redeemed elsewhere: fall through and pay anew
+  }
+
+  const headlineMicro = Math.round(parseFloat(amountUsdc) * 1_000_000);
+  const amountMicro = Math.round(parseFloat(stacksOpt.amount_usdc) * 1_000_000);
+  if (!Number.isFinite(amountMicro) || amountMicro <= 0 || amountMicro !== headlineMicro) {
+    throw new McpError(ErrorCode.InvalidRequest,
+      `'${toolName}' asks $${amountUsdc} but its Stacks option is priced $${stacksOpt.amount_usdc} — refusing to sign.`);
+  }
+  if (spentMicro + amountMicro > capMicro) throw budgetRefusal(toolName, amountUsdc);
+
+  let built;
+  try {
+    const nonce = await fetchStacksNonce();
+    built = stacksTx.buildStacksPayment(stacksOpt, challenge.payment_id, url, STACKS.keypair,
+                                        STACKS.network, nonce, { sponsored: STACKS_SPONSORED });
+  } catch (err) {
+    throw new McpError(ErrorCode.InvalidRequest, `'${toolName}': ${err.message} (nothing was signed)`);
+  }
+  const network = `stacks-${STACKS.network}`;
+  const receiptFor = (result) => ({
+    tx_hash: (result?.payment || {}).tx_hash || built.txid, network,
+    amount_usdc: amountUsdc, amount_sats: built.amountSats, payer: STACKS.address,
+    sponsored: built.sponsored,
+  });
+  log(`AgentPay MCP: settling '${toolName}' on Stacks (${built.amountSats} sats sBTC` +
+      `${built.sponsored ? ', sponsored' : ''}) — $${amountUsdc}`);
+  spentMicro += amountMicro;
+
+  let r;
+  try {
+    r = await postStacksPayment(url, built, params);
+  } catch (err) {
+    stacksNextNonce = built.nonce + 1;
+    pendingStacks.set(toolName, { built, params, receipt: receiptFor, txid: () => built.txid });
+    throw new Error(`'${toolName}': signed Stacks tx transmitted but no answer (${err.message}). ` +
+                    `$${usd(amountMicro)} stays counted; the tx may be live. Call again to redeem it, do not fund a second payment.`);
+  }
+  if (r.status === 200) {
+    stacksNextNonce = built.nonce + 1;
+    const result = await r.json();
+    const rc = receiptFor(result);
+    log(`AgentPay MCP: '${toolName}' settled on Stacks | tx ${String(rc.tx_hash).slice(0, 18)}… | ` +
+        `session spend $${usd(spentMicro)} / $${usd(capMicro)}`);
+    return withReceipt(result, rc);
+  }
+
+  let body = {}; try { body = await r.json(); } catch { /* non-JSON */ }
+  const reason = String(body.error_reason || body.reason || body.detail || `HTTP ${r.status}`);
+  if (String(body.payment_status || '') === 'rejected' && await stacksTxAbsent(built)) {
+    // Nothing broadcast: give the cap back and let the next call sign afresh.
+    spentMicro -= amountMicro;
+    stacksNextNonce = null;
+    const hint = /NotEnoughFunds|underfund|insufficient/i.test(reason) ? ` ${fundingHint()}` : '';
+    throw new Error(`'${toolName}': Stacks payment rejected (${reason}); nothing was broadcast, the cap is unchanged.${hint}`);
+  }
+  stacksNextNonce = built.nonce + 1;
+  const txid = String(body.txid || built.txid).replace(/^0x/, '');
+  pendingStacks.set(toolName, { built, params, receipt: receiptFor, txid: (b) => String(b?.txid || txid) });
+  throw new Error(`'${toolName}': payment sent, settlement not confirmed (${reason}; tx ${txid}). ` +
+                  `$${usd(amountMicro)} stays counted. Call the tool again to redeem the same payment — do not sign a new one.`);
 }
 
 // ── Route tool — buyer-side x402 routing (MCP-2) ─────────────────────────────
@@ -734,7 +947,9 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
 function buildServer() {
   const server = new Server(
     { name: 'agentpay', version: VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} },
+      ...(PAID ? { instructions:
+        'AgentPay paid tools spend real funds from this install\'s wallet (' + PAID_RAIL + '). ' + CAP_RULE } : {}) },
   );
   server.setRequestHandler(ListToolsRequestSchema, listTools);
   server.setRequestHandler(CallToolRequestSchema, callToolRequest);
@@ -749,11 +964,11 @@ const VERIFIED_ROUTE_TOOL_DEF = {
     'rank by real unique-payer usage → budget-gate).',
     '',
     ...(PAID ? [
-      'PAID MODE (AGENTPAY_ENABLE_PAID=1 or AGENTPAY_BASE_KEY): this call runs the PAID verified_route',
-      '($0.01 USDC, settled in-place on Base, gasless) and returns the FULL payload —',
+      'PAID MODE: this call runs the PAID verified_route ($0.01, settled in-place —',
+      `${PAID_RAIL}) and returns the FULL payload —`,
       'the vetted pick WITH provider URL + ready-to-pay x402 challenge, from the full',
       'multi-query catalog sweep + usage-based sybil-collapse + trust allowlist.',
-      'The $0.01 counts against the AGENTPAY_MAX_SPEND session cap.',
+      CAP_RULE,
     ] : [
       'This MCP runs the FREE single-query PREVIEW: it returns the vetted pick',
       '(name + usage stats + why) and survivor count to PROVE a real provider exists,',
@@ -839,6 +1054,52 @@ const ROUTE_TOOL_DEF = {
   },
 };
 
+const SESSION_CAP_TOOL_DEF = {
+  name: 'session_cap',
+  description: [
+    'The hard spending cap of this AgentPay session and what has been spent so far,',
+    'with the wallets that pay. Pass max_usd to LOWER the cap for this session (or',
+    'restore it, up to the configured AGENTPAY_MAX_SPEND ceiling); raising the ceiling',
+    'needs a restart. Call it before the first paid call so the user can confirm or',
+    'change the cap, and whenever they ask what the agent may spend. Free, local.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      max_usd: { type: 'number', description: 'New session cap in USD, at most the configured ceiling and not below what is already spent.' },
+    },
+  },
+  annotations: { title: 'Session Cap', readOnlyHint: false, openWorldHint: false },
+};
+
+function sessionCapTool(maxUsd) {
+  if (maxUsd !== undefined) {
+    const n = Number(maxUsd);
+    if (!Number.isFinite(n) || n < 0) throw new McpError(ErrorCode.InvalidParams, 'max_usd must be a non-negative number');
+    const micro = Math.round(n * 1_000_000);
+    if (micro > MAX_SPEND_MICRO) {
+      throw new McpError(ErrorCode.InvalidParams,
+        `max_usd ${n} is above the configured ceiling $${MAX_SPEND_USD}; restart with AGENTPAY_MAX_SPEND=${n} to raise it`);
+    }
+    if (micro < spentMicro) {
+      throw new McpError(ErrorCode.InvalidParams, `max_usd ${n} is below what this session already spent ($${usd(spentMicro)})`);
+    }
+    capMicro = micro;
+    log(`AgentPay MCP: session cap set to $${usd(capMicro)} (ceiling $${MAX_SPEND_USD})`);
+  }
+  return {
+    paid_mode: PAID,
+    cap_usd: usd(capMicro),
+    configured_ceiling_usd: String(MAX_SPEND_USD),
+    spent_usd: usd(spentMicro),
+    remaining_usd: usd(Math.max(capMicro - spentMicro, 0)),
+    settles_with: PAID ? PAID_RAIL : 'nothing — paid mode is off (free tools only)',
+    wallets: { base: WALLET.address, ...(STACKS ? { stacks: STACKS.address, stacks_network: STACKS.network } : {}) },
+    ...(STACKS ? { stacks_sponsored: STACKS_SPONSORED === null ? 'auto' : STACKS_SPONSORED } : {}),
+    pending_stacks_redemptions: [...pendingStacks.keys()],
+  };
+}
+
 const ESTIMATE_PLAN_TOOL_DEF = {
   name: 'estimate_plan',
   description: [
@@ -895,7 +1156,8 @@ async function listTools() {
   } catch (err) {
     log(`AgentPay MCP: /tools unavailable (${err.message}) — listing the keyless tools only`);
     return {
-      tools: [VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF],
+      tools: [VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF,
+              ...(REMOTE ? [] : [SESSION_CAP_TOOL_DEF])],
     };
   }
 
@@ -914,7 +1176,7 @@ async function listTools() {
       description += ' (x402 over MCP: an unpaid call returns PaymentRequired; pay via _meta x402/payment)';
     }
     if (PAID && parseFloat(t.price_usdc) > 0) {
-      description += ' (paid mode: settles in-place on Base, gasless; counts against AGENTPAY_MAX_SPEND)';
+      description += ` (paid mode: settles in-place — ${PAID_RAIL}. ${CAP_RULE})`;
     }
 
     // Directory requirement: every tool carries a human title + read/destructive
@@ -935,7 +1197,8 @@ async function listTools() {
     };
   });
 
-  const listed = [...gatewayTools, VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF];
+  const listed = [...gatewayTools, VERIFIED_ROUTE_TOOL_DEF, ROUTE_TOOL_DEF, ESTIMATE_PLAN_TOOL_DEF,
+                  ...(REMOTE ? [] : [SESSION_CAP_TOOL_DEF])];
   // Remote: the priced tools are the point of the endpoint and what
   // x402 probers look for with a bounded number of unpaid calls — list them
   // first so a client or scanner meets the in-band 402 before the free tools.
@@ -946,6 +1209,11 @@ async function listTools() {
 async function callToolRequest(request) {
   const { name, arguments: args = {} } = request.params;
   const payment = request.params._meta?.[META_PAYMENT] ?? null;
+
+  if (name === 'session_cap' && !REMOTE) {
+    const status = sessionCapTool(args.max_usd);
+    return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+  }
 
   if (name === 'estimate_plan') {
     try {
@@ -1061,11 +1329,15 @@ async function main() {
       const src = { env: 'AGENTPAY_BASE_KEY', file: WALLET.path, minted: `minted → ${WALLET.path}`,
                     ephemeral: 'EPHEMERAL (not persisted — see stderr above)' }[WALLET.source];
       log(`AgentPay MCP: wallet ${WALLET.address} (${src})`);
+      if (STACKS) {
+        log(`AgentPay MCP: Stacks wallet ${STACKS.address} (${STACKS.network}, AGENTPAY_STACKS_KEY) — ` +
+            `preferred chain ${PREFER_CHAIN}, sponsored ${STACKS_SPONSORED === null ? 'auto' : STACKS_SPONSORED}`);
+      }
     }
     log(REMOTE
       ? 'AgentPay MCP: remote (http) mode — keyless by design; paid tools return the 402 handoff'
       : PAID
-        ? `AgentPay MCP: paid mode ON — paid tools settle in-place | session cap $${MAX_SPEND_USD} (AGENTPAY_MAX_SPEND)`
+        ? `AgentPay MCP: paid mode ON — paid tools settle in-place (${PAID_RAIL}) | session cap $${MAX_SPEND_USD} (AGENTPAY_MAX_SPEND)`
         : 'AgentPay MCP: paid mode OFF — free tools only. Fund the wallet with USDC on Base and set AGENTPAY_ENABLE_PAID=1 to enable paid tools.');
   } catch (err) {
     log(`AgentPay MCP v${VERSION}: could not pre-fetch tools (${err.message}) — will retry on first request`);

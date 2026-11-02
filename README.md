@@ -388,6 +388,7 @@ r = s.call("pre_trade_check", {"symbol": "BTC", "size_usd": 25000, "side": "long
 print(r.data["verdict"], r.tx)      # verdict + the sbtc-token::transfer txid
 ```
 
+- **Fees:** when the gateway's 402 offers `sponsorship` (the public gateway does once its relay is configured), the SDK signs a sponsored, fee-0 transaction and the relay pays the STX fee — the wallet needs only sBTC. Otherwise it pays its own fee; `STACKS_SPONSORED=0` opts out, `1` requires it.
 - **Walkthrough (start here):** [`docs/stacks-walkthrough.md`](docs/stacks-walkthrough.md) — install → one capped mainnet payment → the receipt verified three ways → the rules refusing before signing, with real output.
 - **Mainnet reference:** [`docs/stacks-mainnet.md`](docs/stacks-mainnet.md) — config, the one-liner, redeeming an uncertain settle, ledger verification, the pilot agent.
 - **Runnable demo:** [`examples/stacks_m1_demo.py`](examples/stacks_m1_demo.py) — capped session → sBTC payment → receipt → over-cap rejection. `STACKS_NETWORK=mainnet` runs it on mainnet; the name is from the milestone it was written for.

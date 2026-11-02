@@ -1337,7 +1337,14 @@ async def _redeem_uncertain_stacks(
         return None
     if row.get("tool_name") not in (tool.name, tool_name):
         return _stacks_reject("redeem_tool_mismatch")
-    confirm = await stacks_pay.poll_confirmation(txid, max_polls=2)
+    # A sponsored tx confirms under the relayed txid, kept in tx_hash; when
+    # the relay never named it, look it up by (sender, nonce) now.
+    chain_txid = row.get("tx_hash") or txid
+    if chain_txid == txid and stacks_pay.is_sponsored(signed_tx):
+        found = await stacks_pay.find_relayed_txid(signed_tx)
+        if found:
+            chain_txid = found
+    confirm = await stacks_pay.poll_confirmation(chain_txid, max_polls=2)
     if confirm["status"] == "rejected":
         dropped = await update_payment_log_state(txid, "rejected", expected_state="uncertain",
                                                  error_reason=confirm["reason"])
@@ -1345,15 +1352,15 @@ async def _redeem_uncertain_stacks(
             await sessions.release_by_id(row["session_id"], row.get("amount_usdc") or "0")
         return _stacks_reject(confirm["reason"])
     if confirm["status"] != "success":
-        return _stacks_uncertain("still_unconfirmed", row.get("payment_id") or "", txid)
+        return _stacks_uncertain("still_unconfirmed", row.get("payment_id") or "", chain_txid)
     claimed = await update_payment_log_state(txid, "verified", expected_state="uncertain",
-                                             clear_fields=["error_reason"])
+                                             clear_fields=["error_reason"], tx_hash=chain_txid)
     if not claimed:
         return _stacks_reject("already_redeemed")
     logger.info(f"[PAYMENT] tool={tool_name} network=stacks status=REDEEMED tx={txid[:16]}")
     return {
         "authorized": True,
-        "tx_hash":    txid,
+        "tx_hash":    chain_txid,
         "payer":      row.get("agent_address") or "",
         "network":    row.get("network") or f"stacks-{settings.STACKS_NETWORK}",
         "recovered":  True,
@@ -1516,6 +1523,8 @@ async def _settle_stacks_path(
     settle = await stacks_pay.settle_stacks_payment(
         signed_tx, auth["txid"], payment_id=payment_id,
         payment_payload=payload,
+        sponsored=auth.get("sponsored", False),
+        sender=auth["sender"], nonce=auth.get("nonce", -1),
         requirements={
             "scheme": "exact",
             "network": stacks_pay.payload_network(payload),
@@ -1543,7 +1552,7 @@ async def _settle_stacks_path(
         # broadcast; the SDK keeps the spend recorded meanwhile.
         if sb_enabled() and settle["reason"] != "replay_attack":
             await insert_pending_payment_log(
-                payment_id=settle["txid"],
+                payment_id=auth["txid"],
                 tool_name=tool.name,
                 network=f"stacks-{settings.STACKS_NETWORK}",
                 amount_usdc=str(tool.price_usdc or "0"),
@@ -1573,6 +1582,7 @@ async def _settle_stacks_path(
         "stx_usd_rate": quote_rate if asset == "stx" else "",
         "binding":      auth.get("binding", "memo"),
         "payer_protection": auth.get("payer_protection", "deny_mode_exact_amount"),
+        "sponsored":    auth.get("sponsored", False),
         "session":    hold,
     }
 

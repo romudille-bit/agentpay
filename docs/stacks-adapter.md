@@ -22,10 +22,26 @@ and per-release detail are in `CHANGELOG.md`; mainnet operation is in
       "amount_usdc": "0.001",              // USD-at-quote — budget/cap math
       "btc_usd_rate": "97000",             // rate this quote used
       "pay_to": "ST…",                     // gateway c32 address
-      "fee_microstx": 500                  // suggested STX network fee (optional)
+      "fee_microstx": 500,                 // suggested STX network fee (optional)
+      "sponsorship": {                     // only when a relay is configured
+        "available": true, "relay": "velumx", "origin_fee_microstx": 0 }
   }}
 }
 ```
+
+**Sponsored payments.** With `STACKS_SPONSOR=velumx` (+ `VELUMX_API_KEY`) the
+gateway accepts the SIP-005 sponsored auth variant: the payer signs with fee 0
+and a placeholder sponsor condition, the gateway POSTs the bytes to VelumX
+(`/api/v1/broadcast`), which co-signs, pays the STX fee and broadcasts. The
+402 advertises it as `payment_options.stacks.sponsorship` and, for standard
+clients, `extra.sponsoredAccepted` on the `accepts[]` entries. Because the
+sponsor condition is hashed, the on-chain txid differs from the hash of the
+payer-signed bytes: the replay store still keys on the payer's bytes, while
+`payment_logs.tx_hash` and the paid response carry the relayed txid. A relay
+refusal (4xx, or a connection that never opened) is a definitive `rejected`;
+an ambiguous relay answer is resolved by finding the tx by (sender, nonce) on
+Hiro, and failing that ends `uncertain` and redeems like any other settle.
+Without a configured relay a sponsored tx is refused (`sponsored_not_supported`).
 
 The SDK bounds `amount_usdc` by the session cap BEFORE signing (fail-closed on
 an unparseable amount) and refuses a CAIP-2 network that doesn't match the
@@ -116,7 +132,7 @@ Rules, SDK path unchanged:
   challenge of the same price (both pinned in the tests).
 - A PAYMENT-REQUIRED header that fails to decode is left untouched (sBTC
   then appears in the body only), so index 0 of the header stays Base.
-- Sponsored transactions are still refused (no relay path yet).
+- Sponsored transactions are relayed through VelumX when configured; refused otherwise (see Wire contract).
 - Not covered: PerkOS/Nayori's client, which pays only Nayori-signed quotes
   settled through Nayori's facilitator.
 
@@ -218,9 +234,8 @@ the design rather than a later patch.
   convenience, not a hard dependency** — the payment artifact is a complete
   signed tx, so settlement degrades gracefully to direct Hiro broadcast +
   confirmation polling.
-- Agents need STX for network fees, unless a sponsored-relay path co-signs;
-  the sponsored-transaction flag is supported in the wire format from day
-  one, relay integration itself comes later.
+- Agents need STX for network fees unless the gateway relays sponsored txs
+  (VelumX); the relay's STX float and API caps are then a dependency.
 - sBTC is BTC-denominated: dollar prices require FX at issuance.
 - **USDCx deferred.** USDCx (Circle xReserve-backed USDC on Stacks) would
   sidestep FX, but the grant milestones require the sBTC path and x402
