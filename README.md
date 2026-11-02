@@ -7,6 +7,7 @@
 [![MCP](https://img.shields.io/npm/v/%40romudille%2Fagentpay-mcp?label=mcp&color=orange)](https://www.npmjs.com/package/@romudille/agentpay-mcp)
 [![Live gateway](https://img.shields.io/badge/gateway-agentpay.tools-black)](https://agentpay.tools)
 [![x402-list](https://x402-list.com/badge/agentpay.svg)](https://x402-list.com/services/agentpay?utm_source=badge&utm_medium=referral&utm_campaign=embed)
+[![Audited by AddonAudit](https://addonaudit.com/badges/audited.svg)](https://addonaudit.com/addon/io-github-romudille-bit-agentpay/)
 
 *Most agent-payment tools are a wallet — they move money. AgentPay is the layer that decides whether to spend it at all.*
 
