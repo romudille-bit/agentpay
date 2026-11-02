@@ -23,6 +23,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { generatePrivateKey, privateKeyToAddress } from './eip3009.js';
+import { keypairFromSecret } from './stacks_tx.js';
 
 const WALLET_VERSION = 1;
 
@@ -99,6 +100,28 @@ export function remoteIdentity(env = process.env) {
 function ephemeral() {
   const key = generatePrivateKey();
   return { key, address: privateKeyToAddress(key), source: 'ephemeral', path: null };
+}
+
+/**
+ * Optional Stacks wallet: AGENTPAY_STACKS_KEY (64/66-hex, never persisted) on
+ * AGENTPAY_STACKS_NETWORK (mainnet default). null when unset or invalid; the
+ * key never appears in the log.
+ */
+export function loadStacksWallet(env = process.env, log = () => {}) {
+  const key = (env.AGENTPAY_STACKS_KEY || '').trim();
+  if (!key) return null;
+  const network = (env.AGENTPAY_STACKS_NETWORK || 'mainnet').trim().toLowerCase();
+  if (network !== 'mainnet' && network !== 'testnet') {
+    log(`AgentPay MCP: AGENTPAY_STACKS_NETWORK must be mainnet or testnet (got ${network}) — Stacks wallet off`);
+    return null;
+  }
+  try {
+    const keypair = keypairFromSecret(key);
+    return { keypair, address: keypair.address(network), network };
+  } catch {
+    log('AgentPay MCP: invalid AGENTPAY_STACKS_KEY — Stacks wallet off');
+    return null;
+  }
 }
 
 /**

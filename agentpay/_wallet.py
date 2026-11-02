@@ -18,7 +18,7 @@ import secrets
 import threading
 import time
 from decimal import Decimal
-from typing import Callable
+from typing import Callable, Optional
 
 from stellar_sdk import (
     Keypair, Server, Network, Asset,
@@ -346,6 +346,17 @@ def _extract_stellar_reason(exc) -> str:
 
 # ── Stellar Wallet ────────────────────────────────────────────────────────────
 
+
+def _env_sponsored_preference() -> Optional[bool]:
+    """STACKS_SPONSORED: auto/unset → None, 1/true/always → True, 0/false/never → False."""
+    raw = os.environ.get("STACKS_SPONSORED", "").strip().lower()
+    if raw in ("1", "true", "yes", "always", "required"):
+        return True
+    if raw in ("0", "false", "no", "never"):
+        return False
+    return None
+
+
 class AgentWallet:
     """
     Multi-network wallet for an AI agent.
@@ -362,6 +373,10 @@ class AgentWallet:
         stacks_key:   Optional Stacks private key (64 hex, or 66 hex ending
                       in 01) for sBTC settlement over the Stacks x402 rail.
                       Read from env var STACKS_AGENT_KEY if not passed.
+        stacks_sponsored: None (default) signs a sponsored, fee-0 tx whenever
+                      the 402 offers sponsorship; True requires it; False
+                      always pays the STX fee itself. Env STACKS_SPONSORED
+                      (auto|1|0) when not passed.
 
     Example:
         wallet = AgentWallet(
@@ -379,7 +394,8 @@ class AgentWallet:
     _ERC20_TRANSFER_SIG = bytes.fromhex("a9059cbb")
 
     def __init__(self, secret_key: str = None, network: str = "testnet", *,
-                 base_key: str = None, stacks_key: str = None):
+                 base_key: str = None, stacks_key: str = None,
+                 stacks_sponsored: Optional[bool] = None):
         # secret_key is optional: a Stacks/Base-only payer can omit it. An
         # ephemeral Stellar keypair is generated so the wallet keeps a working
         # in-process identity (public_key, request signing), and the Stellar
@@ -456,6 +472,8 @@ class AgentWallet:
         # don't reuse a nonce the chain read hasn't caught up to yet.
         self._stacks_lock = threading.Lock()
         self._stacks_next_nonce: int | None = None
+        self.stacks_sponsored = (stacks_sponsored if stacks_sponsored is not None
+                                 else _env_sponsored_preference())
         _stacks_key = stacks_key or os.environ.get("STACKS_AGENT_KEY")
         if _stacks_key:
             try:
@@ -855,6 +873,16 @@ class AgentWallet:
         sats = Decimal(self.get_sbtc_balance())
         return _num(sats / Decimal(100_000_000) * rate)
 
+    def _use_sponsored(self, offered: bool) -> bool:
+        if self.stacks_sponsored is None:
+            return offered
+        if self.stacks_sponsored and not offered:
+            raise ValueError(
+                "sponsored Stacks payment required (stacks_sponsored=True / "
+                "STACKS_SPONSORED=1) but the 402 offers no sponsorship"
+            )
+        return bool(self.stacks_sponsored)
+
     def fetch_stacks_nonce(self) -> int:
         """Next valid account nonce from the Stacks node (`/v2/accounts`)."""
         resp = httpx.get(
@@ -875,7 +903,12 @@ class AgentWallet:
         max(chain's next nonce, our local successor). Budget cap math stays
         in USD; amount_sats is what gets signed.
 
-        Returns {"header", "txid", "nonce", "amount_sats", "amount_usd"}.
+        Sponsored (relay-paid) when the 402 offers `sponsorship` and the
+        wallet allows it: fee 0, sponsored auth variant; the relay's txid
+        then differs from `txid` (the hash of these bytes).
+
+        Returns {"header", "txid", "nonce", "amount_sats", "amount_usd",
+                 "sponsored", "sender"}.
         """
         from agentpay import _stacks_tx
         if self._stacks_keypair is None:
@@ -905,20 +938,25 @@ class AgentWallet:
         pay_to = stacks_opt.get("pay_to") or stacks_opt.get("payTo")
         if not pay_to:
             raise ValueError("402 stacks option has no pay_to address")
-        fee = int(
-            stacks_opt.get("fee_microstx")
-            or os.environ.get("STACKS_FEE_MICROSTX")
-            or DEFAULT_STACKS_FEE_MICROSTX
-        )
-        fee_cap = min(
-            int(os.environ.get("STACKS_MAX_FEE_MICROSTX", MAX_STACKS_FEE_MICROSTX)),
-            MAX_STACKS_FEE_MICROSTX,
-        )
-        if fee > fee_cap:
-            logger.warning(f"402 suggested fee {fee} µSTX exceeds the cap; using {fee_cap}")
-            fee = fee_cap
-        if fee < 1:
-            raise ValueError("fee_microstx must be positive")
+        sponsored = self._use_sponsored(
+            bool((stacks_opt.get("sponsorship") or {}).get("available")))
+        if sponsored:
+            fee = 0
+        else:
+            fee = int(
+                stacks_opt.get("fee_microstx")
+                or os.environ.get("STACKS_FEE_MICROSTX")
+                or DEFAULT_STACKS_FEE_MICROSTX
+            )
+            fee_cap = min(
+                int(os.environ.get("STACKS_MAX_FEE_MICROSTX", MAX_STACKS_FEE_MICROSTX)),
+                MAX_STACKS_FEE_MICROSTX,
+            )
+            if fee > fee_cap:
+                logger.warning(f"402 suggested fee {fee} µSTX exceeds the cap; using {fee_cap}")
+                fee = fee_cap
+            if fee < 1:
+                raise ValueError("fee_microstx must be positive")
         chain_nonce = self.fetch_stacks_nonce()
         nonce = (
             chain_nonce if self._stacks_next_nonce is None
@@ -932,6 +970,7 @@ class AgentWallet:
             nonce=nonce,
             fee_microstx=fee,
             network=network,
+            sponsored=sponsored,
         )
         signed = _stacks_tx.sign_transaction(unsigned, self._stacks_keypair)
         txid = _stacks_tx.txid_of(signed)
@@ -944,7 +983,8 @@ class AgentWallet:
             # tx to match it (the memo is the cryptographic binding; this
             # field is the lookup key). docs/stacks-adapter.md §Wire contract.
             "payment_id": payment_id,
-            "payload": {"signedTransaction": signed.hex(), "txid": txid},
+            "payload": {"signedTransaction": signed.hex(), "txid": txid,
+                        "sponsored": sponsored},
             "accepted": {
                 "scheme": stacks_opt.get("scheme", "exact"),
                 "network": expected_caip2,
@@ -962,6 +1002,8 @@ class AgentWallet:
             "nonce": nonce,
             "amount_sats": amount_sats,
             "amount_usd": stacks_opt.get("amount_usdc"),
+            "sponsored": sponsored,
+            "sender": self.stacks_address,
         }
 
     def note_stacks_nonce_used(self, nonce: int) -> None:

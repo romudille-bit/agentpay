@@ -40,6 +40,7 @@ from agentpay._stacks_tx import (
     verify_origin_signature,
 )
 from gateway.config import settings
+from gateway import stacks_sponsor
 from gateway.services import supabase as sb
 
 logger = logging.getLogger("gateway.stacks")
@@ -410,7 +411,13 @@ def stacks_402_option(quote: tuple[int, Decimal], price_usdc,
                             else settings.STACKS_SUGGESTED_FEE_MICROSTX),
         "asset": "sbtc",
         "header": "payment-signature: <base64(StacksPaymentPayload JSON)>",
+        **stacks_sponsor.sponsorship_fields(),
     }
+
+
+def _sponsored_extra() -> dict:
+    """Tells standard clients a sponsored (fee 0) tx is accepted here."""
+    return {"sponsoredAccepted": True} if stacks_sponsor.sponsor_enabled() else {}
 
 
 def stacks_accepts_entry(quote: tuple[int, Decimal], price_usdc,
@@ -430,6 +437,7 @@ def stacks_accepts_entry(quote: tuple[int, Decimal], price_usdc,
             "tokenType": "sBTC",
             "amount_usdc": str(price_usdc),
             "btc_usd_rate": str(rate),
+            **_sponsored_extra(),
         },
     }
 
@@ -451,6 +459,7 @@ def stacks_accepts_entry_stx(quote: tuple[int, Decimal], price_usdc,
             "tokenType": "STX",
             "amount_usdc": str(price_usdc),
             "stx_usd_rate": str(rate),
+            **_sponsored_extra(),
         },
     }
 
@@ -805,9 +814,9 @@ async def verify_stacks_payment(
         # is a rejection, never a 500.
         return _fail(f"malformed_stacks_tx: {e}")
 
-    # No sponsored-relay path in M1: a client-signed sponsored tx carries only a
-    # placeholder sponsor signature and can never broadcast. Refuse up front.
-    if tx["sponsored"]:
+    # A sponsored tx carries a placeholder sponsor signature: only a relay can
+    # broadcast it (gateway/stacks_sponsor.py). Without one, refuse up front.
+    if tx["sponsored"] and not stacks_sponsor.sponsor_enabled():
         return _fail("sponsored_not_supported")
 
     if tx["network"] != _network():
@@ -908,10 +917,25 @@ async def verify_stacks_payment(
         "overpaid": overpaid,
         "binding": binding,
         "payer_protection": payer_protection,
+        "sponsored": tx["sponsored"],
+        "nonce": tx["nonce"],
     }
 
 
 # ── confirmation polling ─────────────────────────────────────────────────────
+
+
+def is_sponsored(signed_tx: bytes) -> bool:
+    return len(signed_tx) > 5 and signed_tx[5] == _AUTH_SPONSORED
+
+
+async def find_relayed_txid(signed_tx: bytes) -> Optional[str]:
+    """Relayed on-chain txid of a sponsored tx, found by its (sender, nonce)."""
+    try:
+        tx = decode_stacks_transfer(signed_tx)
+    except (ValueError, RecursionError):
+        return None
+    return await stacks_sponsor.find_relayed_tx(_hiro_api(), tx["sender"], tx["nonce"])
 
 
 async def poll_confirmation(txid: str, *, max_polls: Optional[int] = None) -> dict:
@@ -1051,6 +1075,9 @@ async def settle_stacks_payment(
     payment_id: str,
     payment_payload: Optional[dict] = None,
     requirements: Optional[dict] = None,
+    sponsored: bool = False,
+    sender: str = "",
+    nonce: int = -1,
 ) -> dict:
     """Consume the txid, then broadcast + confirm under one deadline.
 
@@ -1061,7 +1088,8 @@ async def settle_stacks_payment(
     Steps 2–5 in `_broadcast_and_confirm`, bounded by STACKS_SETTLE_DEADLINE_S.
 
     Returns {"ok", "state": "ok"|"ok_recovered"|"rejected"|"uncertain",
-             "txid", "reason"}.
+             "txid", "reason"}. For a sponsored tx `txid` is the relayed
+    on-chain txid once known; the consume key stays the payer-bytes hash.
     """
     label = _network_label()
 
@@ -1092,6 +1120,11 @@ async def settle_stacks_payment(
     # SDK's reply. Cutting to "uncertain" ourselves keeps the structured
     # reply, and redemption finishes the call later.
     try:
+        if sponsored:
+            return await asyncio.wait_for(
+                _relay_and_confirm(signed_tx, txid, sender, nonce),
+                timeout=settings.STACKS_SETTLE_DEADLINE_S,
+            )
         return await asyncio.wait_for(
             _broadcast_and_confirm(signed_tx, txid, payment_payload, requirements),
             timeout=settings.STACKS_SETTLE_DEADLINE_S,
@@ -1101,6 +1134,29 @@ async def settle_stacks_payment(
                        f"hit for {txid[:20]}… — answering uncertain")
         return {"ok": False, "state": "uncertain", "txid": txid,
                 "reason": "settle_deadline_pending_confirmation"}
+
+
+async def _relay_and_confirm(signed_tx: bytes, origin_txid: str,
+                             sender: str, nonce: int) -> dict:
+    """Sponsored tx: the relay broadcasts, we confirm on the relayed txid.
+    A relay refusal is definitive (nothing broadcast); an ambiguous answer is
+    resolved by (sender, nonce) on Hiro before giving up as uncertain."""
+    rel = await stacks_sponsor.relay_sponsored(signed_tx, _network())
+    if rel["outcome"] == "rejected":
+        return {"ok": False, "state": "rejected", "txid": origin_txid, "reason": rel["reason"]}
+    txid = rel["txid"]
+    if not txid:
+        txid = await stacks_sponsor.find_relayed_tx(_hiro_api(), sender, nonce) or ""
+        if not txid:
+            return {"ok": False, "state": "uncertain", "txid": origin_txid,
+                    "reason": rel["reason"]}
+    confirm = await poll_confirmation(txid)
+    if confirm["status"] == "success":
+        return {"ok": True, "state": "ok", "txid": txid, "reason": "ok"}
+    if confirm["status"] == "rejected":
+        return {"ok": False, "state": "rejected", "txid": txid, "reason": confirm["reason"]}
+    return {"ok": False, "state": "uncertain", "txid": txid,
+            "reason": "relay_accepted_pending_confirmation"}
 
 
 async def _broadcast_and_confirm(

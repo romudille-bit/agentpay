@@ -24,6 +24,14 @@ own key via `AGENTPAY_BASE_KEY` (which implies paid mode, as in v2.4.x). Spendin
 capped by `AGENTPAY_MAX_SPEND`. In paid mode, `verified_route` returns the **full paid
 payload** — provider URL + ready-to-pay challenge; otherwise it's the free preview.
 
+**New in v2.8.0 — pay in sBTC on Stacks, and every paid result carries its receipt.** Set
+`AGENTPAY_STACKS_KEY` (a Stacks private key, 64 or 66 hex) and paid tools settle in **sBTC on
+Stacks** — sponsored (no STX for fees) whenever the gateway's 402 offers it, so the wallet
+needs only sats. The MCP signs a complete transaction with an exact-amount post-condition and
+never broadcasts; the gateway (or its relay) does. Every paid result, on either chain, now
+comes back with a `receipt` (tx, network, amount, session spend vs cap, explorer link), and the
+new `session_cap` tool shows the cap and lets the user lower it before the first paid call.
+
 To rotate the wallet, stop the MCP and delete (or move) `~/.agentpay/mcp-wallet.json` — a
 fresh key is minted next start. Sweep any USDC out first; the key never leaves the file.
 
@@ -100,7 +108,11 @@ or the `agentpay-x402` Python SDK.
 | `AGENTPAY_ENABLE_PAID` | *(unset — off)* | `1` to settle paid tools from this install's persisted wallet (fund it first) |
 | `AGENTPAY_BASE_KEY` | *(unset)* | Bring-your-own EVM private key; implies paid mode (v2.4.x behaviour) |
 | `AGENTPAY_WALLET_PATH` | `~/.agentpay/mcp-wallet.json` | Where the minted wallet lives (sandboxed hosts: point somewhere writable) |
-| `AGENTPAY_MAX_SPEND` | `0.10` | Hard session spend cap in USDC (paid mode) — calls past the cap are refused |
+| `AGENTPAY_MAX_SPEND` | `0.10` | Hard session spend cap in USD (paid mode) — calls past the cap are refused; `session_cap` can lower it per session |
+| `AGENTPAY_STACKS_KEY` | *(unset)* | Stacks private key (64/66 hex, never persisted): paid tools settle in sBTC on Stacks; implies paid mode |
+| `AGENTPAY_STACKS_NETWORK` | `mainnet` | `mainnet` or `testnet` for the Stacks key |
+| `AGENTPAY_STACKS_SPONSORED` | `auto` | `auto` signs a sponsored (fee-0) tx when the 402 offers it; `1` requires it; `0` pays its own STX fee |
+| `AGENTPAY_PREFER_CHAIN` | `stacks` with a Stacks key, else `base` | Which rail to settle on when a 402 offers both |
 
 ## Paid mode (settle paid tools in-place)
 
@@ -142,6 +154,30 @@ facilitator settles only if it accepts the call, so a rejected call moves no USD
 paid call counts against `AGENTPAY_MAX_SPEND`; the MCP refuses calls that would exceed it.
 
 Use a dedicated, small-balance key for agent spend — the cap is your blast radius.
+
+### Stacks (sBTC)
+
+```json
+{
+  "mcpServers": {
+    "agentpay": {
+      "command": "npx",
+      "args": ["-y", "@romudille/agentpay-mcp"],
+      "env": {
+        "AGENTPAY_STACKS_KEY": "<64- or 66-hex Stacks private key>",
+        "AGENTPAY_MAX_SPEND": "0.10"
+      }
+    }
+  }
+}
+```
+
+Fund the key's address (printed on stderr at startup) with a few sats of sBTC. When the
+gateway advertises `sponsorship` in its 402 the MCP signs a sponsored transaction with fee 0
+and the gateway's relay pays the STX fee; otherwise keep a little STX in the wallet for fees.
+The transaction carries a deny-mode "exactly N sats leave the sender" post-condition, so the
+gateway can settle at most the quoted amount. An unconfirmed settle is redeemed on the next
+call of the same tool — the MCP never signs a second payment for it.
 
 Prefer Python, or need Stellar settlement and full receipts? The `agentpay-x402` SDK:
 

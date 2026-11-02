@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # Also offer native STX to standard clients (second stacks:1 accepts
     # entry). Needs db/migrations/pending_challenges_stx_quote.sql.
     STACKS_STX: bool = False
+    # Sponsored (relay-paid) Stacks txs: "" refuses them, "velumx" relays them
+    # to VelumX, which co-signs, pays the STX fee and broadcasts.
+    STACKS_SPONSOR: str = ""
+    VELUMX_API_KEY: str = ""
+    VELUMX_API_URL: str = "https://api.velumx.xyz/api/v1"
     STACKS_FIXED_STX_USD: str = ""           # fallback when the live STX/USD fetch fails
     # Server-side session cap (db/migrations/sessions.sql must be applied).
     # Off: session_create returns an id nothing checks, as before.

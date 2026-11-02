@@ -287,8 +287,10 @@ medium tier for an sBTC transfer, floored at 3,000 and capped at 20,000
 µSTX); the SDK clamps whatever a gateway suggests to 0.05 STX. So a payer
 wallet needs a little STX alongside its sBTC.
 
-**Not yet:** sponsored (relay-paid) transactions are refused at
-verification, so an sBTC-only wallet with no STX cannot pay today; one
+**Not yet:** sponsored (relay-paid) transactions are accepted only on
+gateways that configure a relay (the public gateway advertises it in the
+402 as `payment_options.stacks.sponsorship` when on), so check the 402
+before assuming an sBTC-only wallet can pay; one
 in-flight Stacks payment per wallet, since nonces are sequential and the
 SDK serialises signing; refunds on Stacks are not issued by the gateway (a
 paid call whose tool fails reports `refund_unavailable` rather than

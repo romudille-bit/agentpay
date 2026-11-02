@@ -7,6 +7,14 @@ project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Sponsored Stacks payments** — when the 402 carries
+  `payment_options.stacks.sponsorship`, the wallet signs the SIP-005
+  sponsored variant with fee 0 and the gateway's relay pays the STX fee, so
+  an sBTC-only wallet can pay. `AgentWallet(stacks_sponsored=)` /
+  `STACKS_SPONSORED` (`auto` default, `1` requires it, `0` never). The
+  settled leg and `SettlementUncertain.tx_hash` carry the relay's on-chain
+  txid; redemption resolves it by (sender, nonce) when the relay never
+  named it.
 - `GatewayUnavailable` — raised by `Session.call()` when the gateway does
   not answer the registry lookup (a connection error, a timeout, or a 5xx,
   after one retry). Carries the cause. Nothing is signed or paid.

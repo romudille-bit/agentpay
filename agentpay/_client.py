@@ -208,7 +208,7 @@ class AgentPayClient:
                 if retry.status_code == 200:
                     self.wallet.note_stacks_nonce_used(built["nonce"])
                     self.wallet.note_stacks_settled(amount_usd or 0)
-                    return retry, built["txid"]
+                    return retry, self._chain_txid(retry, built)
 
                 # ── Non-200: only a definitive broadcast rejection is safe to
                 # act on here; everything else goes to the shared handling
@@ -226,12 +226,13 @@ class AgentPayClient:
                 rejected = str((body or {}).get("payment_status") or "") in (
                     "rejected", "not_settled"
                 )
+                chain_txid = self._chain_txid(retry, built, body)
                 # "rejected" is the gateway's word, and the SDK points at
                 # arbitrary gateways: one that broadcast and then said
                 # "rejected" would leave real spend unrecorded. Ask the chain
                 # before zeroing the leg; when it cannot rule the tx out,
                 # keep the spend and treat the outcome as uncertain.
-                if rejected and not self._stacks_tx_absent(client, built["txid"]):
+                if rejected and not self._stacks_tx_absent(client, chain_txid, built):
                     logger.warning(
                         f"  gateway said rejected but Hiro does not confirm the tx "
                         f"is absent — keeping the spend as uncertain"
@@ -326,13 +327,33 @@ class AgentPayClient:
                 # Keep the spend recorded; the shared non-200 handling
                 # classifies it (RefundPending / uncertain_settlement).
                 self.wallet.note_stacks_nonce_used(built["nonce"])
-                self._stacks_redeem_ctx = self._redeem_ctx(url, payload, built, tool_name)
-                return retry, built["txid"]
+                self._stacks_redeem_ctx = self._redeem_ctx(url, payload, built, tool_name,
+                                                           chain_txid)
+                return retry, chain_txid
 
-    def _stacks_tx_absent(self, client, txid: str) -> bool:
+    @staticmethod
+    def _chain_txid(resp, built: dict, body: "dict | None" = None) -> str:
+        """The txid to look for on chain. For a sponsored tx the relay's
+        txid (reported by the gateway) replaces the payer-bytes hash."""
+        if body is None:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {}
+        body = body if isinstance(body, dict) else {}
+        reported = (body.get("txid") or (body.get("payment") or {}).get("tx_hash") or "")
+        reported = str(reported).lower().removeprefix("0x")
+        if built.get("sponsored") and re.fullmatch(r"[0-9a-f]{64}", reported):
+            return reported
+        return built["txid"]
+
+    def _stacks_tx_absent(self, client, txid: str, built: "dict | None" = None) -> bool:
         """True only when Hiro shows the tx cannot settle: not known (404)
         or mined-and-aborted. Pending, success, dropped, or any error keeps
-        the leg — conservative on failure."""
+        the leg — conservative on failure. A sponsored tx whose relayed
+        txid is unknown is looked up by (sender, nonce) instead."""
+        if built and built.get("sponsored") and txid == built["txid"]:
+            return self._stacks_nonce_absent(client, built.get("sender"), built.get("nonce"))
         try:
             r = client.get(
                 f"{self.wallet._stacks_api_base}/extended/v1/tx/0x{txid}",
@@ -350,10 +371,51 @@ class AgentPayClient:
             return False
         return status.startswith("abort_")
 
+    def _stacks_relayed_txid(self, client, sender, nonce) -> "str | None":
+        """txid of `sender`'s tx at `nonce` on Hiro (mempool first), or None."""
+        if not sender or nonce is None:
+            return None
+        base = f"{self.wallet._stacks_api_base}/extended/v1/address/{sender}"
+        for path in ("/mempool?limit=50", "/transactions?limit=50"):
+            try:
+                r = client.get(base + path, timeout=10.0, follow_redirects=True)
+                if r.status_code != 200:
+                    continue
+                for row in r.json().get("results", []):
+                    tx = row.get("tx", row)
+                    if int(tx.get("nonce", -1)) == int(nonce):
+                        return str(tx.get("tx_id") or "").lower().removeprefix("0x") or None
+            except Exception:
+                continue
+        return None
+
+    def _stacks_nonce_absent(self, client, sender, nonce) -> bool:
+        """True when neither Hiro's mempool nor the confirmed list holds a tx
+        of `sender` at `nonce`; any error keeps the leg."""
+        if not sender or nonce is None:
+            return False
+        base = f"{self.wallet._stacks_api_base}/extended/v1/address/{sender}"
+        for path in ("/mempool?limit=50", "/transactions?limit=50"):
+            try:
+                r = client.get(base + path, timeout=10.0, follow_redirects=True)
+                if r.status_code != 200:
+                    return False
+                for row in r.json().get("results", []):
+                    tx = row.get("tx", row)
+                    if int(tx.get("nonce", -1)) == int(nonce):
+                        return str(tx.get("tx_status") or "").startswith("abort_")
+            except Exception:
+                return False
+        return True
+
     @staticmethod
-    def _redeem_ctx(url: str, payload: dict, built: dict, tool_name: str) -> dict:
+    def _redeem_ctx(url: str, payload: dict, built: dict, tool_name: str,
+                    chain_txid: "str | None" = None) -> dict:
         return {"url": url, "json": payload, "header": built["header"],
-                "txid": built["txid"], "address": None, "tool": tool_name}
+                "txid": chain_txid or built["txid"], "address": None, "tool": tool_name,
+                "sponsored": bool(built.get("sponsored")),
+                "relayed_known": bool(chain_txid and chain_txid != built["txid"]),
+                "sender": built.get("sender"), "nonce": built.get("nonce")}
 
     def uncertain_from_txid(self, txid: str, tool_name: str,
                             parameters: "dict | None" = None) -> SettlementUncertain:
@@ -403,11 +465,18 @@ class AgentPayClient:
         if not ctx or exc.network != "stacks":
             raise PaymentFailed("nothing to redeem: not an uncertain Stacks settlement")
         txid = ctx["txid"]
-        status_url = f"{self.wallet._stacks_api_base}/extended/v1/tx/0x{txid}"
         deadline = _time.monotonic() + wait_s
         status = ""
         with httpx.Client(timeout=15.0) as client:
             while True:
+                # A sponsored tx confirms under the relay's txid; until the
+                # relay named it, find it by (sender, nonce).
+                if ctx.get("sponsored") and not ctx.get("relayed_known"):
+                    found = self._stacks_relayed_txid(client, ctx.get("sender"), ctx.get("nonce"))
+                    if found:
+                        txid = ctx["txid"] = found
+                        ctx["relayed_known"] = True
+                status_url = f"{self.wallet._stacks_api_base}/extended/v1/tx/0x{txid}"
                 try:
                     r = client.get(status_url)
                     if r.status_code == 200:
