@@ -674,7 +674,7 @@ agents the x402 way: by payment.
    `free:<payment_id>` proof exactly as the challenge instructs. No wallet,
    no funds required.
 
-## Paid tools ($0.01: session_create, pre_trade_check, verified_route)
+## Paid tools ($0.01: session_create, pre_trade_check, funding_spread, verified_route)
 
 Pay the `402` challenge with USDC on **Base** (EIP-3009, gasless) or
 **Stellar**. The easiest client is the SDK:
@@ -814,7 +814,7 @@ AgentPay gives agents a wallet, a budget cap, and the awareness to spend it well
 2. GET  /tools → list tools
 3. POST /tools/{{name}}/call → {{ result, receipt }}  (free tools settle $0)
 
-Paid anchors (all $0.01, Bazaar-indexed): POST /v1/session/create (budget-capped session); pre_trade_check (one-call trade verdict — slippage at size, funding carry, OI crowding, security; Stacks tokens price the swap on Bitflow: impact at size, route, pool TVL); verified_route (buyer-side trust oracle — sweeps the x402 marketplace, collapses sybils, returns one vetted, ready-to-pay provider). Each pick carries a typed `evidence[]` (types follow the proposed x402 Trust-Provider evidenceType vocabulary).
+Paid anchors (all $0.01, Bazaar-indexed): POST /v1/session/create (budget-capped session); pre_trade_check (one-call trade verdict — slippage at size, funding carry, OI crowding, security; Stacks tokens price the swap on Bitflow: impact at size, route, pool TVL); verified_route (buyer-side trust oracle — sweeps the x402 marketplace, collapses sybils, returns one vetted, ready-to-pay provider). Each pick carries a typed `evidence[]` (types follow the proposed x402 Trust-Provider evidenceType vocabulary); funding_spread (cross-venue perp funding divergence — nine venues normalised to 8h, cheapest/dearest venue, 7-day percentile, carry estimate at your size).
 Price any multi-tool plan BEFORE spending: POST /v1/plan/estimate (free, no wallet).
 
 ## Gateway

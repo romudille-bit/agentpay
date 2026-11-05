@@ -48,7 +48,7 @@ HARNESSES: dict[str, dict] = {
         ],
         "notes": [
             "Pro accounts get read/fetch tools only. The 20 free AgentPay tools are read-only "
-            "(<code>readOnlyHint: true</code>); the three $0.01 tools are marked as spending and may be "
+            "(<code>readOnlyHint: true</code>); the $0.01 tools are marked as spending and may be "
             "hidden on Pro — ChatGPT has no wallet to pay them with anyway.",
         ],
         "source": "https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt",
@@ -140,8 +140,8 @@ trust preview (which x402 provider for a need is real and actually used), and <c
 <h2>First thing to try</h2>
 <pre>{_e(FIRST_PROMPT)}</pre>
 <h2>Paid verdicts</h2>
-<p class="note">The remote server never holds a wallet. The three $0.01 tools
-(<code>pre_trade_check</code>, <code>verified_route</code>, <code>session_create</code>) answer an unpaid
+<p class="note">The remote server never holds a wallet. The $0.01 tools
+(<code>pre_trade_check</code>, <code>funding_spread</code>, <code>verified_route</code>, <code>session_create</code>) answer an unpaid
 call with the x402 PaymentRequired; an MCP client that carries a wallet pays it in-band and gets the
 result with a receipt. Without one, run the local server with a small capped wallet
 (<code>npx -y @romudille/agentpay-mcp</code> with <code>AGENTPAY_ENABLE_PAID=1</code> and

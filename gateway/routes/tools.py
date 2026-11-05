@@ -194,9 +194,20 @@ _PAID_RELATED: dict[str, list[dict]] = {
                  "and Base, with a verifiable receipt ledger")},
     ],
     "pre_trade_check": [
+        {"tool": "funding_spread", "price_usdc": "0.01",
+         "why": ("cross-venue funding divergence for the same perp: cheapest/"
+                 "dearest venue, 7-day percentile, carry estimate at your size")},
         {"tool": "verified_route", "price_usdc": "0.01",
          "why": ("usage-vetted pick of the best x402 provider for any need — "
                  "sybil tails collapsed, ready-to-pay challenge included")},
+        {"tool": "session_create", "price_usdc": "0.01",
+         "why": ("gateway-enforced multi-call spend cap for your wallet on Stacks "
+                 "and Base, with a verifiable receipt ledger")},
+    ],
+    "funding_spread": [
+        {"tool": "pre_trade_check", "price_usdc": "0.01",
+         "why": ("one-call ok/caution/avoid trade verdict: live slippage at "
+                 "your size + side-aware funding + OI crowding + security")},
         {"tool": "session_create", "price_usdc": "0.01",
          "why": ("gateway-enforced multi-call spend cap for your wallet on Stacks "
                  "and Base, with a verifiable receipt ledger")},
@@ -330,6 +341,91 @@ _TOOL_BAZAAR: dict[str, dict] = {
                                             "token_address": {
                                                 "type": "string",
                                                 "description": "Optional ERC-20 address — adds a GoPlus security scan",
+                                            },
+                                        },
+                                        "required": ["symbol"],
+                                    },
+                                },
+                            },
+                        },
+                        "required": ["type", "bodyType", "body", "method"],
+                    },
+                    "output": {
+                        "type": "object",
+                        "properties": {
+                            "example": {"type": "object"},
+                            "type":    {"type": "string"},
+                        },
+                        "required": ["type"],
+                    },
+                },
+                "required": ["input"],
+            },
+        },
+    },
+    "funding_spread": {
+        "resource": {
+            "serviceName": "AgentPay Funding Spread",
+            "description": (
+                "Cross-venue perp funding divergence for one asset: per-venue "
+                "funding normalised to 8h across Binance, Bybit, OKX, Gate.io, "
+                "Bitget, Hyperliquid, dYdX, MEXC and KuCoin, the spread (max-min, "
+                "cheapest and dearest venue), its 7-day percentile, and a carry "
+                "estimate for a given notional net of taker fees. The basis/carry "
+                "arbitrage read, not the raw rates."
+            ),
+            "tags": ["funding", "perps", "basis", "arbitrage", "funding-spread"],
+        },
+        "extension": {
+            "description": (
+                "Cross-venue perp funding spread: which venue pays the most and "
+                "the least for the same perp right now, how wide that is against "
+                "the last 7 days, and what the carry is worth at your size."
+            ),
+            "info": {
+                "input": {
+                    "type":     "http",
+                    "method":   "POST",
+                    "bodyType": "json",
+                    "body": {"parameters": {"symbol": "ETH", "notional_usd": 10000}},
+                },
+                "output": {
+                    "type": "json",
+                    "example": {
+                        "asset": "ETH",
+                        "spread": {"pct_8h": 0.029, "bps_8h": 2.9, "cheapest": "okx",
+                                   "dearest": "dydx"},
+                        "history": {"days": 7, "current_percentile": 77},
+                        "carry_estimate": {"per_day_usd": 8.7, "breakeven_hours": 55.2},
+                        "read": ("ETH funding 0.0390%/8h on dydx vs 0.0100% on okx — "
+                                 "2.9 bps/8h, 77th percentile of the last 7 days"),
+                    },
+                },
+            },
+            "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "type":     {"const": "http", "type": "string"},
+                            "method":   {"enum": ["POST"], "type": "string"},
+                            "bodyType": {"enum": ["json", "form-data", "text"], "type": "string"},
+                            "body": {
+                                "type": "object",
+                                "properties": {
+                                    "parameters": {
+                                        "type": "object",
+                                        "properties": {
+                                            "symbol": {
+                                                "type": "string",
+                                                "description": "Perp underlying, e.g. 'BTC', 'ETH', 'SOL'",
+                                            },
+                                            "notional_usd": {
+                                                "type": "number",
+                                                "description": "Optional position size for the carry estimate",
                                             },
                                         },
                                         "required": ["symbol"],

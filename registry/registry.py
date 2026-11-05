@@ -657,6 +657,55 @@ _TOOLS: dict[str, Tool] = {
             "not_checked": ["security"],
         },
     ),
+    "funding_spread": Tool(
+        name="funding_spread",
+        description=(
+            "Cross-venue perp funding divergence for one asset — the basis/carry read, not the "
+            "raw rates. Reads Binance, Bybit, OKX, Gate.io, Bitget, Hyperliquid, dYdX, MEXC and "
+            "KuCoin in parallel, normalises every rate to a per-8h figure (hourly venues scaled), "
+            "and returns the spread (max minus min, cheapest and dearest venue, deviation from the "
+            "median), its percentile against the last 7 days of cross-venue spreads, a plain-"
+            "English read, and — given notional_usd — a carry estimate (per 8h / day / 30d) net "
+            "of an assumed taker fee with the breakeven holding time. Venues that fail to answer "
+            "are named in venues_unavailable; the spread is computed over the ones that did."
+        ),
+        endpoint="https://agentpay.tools/tools/funding_spread",
+        price_usdc="0.01",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Perp underlying, e.g. 'BTC', 'ETH', 'SOL'",
+                },
+                "notional_usd": {
+                    "type": "number",
+                    "description": ("Optional position size per leg in USD — adds carry_estimate "
+                                    "(long the cheapest venue, short the dearest)"),
+                },
+            },
+            "required": ["symbol"],
+        },
+        category="trading",
+        triggers=["funding spread", "funding arbitrage", "basis trade", "carry trade", "cross-exchange funding", "funding divergence", "which venue pays funding", "cheapest funding"],
+        use_when="An agent wants to know whether funding on one venue is out of line with the others for the same perp — to pick the cheaper venue for a position, or to size a long/short carry across venues.",
+        avoid_when="you only need one venue's current funding — funding_rates is free; you want a trade verdict for one venue — pre_trade_check. This call settles $0.01 on-chain.",
+        returns="asset, as_of, venues[{venue, rate_8h_pct, rate_annualized_pct, raw_rate_pct, interval_hours, next_funding_time}] sorted cheapest first, spread{pct_8h, bps_8h, annualized_pct, median_8h_pct, max_deviation_from_median_pct, cheapest, dearest}, history{days, buckets, spread_pct_8h_p50/p90/max, current_percentile}, carry_estimate{per_8h_usd, per_day_usd, per_30d_usd, taker_fees_round_trip_usd, breakeven_hours, assumptions} | null, read, venues_unavailable{venue: reason}",
+        response_example={
+            "asset": "ETH", "as_of": "2026-11-05T12:41:00+00:00",
+            "venues": [
+                {"venue": "okx", "rate_8h_pct": 0.01, "rate_annualized_pct": 10.95, "raw_rate_pct": 0.01, "interval_hours": 8.0, "next_funding_time": 1793923200000},
+                {"venue": "hyperliquid", "rate_8h_pct": 0.01, "rate_annualized_pct": 10.95, "raw_rate_pct": 0.00125, "interval_hours": 1.0, "next_funding_time": 1793883600000},
+                {"venue": "dydx", "rate_8h_pct": 0.039, "rate_annualized_pct": 42.7, "raw_rate_pct": 0.004875, "interval_hours": 1.0, "next_funding_time": 1793883600000},
+            ],
+            "spread": {"pct_8h": 0.029, "bps_8h": 2.9, "annualized_pct": 31.75, "median_8h_pct": 0.01, "max_deviation_from_median_pct": 0.029, "cheapest": "okx", "dearest": "dydx"},
+            "history": {"days": 7, "buckets": 22, "venues_with_history": ["dydx", "hyperliquid", "okx"], "spread_pct_8h_p50": 0.0125, "spread_pct_8h_p90": 0.04242, "spread_pct_8h_max": 0.05698, "current_percentile": 77},
+            "carry_estimate": {"notional_usd": 10000.0, "long_on": "okx", "short_on": "dydx", "per_8h_usd": 2.9, "per_day_usd": 8.7, "per_30d_usd": 261.0, "taker_fees_round_trip_usd": 20.0, "breakeven_hours": 55.2, "assumptions": "taker 0.05% per leg on both venues, open and close; spread held constant; no slippage, no basis move"},
+            "read": "ETH funding 0.0390%/8h on dydx vs 0.0100% on okx — 2.9 bps/8h, 77th percentile of the last 7 days (7 of 9 venues answered)",
+            "venues_unavailable": {"binance": "geo-blocked (451)", "bybit": "geo-blocked (403)"},
+        },
+    ),
 }
 
 
