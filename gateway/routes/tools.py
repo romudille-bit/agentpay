@@ -45,6 +45,7 @@ from decimal import Decimal
 
 from gateway import base as base_pay
 from gateway import stacks as stacks_pay
+from gateway import payment_response
 from gateway import stellar_x402
 from gateway._limiter import limiter, wallet_or_ip
 from gateway.config import GATEWAY_URL, settings
@@ -1994,6 +1995,10 @@ async def call_tool(
         return body_err
 
     agent_address = x_agent_address or body.agent_address
+    try:
+        _is_free_tool = Decimal(str(tool.price_usdc or "0")) == 0
+    except Exception:
+        _is_free_tool = False
 
     if unpaid:
         return await _issue_402(
@@ -2008,10 +2013,6 @@ async def call_tool(
         payment_id = parsed.get("id") or auth.get("tx_hash", "")
         is_base = False
     else:
-        try:
-            _is_free_tool = Decimal(str(tool.price_usdc or "0")) == 0
-        except Exception:
-            _is_free_tool = False
         # ── Stacks dispatch: HTTP headers are case-insensitive, so
         # the lowercase dialect can't be routed on casing — route on the
         # payload's CAIP-2 network instead. Priced tools only: a stacks
@@ -2063,10 +2064,23 @@ async def call_tool(
         payment_id = auth.get("tx_hash", "")
         is_base = True
 
-    return await _execute_and_log(
+    result = await _execute_and_log(
         tool, resolved, tool_name, body, request,
         auth, agent_address, payment_id, is_base,
     )
+    if not isinstance(result, dict) or _is_free_tool:
+        return result                     # refund/500/402 response, or $0 (nothing settled)
+    # Paid 200: the settlement receipt goes in PAYMENT-RESPONSE too, so stock
+    # x402 clients and third-party verifiers can read the tx without our JSON.
+    # The classic Stellar path returns no payer/network; fill from the request.
+    receipt_headers = payment_response.headers_for({
+        **auth,
+        "payer":   auth.get("payer") or agent_address,
+        "network": auth.get("network") or f"stellar-{settings.STELLAR_NETWORK}",
+    })
+    if not receipt_headers:
+        return result
+    return JSONResponse(content=jsonable_encoder(result), headers=receipt_headers)
 
 
 # Registration validation. The price cap leaves generous headroom over

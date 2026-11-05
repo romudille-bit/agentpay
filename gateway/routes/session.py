@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -31,6 +32,7 @@ import registry
 from gateway import base as base_pay
 from gateway import stellar_x402
 from gateway._limiter import limiter
+from gateway import payment_response
 from gateway.config import GATEWAY_URL, settings
 from gateway.services import probe_rollup
 from gateway.services import sessions
@@ -665,7 +667,10 @@ async def create_session(
             "`from agentpay import Session` adds client-side rules and receipts."
             if enforced else
             "Use `from agentpay import Session` to enforce the max_spend cap client-side.")
-    return {
+    receipt_headers = payment_response.headers_for(
+        {"authorized": True, "tx_hash": tx_hash, "network": receipt_network,
+         "payer": agent_address})
+    return JSONResponse(headers=receipt_headers, content=jsonable_encoder({
         "session_id":     session_id,
         "max_spend":      body.max_spend,
         "enforced":       enforced,
@@ -698,7 +703,7 @@ async def create_session(
                          "slippage at your size + funding + OI + security")},
             ],
         },
-    }
+        }))
 
 
 @router.get("/v1/session/{session_id}")
