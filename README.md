@@ -25,7 +25,7 @@ The developer sees all of it: spending patterns per agent, anomaly flags when so
 
 The result is an agent that doesn't just have a budget. It knows how to use one.
 
-**Start free:** 21 tools (17 free), no USDC needed, no wallet setup required.  
+**Start free:** 22 tools (17 free), no USDC needed, no wallet setup required.  
 **Live gateway:** `https://agentpay.tools`  
 **Settles in:** USDC on Base and Stellar, **sBTC on Stacks mainnet** ([walkthrough](docs/stacks-walkthrough.md))
 
@@ -91,6 +91,7 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `session_create` | `agent_address`, `max_spend`, `label` | session_id, budget config, gateway_url, receipt — **$0.01** |
 | `pre_trade_check` | `symbol`, `size_usd`, `side`, `venue?`, `token_address?` | one-call trade verdict (ok/caution/avoid): slippage at YOUR size, side-aware funding carry, OI crowding, optional security; Stacks tokens add the Bitflow venue (price impact at size, route, pool TVL) — **$0.01** |
 | `funding_spread` | `symbol`, `notional_usd?` | cross-venue perp funding divergence: nine venues normalised to 8h, spread (cheapest/dearest), 7-day percentile, carry estimate net of taker fees — **$0.01** |
+| `sbtc_peg` | — | the sBTC peg: supply vs cap, 24h/7d peg-in and peg-out flows, in-flight and failed bridge requests, last peg events, signer set and threshold, rolling withdrawal headroom — **$0.01** |
 | `verified_route` | `need`, `budget_usd?`, `chain?` | buyer-side trust oracle: sweeps the x402 marketplace, collapses sybil/factory clusters, ranks real providers by usage × delivery scores → one vetted recommendation + ready_to_pay challenge — **$0.01** |
 
 ---
@@ -353,7 +354,7 @@ agent (Python SDK)
     ▼
 gateway (FastAPI on Railway)
     │
-    ├── registry/registry.py   — 21-tool catalog (17 free; session_create, pre_trade_check, funding_spread, verified_route — $0.01 each)
+    ├── registry/registry.py   — 22-tool catalog (17 free; session_create, pre_trade_check, funding_spread, sbtc_peg, verified_route — $0.01 each)
     ├── gateway/routes/plan.py — POST /v1/plan/estimate (free pre-flight plan pricing)
     ├── gateway/radar.py       — Arbitrum x402 Radar discovery + settlement verify (see RADAR.md)
     ├── gateway/stellar.py     — Stellar payment verification via Horizon

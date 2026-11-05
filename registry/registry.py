@@ -706,6 +706,45 @@ _TOOLS: dict[str, Tool] = {
             "venues_unavailable": {"binance": "geo-blocked (451)", "bybit": "geo-blocked (403)"},
         },
     ),
+    "sbtc_peg": Tool(
+        name="sbtc_peg",
+        description=(
+            "The sBTC peg as an agent-readable feed — the one dataset only Stacks state can "
+            "answer. Live sBTC supply (and share of the peg cap), peg-in and peg-out flows for "
+            "24h and 7d (sats, counts, unique recipients, net), in-flight bridge requests "
+            "(pending and accepted deposits with the oldest pending age, pending withdrawals, "
+            "24h failures), the last peg events with Bitcoin txids, the signer set and "
+            "signature threshold, and the rolling withdrawal cap with its current headroom. "
+            "Read from the sBTC token and registry contracts and the bridge API (Emily); a "
+            "source that fails degrades to null plus a note. Signer liveness is not public and "
+            "is reported as null — the pending ages and withdrawal headroom are the proxies."
+        ),
+        endpoint="https://agentpay.tools/tools/sbtc_peg",
+        price_usdc="0.01",
+        developer_address="GB7THTEVT2T7CZQ5TFUOIQSI32XCJ7BHWS35OBTAI2V4FNL7BXZZ2GM2",
+        parameters={"type": "object", "properties": {}, "required": []},
+        category="data",
+        triggers=["sbtc peg", "sbtc supply", "peg in", "peg out", "sbtc bridge", "sbtc signers", "bitcoin on stacks", "sbtc withdrawals"],
+        use_when="An agent wants the state of the sBTC peg before moving BTC onto or off Stacks, sizing against the withdrawal cap, or reading Bitcoin-capital flow into Stacks as a signal.",
+        avoid_when="you need the sBTC price or market data — token_price / token_market_data are free; you need a swap quote — pre_trade_check prices Bitflow. This call settles $0.01 on-chain.",
+        returns="asset, contract, network, as_of{time, stacks_height, bitcoin_height}, supply{sats, btc, peg_cap_sats, pct_of_cap}, flows{24h, 7d}{peg_in_sats, peg_in_count, peg_in_unique_recipients, peg_out_sats, peg_out_count, net_sats, from_stacks_height, complete}, in_flight{deposits_pending, deposits_accepted, oldest_pending_deposit_age_hours, withdrawals_pending, withdrawals_accepted, deposits_failed_24h, withdrawals_failed_24h}, last_events[{type, sats, stacks_height, bitcoin_txid, recipient|sender}], signers{count, signature_threshold, aggregate_pubkey, limits{peg_cap_sats, per_deposit_minimum_sats, per_withdrawal_cap_sats, rolling_withdrawal_cap_sats, rolling_window_blocks, available_to_withdraw_sats, withdrawal_headroom_pct, throttle_mode}, liveness, note}, read, sources, notes[]",
+        response_example={
+            "asset": "sBTC", "contract": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token", "network": "stacks-mainnet",
+            "as_of": {"time": "2026-11-05T13:16:06+00:00", "stacks_height": 9418770, "bitcoin_height": 974675},
+            "supply": {"sats": 248402294199, "btc": 2484.02294199, "peg_cap_sats": 2100000000000000, "pct_of_cap": 0.0118},
+            "flows": {
+                "24h": {"peg_in_sats": 349000521, "peg_in_count": 870, "peg_in_unique_recipients": 11, "peg_out_sats": 172451573, "peg_out_count": 15, "net_sats": 176548948, "from_stacks_height": 9411041, "complete": True},
+                "7d": {"peg_in_sats": 1093108934, "peg_in_count": 5324, "peg_in_unique_recipients": 39, "peg_out_sats": 790710098, "peg_out_count": 110, "net_sats": 302398836, "from_stacks_height": 9359229, "complete": True},
+            },
+            "in_flight": {"deposits_pending": 10, "deposits_accepted": 16, "oldest_pending_deposit_age_hours": 50.0, "withdrawals_pending": 0, "withdrawals_accepted": 3, "deposits_failed_24h": 0, "withdrawals_failed_24h": 1},
+            "last_events": [{"type": "peg_in", "sats": 85000, "stacks_height": 9418744, "bitcoin_txid": "62acd3f2cee3b1bb0ba547de0d1fc32253bf69e79b63cf19f9e055dc97f741db", "recipient": "SP000000000000000000002Q6VF78.pox-5"}],
+            "signers": {"count": 11, "signature_threshold": 8, "aggregate_pubkey": "0x02d99ad0f0111a7e9aaa2ed22940efec98db0ece9b9475e61e1eec65a6e7f3af69",
+                        "limits": {"peg_cap_sats": 2100000000000000, "per_deposit_minimum_sats": 10000, "per_withdrawal_cap_sats": 5100000000, "rolling_withdrawal_cap_sats": 15100000000, "rolling_window_blocks": 150, "available_to_withdraw_sats": 14786411900, "withdrawal_headroom_pct": 97.9, "throttle_mode": None},
+                        "liveness": None, "note": "signer liveness is not published; the observable proxies are pending/accepted deposit ages and the rolling withdrawal headroom"},
+            "read": "sBTC supply 2484.02 BTC; 24h net +1.7655 BTC (870 in / 15 out); 7d net +3.0240 BTC (5324 in / 110 out); 10 deposits pending (oldest 50.0h); 8-of-11 signers; withdrawal headroom 97.9%",
+            "notes": [],
+        },
+    ),
 }
 
 

@@ -20,7 +20,7 @@ import httpx
 from gateway.config import settings
 from gateway.services import bitflow
 from gateway.services.cache import CACHE_TTL, cache_get, cache_set
-from gateway.services import funding_spread
+from gateway.services import funding_spread, sbtc_peg
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,8 @@ async def real_tool_response(tool_name: str, params: dict) -> dict:
                 result = await _fetch_funding_rates(client, params)
             elif tool_name == "funding_spread":
                 result = await funding_spread.fetch(client, params)
+            elif tool_name == "sbtc_peg":
+                result = await sbtc_peg.fetch(client, params)
             elif tool_name == "open_interest":
                 result = await _fetch_open_interest(client, params)
             elif tool_name == "orderbook_depth":
