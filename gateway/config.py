@@ -261,6 +261,9 @@ class Settings(BaseSettings):
     # dev-onboarding flow ships (Supabase-backed registry), replace with
     # per-developer API keys.
     TOOL_REGISTER_SECRET: str = ""
+    # x402-list.com ownership proof: the one-time token from their update form,
+    # served at /.well-known/x402list.txt (404 while unset; tokens expire in 72h).
+    X402LIST_TOKEN: str = ""
 
     class Config:
         env_file = "../.env"

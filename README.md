@@ -278,9 +278,9 @@ agentpay-route "funding rates" --budget 0.01   # ranked candidates + a recommend
 
 ---
 
-## Paid tools: session_create, pre_trade_check, verified_route ($0.01 each)
+## Paid tools: session_create, pre_trade_check, funding_spread, sbtc_peg, verified_route ($0.01 each)
 
-Three tools cost money today. `session_create` opens a budget-capped session with a
+Five tools cost money today. `session_create` opens a budget-capped session with a
 hard `max_spend` limit — for autonomous agents that need spend enforcement across
 multiple calls. `pre_trade_check` is the first **outcome bundle**: one call returns
 an ok/caution/avoid trade verdict from live orderbook slippage at your size,
@@ -293,8 +293,15 @@ is the **buyer-side trust oracle**: "I need X, budget $Y — which x402 tool is
 real?" It sweeps the whole marketplace, collapses sybil/factory clusters, keeps
 only providers relevant to *your need*, ranks them by real unique-payer usage ×
 the [Prober's](https://agentpay.tools/probes) paid delivery scores, and returns
-one vetted recommendation with a ready-to-pay challenge. All 17 data tools
-remain free.
+one vetted recommendation with a ready-to-pay challenge. `funding_spread` reads
+perp funding on nine venues, normalises it to per-8h, and returns the spread —
+cheapest and dearest venue, its percentile against the last 7 days, and a carry
+estimate at your size net of taker fees (see
+[`docs/funding-spread.md`](docs/funding-spread.md)). `sbtc_peg` is the sBTC peg
+as a feed: supply vs cap, 24h/7d peg-in and peg-out flows, in-flight and failed
+bridge requests, the signer set and the rolling withdrawal headroom — Stacks-native
+data no EVM source has (see [`docs/sbtc-peg.md`](docs/sbtc-peg.md)). All 17 data
+tools remain free.
 
 Price any plan before spending a cent (free, no wallet): `POST /v1/plan/estimate`,
 or `session.estimate_plan([...])` from the SDK.
@@ -347,7 +354,7 @@ agent (Python SDK)
     │
     │  POST /tools/{name}/call
     │  ← 200 {result: ...}              ← free tools return directly
-    │  ← 402 {payment_id, amount, ...}  ← paid tools (session_create, pre_trade_check, verified_route)
+    │  ← 402 {payment_id, amount, ...}  ← paid tools (session_create, pre_trade_check, funding_spread, sbtc_peg, verified_route)
     │  → USDC on Base (~2s, standard x402) or Stellar (~3–5s, SDK classic+memo)
     │  → retry with X-Payment header
     │  ← 200 {result: ...}
@@ -414,7 +421,7 @@ print(r.data["verdict"], r.tx)      # verdict + the sbtc-token::transfer txid
 | [npm](https://www.npmjs.com/package/@romudille/agentpay-mcp) | ✅ @romudille/agentpay-mcp |
 | [skills CLI](https://github.com/vercel-labs/skills) | ✅ `npx skills add romudille-bit/agentpay` |
 | [402index.io](https://402index.io) | ✅ domain verified, 17 tools synced |
-| [x402-list.com](https://x402-list.com/services/agentpay) | ✅ listed 2026-09-07 — 3 paid endpoints, 14/14 x402 compliance, measured (never self-attested) score |
+| [x402-list.com](https://x402-list.com/services/agentpay) | ✅ listed 2026-09-07 — paid endpoints, 14/14 x402 compliance, measured (never self-attested) score |
 | Coinbase Bazaar | ✅ indexed via REST — `session_create`, `pre_trade_check`, `verified_route` (Base). ⚠️ NOT in the curated set: invisible on the MCP `search_resources` default |
 | Claude Code plugin | ✅ `/plugin marketplace add romudille-bit/agentpay` |
 | [MCP Registry](https://registry.modelcontextprotocol.io) | ✅ `io.github.romudille-bit/agentpay` v2.4.3 (official) |

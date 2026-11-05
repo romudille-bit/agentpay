@@ -863,6 +863,13 @@ async def llms_txt():
     return Response(content=build_llms_txt(), media_type="text/plain")
 
 
+@router.get("/.well-known/x402list.txt", response_class=Response, include_in_schema=False)
+async def x402list_token():
+    if not settings.X402LIST_TOKEN:
+        raise HTTPException(status_code=404)
+    return Response(content=settings.X402LIST_TOKEN.strip() + "\n", media_type="text/plain")
+
+
 @router.get("/sitemap.xml", response_class=Response)
 async def sitemap():
     from gateway.routes.prober import service_has_probe_data, service_slug

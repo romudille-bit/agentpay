@@ -290,7 +290,7 @@ def main():
         return (r.get("agent_address") or "").lower() in bot_wallets
 
     # Completed PAID calls = the real KPI (challenge issued AND settled). Counts
-    # ALL paid tools — session_create, pre_trade_check, verified_route — because an
+    # ALL paid tools — session_create, pre_trade_check, funding_spread, sbtc_peg, verified_route — because an
     # agent that pays for pre_trade_check/verified_route directly is a paying
     # customer even if it never opens a session_create. (Broadened 2026-07-29: was
     # session_create-only, which hid repeat payer 0xcD513… settling $0.01 on the
@@ -331,7 +331,7 @@ def main():
     total_usd = sum(e["usd"] for e in pay_by_wallet.values())
     print(f"\n  REAL-USAGE signals (crawlers excluded):")
     print(f"    completed paid calls    : {len(done_paid)}   <- the KPI: discovered + actually paid")
-    print(f"                              (all 3 paid tools; ${total_usd:.2f} across {len(pay_by_wallet)} wallet(s))")
+    print(f"                              (all paid tools; ${total_usd:.2f} across {len(pay_by_wallet)} wallet(s))")
     for w, e in sorted(pay_by_wallet.items(), key=lambda kv: -kv[1]["n"]):
         breakdown = ", ".join(f"{t}×{c}" for t, c in e["tools"].most_common())
         print(f"      · {w}  {e['n']} paid  ${e['usd']:.2f}  ({breakdown})")

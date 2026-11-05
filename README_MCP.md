@@ -33,8 +33,8 @@ Every call is session-tracked. The cap is enforced **before** any payment is sig
 ## Remote MCP (claude.ai, ChatGPT, Perplexity, Grok)
 
 No install: add `https://agentpay.tools/mcp` as a custom connector (Streamable HTTP, no auth). It
-serves the keyless set — 17 free tools, `verified_route_preview` and `estimate_plan`. The three
-$0.01 tools (`pre_trade_check`, `verified_route`, `session_create`) answer an unpaid call with
+serves the keyless set — 17 free tools, `verified_route_preview` and `estimate_plan`. The
+$0.01 tools (`pre_trade_check`, `funding_spread`, `sbtc_peg`, `verified_route`, `session_create`) answer an unpaid call with
 the x402 PaymentRequired, which a wallet-carrying MCP client pays in-band; without one, use the
 local server with a wallet (below) or the SDK. Per-harness steps:
 [agentpay.tools/connect](https://agentpay.tools/connect).
@@ -85,14 +85,16 @@ Restart Claude Desktop. Try asking:
 | `whale_activity` | Free | Large transfers for a token (≥$100k by default) |
 | `defi_tvl` | Free | DeFi protocol TVL from DeFiLlama |
 | `token_security` | Free | Honeypot, rug pull, and security scan for any token contract |
-| `open_interest` | Free | Total OI + 1h/24h change + long/short ratio across Binance + Bybit |
+| `open_interest` | Free | Total OI + 1h/24h change + median long/short ratio across Binance, OKX, Gate.io, Bitget |
 | `orderbook_depth` | Free | Best bid/ask + slippage at $10k/$50k/$250k notional |
 | `funding_rates` | Free | Perp funding rates across Binance, Bybit, and OKX |
 | `crypto_news` | Free | Latest headlines and community sentiment from Reddit |
 | `yield_scanner` | Free | Best DeFi yield opportunities for a token across protocols |
 | `dune_query` | Free | Run any Dune Analytics query by ID |
 | `session_create` | $0.01 | Open a budget-capped agent session with a hard spend cap |
-| `pre_trade_check` | $0.01 | One-call trade verdict: slippage at size + funding carry + OI crowding + security |
+| `pre_trade_check` | $0.01 | One-call trade verdict: slippage at size + funding carry + OI crowding + security (Bitflow venue for Stacks tokens) |
+| `funding_spread` | $0.01 | Cross-venue perp funding spread: nine venues normalised to 8h, cheapest/dearest, 7-day percentile, carry at your size |
+| `sbtc_peg` | $0.01 | The sBTC peg: supply vs cap, 24h/7d peg-in/out flows, in-flight bridge requests, signer set, withdrawal headroom |
 | `verified_route` | $0.01 | Buyer-side trust oracle: the vetted x402 provider for a need, ready to pay (free preview keyless) |
 
 ---
