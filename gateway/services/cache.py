@@ -38,6 +38,7 @@ CACHE_TTL: dict[str, int] = {
     "market_snapshot":    60,   # 60 seconds — macro + crypto ticks frequently
     "token_security":     3600, # 1 hour — contract scan results change rarely
     "yield_scanner":      300,  # 5 minutes — pool APYs move slowly
+    "funding_spread":     120,  # 2 minutes — funding moves per interval, history per 8h
     "funding_rates":      60,   # funding updates hourly; 60s is conservative
     "open_interest":      60,
     "orderbook_depth":    15,   # shortest — depth is the most time-sensitive read

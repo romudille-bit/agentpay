@@ -86,14 +86,14 @@ def patch_route_tool_response(monkeypatch):
 
 class TestListTools:
 
-    def test_returns_all_20_tools(self, client):
+    def test_returns_all_21_tools(self, client):
         r = client.get("/tools")
         assert r.status_code == 200
         body = r.json()
         assert "tools" in body
         assert "count" in body
-        assert body["count"] == 20
-        assert len(body["tools"]) == 20
+        assert body["count"] == 21
+        assert len(body["tools"]) == 21
 
     def test_each_tool_has_required_fields(self, client):
         r = client.get("/tools")
@@ -1578,7 +1578,7 @@ class TestPaidResponseUpsell:
         rel = r.json()["related"]
         assert "plan/estimate" in rel["hint"]
         names = {t["tool"] for t in rel["paid_tools"]}
-        assert names == {"verified_route", "session_create"}
+        assert names == {"funding_spread", "verified_route", "session_create"}
 
     def test_free_tool_response_has_no_related_block(
         self, client, patch_route_verify, patch_route_tool_response

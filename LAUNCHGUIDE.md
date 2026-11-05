@@ -15,7 +15,7 @@ Who it is for: developers running agents that buy data or compute from x402 APIs
 Runs locally (`npx @romudille/agentpay-mcp`) or as a remote Streamable HTTP server at https://agentpay.tools/mcp (keyless set: 17 free tools, `verified_route_preview`, `estimate_plan`). A Python SDK (`pip install agentpay-x402`) exposes the same sessions with policy controls (allowed tools, per-tool caps, recipient allowlist, approval threshold) and settles in USDC on Base and Stellar or sBTC on Stacks.
 
 ## Setup Requirements
-- `AGENTPAY_ENABLE_PAID` (optional): Set to `1` to let the server pay for the three $0.01 tools from the wallet it mints on first run (`~/.agentpay/mcp-wallet.json`; fund it with a few cents of USDC on Base). Default off: the 17 free tools work with nothing set. https://github.com/romudille-bit/agentpay/blob/main/README_MCP.md#paid-tools-wallet-mode
+- `AGENTPAY_ENABLE_PAID` (optional): Set to `1` to let the server pay for the $0.01 tools from the wallet it mints on first run (`~/.agentpay/mcp-wallet.json`; fund it with a few cents of USDC on Base). Default off: the 17 free tools work with nothing set. https://github.com/romudille-bit/agentpay/blob/main/README_MCP.md#paid-tools-wallet-mode
 - `AGENTPAY_MAX_SPEND` (optional): Hard per-session spend cap in USD when paid mode is on. Calls that would exceed it are refused before anything is signed. Default `0.10`.
 - `AGENTPAY_BASE_KEY` (optional): Bring your own EVM private key instead of the minted wallet. Use a dedicated, small-balance key; the cap is your blast radius. Not needed for free tools.
 - `AGENTPAY_WALLET_PATH` (optional): Where the minted wallet file is stored. Default `~/.agentpay/mcp-wallet.json`.

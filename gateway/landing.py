@@ -35,7 +35,7 @@ _LANDING_TEMPLATE = """<!DOCTYPE html>
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="GATEWAY_URL_PLACEHOLDER/og.png">
 <meta name="twitter:title" content="AgentPay — economic intelligence for MCP servers and AI agents">
-<meta name="twitter:description" content="Verified delivery, capped sessions, on-chain receipts. 20 x402 tools, 17 free, payable by any standard x402 client on Base or Stellar. Public delivery scores for the whole x402 market.">
+<meta name="twitter:description" content="Verified delivery, capped sessions, on-chain receipts. 21 x402 tools, 17 free, payable by any standard x402 client on Base or Stellar. Public delivery scores for the whole x402 market.">
 <link rel="canonical" href="GATEWAY_URL_PLACEHOLDER">
 <script type="application/ld+json">
 {
@@ -311,7 +311,7 @@ print(s.spending_summary())               # receipt: every call, cost, tx, chain
 </section>
 
 <section id="tools" class="tools">
-  <h2>20 tools — 17 free</h2>
+  <h2>21 tools — 17 free</h2>
   <ul class="tools-list">
 TOOLS_ROWS_PLACEHOLDER
   </ul>
