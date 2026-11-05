@@ -124,6 +124,14 @@
     {
       "name": "pre_trade_check",
       "description": "One-call pre-trade safety verdict ($0.01): slippage at size, funding carry, OI crowding, security. Settled via the agentpay-x402 SDK."
+    },
+    {
+      "name": "funding_spread",
+      "description": "Cross-venue perp funding spread ($0.01): nine venues normalised to 8h, cheapest and dearest venue, 7-day percentile, carry estimate at your size. Settled via the agentpay-x402 SDK."
+    },
+    {
+      "name": "sbtc_peg",
+      "description": "The sBTC peg as a feed ($0.01): supply vs cap, 24h/7d peg-in and peg-out flows, in-flight bridge requests, signer set, withdrawal headroom. Settled via the agentpay-x402 SDK."
     }
   ],
   "tools_generated": true,

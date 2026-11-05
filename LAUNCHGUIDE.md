@@ -29,7 +29,9 @@ Finance
 - `verified_route`: buyer-side trust oracle that vets x402 providers for a need and returns one ready-to-pay recommendation
 - Sybil and factory-clone collapse: listings from the same wallet or template are merged before ranking
 - Ranking by real paying users, call volume and recency rather than self-reported stats
-- `pre_trade_check`: one-call ok / caution / avoid verdict with slippage at your size, funding carry, open-interest crowding and optional token security
+- `pre_trade_check`: one-call ok / caution / avoid verdict with slippage at your size, funding carry, open-interest crowding and optional token security; Stacks tokens are priced on Bitflow
+- `funding_spread`: cross-venue perp funding divergence — nine venues normalised to 8h, cheapest and dearest venue, 7-day percentile, carry estimate at your size
+- `sbtc_peg`: the sBTC peg as a feed — supply vs cap, 24h/7d peg-in and peg-out flows, in-flight bridge requests, signer set and withdrawal headroom
 - `estimate_plan`: price a whole multi-tool plan before spending anything, with cheaper alternatives
 - Session receipt: every call, cost, settlement chain and transaction hash
 - Anomaly flags for repeated identical paid calls, a single call taking half the cap, and unconfirmed settlements

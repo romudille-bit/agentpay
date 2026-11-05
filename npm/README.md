@@ -40,8 +40,8 @@ Gateway: `https://agentpay.tools`
 ## Remote MCP (claude.ai, ChatGPT, Perplexity, Grok)
 
 No install: add `https://agentpay.tools/mcp` as a custom connector (Streamable HTTP, no auth). It
-serves the keyless set — 17 free tools, `verified_route_preview` and `estimate_plan`. The three
-$0.01 tools (`pre_trade_check`, `verified_route`, `session_create`) answer an unpaid call with
+serves the keyless set — 17 free tools, `verified_route_preview` and `estimate_plan`. The
+$0.01 tools (`pre_trade_check`, `funding_spread`, `sbtc_peg`, `verified_route`, `session_create`) answer an unpaid call with
 the x402 PaymentRequired, which a wallet-carrying MCP client pays in-band; without one, use the
 local server with a wallet (below) or the SDK. Per-harness steps:
 [agentpay.tools/connect](https://agentpay.tools/connect).
@@ -95,7 +95,9 @@ or the `agentpay-x402` Python SDK.
 | `yield_scanner` | Free | DeFi yield opportunities |
 | `dune_query` | Free | Run a Dune query |
 | `session_create` | $0.01 | Open a metered, budget-capped spending session |
-| `pre_trade_check` | $0.01 | Composite pre-trade verdict: orderbook + funding + OI + security |
+| `pre_trade_check` | $0.01 | Composite pre-trade verdict: orderbook + funding + OI + security (Bitflow venue for Stacks tokens) |
+| `funding_spread` | $0.01 | Cross-venue perp funding spread: nine venues normalised to 8h, cheapest/dearest, 7-day percentile, carry at your size |
+| `sbtc_peg` | $0.01 | The sBTC peg: supply vs cap, 24h/7d peg-in/out flows, in-flight bridge requests, signer set, withdrawal headroom |
 | `verified_route` | Free preview / $0.01 full | Buyer-side trust oracle: the vetted, real x402 provider for a need (full payload in wallet mode) |
 | `route` | Free | Legacy alias of the `verified_route` preview |
 | `estimate_plan` | Free | Price a multi-tool plan before spending |
