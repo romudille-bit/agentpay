@@ -204,6 +204,14 @@ _PAID_RELATED: dict[str, list[dict]] = {
          "why": ("gateway-enforced multi-call spend cap for your wallet on Stacks "
                  "and Base, with a verifiable receipt ledger")},
     ],
+    "sbtc_peg": [
+        {"tool": "pre_trade_check", "price_usdc": "0.01",
+         "why": ("one-call ok/caution/avoid verdict for STX, sBTC and Stacks tokens: "
+                 "Bitflow price impact at your size + CEX legs")},
+        {"tool": "session_create", "price_usdc": "0.01",
+         "why": ("gateway-enforced multi-call spend cap for your wallet on Stacks "
+                 "and Base, with a verifiable receipt ledger")},
+    ],
     "funding_spread": [
         {"tool": "pre_trade_check", "price_usdc": "0.01",
          "why": ("one-call ok/caution/avoid trade verdict: live slippage at "
@@ -430,6 +438,77 @@ _TOOL_BAZAAR: dict[str, dict] = {
                                         },
                                         "required": ["symbol"],
                                     },
+                                },
+                            },
+                        },
+                        "required": ["type", "bodyType", "body", "method"],
+                    },
+                    "output": {
+                        "type": "object",
+                        "properties": {
+                            "example": {"type": "object"},
+                            "type":    {"type": "string"},
+                        },
+                        "required": ["type"],
+                    },
+                },
+                "required": ["input"],
+            },
+        },
+    },
+    "sbtc_peg": {
+        "resource": {
+            "serviceName": "AgentPay sBTC Peg",
+            "description": (
+                "The sBTC peg as an agent-readable feed: live supply vs cap, "
+                "peg-in and peg-out flows for 24h and 7d (sats, counts, unique "
+                "recipients, net), in-flight and failed bridge requests, the last "
+                "peg events with Bitcoin txids, the signer set and threshold, and "
+                "the rolling withdrawal headroom. Stacks-native data no EVM source "
+                "has, read straight from the sBTC contracts and the bridge API."
+            ),
+            "tags": ["sbtc", "bitcoin", "stacks", "peg", "bridge"],
+        },
+        "extension": {
+            "description": (
+                "sBTC peg feed: supply, 24h/7d peg-in and peg-out flows, pending "
+                "and failed bridge requests, signer set and withdrawal headroom."
+            ),
+            "info": {
+                "input": {
+                    "type":     "http",
+                    "method":   "POST",
+                    "bodyType": "json",
+                    "body": {"parameters": {}},
+                },
+                "output": {
+                    "type": "json",
+                    "example": {
+                        "supply": {"btc": 2484.02, "pct_of_cap": 0.0118},
+                        "flows": {"24h": {"peg_in_sats": 349000521, "peg_out_sats": 172451573,
+                                          "net_sats": 176548948}},
+                        "in_flight": {"deposits_pending": 10, "oldest_pending_deposit_age_hours": 50.0},
+                        "signers": {"count": 11, "signature_threshold": 8},
+                        "read": ("sBTC supply 2484.02 BTC; 24h net +1.7655 BTC (870 in / 15 out); "
+                                 "8-of-11 signers; withdrawal headroom 97.9%"),
+                    },
+                },
+            },
+            "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "type":     {"const": "http", "type": "string"},
+                            "method":   {"enum": ["POST"], "type": "string"},
+                            "bodyType": {"enum": ["json", "form-data", "text"], "type": "string"},
+                            "body": {
+                                "type": "object",
+                                "properties": {
+                                    "parameters": {"type": "object", "properties": {}},
                                 },
                             },
                         },

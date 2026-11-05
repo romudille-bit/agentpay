@@ -141,7 +141,7 @@ trust preview (which x402 provider for a need is real and actually used), and <c
 <pre>{_e(FIRST_PROMPT)}</pre>
 <h2>Paid verdicts</h2>
 <p class="note">The remote server never holds a wallet. The $0.01 tools
-(<code>pre_trade_check</code>, <code>funding_spread</code>, <code>verified_route</code>, <code>session_create</code>) answer an unpaid
+(<code>pre_trade_check</code>, <code>funding_spread</code>, <code>sbtc_peg</code>, <code>verified_route</code>, <code>session_create</code>) answer an unpaid
 call with the x402 PaymentRequired; an MCP client that carries a wallet pays it in-band and gets the
 result with a receipt. Without one, run the local server with a small capped wallet
 (<code>npx -y @romudille/agentpay-mcp</code> with <code>AGENTPAY_ENABLE_PAID=1</code> and
