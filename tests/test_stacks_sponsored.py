@@ -117,6 +117,22 @@ class TestSettle:
         assert not hiro.called
 
     @respx.mock
+    async def test_relay_5xx_policy_refusal_is_definitive(self, sponsor_on):
+        """VelumX reports its per-sender quota as a 500: nothing was broadcast,
+        so the payer gets a rejection it can act on, not an uncertain loop."""
+        tx = _sponsored_tx()
+        respx.post(f"{VELUMX}/broadcast").mock(return_value=httpx.Response(
+            500, json={"error": "Sponsorship limit reached: this user has already "
+                                "used 5 of 5 sponsored transactions."}))
+        hiro = respx.get(url__regex=rf"{HIRO}/extended/v1/.*").mock(
+            return_value=httpx.Response(200, json={"results": []}))
+        out = await stacks_pay.settle_stacks_payment(
+            tx, txid_of(tx), payment_id=PAYMENT_ID, sponsored=True, sender="ST1", nonce=4)
+        assert not out["ok"] and out["state"] == "rejected"
+        assert out["reason"].startswith("sponsor_rejected: Sponsorship limit reached")
+        assert not hiro.called
+
+    @respx.mock
     async def test_relay_unreachable_is_rejection(self, sponsor_on):
         tx = _sponsored_tx()
         respx.post(f"{VELUMX}/broadcast").mock(side_effect=httpx.ConnectError("refused"))

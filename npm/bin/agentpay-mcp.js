@@ -44,7 +44,8 @@
  *   AGENTPAY_STACKS_KEY   — optional Stacks private key: paid tools settle in sBTC on Stacks
  *                           (sponsored/gasless when the gateway offers it). Implies paid mode.
  *   AGENTPAY_STACKS_NETWORK — mainnet (default) | testnet
- *   AGENTPAY_STACKS_SPONSORED — auto (default: sponsored when offered) | 1 (require) | 0 (pay own fee)
+ *   AGENTPAY_STACKS_SPONSORED — auto (default: sponsored when offered, own fee when the relay
+ *                           refuses) | 1 (require) | 0 (pay own fee)
  *   AGENTPAY_PREFER_CHAIN — "stacks" (default when a Stacks key is set) | "base"
  *   AGENTPAY_TRANSPORT    — "stdio" (default) or "http": Streamable HTTP at /mcp on $PORT.
  *                           HTTP is the shared remote server: always keyless, never paid.
@@ -582,7 +583,7 @@ async function postStacksPayment(url, built, params) {
   });
 }
 
-async function settleStacks(toolName, url, params, challenge, stacksOpt) {
+async function settleStacks(toolName, url, params, challenge, stacksOpt, { unsponsored = false } = {}) {
   const amountUsdc = challenge.amount_usdc;
 
   // Redeem first: an earlier uncertain settle for this tool may have confirmed.
@@ -614,7 +615,8 @@ async function settleStacks(toolName, url, params, challenge, stacksOpt) {
   try {
     const nonce = await fetchStacksNonce();
     built = stacksTx.buildStacksPayment(stacksOpt, challenge.payment_id, url, STACKS.keypair,
-                                        STACKS.network, nonce, { sponsored: STACKS_SPONSORED });
+                                        STACKS.network, nonce,
+                                        { sponsored: unsponsored ? false : STACKS_SPONSORED });
   } catch (err) {
     throw new McpError(ErrorCode.InvalidRequest, `'${toolName}': ${err.message} (nothing was signed)`);
   }
@@ -652,7 +654,21 @@ async function settleStacks(toolName, url, params, challenge, stacksOpt) {
     // Nothing broadcast: give the cap back and let the next call sign afresh.
     spentMicro -= amountMicro;
     stacksNextNonce = null;
-    const hint = /NotEnoughFunds|underfund|insufficient/i.test(reason) ? ` ${fundingHint()}` : '';
+    // The relay refused to sponsor (per-sender quota, budget). Auto mode pays
+    // its own fee against a fresh 402; required mode stops here.
+    const sponsorRefused = built.sponsored && /sponsor/i.test(reason)
+      && /limit|quota|budget|not (allowed|permitted|eligible)/i.test(reason);
+    if (sponsorRefused && STACKS_SPONSORED === null && !unsponsored) {
+      const fresh = await freshChallenge(url, params, STACKS.address);
+      const freshOpt = (fresh?.payment_options || {}).stacks;
+      if (freshOpt) {
+        log(`AgentPay MCP: '${toolName}' sponsorship refused (${reason}) — paying the STX fee instead`);
+        return settleStacks(toolName, url, params, fresh, freshOpt, { unsponsored: true });
+      }
+    }
+    const hint = sponsorRefused && STACKS_SPONSORED === true
+      ? ' Sponsorship is required (AGENTPAY_STACKS_SPONSORED=1); set it to auto or 0 to pay the fee.'
+      : (/NotEnoughFunds|underfund|insufficient/i.test(reason) ? ` ${fundingHint()}` : '');
     throw new Error(`'${toolName}': Stacks payment rejected (${reason}); nothing was broadcast, the cap is unchanged.${hint}`);
   }
   stacksNextNonce = built.nonce + 1;

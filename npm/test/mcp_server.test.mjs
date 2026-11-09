@@ -356,6 +356,60 @@ test('AGENTPAY_STACKS_SPONSORED=0 pays its own fee even when sponsorship is offe
   assert.equal(tx.readBigUInt64BE(35), 3000n);
 });
 
+test('auto mode pays its own fee when the relay refuses to sponsor (per-sender quota)', async () => {
+  // First settle: the relay's quota is spent (nothing broadcast). The MCP gives the cap
+  // back, fetches a fresh 402 and re-signs unsponsored; the receipt says so.
+  let settles = 0;
+  const g = await fakeGateway((req) => {
+    if (req.url === '/tools') return { json: toolsList };
+    if (req.url.startsWith('/v2/accounts/')) return { json: { nonce: 4, balance: '0x0' } };
+    if (req.url.startsWith('/extended/v1/address/')) return { json: { results: [] } };
+    if (req.headers['payment-signature']) {
+      settles += 1;
+      if (settles === 1) {
+        return { status: 402, json: { payment_status: 'rejected',
+          error_reason: 'sponsor_rejected: Sponsorship limit reached: this user has already used 5 of 5 sponsored transactions.' } };
+      }
+      return { json: { result: { ok: true }, payment: { tx_hash: 'cd'.repeat(32), network: 'stacks-testnet' } } };
+    }
+    return { status: 402, json: { ...stacksChallenge(), payment_id: settles === 0 ? 'pid-stx-1' : 'pid-stx-2' } };
+  });
+  const { replies, stderr } = await callOnce(g.url, { env: stacksEnv(g.url) });
+  g.server.close();
+
+  const out = JSON.parse(textOf(replies[0]));
+  assert.equal(out.ok, true);
+  assert.equal(out.receipt.sponsored, false);
+  assert.equal(out.receipt.session_spent_usd, '0.01');            // counted once, not twice
+  const paid = g.seen.filter((r) => r.headers['payment-signature']).map(decodeHeader);
+  assert.equal(paid.length, 2);
+  assert.equal(paid[0].payload.sponsored, true);
+  assert.equal(paid[1].payload.sponsored, false);
+  assert.equal(paid[1].payment_id, 'pid-stx-2');                   // a fresh challenge, not a replay
+  const tx2 = Buffer.from(paid[1].payload.signedTransaction, 'hex');
+  assert.equal(tx2[5], 0x04);
+  assert.equal(tx2.readBigUInt64BE(35), 3000n);
+  assert.match(stderr, /sponsorship refused .* paying the STX fee instead/);
+});
+
+test('AGENTPAY_STACKS_SPONSORED=1 stops with a clear error when the relay refuses', async () => {
+  const g = await fakeGateway((req) => {
+    if (req.url === '/tools') return { json: toolsList };
+    if (req.url.startsWith('/v2/accounts/')) return { json: { nonce: 4, balance: '0x0' } };
+    if (req.url.startsWith('/extended/v1/address/')) return { json: { results: [] } };
+    if (req.headers['payment-signature']) {
+      return { status: 402, json: { payment_status: 'rejected', error_reason: 'sponsor_rejected: Sponsorship limit reached' } };
+    }
+    return { status: 402, json: stacksChallenge() };
+  });
+  const { replies } = await callOnce(g.url, { env: stacksEnv(g.url, { AGENTPAY_STACKS_SPONSORED: '1' }) });
+  g.server.close();
+  const text = textOf(replies[0]);
+  assert.match(text, /Stacks payment rejected .*Sponsorship limit reached/);
+  assert.match(text, /Sponsorship is required/);
+  assert.equal(g.seen.filter((r) => r.headers['payment-signature']).length, 1);
+});
+
 test('a Base receipt is returned with the result too', async () => {
   const g = await fakeGateway((req) => {
     if (req.url === '/tools') return { json: toolsList };
