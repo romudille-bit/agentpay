@@ -67,7 +67,7 @@ import * as stacksTx from './stacks_tx.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.8.0';
+const VERSION = '2.8.1';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.

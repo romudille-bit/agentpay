@@ -709,7 +709,7 @@ async def auth_md():
 
 
 # In lockstep with npm/package.json (tests/test_mcp_versions.py).
-MCP_SERVER_VERSION = "2.8.0"
+MCP_SERVER_VERSION = "2.8.1"
 
 
 @router.get("/.well-known/mcp/server-card.json", response_class=JSONResponse)
