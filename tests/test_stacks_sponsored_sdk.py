@@ -179,6 +179,59 @@ class TestClient:
         assert client.call_log[-1]["amount_usdc"] != "0"
 
 
+    def test_auto_pays_own_fee_after_sponsor_quota_refusal(self):
+        """The relay's per-sender quota is spent: the leg is zeroed, a fresh
+        402 is fetched and the same call is re-signed unsponsored (fee > 0)."""
+        w = _wallet()
+        client = AgentPayClient(wallet=w, gateway_url=GATEWAY)
+        second_402 = _stacks_402(sponsorship=SPONSORSHIP)
+        second_402["payment_id"] = "pay_stacks_test_0002"
+        with respx.mock:
+            _mock_nonce(7)
+            route = respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=_stacks_402(sponsorship=SPONSORSHIP)),
+                httpx.Response(402, json={
+                    "payment_status": "rejected",
+                    "error_reason": ("sponsor_rejected: Sponsorship limit reached: this "
+                                     "user has already used 5 of 5 sponsored transactions.")}),
+                httpx.Response(402, json=second_402),
+                httpx.Response(200, json=_ok_200()),
+            ])
+            respx.get(url__regex=rf"{HIRO}/extended/v1/address/{w.stacks_address}/.*").mock(
+                return_value=httpx.Response(200, json={"results": []}))
+            client.call_tool("verified_route", {"need": "x"}, max_spend="0.0011",
+                             prefer_chain="stacks", chain_is_explicit=True)
+        settles = [c.request for c in route.calls if "payment-signature" in c.request.headers]
+        assert len(settles) == 2
+        first, tx1, _ = _decode_ps_header(settles[0].headers["payment-signature"])
+        second, tx2, _ = _decode_ps_header(settles[1].headers["payment-signature"])
+        assert first["payload"]["sponsored"] is True and tx1[5] == 0x05
+        assert second["payload"]["sponsored"] is False and tx2[5] == 0x04
+        assert second["payment_id"] == "pay_stacks_test_0002"
+        assert int.from_bytes(tx2[35:43], "big") > 0        # payer fee, not 0
+        states = [e.get("state") for e in client.call_log if e.get("network") == "stacks"]
+        assert "sponsor_refused_resigned" in states
+        assert client.call_log[-1]["amount_usdc"] != "0"      # the re-signed leg is the spend
+
+    def test_required_sponsorship_stops_on_quota_refusal(self):
+        w = _wallet(stacks_sponsored=True)
+        client = AgentPayClient(wallet=w, gateway_url=GATEWAY)
+        with respx.mock:
+            _mock_nonce(7)
+            route = respx.post(TOOL_URL).mock(side_effect=[
+                httpx.Response(402, json=_stacks_402(sponsorship=SPONSORSHIP)),
+                httpx.Response(402, json={"payment_status": "rejected",
+                                          "error_reason": "sponsor_rejected: Sponsorship limit reached"}),
+            ])
+            respx.get(url__regex=rf"{HIRO}/extended/v1/address/{w.stacks_address}/.*").mock(
+                return_value=httpx.Response(200, json={"results": []}))
+            with pytest.raises(PaymentFailed, match="sponsorship refused"):
+                client.call_tool("verified_route", {"need": "x"}, max_spend="0.0011",
+                                 prefer_chain="stacks", chain_is_explicit=True)
+        assert len([c for c in route.calls if "payment-signature" in c.request.headers]) == 1
+        assert client.call_log[-1]["amount_usdc"] == "0"
+
+
 class TestRedeemResolvesRelayedTxid:
     def test_redeem_finds_relayed_txid_by_nonce(self):
         w = _wallet()

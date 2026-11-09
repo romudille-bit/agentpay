@@ -892,7 +892,8 @@ class AgentWallet:
         resp.raise_for_status()
         return int(resp.json()["nonce"])
 
-    def build_stacks_payment(self, stacks_opt: dict, payment_id: str, resource_url: str) -> dict:
+    def build_stacks_payment(self, stacks_opt: dict, payment_id: str, resource_url: str,
+                             sponsored: Optional[bool] = None) -> dict:
         """Sign, but do not broadcast, an sBTC transfer for a 402 stacks
         option, and build the lowercase `payment-signature` header payload.
 
@@ -905,7 +906,9 @@ class AgentWallet:
 
         Sponsored (relay-paid) when the 402 offers `sponsorship` and the
         wallet allows it: fee 0, sponsored auth variant; the relay's txid
-        then differs from `txid` (the hash of these bytes).
+        then differs from `txid` (the hash of these bytes). `sponsored`
+        overrides the wallet preference for this one tx (the client passes
+        False to pay its own fee after a relay refusal).
 
         Returns {"header", "txid", "nonce", "amount_sats", "amount_usd",
                  "sponsored", "sender"}.
@@ -938,8 +941,9 @@ class AgentWallet:
         pay_to = stacks_opt.get("pay_to") or stacks_opt.get("payTo")
         if not pay_to:
             raise ValueError("402 stacks option has no pay_to address")
-        sponsored = self._use_sponsored(
-            bool((stacks_opt.get("sponsorship") or {}).get("available")))
+        if sponsored is None:
+            sponsored = self._use_sponsored(
+                bool((stacks_opt.get("sponsorship") or {}).get("available")))
         if sponsored:
             fee = 0
         else:

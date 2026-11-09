@@ -241,17 +241,34 @@ class AgentPayClient:
                 nonce_conflict = bool(
                     re.search(r"(?i)(bad|conflicting|stale)[ _-]{0,3}nonce", reason)
                 )
-                if rejected and nonce_conflict and attempt == 1:
-                    # Node refused the tx (stale nonce). The payment_id was
-                    # already consumed pre-broadcast, so reusing it would be
-                    # rejected as a replay — request a fresh 402 for a new
-                    # payment_id, then re-sign.
+                # The relay refused to sponsor (per-sender quota, budget):
+                # nothing was broadcast and the payer can pay its own fee.
+                sponsor_refused = bool(built.get("sponsored")) and bool(
+                    re.search(r"(?i)sponsor", reason)
+                    and re.search(r"(?i)(limit|quota|budget|not (allowed|permitted|eligible))",
+                                  reason)
+                )
+                if rejected and sponsor_refused and self.wallet.stacks_sponsored is True:
                     entry["amount_usdc"] = "0"
-                    entry["state"] = "stale_nonce_resigned"
+                    entry["state"] = "rejected"
+                    self.wallet.reset_stacks_nonce()
+                    raise PaymentFailed(
+                        f"stacks sponsorship refused for this wallet and "
+                        f"stacks_sponsored=True forbids paying the fee: {reason[:160]}"
+                    )
+                if rejected and (nonce_conflict or sponsor_refused) and attempt == 1:
+                    # The node (stale nonce) or the relay (sponsorship quota)
+                    # refused. The payment_id is consumed, so request a fresh
+                    # 402 and re-sign once — unsponsored after a relay refusal.
+                    cause = "sponsorship refused" if sponsor_refused else "stale nonce"
+                    entry["amount_usdc"] = "0"
+                    entry["state"] = ("sponsor_refused_resigned" if sponsor_refused
+                                      else "stale_nonce_resigned")
                     self.wallet.reset_stacks_nonce()
                     logger.warning(
-                        f"  Stacks settle rejected (stale nonce) — re-requesting "
-                        f"a fresh 402 and re-signing once: {reason[:80]}"
+                        f"  Stacks settle rejected ({cause}) — re-requesting a fresh "
+                        f"402 and re-signing once"
+                        f"{' with the payer fee' if sponsor_refused else ''}: {reason[:80]}"
                     )
                     try:
                         fresh = client.post(
@@ -302,13 +319,14 @@ class AgentPayClient:
                                 amount_usd=amount_usd,
                             )
                         built = self.wallet.build_stacks_payment(
-                            stacks_opt, payment_id, url
+                            stacks_opt, payment_id, url,
+                            **({"sponsored": False} if sponsor_refused else {}),
                         )
                     except (BudgetExceeded, PaymentFailed):
                         raise
                     except Exception as e:
                         raise PaymentFailed(
-                            f"stacks re-sign after stale nonce failed: {str(e)[:160]}"
+                            f"stacks re-sign after {cause} failed: {str(e)[:160]}"
                         )
                     continue
                 if rejected:

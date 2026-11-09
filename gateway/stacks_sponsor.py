@@ -11,6 +11,7 @@ resolved by finding the tx again by (sender, nonce) on Hiro.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -20,6 +21,12 @@ from gateway.config import settings
 logger = logging.getLogger("agentpay.gateway.stacks")
 
 RELAY = "velumx"
+
+# A 5xx whose body states a policy refusal (per-sender quota, budget, not
+# allowed) means nothing left the relay: definitive, not uncertain.
+_POLICY_REFUSAL = re.compile(
+    r"(?i)(limit (reached|exceeded)|sponsorship limit|quota|budget|"
+    r"not (allowed|permitted|eligible))")
 
 
 def sponsor_enabled() -> bool:
@@ -34,7 +41,9 @@ def sponsorship_fields() -> dict:
         "available": True,
         "relay": RELAY,
         "origin_fee_microstx": 0,
-        "note": "sign the sponsored auth variant with fee 0; the relay pays the STX fee",
+        "note": ("sign the sponsored auth variant with fee 0; the relay pays the STX fee. "
+                 "The relay may cap sponsored txs per sender: a sponsor_rejected answer "
+                 "is definitive and the payer can pay its own fee instead"),
     }}
 
 
@@ -73,7 +82,7 @@ async def relay_sponsored(signed_tx: bytes, network: str) -> dict:
             return {"outcome": "uncertain", "txid": "", "reason": "sponsor_no_txid"}
         return {"outcome": "accepted", "txid": txid, "reason": "ok"}
     err = str(data.get("error") or data.get("message") or resp.text[:160] or resp.status_code)
-    if resp.status_code < 500:
+    if resp.status_code < 500 or _POLICY_REFUSAL.search(err):
         return {"outcome": "rejected", "txid": "", "reason": f"sponsor_rejected: {err[:160]}"}
     return {"outcome": "uncertain", "txid": "",
             "reason": f"sponsor_http_{resp.status_code}: {err[:120]}"}
