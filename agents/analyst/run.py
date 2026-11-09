@@ -405,13 +405,22 @@ def goal_strategy_spec(day: int, override: list[str] | None) -> dict:
     }
 
 
+# One need per rotation slot: six identical "dex pair liquidity" runs in a row
+# taught us nothing about the marketplace. FLAGSHIP_VR_NEED still overrides.
+_VR_NEEDS = [
+    "dex pair liquidity", "token price feed", "wallet balance lookup",
+    "crypto news headlines", "token security scan", "web search",
+    "gas price oracle",
+]
+
+
 def goal_verified_route(day: int, override: list[str] | None) -> dict:
     """Daily buyer-side trust run — vet the x402 marketplace and settle ONE paid
     verified_route ($0.01) under the cap. The autonomous, on-chain proof that an
     agent pays for trust BEFORE it spends: sweep the catalog, collapse sybils,
     return the real used provider. Free regime intel for context; the only paid
     leg is the single verified_route call."""
-    need = os.environ.get("FLAGSHIP_VR_NEED", "").strip() or "dex pair liquidity"
+    need = os.environ.get("FLAGSHIP_VR_NEED", "").strip() or _VR_NEEDS[day % len(_VR_NEEDS)]
     gt = (f"Vet the x402 marketplace for '{need}' — pay verified_route for the "
           f"real, used provider before trusting a stranger")
     return {

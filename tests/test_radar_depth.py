@@ -103,17 +103,21 @@ def test_retention_does_not_affect_rank():
     assert _quality(c, a)[OTTO]["quality"] == _quality(c, b)[OTTO]["quality"]
 
 
-def test_fleet_shaped_flag_is_informational():
+def test_fleet_shaped_halves_quality_and_is_never_the_pick():
+    """A provider our own depth data calls fleet-shaped used to be recommended
+    with that warning attached. Now the flag costs half the quality and the
+    listing stays visible but is never the recommendation."""
     c = [_cand(CLUSTER, payers=50, calls=300), _cand(FLEET, payers=24, calls=480),
          _cand(OTTO, payers=50, calls=300)]
     out = _quality(c, DEPTH)
     assert radar.FLAG_FLEET_SHAPED in out[CLUSTER]["flags"]
     assert radar.FLAG_FLEET_SHAPED in out[FLEET]["flags"]
     assert radar.FLAG_FLEET_SHAPED not in out[OTTO]["flags"]
-    # No rank change from the flag itself: Cluster (pq 0.999) ≈ unweighted.
-    assert out[CLUSTER]["quality"] == radar._usage_q(50, 300, 0)
+    assert out[CLUSTER]["quality"] == radar._usage_q(50, 300, 0) // 2
     assert out[CLUSTER]["depth"]["fleet_shaped"] is True
     assert out[CLUSTER]["depth"]["legs_per_payer"] == pytest.approx(173.7, abs=0.1)
+    _, rec = radar.decide(c, Decimal("0.25"), depth=DEPTH)
+    assert rec["pay_to"] == OTTO
 
 
 def test_why_and_public_projection_carry_depth():

@@ -176,7 +176,13 @@ async def health():
         "pending_payments": get_pending_count(),
         # Railway injects the built commit; local runs report "dev".
         "commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "dev")[:12],
+        "bazaar_catalog": _catalog_status(),
     }
+
+
+def _catalog_status() -> dict:
+    from gateway.services import catalog_cache
+    return catalog_cache.status()
 
 
 @router.get("/stats")

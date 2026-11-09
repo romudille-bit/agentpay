@@ -1809,14 +1809,16 @@ async def _fetch_verified_route(client: httpx.AsyncClient, params: dict) -> dict
     except (InvalidOperation, ValueError, TypeError):
         budget = Decimal("1")
 
-    # Bias the sweep toward the need: lead with the whole need + the agent's own
-    # topical terms (same tokenizer the relevance tier uses), then the
-    # broad default set (deduped, order-preserving) for full-catalog coverage.
+    # The catalog snapshot is the candidate set; the live sweep is a top-up for
+    # listings newer than it (need + the agent's topical terms, same tokenizer
+    # as the relevance tier). With no snapshot the broad term set is swept too.
+    from gateway.services import catalog_cache
+    catalog = catalog_cache.get() if settings.BAZAAR_CATALOG_CACHE else None
     need_terms = ([need.lower()] if need else []) + radar._need_tokens(need)[:4]
-    queries = list(dict.fromkeys(need_terms + radar.SWEEP_QUERIES))
+    queries = list(dict.fromkeys(need_terms + ([] if catalog is not None else radar.SWEEP_QUERIES)))
 
     payloads = await _sweep_bazaar(client, queries)
-    if not payloads:
+    if not payloads and catalog is None:
         return {"error": "Bazaar discovery unavailable — no queries returned"}
 
     # Delivery scores from the Prober: unprobed = neutral factor 1.0;
@@ -1826,8 +1828,10 @@ async def _fetch_verified_route(client: httpx.AsyncClient, params: dict) -> dict
     # on-chain payer depth per payTo (cached; {} = unweighted).
     depth = await fetch_provider_depth()
 
-    result = radar.verified_route_from_payloads(payloads, need=need, budget=budget,
-                                                chain=chain, scores=scores, depth=depth)
+    result = radar.verified_route_from_payloads(
+        payloads, need=need, budget=budget, chain=chain, scores=scores, depth=depth,
+        extra=catalog, source="catalog+sweep" if catalog is not None else "sweep",
+        snapshot_age_h=catalog_cache.age_hours() if catalog is not None else None)
     # keep what the sweep resolved (payTo → host/URLs/need) for the
     # map — held in memory, written by the rollup flush, never from here.
     try:
