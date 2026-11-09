@@ -6,6 +6,10 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-11-09
+
+**Sponsored Stacks payments, with a fallback when the relay says no.**
+
 ### Added
 - **Sponsored Stacks payments** — when the 402 carries
   `payment_options.stacks.sponsorship`, the wallet signs the SIP-005
@@ -18,6 +22,15 @@ project uses [Semantic Versioning](https://semver.org/).
 - `GatewayUnavailable` — raised by `Session.call()` when the gateway does
   not answer the registry lookup (a connection error, a timeout, or a 5xx,
   after one retry). Carries the cause. Nothing is signed or paid.
+
+- **Own-fee fallback after a sponsorship refusal.** The relay may cap
+  sponsored transactions per sender. When the gateway answers `rejected`
+  with a sponsorship-limit reason, nothing was broadcast: in `auto` mode
+  the client zeroes the leg (`state: sponsor_refused_resigned`), requests a
+  fresh 402 and re-signs the same call once with its own STX fee.
+  `stacks_sponsored=True` raises `PaymentFailed` instead of paying.
+  `AgentWallet.build_stacks_payment(..., sponsored=)` overrides the wallet
+  preference for one transaction.
 
 ### Changed
 - `ToolNotFound` is raised only on an actual 404 from the gateway. A lookup
