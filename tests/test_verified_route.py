@@ -452,3 +452,138 @@ def test_timestamps_normalised_and_survivor_depth_not_repeated():
     assert "effective_payers" not in ev and exa["depth"] is not None
     fac = next(s for s in out["survivors"] if s["pay_to"] == FACTORY_WALLET)
     assert "collapsed_siblings" in _by_metric(fac["evidence"])
+
+
+# ── usage-shape band, never-pick flags, confidence floor, catalog merge ──────
+
+def _vr(payload, need="dex pair liquidity", **kw):
+    return radar.verified_route_from_payloads([payload], need, Decimal("1"), **kw)
+
+
+def test_shallow_usage_halves_quality_but_stays_eligible():
+    """100 wallets calling once is weaker evidence than 40 wallets calling 300
+    times. The one-call-per-payer listing is flagged and halved, still listed,
+    still eligible — and loses to repeat use."""
+    payload = {"resources": [
+        _res("Onboarding Pool", "https://wide.x/dex/pool", "0x" + "a1" * 20, payers=100, calls=100),
+        _res("Repeat Pairs", "https://deep.x/dex/pairs", "0x" + "b2" * 20, payers=40, calls=300),
+    ]}
+    out = _vr(payload)
+    by = {s["name"]: s for s in out["survivors"]}
+    assert radar.FLAG_SHALLOW_USAGE in by["Onboarding Pool"]["flags"]
+    assert by["Onboarding Pool"]["quality"] == radar._usage_q(100, 100, None) // 2
+    assert radar.FLAG_SHALLOW_USAGE not in by["Repeat Pairs"]["flags"]
+    assert out["verdict"] == "pick"
+    assert out["recommendation"]["name"] == "Repeat Pairs"
+
+
+def test_shallow_flag_needs_three_payers():
+    payload = {"resources": [
+        _res("Tiny", "https://tiny.x/dex", "0x" + "c3" * 20, payers=2, calls=2),
+    ]}
+    out = _vr(payload)
+    assert radar.FLAG_SHALLOW_USAGE not in out["survivors"][0]["flags"]
+
+
+def test_heavy_repeat_use_is_not_penalised_from_listing_numbers():
+    """30 wallets averaging 333 calls each is how the market head looks
+    (BlockRun, StableEnrich, AX1 run 100–350). Listing counters never flag
+    it; only on-chain depth can call a provider fleet-shaped."""
+    payload = {"resources": [
+        _res("Busy", "https://busy.x/dex/pairs", "0x" + "d4" * 20, payers=30, calls=10_000),
+        _res("Modest", "https://modest.x/dex/pairs", "0x" + "e5" * 20, payers=20, calls=100),
+    ]}
+    out = _vr(payload)
+    busy = next(s for s in out["survivors"] if s["name"] == "Busy")
+    assert busy["flags"] == []
+    assert busy["quality"] == radar._usage_q(30, 10_000, None)   # calls capped, not halved
+    assert out["recommendation"]["name"] == "Busy"
+
+
+def test_single_payer_volume_means_one_or_two_wallets():
+    """The flag is literal: two wallets behind 900 calls, yes; 141 payers at
+    25 calls each is a busy service, not wash volume."""
+    payload = {"resources": [
+        _res("Two Wallets", "https://two.x/dex/pairs", "0x" + "a9" * 20, payers=2, calls=900),
+        _res("Busy", "https://busy.x/dex/pairs", "0x" + "b1" * 20, payers=141, calls=3525),
+    ]}
+    out = _vr(payload)
+    by = {s["name"]: s for s in out["survivors"]}
+    assert radar.FLAG_SINGLE_PAYER_VOLUME in by["Two Wallets"]["flags"]
+    assert radar.FLAG_SINGLE_PAYER_VOLUME not in by["Busy"]["flags"]
+    assert radar.FLAG_FLEET_SHAPED not in by["Busy"]["flags"]
+    assert out["recommendation"]["name"] == "Busy"
+
+
+def test_too_close_to_call_returns_no_pick_with_reason():
+    """70 vs 66 is a coin flip, not a recommendation."""
+    payload = {"resources": [
+        _res("A Bench", "https://a.x/dex/pool", "0x" + "f6" * 20, payers=6, calls=40),
+        _res("B Screen", "https://b.x/dex/pools", "0x" + "a7" * 20, payers=6, calls=36),
+    ]}
+    out = _vr(payload)
+    assert out["verdict"] == "no_confident_pick"
+    assert out["recommendation"] is None
+    assert "too close" in out["no_pick_reason"]
+    assert len(out["survivors"]) == 2                     # the ranking is still handed over
+
+
+def test_pick_needs_three_distinct_payers():
+    payload = {"resources": [
+        _res("Lonely", "https://lonely.x/dex", "0x" + "b8" * 20, payers=1, calls=9),
+    ]}
+    out = _vr(payload)
+    assert out["verdict"] == "no_confident_pick"
+    assert "distinct payer" in out["no_pick_reason"]
+
+
+def test_margin_is_waived_for_same_provider_and_other_relevance_tiers():
+    """A provider's own second endpoint is not a rival, and a listing matching
+    fewer need concepts is not competing at the same relevance."""
+    same = "0x" + "c9" * 20
+    payload = {"resources": [
+        _res("Pool", "https://one.x/dex/pool", same, payers=120, calls=400),
+        _res("Candles", "https://one.x/dex/candles", same, payers=110, calls=380),
+        _res("Generic Dex", "https://other.x/dex", "0x" + "d0" * 20, payers=115, calls=390),
+    ]}
+    out = _vr(payload, need="dex pool liquidity")
+    assert out["verdict"] == "pick"
+    assert out["recommendation"]["name"] == "Pool"
+
+
+def test_catalog_extra_is_deduped_and_live_sweep_wins():
+    """The snapshot and the live sweep both carry the same URL: counted once,
+    with the live numbers."""
+    url = "https://same.x/dex/pairs"
+    live = {"resources": [_res("Same Live", url, "0x" + "e1" * 20, payers=60, calls=300)]}
+    snapshot = radar.parse_resources({"resources": [
+        _res("Same Snapshot", url, "0x" + "e1" * 20, payers=10, calls=20),
+        _res("Only In Catalog", "https://cat.x/dex/pools", "0x" + "f2" * 20, payers=25, calls=120),
+    ]})
+    out = _vr(live, extra=snapshot, source="catalog+sweep", snapshot_age_h=5.25)
+    names = [s["name"] for s in out["survivors"]]
+    assert names.count("Same Live") == 1 and "Same Snapshot" not in names
+    assert "Only In Catalog" in names
+    assert out["catalog"]["scanned"] == 2
+    assert out["catalog"]["source"] == "catalog+sweep"
+    assert out["catalog"]["snapshot_age_h"] == 5.2
+    assert out["vetting"].startswith("catalog snapshot + 1 live queries")
+
+
+def test_sweep_only_result_says_so():
+    out = _vr({"resources": [_res("X", "https://x.x/dex", "0x" + "a3" * 20, payers=40, calls=200)]})
+    assert out["catalog"]["source"] == "sweep"
+    assert "snapshot_age_h" not in out["catalog"]
+    assert out["vetting"].startswith("swept 1 queries")
+
+
+def test_the_nov7_shape_fails_the_floor_not_the_margin():
+    """5 payers calling 6 times (the real Nov 7 pick, quality 31 then) is
+    shallow usage; halved it sits under the quality floor and says so."""
+    payload = {"resources": [
+        _res("A Bench", "https://a.x/dex/pool", "0x" + "f6" * 20, payers=5, calls=6),
+        _res("Lone Screen", "https://b.x/dex/screen", "0x" + "a7" * 20, payers=1, calls=51),
+    ]}
+    out = _vr(payload)
+    assert out["verdict"] == "no_confident_pick"
+    assert "below the floor" in out["no_pick_reason"]

@@ -305,10 +305,20 @@ FLAG_NO_DELIVERY = "took_payment_no_delivery"
 FLAG_NO_DELIVERY_UNCONFIRMED = "no_delivery_unconfirmed"
 _NO_DELIVERY_FLAGS = {FLAG_NO_DELIVERY, FLAG_NO_DELIVERY_UNCONFIRMED}
 
-# [MR-2] single-payer wash volume: calls capped at this multiple of unique
-# payers in usage_q, and flagged above it. 342 calls from 1 payer ranks like
-# ~20 calls, not like a popular tool.
+# [MR-2] wash volume: calls are capped at this multiple of unique payers in
+# usage_q, so 342 calls from 1 payer ranks like ~20 calls. The FLAG is for the
+# literal case — one or two wallets behind the volume — never for a busy
+# service with hundreds of payers.
 CALLS_PER_PAYER_CAP = 20
+SINGLE_PAYER_MAX_PAYERS = 2
+FLAG_SINGLE_PAYER_VOLUME = "single_payer_volume"
+
+# The other tail: every payer called once. Half of the catalog's ≥3-payer
+# listings look like this (2026-11 census) — onboarding, free-tier or airdrop
+# traffic, weaker evidence than repeat use. Discounted, not disqualified.
+SHALLOW_LEGS_PER_PAYER = 1.5
+SHALLOW_MIN_PAYERS = 3
+FLAG_SHALLOW_USAGE = "shallow_usage"
 
 
 def _usage_q(payers: int, calls: int, rec_days: Optional[int]) -> int:
@@ -337,11 +347,22 @@ def _usage_q(payers: int, calls: int, rec_days: Optional[int]) -> int:
 # ranked on. Depth rows older than DEPTH_MAX_AGE_DAYS are ignored (never
 # penalise a provider for our cache being stale).
 DEPTH_MAX_AGE_DAYS = 7
-# legs/payer in 30d at which a provider is "fleet-shaped": organic sellers run
-# 12–44, closed fleets 455–18,000, Cluster 174. Informational flag in `why`
-# only — heavy legitimate users exist; the funding graph decides.
+# On-chain legs/payer in 30d at which a provider is "fleet-shaped" (from
+# provider_depth, never from listing counters): closed fleets ran 455–18,000,
+# Cluster 174 (2026-08). Costs half the quality and bars the pick.
 FLEET_LEGS_PER_PAYER = 100
 FLAG_FLEET_SHAPED = "fleet_shaped"
+
+# Listed and flagged, never the pick: no-delivery (buyer protection) and the
+# two sybil shapes. A recommendation that carries its own fleet warning is a
+# contradiction, not a hedge.
+_NEVER_PICK_FLAGS = _NO_DELIVERY_FLAGS | {FLAG_FLEET_SHAPED, FLAG_SINGLE_PAYER_VOLUME}
+
+# Confidence floor for the paid pick: below it verified_route says so
+# instead of crowning a 31-vs-30 winner.
+MIN_PICK_PAYERS = 3
+MIN_PICK_QUALITY = 25
+PICK_MARGIN = 1.2
 
 
 def _depth_age_days(row: dict) -> Optional[int]:
@@ -513,8 +534,19 @@ def decide(cands: list[dict], remaining: Decimal,
             q = q // 4
         if c["payers30d"] == 0 and c["calls30d"] == 0:
             flags.append("unproven(0/0)")
-        if c["calls30d"] > max(c["payers30d"], 1) * CALLS_PER_PAYER_CAP:
-            flags.append("single_payer_volume")
+        legs = c["calls30d"] / c["payers30d"] if c["payers30d"] else float(c["calls30d"])
+        if (c["payers30d"] <= SINGLE_PAYER_MAX_PAYERS
+                and c["calls30d"] > max(c["payers30d"], 1) * CALLS_PER_PAYER_CAP):
+            flags.append(FLAG_SINGLE_PAYER_VOLUME)
+        if c["payers30d"] >= SHALLOW_MIN_PAYERS and legs < SHALLOW_LEGS_PER_PAYER:
+            flags.append(FLAG_SHALLOW_USAGE)
+        # No upper band from listing numbers: the market head (BlockRun,
+        # StableEnrich, AX1…) runs 100–350 calls per payer. Heavy use is not
+        # sybil evidence; the on-chain funding graph (depth) is.
+        # Usage-shape discounts: both tails halve quality; the sybil shapes
+        # also leave the pick (see _NEVER_PICK_FLAGS).
+        if {FLAG_SHALLOW_USAGE, FLAG_FLEET_SHAPED, FLAG_SINGLE_PAYER_VOLUME} & set(flags):
+            q = q // 2
 
         # Stage 4 — delivery factor (the Prober's axis; unprobed = neutral)
         score_row = scores.get(c["url"]) or {}
@@ -548,10 +580,8 @@ def decide(cands: list[dict], remaining: Decimal,
 
     survivors = [s for s in scored if not s["dropped"]]
     survivors.sort(key=lambda s: (-s["quality"], s["price_usd"]))
-    # A no-delivery flag (confirmed OR unconfirmed) is listed but NEVER
-    # recommended — protection doesn't wait for confirmation.
     recommendation = next(
-        (s for s in survivors if not _NO_DELIVERY_FLAGS & set(s["flags"])), None)
+        (s for s in survivors if not _NEVER_PICK_FLAGS & set(s["flags"])), None)
     return scored, recommendation
 
 
@@ -677,8 +707,10 @@ def _public(s: Optional[dict]) -> Optional[dict]:
 # tools → one entry), and return the genuinely-distinct, actually-used survivors.
 # All pure functions below so they're unit-testable against captured payloads.
 
-# Default sweep terms for comprehensive discovery. Bazaar returns a slice per
-# query, so a fixed broad sweep + dedup approximates the full catalog.
+# Bazaar text search returns a short head per term, so this sweep sees a few
+# hundred listings at most. The full catalog comes from
+# services/catalog_cache.py; this list is the live top-up and the cold-cache
+# fallback.
 SWEEP_QUERIES = [
     "api", "data", "crypto", "price", "ai", "search", "weather", "stock",
     "news", "image", "trade", "defi", "token", "finance", "llm", "agent",
@@ -921,26 +953,53 @@ def evidence_for(s: dict, scores: Optional[dict], swept_at: str) -> list[dict]:
     return out
 
 
+def _confident_pick(pool: list[dict]) -> tuple[Optional[dict], Optional[str]]:
+    """The pick, or (None, why). Eligible = no never-pick flag; then the floor:
+    ≥MIN_PICK_PAYERS distinct payers, ≥MIN_PICK_QUALITY, and a PICK_MARGIN
+    lead over the next eligible provider competing at the same relevance."""
+    eligible = [s for s in pool if not _NEVER_PICK_FLAGS & set(s["flags"])]
+    if not eligible:
+        return None, ("no eligible provider — every candidate carries a disqualifying "
+                      "flag" if pool else "no candidates")
+    top = eligible[0]
+    if top["payers30d"] < MIN_PICK_PAYERS:
+        return None, (f"top candidate '{top['name']}' has {top['payers30d']} distinct "
+                      f"payer(s) in 30d — need {MIN_PICK_PAYERS}")
+    if top["quality"] < MIN_PICK_QUALITY:
+        return None, (f"top candidate '{top['name']}' quality {top['quality']} is below "
+                      f"the floor of {MIN_PICK_QUALITY}")
+    runner = next((s for s in eligible[1:]
+                   if s["pay_to"] != top["pay_to"]
+                   and s.get("relevance", 0) == top.get("relevance", 0)), None)
+    if runner and runner["quality"] > 0 and top["quality"] < PICK_MARGIN * runner["quality"]:
+        return None, (f"too close to call: '{top['name']}' {top['quality']} vs "
+                      f"'{runner['name']}' {runner['quality']}")
+    return top, None
+
+
 def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decimal,
                                  chain: Optional[str] = None,
                                  extra: Optional[Iterable[dict]] = None,
                                  scores: Optional[dict] = None,
                                  depth: Optional[dict] = None,
-                                 now: Optional[datetime] = None) -> dict:
+                                 now: Optional[datetime] = None,
+                                 source: str = "sweep",
+                                 snapshot_age_h: Optional[float] = None) -> dict:
     """Assemble the paid verified_route result from swept Bazaar payloads. Pure.
 
-    DISCOVER (merge+dedup many queries) → FILTER (chain) → DECIDE (junk/factory/
+    DISCOVER (merge+dedup many queries; `extra` = the catalog snapshot, live
+    sweep wins on a duplicate URL) → FILTER (chain) → DECIDE (junk/factory/
     rank over the FULL set, delivery factor joined from `scores`) → COLLAPSE
-    (sybil clusters → one entry) → RELEVANCE tier (need-matching
-    providers outrank the catalog; usage × delivery ranks within the tier;
-    empty tier falls back catalog-wide with `relevance_fallback`) →
-    recommend (never a service flagged took_payment_no_delivery — listed,
-    not recommended).
+    (sybil clusters → one entry) → RELEVANCE tier (need-matching providers
+    outrank the catalog; usage × delivery ranks within the tier; empty tier
+    falls back catalog-wide with `relevance_fallback`) → PICK only above the
+    confidence floor, else `verdict: no_confident_pick` with the reason.
     """
     merged = merge_resources(payloads)
     cands = filter_chain(parse_resources(merged), chain)
     if extra:
-        cands = cands + filter_chain(list(extra), chain)
+        seen = {c["url"] for c in cands}
+        cands = cands + [c for c in filter_chain(list(extra), chain) if c["url"] not in seen]
 
     scored, _ = decide(cands, budget, usage_aware=True, scores=scores, depth=depth)
     survivors = [s for s in scored if not s["dropped"]]
@@ -958,7 +1017,7 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
     relevant = [s for s in kept if s["relevance"] > 0]
     fallback = bool(tokens) and not relevant
     pool = relevant if relevant else kept
-    rec = next((s for s in pool if not _NO_DELIVERY_FLAGS & set(s["flags"])), None)
+    rec, no_pick = _confident_pick(pool)
 
     swept_at = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -991,9 +1050,13 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
         "need": need,
         "chain": chain,
         "budget_usd": str(budget),
+        "verdict": "pick" if rec_pub else "no_confident_pick",
+        **({"no_pick_reason": no_pick} if no_pick else {}),
         "recommendation": rec_pub,
         "survivors": [_pub(s) for s in kept],
         "catalog": {
+            "source": source,
+            **({"snapshot_age_h": round(snapshot_age_h, 1)} if snapshot_age_h is not None else {}),
             "scanned": len(cands),
             "after_vetting": len(survivors),
             "real_providers": len(kept),
@@ -1006,7 +1069,9 @@ def verified_route_from_payloads(payloads: list[dict], need: str, budget: Decima
         },
         **({"relevance_fallback": True} if fallback else {}),
         "vetting": (
-            f"swept {len(payloads)} queries → {len(cands)} listings → "
+            (f"catalog snapshot + {len(payloads)} live queries" if source.startswith("catalog")
+             else f"swept {len(payloads)} queries")
+            + f" → {len(cands)} listings → "
             f"collapsed {stats['sybil_collapsed']} sybil listings → "
             f"{len(kept)} real providers"
             + (f" → {len(relevant)} match the need" if relevant else (

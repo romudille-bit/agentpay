@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     # Accept standard Stacks x402 clients (AIBTC wallet, x402-stacks).
     # See docs/stacks-adapter.md. The SDK path is unaffected.
     STACKS_STANDARD_CLIENTS: bool = False
+    # Hold the full Bazaar catalog in memory for verified_route (daily refresh).
+    BAZAAR_CATALOG_CACHE: bool = True
     # Also offer native STX to standard clients (second stacks:1 accepts
     # entry). Needs db/migrations/pending_challenges_stx_quote.sql.
     STACKS_STX: bool = False

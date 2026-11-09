@@ -633,6 +633,12 @@ async def lifespan(app: FastAPI):
             from gateway.services import depth_refresh
             asyncio.create_task(depth_refresh.refresh_loop())
 
+        # The full Bazaar catalog for verified_route: warms ~30s after boot,
+        # refreshes daily; a cold cache falls back to the text sweep.
+        if settings.BAZAAR_CATALOG_CACHE:
+            from gateway.services import catalog_cache
+            asyncio.create_task(catalog_cache.refresh_loop())
+
         # Async on-chain refund worker, gated by REFUND_ENABLED.
         # Picks up refund_pending rows, sends USDC back to the agent
         # on Stellar, transitions to refund_done or refund_failed.
