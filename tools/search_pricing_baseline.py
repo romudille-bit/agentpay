@@ -38,6 +38,7 @@ SELF_ADDRESSES = {
     "0xe1601c10b8d4dbf71e0c592b779520380174bc3a",  # flagship analyst
     "0xc507d39678309b2389744526a7cd86e236c6c750",  # prober wallet
     "0x1111111111111111111111111111111111111111",  # free_v2_smoke payer
+    "0x0daadd5f797752b6e2c30fb8a4b3485eca0d61f5",  # Claude Desktop MCP (operator testing)
 }
 KNOWN_PROBER_UAS = ("trustprobe", "cairn", "x402-observer", "census-probe", "carbonmonitor",
                     "mako-pulse", "fuchss", "x402-validator", "masterkey")

@@ -47,6 +47,17 @@ SELF_ADDRESSES = {
         "SP27VCS0HWCMKEZE8ESRG8J95RN3BXX559KPNBWK5",  # Flagship analyst / M2 demo payer — Stacks mainnet
         "0x1111111111111111111111111111111111111111",  # free_v2_smoke.py test payer
         "0x28211bC4BA5c634B935fd3B89B8Ed4123c73248C",  # agentpaytools Basename owner (operator wallet)
+        "0x0dAaDd5f797752B6e2C30Fb8a4B3485eCA0D61f5",  # Claude Desktop MCP (npx, paid mode) — operator testing
+    ]
+}
+
+# Third-party monitors that PAY to verify delivery. A settled paid call is
+# otherwise the strongest "real buyer" signal, so these are pinned by address:
+# a bare `node` UA would promote them into the paid KPI.
+MONITOR_ADDRESSES = {
+    a.lower() for a in [
+        "GCEOU7BSH7RIVZXYQJUYBS76YCTNVB63XWZGT5ZNPWMJW6MUQKN2KX7C",  # vet402 observatory (Stellar)
+        "GCKTH26VNR4H4WLCXS5DX6563XRQQXWP5QKQWFD6CHOGTZJ2N5GKBU2L",  # unidentified Stellar x402 seller monitor, daily sweep since 2026-10-24
     ]
 }
 
@@ -185,6 +196,10 @@ def _is_self(addr):
     return (addr or "").lower() in SELF_ADDRESSES
 
 
+def _is_monitor(addr):
+    return (addr or "").lower() in MONITOR_ADDRESSES
+
+
 def main():
     _load_dotenv()
     url = os.environ.get("SUPABASE_URL")
@@ -212,8 +227,8 @@ def main():
     keep_scanner = "--with-scanner" in sys.argv
     scanner = [] if keep_scanner else [r for r in real if _is_scanner(r.get("user_agent"))]
     rest    = real if keep_scanner else [r for r in real if not _is_scanner(r.get("user_agent"))]
-    crawler = [r for r in rest if _is_crawler(r.get("user_agent"))]
-    non_crawl = [r for r in rest if not _is_crawler(r.get("user_agent"))]
+    crawler = [r for r in rest if _is_crawler(r.get("user_agent")) or _is_monitor(r.get("agent_address"))]
+    non_crawl = [r for r in rest if not (_is_crawler(r.get("user_agent")) or _is_monitor(r.get("agent_address")))]
 
     # Wallets that ever truly settled a paid tool are proven customers, and a bare
     # `node`/httpx User-Agent must not demote them. Compute the paying-wallet set
@@ -233,6 +248,7 @@ def main():
         and (_is_crawler(r.get("user_agent")) or _is_scanner(r.get("user_agent")))
     }
     bot_wallets.discard("")
+    bot_wallets |= MONITOR_ADDRESSES
     paying_wallets = {
         (r.get("agent_address") or "").lower()
         for r in non_crawl
