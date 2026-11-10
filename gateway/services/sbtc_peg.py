@@ -146,6 +146,65 @@ async def _emily_list(c: httpx.AsyncClient, kind: str, status: str, min_height: 
     return rows, False
 
 
+async def _emily_deposit_keys(c: httpx.AsyncClient, txid: str) -> set[tuple[str, Any]]:
+    """(txid, output index) of every record Emily holds under one txid."""
+    r = await c.get(f"{EMILY}/deposit/{txid}")
+    if r.status_code == 404:
+        return set()
+    r.raise_for_status()
+    return {(str(d.get("bitcoinTxid") or ""), d.get("bitcoinTxOutputIndex"))
+            for d in (r.json().get("deposits") or [])}
+
+
+async def _drop_duplicate_deposits(c: httpx.AsyncClient, listing, label: str, notes: list[str]):
+    """Remove in-flight deposit rows that are not real requests.
+
+    Emily keys a deposit by the txid string as posted, so the same Bitcoin
+    txid re-posted in another letter case becomes a second record that no
+    signer ever advances — it sits in `pending` for good and would otherwise
+    set the oldest-pending age. A row whose txid is not lowercase is looked up
+    under its lowercase id: if Emily already holds that deposit, the row is a
+    duplicate and is dropped; if the lookup fails it is left out and noted
+    (unverified beats a false stall signal); if nothing is held under the
+    lowercase id the row is the only record of the deposit and is kept.
+    Exact repeats of (txid, output index) are collapsed too."""
+    if not listing:
+        return listing
+    rows, complete = listing
+    seen: set[tuple[str, Any]] = set()
+    keep: list[dict] = []
+    odd: dict[str, list[tuple[tuple[str, Any], dict]]] = {}
+    for row in rows:
+        txid = str(row.get("bitcoinTxid") or "")
+        key = (txid.lower(), row.get("bitcoinTxOutputIndex"))
+        if txid != txid.lower():
+            odd.setdefault(txid.lower(), []).append((key, row))
+        elif key not in seen:
+            seen.add(key)
+            keep.append(row)
+    duplicates = len(rows) - len(keep) - sum(len(v) for v in odd.values())
+    unverified = 0
+    for low, items in odd.items():
+        try:
+            held = await _emily_deposit_keys(c, low)
+        except Exception:
+            held = None
+        for key, row in items:
+            if held is None:
+                unverified += 1
+            elif key in held or key in seen:
+                duplicates += 1
+            else:
+                seen.add(key)
+                keep.append(row)
+    if duplicates:
+        notes.append(f"{duplicates} {label} deposit row(s) ignored: duplicate of a deposit Emily already "
+                     "holds (same Bitcoin txid re-posted)")
+    if unverified:
+        notes.append(f"{unverified} {label} deposit row(s) left out: non-canonical txid, lookup failed")
+    return keep, complete
+
+
 async def _limits(c: httpx.AsyncClient) -> dict:
     r = await c.get(f"{EMILY}/limits")
     r.raise_for_status()
@@ -213,6 +272,10 @@ async def fetch(client: httpx.AsyncClient, params: dict) -> dict:
             guarded(_emily_list(client, "deposit", "failed", h_1d, max_pages=1), "failed deposits"),
             guarded(_emily_list(client, "withdrawal", "failed", h_1d, max_pages=1), "failed withdrawals"),
         )
+
+    dep_pending, dep_accepted = await asyncio.gather(
+        _drop_duplicate_deposits(client, dep_pending, "pending", notes),
+        _drop_duplicate_deposits(client, dep_accepted, "accepted", notes))
 
     supply_sats = supply.get("ok") if isinstance(supply, dict) else None
     dep_rows, dep_complete = dep7 if dep7 else ([], False)
