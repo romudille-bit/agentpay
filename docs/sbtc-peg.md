@@ -37,6 +37,13 @@ but not yet minted; `oldest_pending_deposit_age_hours` is the stuck-deposit
 signal. Failures are counted within the last 24h only (the failed listing is
 cumulative).
 
+Emily keys a deposit by the txid string as posted, so a deposit re-posted with
+its txid in another letter case becomes a second record that never leaves
+`pending`. Those rows are not requests: a non-lowercase txid is looked up under
+its lowercase id and dropped when Emily already holds that deposit, and exact
+repeats are collapsed. Each dropped row is counted in `notes`. If the lookup
+fails the row is left out and the note says so.
+
 ## Signer status
 
 Signer liveness is not published anywhere public, so `liveness` is `null`

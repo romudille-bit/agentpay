@@ -79,6 +79,12 @@ class FakeChain:
                                                  "rollingWithdrawalCap": 15_100_000_000,
                                                  "availableToWithdraw": 14_786_411_900, "throttleModeInitiator": None})
             status = q.get("status")
+            if p.startswith("/deposit/"):
+                if "lookup" in self.down:
+                    return httpx.Response(500, text="boom")
+                txid = p.rsplit("/", 1)[1]
+                return httpx.Response(200, json={"deposits": [r for r in self.dep if r["bitcoinTxid"] == txid],
+                                                 "nextToken": None})
             if p == "/deposit":
                 rows = {"confirmed": self.dep, "pending": self.pending, "accepted": self.accepted,
                         "failed": self.failed_dep}.get(status, [])
@@ -94,8 +100,9 @@ class FakeChain:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handler))
 
 
-def dep(height, sats, recipient="0616000000000000000000000000000000000000000005706f782d35", txid="aa" * 32):
-    return {"lastUpdateHeight": height, "amount": sats, "recipient": recipient, "bitcoinTxid": txid, "status": "confirmed"}
+def dep(height, sats, recipient="0616000000000000000000000000000000000000000005706f782d35", txid="aa" * 32, vout=0):
+    return {"lastUpdateHeight": height, "amount": sats, "recipient": recipient, "bitcoinTxid": txid,
+            "bitcoinTxOutputIndex": vout, "status": "confirmed"}
 
 
 def wd(height, sats, rid=1):
@@ -157,6 +164,50 @@ async def test_signers_limits_and_last_events():
     assert ev[1]["type"] == "peg_out" and ev[1]["request_id"] == 4830
     assert all(ev[i]["stacks_height"] >= ev[i + 1]["stacks_height"] for i in range(len(ev) - 1))
     assert "8-of-11 signers" in r["read"] and "headroom 97.9%" in r["read"]
+
+
+@pytest.mark.asyncio
+async def test_case_variant_reposts_do_not_set_the_oldest_pending_age():
+    """Seen on mainnet 2026-11-10: a confirmed deposit re-posted to Emily with
+    its txid in upper and mixed case left two rows pending for good, and the
+    feed reported a 183h stuck deposit on a healthy bridge."""
+    real = "7ace8ce1" + "0f" * 28
+    confirmed = [dep(NOW_H - 52_000, 65_000, txid=real, vout=1)]
+    pending = [dep(NOW_H - 39, 30_000, txid="c1" * 32), dep(NOW_H - 39, 80_000, txid="c2" * 32),
+               dep(NOW_H - 39, 80_000, txid="c2" * 32),                      # exact repeat
+               dep(NOW_H - 51_500, 65_000, txid=real.upper(), vout=1),
+               dep(NOW_H - 51_520, 65_000, txid=real[:8].upper() + real[8:], vout=1)]
+    chain = FakeChain(confirmed, [], pending=pending)
+    async with chain.client() as c:
+        r = await sp.fetch(c, {})
+    assert r["in_flight"]["deposits_pending"] == 2
+    assert r["in_flight"]["oldest_pending_deposit_age_hours"] == pytest.approx(39 / RATE / 3600, abs=0.1)
+    assert "2 deposits pending (oldest 0.1h)" in r["read"]
+    assert any(n.startswith("3 pending deposit row(s) ignored") for n in r["notes"])
+    lookups = [x for x in chain.calls if x[0].startswith("/deposit/")]
+    assert [x[0] for x in lookups] == [f"/deposit/{real}"]                   # one lookup per txid, lowercase
+
+
+@pytest.mark.asyncio
+async def test_non_lowercase_pending_row_is_kept_when_it_is_the_only_record():
+    pending = [dep(NOW_H - 14_000, 50_000, txid="AB" * 32)]
+    chain = FakeChain(DEPOSITS, WITHDRAWALS, pending=pending)
+    async with chain.client() as c:
+        r = await sp.fetch(c, {})
+    assert r["in_flight"]["deposits_pending"] == 1
+    assert r["in_flight"]["oldest_pending_deposit_age_hours"] == pytest.approx(14_000 / RATE / 3600, abs=0.2)
+    assert r["notes"] == []
+
+
+@pytest.mark.asyncio
+async def test_non_lowercase_pending_row_is_left_out_and_noted_when_the_lookup_fails():
+    pending = [dep(NOW_H - 39, 30_000, txid="c1" * 32), dep(NOW_H - 51_500, 65_000, txid="AB" * 32)]
+    chain = FakeChain(DEPOSITS, WITHDRAWALS, pending=pending, down={"lookup"})
+    async with chain.client() as c:
+        r = await sp.fetch(c, {})
+    assert r["in_flight"]["deposits_pending"] == 1
+    assert r["in_flight"]["oldest_pending_deposit_age_hours"] == pytest.approx(39 / RATE / 3600, abs=0.1)
+    assert any("left out: non-canonical txid, lookup failed" in n for n in r["notes"])
 
 
 @pytest.mark.asyncio
