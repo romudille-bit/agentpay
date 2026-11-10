@@ -30,7 +30,9 @@ from agents.prober.probe import score
 from gateway import radar
 from gateway._limiter import limiter
 from gateway.config import settings
+from gateway.services import probe_rollup
 from gateway.services.supabase import (
+    fetch_paid_probe_history,
     fetch_service_probes,
     insert_flagship_run,
     insert_service_probes,
@@ -79,8 +81,14 @@ def service_has_probe_data(row: dict) -> bool:
         return False
 
 
+def _caller_ip(request: Request) -> str:
+    h = request.headers
+    fwd = (h.get("x-forwarded-for") or "").split(",")[0].strip()
+    return h.get("cf-connecting-ip") or fwd or (request.client.host if request.client else "")
+
+
 @router.get("/scores.json")
-async def scores_json():
+async def scores_json(request: Request):
     """Public delivery scores — the Prober's findings.
 
     One row per probed x402 service: delivery rate/factor over the 30d
@@ -89,6 +97,10 @@ async def scores_json():
     stays private (tx hash + response snapshots back every negative flag);
     these scores are the public asset. No-store: reflect fresh sweeps."""
     from decimal import Decimal
+
+    ua = request.headers.get("user-agent") or ""
+    if ua.startswith("x402-guard"):
+        probe_rollup.record_guard_fetch(ua, _caller_ip(request))
 
     from gateway.radar import _delivery_why
     from gateway.radar import normalize_network as _norm_net
@@ -558,7 +570,10 @@ async def prober_ingest(request: Request,
     # (table missing, blip) fall back to scoring just this run's rows —
     # better a fresh score than none.
     window = await fetch_service_probes()
-    scores = score(window if window else probes)
+    # Older settled paid probes ride along so a failing seller keeps its
+    # flag after its last probe leaves the window.
+    history = await fetch_paid_probe_history() if window else []
+    scores = score([*window, *history] if window else probes)
     scores_stored = await upsert_service_scores(scores)
 
     run_stored = False

@@ -1,6 +1,6 @@
 {
   "about": "synthetic fixture — shape of agentpay.tools/scores.json, invented providers",
-  "count": 8,
+  "count": 9,
   "services": [
     {
       "resource_url": "https://honest.example/v1/infer",
@@ -64,6 +64,14 @@
       "no_delivery_probes": 1, "settle_failures": 0, "latency_p50_ms": 546, "flags": ["no_delivery_unconfirmed"],
       "price_usdc": 0.01, "last_ok_at": null, "last_fail_at": "2026-11-09T05:31:00+00:00",
       "why": "probed 1× in 30d, 0% delivered"
+    },
+    {
+      "resource_url": "https://agedout.example/v1/screening",
+      "name": "Aged Out Screening", "need": "wallet screening", "network": "eip155:8453",
+      "paid_probes": 0, "delivery_rate": null, "delivery_factor": 1.0, "confidence": null,
+      "no_delivery_probes": 0, "settle_failures": 0, "latency_p50_ms": null, "flags": ["took_payment_no_delivery"],
+      "price_usdc": 0.01, "last_ok_at": null, "last_fail_at": "2026-09-28T05:20:00+00:00",
+      "why": "⚠ took payment without delivering on 2026-09-28"
     }
   ]
 }

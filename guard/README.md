@@ -92,7 +92,7 @@ Each scores.json entry carries the last 30 days of *paid* probes against that re
 
 | Verdict | When |
 |---|---|
-| `block` | flagged `took_payment_no_delivery` (two or more paid probes settled and returned nothing usable) or `no_delivery_unconfirmed` (one did) — the same services `verified_route` never recommends |
+| `block` | flagged `took_payment_no_delivery` (two or more paid probes settled and returned nothing usable) or `no_delivery_unconfirmed` (one did) — the same services `verified_route` never recommends. A flag stays after the 30-day window until a paid probe succeeds |
 | `warn` | < 90 % delivery; or a single probe (`provisional`); or settle failures |
 | `pass` | confirmed, ≥ 90 % delivered |
 | `unknown` | not in scores.json, or no paid probe in the window |
@@ -104,6 +104,7 @@ URL matching is exact after normalisation (host lowercased, no query, no trailin
 ## What it fetches, and what it does not send
 
 - One `GET https://agentpay.tools/scores.json` per `ttlMs` (default 10 min), cached in memory. No request body, no wallet, no resource URL leaves your process.
+- That request identifies itself as `x402-guard/<version>`. AgentPay counts those fetches per day, by version and by a keyed hash of the caller's IP, to know how many installs are active. The IP itself is not stored.
 - If the fetch fails, the last good copy is kept; with none, every verdict is `unknown`. The guard fails open by design — a scores outage must never stop your agent from paying.
 - Nothing is reported back. Decisions, the budget and the ledger stay in your process (`onDecision` and `ledger()` are yours to use).
 - The hook is client-side, like the client's own `spendControls`: it protects an agent from bad sellers and runaway runs, not from code that bypasses the hook.

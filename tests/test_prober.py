@@ -375,6 +375,50 @@ class TestHeaderOnly402:
         assert probe.t0_checks(402, None, headers=hdr)["mpp_option"] is True
 
 
+class TestCarriedNoDelivery:
+    """A failing seller keeps its flag after its probes leave the window."""
+    URL = "https://aged-out.com/t"
+
+    def fail(self, days_ago):
+        return probe_row(self.URL, days_ago=days_ago, response_nonempty=False)
+
+    def one(self, rows):
+        (row,) = [r for r in probe.score(rows, now=NOW) if r["resource_url"] == self.URL]
+        return row
+
+    def test_confirmed_flag_survives_the_window(self):
+        row = self.one([self.fail(45), self.fail(40),
+                        probe_row(self.URL, days_ago=1, probe_type="free")])
+        assert row["flags"] == [probe.FLAG_NO_DELIVERY]
+        assert row["paid_probes"] == 0 and row["delivery_rate"] is None
+        assert row["last_fail_at"].startswith("2026-05-31")
+
+    def test_single_old_failure_stays_unconfirmed(self):
+        assert self.one([self.fail(40)])["flags"] == [probe.FLAG_NO_DELIVERY_UNCONFIRMED]
+
+    def test_flagged_service_with_no_window_probe_still_gets_a_row(self):
+        assert self.one([self.fail(45), self.fail(40)])["flags"] == [probe.FLAG_NO_DELIVERY]
+
+    def test_a_later_delivery_clears_it(self):
+        rows = [self.fail(45), self.fail(40), probe_row(self.URL, days_ago=35),
+                probe_row(self.URL, days_ago=1, probe_type="free")]
+        assert self.one(rows)["flags"] == []
+
+    def test_a_paid_probe_in_the_window_decides_alone(self):
+        row = self.one([self.fail(45), self.fail(40), probe_row(self.URL, days_ago=2)])
+        assert row["flags"] == [] and row["delivery_rate"] == 1.0
+
+    def test_any_fraction_length_parses(self):
+        assert probe._parse_ts("2026-09-28T06:08:36.31483+00:00").microsecond == 314830
+        assert probe._parse_ts("2026-09-28T06:08:36.4Z").microsecond == 400000
+        assert probe._parse_ts("2026-09-28T06:08:36+00:00").second == 36
+
+    def test_old_unsettled_probes_carry_nothing(self):
+        rows = [probe_row(self.URL, days_ago=40, settle_ok=False, http_ok=False),
+                probe_row(self.URL, days_ago=1, probe_type="free")]
+        assert self.one(rows)["flags"] == []
+
+
 def test_score_ignores_skipped_rows():
     """Skipped (unscoreable) paid rows never enter delivery_rate — a
     buyer-side rejection must not downrank the seller (2026-07-10 incident:
@@ -575,6 +619,14 @@ class TestRetestQueue:
     def test_unprobed_services_are_not_requeued(self):
         q = probe.retest_queue([self.row("https://never/x", 0, None)])
         assert q == []
+
+    def test_carried_flag_is_requeued_last(self):
+        q = probe.retest_queue([
+            self.row("https://aged-out/x", 0, None, flags=[probe.FLAG_NO_DELIVERY]),
+            self.row("https://provisional-fail/x", 1, 0.0),
+        ])
+        assert [c["url"] for c in q] == ["https://provisional-fail/x",
+                                         "https://aged-out/x"]
 
     def test_retest_is_probed_before_fresh_candidates(self):
         # One-strike-and-rotate was the bug: "PDF to Text" failed once on

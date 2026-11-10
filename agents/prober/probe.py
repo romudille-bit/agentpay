@@ -248,6 +248,7 @@ FLAG_NO_DELIVERY = "took_payment_no_delivery"
 # decision (Valeria, 2026-07-11): protection immediate, accusation
 # confirmed.
 FLAG_NO_DELIVERY_UNCONFIRMED = "no_delivery_unconfirmed"
+_NO_DELIVERY_FLAGS = frozenset((FLAG_NO_DELIVERY, FLAG_NO_DELIVERY_UNCONFIRMED))
 
 
 # ── SELECT ─────────────────────────────────────────────────────────────────────
@@ -279,7 +280,10 @@ def retest_queue(scores: Iterable[dict], limit: int = 6) -> list[dict]:
         url = (row or {}).get("resource_url")
         n = row.get("paid_probes") or 0
         rate = row.get("delivery_rate")
-        if not url or not n or rate is None:
+        # A carried flag has no paid probe in the window; it still needs a
+        # re-probe, or the seller could never clear it.
+        carried = not n and bool(_NO_DELIVERY_FLAGS & set(row.get("flags") or ()))
+        if not url or ((not n or rate is None) and not carried):
             continue
         cand = {
             "url": url,
@@ -290,7 +294,9 @@ def retest_queue(scores: Iterable[dict], limit: int = 6) -> list[dict]:
             "price_usd": _as_decimal(row.get("price_usdc")),
             "retest": True,
         }
-        if n < MIN_PROBES_CONFIRMED:
+        if carried:
+            tiers[2].append(cand)
+        elif n < MIN_PROBES_CONFIRMED:
             tiers[0 if rate < GOOD_RATE else 1].append(cand)
         elif rate < BAD_RATE:
             tiers[2].append(cand)
@@ -674,6 +680,18 @@ def _delivered(p: dict) -> bool:
     return p.get("schema_ok") is not False
 
 
+def _trailing_failures(past: Iterable[dict]) -> list[dict]:
+    """The non-deliveries since a service's last delivered paid probe. PURE."""
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    out: list[dict] = []
+    for p in sorted(past, key=lambda p: _parse_ts(p.get("probed_at")) or floor,
+                    reverse=True):
+        if _delivered(p):
+            break
+        out.append(p)
+    return out
+
+
 def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
           now: Optional[datetime] = None) -> list[dict]:
     """Aggregate raw probe rows → one service_scores row per resource_url. PURE.
@@ -682,19 +700,31 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
     http_ok, response_nonempty, schema_ok, latency_ms, ...}. Only paid probes
     inside the window feed delivery_rate; any paid_but_no_data in the window
     adds FLAG_NO_DELIVERY (hard-drop from recommendation downstream).
+
+    Rows older than the window never feed the rate. They matter in one case:
+    a service with no settled paid probe in the window keeps the no-delivery
+    flag its last paid probes earned, until a paid probe succeeds.
     """
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=window_days)
 
     by_url: dict[str, list[dict]] = {}
+    older: dict[str, list[dict]] = {}
     for p in probes:
         url = p.get("resource_url")
         if not url:
             continue
         ts = _parse_ts(p.get("probed_at"))
         if ts is not None and ts < cutoff:
+            if (p.get("probe_type") == "paid" and p.get("settle_ok")
+                    and not p.get("skipped")):
+                older.setdefault(url, []).append(p)
             continue
         by_url.setdefault(url, []).append(p)
+    # A flagged service with no probe at all in the window still gets a row.
+    for url, past in older.items():
+        if url not in by_url and _trailing_failures(past):
+            by_url[url] = []
 
     rows: list[dict] = []
     for url, group in sorted(by_url.items()):
@@ -725,21 +755,28 @@ def score(probes: Iterable[dict], window_days: int = WINDOW_DAYS,
             flags.append(FLAG_NO_DELIVERY)              # confirmed → public ⚠
         elif no_delivery == 1:
             flags.append(FLAG_NO_DELIVERY_UNCONFIRMED)  # rec-drop only
+        carried = _trailing_failures(older.get(url, ())) if n == 0 else []
+        if len(carried) >= MIN_PROBES_CONFIRMED:
+            flags.append(FLAG_NO_DELIVERY)
+        elif carried:
+            flags.append(FLAG_NO_DELIVERY_UNCONFIRMED)
+        ident = group or carried    # identity fields for a carried-only row
         latencies = sorted(p["latency_ms"] for p in settled
                            if isinstance(p.get("latency_ms"), (int, float)))
         oks = [_parse_ts(p.get("probed_at")) for p in settled if _delivered(p)]
-        fails = [_parse_ts(p.get("probed_at")) for p in settled if not _delivered(p)]
+        fails = [_parse_ts(p.get("probed_at"))
+                 for p in [*settled, *carried] if not _delivered(p)]
         # [MR-3] MPP/Tempo label: known from FREE probes too (T0 parses every
         # live 402), so it aggregates over ALL window probes, not just paid.
-        mpp = any(p.get("mpp_option") for p in group)
+        mpp = any(p.get("mpp_option") for p in ident)
         # Human-readable identity: last-known serviceName + discovery need +
         # settlement network (from the service's advertised accepts).
-        named = [p for p in group if p.get("name")]
-        needed = [p for p in group if p.get("need")]
-        networked = [p for p in group if p.get("network")]
-        usdg = any(p.get("usdg_option") for p in group)
+        named = [p for p in ident if p.get("name")]
+        needed = [p for p in ident if p.get("need")]
+        networked = [p for p in ident if p.get("network")]
+        usdg = any(p.get("usdg_option") for p in ident)
         # Last-known advertised price — lets estimate_plan price external legs.
-        priced = [p for p in group if p.get("price_usdc") is not None]
+        priced = [p for p in ident if p.get("price_usdc") is not None]
         priced.sort(key=lambda p: _parse_ts(p.get("probed_at"))
                     or datetime.min.replace(tzinfo=timezone.utc))
         rows.append({
@@ -874,6 +911,8 @@ def reconcile_settlements(entries: Iterable[dict],
 def _parse_ts(iso: object) -> Optional[datetime]:
     if not isinstance(iso, str):
         return None
+    # Python 3.10 only parses 0/3/6 fractional digits; the database emits any.
+    iso = re.sub(r"\.(\d{1,6})\d*", lambda m: "." + m.group(1).ljust(6, "0"), iso)
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)

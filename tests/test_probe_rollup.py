@@ -13,8 +13,51 @@ from gateway.services import probe_rollup
 @pytest.fixture(autouse=True)
 def clean_counts():
     probe_rollup._counts.clear()
+    probe_rollup._guard_counts.clear()
     yield
     probe_rollup._counts.clear()
+    probe_rollup._guard_counts.clear()
+
+
+class TestGuardFetch:
+
+    def test_counts_per_version_and_caller(self):
+        probe_rollup.record_guard_fetch("x402-guard/0.1.1", "203.0.113.7")
+        probe_rollup.record_guard_fetch("x402-guard/0.1.1", "203.0.113.7")
+        probe_rollup.record_guard_fetch("x402-guard/0.1.1", "203.0.113.8")
+        assert sum(probe_rollup._guard_counts.values()) == 3
+        assert len(probe_rollup._guard_counts) == 2
+
+    def test_caller_tag_hides_the_ip(self):
+        tag = probe_rollup.caller_tag("203.0.113.7")
+        assert len(tag) == 12 and "203" not in tag
+        assert tag == probe_rollup.caller_tag("203.0.113.7")
+        assert tag != probe_rollup.caller_tag("203.0.113.8")
+
+    def test_flush_writes_guard_rows(self, monkeypatch):
+        sent = []
+
+        class _Resp:
+            status_code = 201
+            text = ""
+
+        class _Client:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, headers=None, json=None):
+                sent.extend(json)
+                return _Resp()
+
+        monkeypatch.setattr(probe_rollup.sb, "sb_enabled", lambda: True)
+        monkeypatch.setattr(probe_rollup.sb, "sb_headers", lambda: {})
+        monkeypatch.setattr(probe_rollup.httpx, "AsyncClient", _Client)
+        probe_rollup.record_guard_fetch("x402-guard/0.1.1", "203.0.113.7")
+        assert asyncio.run(probe_rollup.flush()) == 1
+        row = sent[0]
+        assert (row["tool_name"], row["state"], row["n"]) == ("scores.json", "guard_fetch", 1)
+        assert row["network"] == probe_rollup.caller_tag("203.0.113.7")
+        assert not probe_rollup._guard_counts
 
 
 class TestRecord402:

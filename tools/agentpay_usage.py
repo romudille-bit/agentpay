@@ -395,6 +395,8 @@ def main():
         print(f"    retained (seen in ≥2 ISO weeks)         : {len(retained)}")
         print(f"    paid-wall reaches (402, never settled)  : {len(wall_addrs)} address(es) / {len(wall_rows)} row(s)")
 
+    _guard_report(url, key, since)
+
     if not human:
         print("\n  No non-crawler activity yet. Bazaar's crawler is hitting you (good), but no")
         print("  real agent has called through yet. Run with --all to confirm logging works.\n")
@@ -421,6 +423,34 @@ def main():
 
 
 PAID_TOOLS = {"session_create", "pre_trade_check", "verified_route"}
+
+
+def _guard_report(url, key, since):
+    """x402-guard installs: scores.json fetches from the daily rollup."""
+    q = urllib.parse.urlencode({
+        "select": "day,user_agent,network,n", "state": "eq.guard_fetch",
+        "day": f"gte.{since.date().isoformat()}"})
+    req = urllib.request.Request(
+        f"{url.rstrip('/')}/rest/v1/payment_logs_daily_rollup?{q}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            rows = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"\n  x402-guard: rollup read failed ({e})")
+        return
+    weeks, versions = {}, Counter()
+    for r in rows:
+        y, m, d = str(r["day"])[:10].split("-")
+        iso = datetime(int(y), int(m), int(d)).isocalendar()
+        weeks.setdefault(r.get("network") or "", set()).add((iso[0], iso[1]))
+        versions[r.get("user_agent") or ""] += int(r.get("n") or 0)
+    retained = sum(1 for ws in weeks.values() if len(ws) >= 2)
+    print("\n  x402-guard (scores.json fetches; one caller = one hashed IP):")
+    print(f"    active installs (distinct callers) : {len(weeks)}")
+    print(f"    retained (seen in ≥2 ISO weeks)    : {retained}")
+    print(f"    fetches                            : {sum(versions.values())}"
+          + (f"   ({', '.join(f'{v} ×{n}' for v, n in versions.most_common(4))})" if versions else ""))
 
 
 def _generic_breakdown(generic):

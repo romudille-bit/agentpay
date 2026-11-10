@@ -27,6 +27,8 @@ not tracked here.
 """
 
 import asyncio
+import hashlib
+import hmac
 import logging
 from collections import Counter
 from datetime import datetime, timezone
@@ -57,6 +59,31 @@ _OVERFLOW_UA = "(overflow)"
 
 _counts: Counter = Counter()
 
+# x402-guard fetches of /scores.json, keyed (utc_day, user_agent, caller).
+# Flushed into the same table as tool "scores.json", state "guard_fetch",
+# with the caller tag in `network`: distinct tags = active installs.
+GUARD_TOOL = "scores.json"
+GUARD_KIND = "guard_fetch"
+_guard_counts: Counter = Counter()
+
+
+def caller_tag(ip: Optional[str]) -> str:
+    """Keyed hash of the caller IP — stable per install, never the raw IP."""
+    key = (settings.FLAGSHIP_INGEST_SECRET or "agentpay").encode()
+    return hmac.new(key, (ip or "unknown").encode(), hashlib.sha256).hexdigest()[:12]
+
+
+def record_guard_fetch(user_agent: Optional[str], ip: Optional[str]) -> None:
+    """Count one guard fetch. Synchronous, in-memory, never raises."""
+    try:
+        day = datetime.now(timezone.utc).date().isoformat()
+        key = (day, (user_agent or "(none)")[:160], caller_tag(ip))
+        if key not in _guard_counts and len(_guard_counts) >= _MAX_KEYS:
+            key = (day, _OVERFLOW_UA, "")
+        _guard_counts[key] += 1
+    except Exception:  # pragma: no cover — telemetry must never break a read
+        pass
+
 
 def record_402(tool_name: str, user_agent: Optional[str], kind: str) -> None:
     """Count one 402 issuance. Synchronous, in-memory, never raises."""
@@ -76,14 +103,20 @@ async def flush() -> int:
 
     On failure the snapshot is merged back so the next flush retries —
     counts are never silently dropped (until process exit)."""
-    if not _counts or not sb.sb_enabled():
+    if not (_counts or _guard_counts) or not sb.sb_enabled():
         return 0
     snapshot = dict(_counts)
     _counts.clear()
+    guard_snapshot = dict(_guard_counts)
+    _guard_counts.clear()
     rows = [
         {"day": day, "tool_name": tool, "user_agent": ua, "state": kind,
          "network": "", "n": n}
         for (day, tool, ua, kind), n in snapshot.items()
+    ] + [
+        {"day": day, "tool_name": GUARD_TOOL, "user_agent": ua,
+         "state": GUARD_KIND, "network": caller, "n": n}
+        for (day, ua, caller), n in guard_snapshot.items()
     ]
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -101,6 +134,8 @@ async def flush() -> int:
         )
         for key, n in snapshot.items():
             _counts[key] += n
+        for key, n in guard_snapshot.items():
+            _guard_counts[key] += n
         return 0
 
 

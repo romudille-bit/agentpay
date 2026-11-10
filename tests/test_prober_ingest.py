@@ -227,6 +227,40 @@ def test_scores_json_empty_ok(monkeypatch):
     assert r.json()["count"] == 0
 
 
+def test_rescore_keeps_a_flag_whose_probes_left_the_window(monkeypatch):
+    monkeypatch.setattr(settings, "FLAGSHIP_INGEST_SECRET", "s3cr3t")
+    url = "https://aged-out.x/t"
+    failed = dict(resource_url=url, http_ok=False, response_nonempty=False)
+    calls = _patch_store(monkeypatch, window=[_paid_probe()])
+
+    async def _history(window_days=30, limit=5000):
+        return [_paid_probe(probed_at=_ago(40), **failed),
+                _paid_probe(probed_at=_ago(45), **failed)]
+    monkeypatch.setattr(prober, "fetch_paid_probe_history", _history)
+
+    r = _client().post("/v1/prober/run", json={"probes": [_paid_probe()]},
+                       headers=SECRET_HDR)
+    assert r.status_code == 200
+    (row,) = [s for s in calls["scores"] if s["resource_url"] == url]
+    assert row["flags"] == ["took_payment_no_delivery"] and row["paid_probes"] == 0
+
+
+def test_scores_json_counts_guard_fetches_only(monkeypatch):
+    async def _empty():
+        return {}
+    from gateway.services import probe_rollup, supabase
+    monkeypatch.setattr(supabase, "fetch_service_scores", _empty)
+    probe_rollup._guard_counts.clear()
+    c = _client()
+    c.get("/scores.json", headers={"user-agent": "curl/8.5.0"})
+    assert not probe_rollup._guard_counts
+    c.get("/scores.json", headers={"user-agent": "x402-guard/0.1.1", "cf-connecting-ip": "203.0.113.7"})
+    (day, ua, caller), = probe_rollup._guard_counts.keys()
+    assert ua == "x402-guard/0.1.1"
+    assert caller == probe_rollup.caller_tag("203.0.113.7")
+    probe_rollup._guard_counts.clear()
+
+
 def test_probes_page_serves_html():
     r = _client().get("/probes")
     assert r.status_code == 200

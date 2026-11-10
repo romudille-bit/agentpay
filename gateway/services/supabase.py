@@ -1903,6 +1903,37 @@ async def fetch_service_probes(window_days: int = 30, limit: int = 5000) -> list
         return []
 
 
+async def fetch_paid_probe_history(window_days: int = 30, limit: int = 5000) -> list[dict]:
+    """Settled paid probes OLDER than the scoring window, newest first — what
+    score() needs to keep a no-delivery flag alive. [] on error/disabled."""
+    if not sb_enabled():
+        return []
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+    cols = _without_optional(_PROBE_COLUMNS, _PROBE_COLUMNS_OPTIONAL)
+    try:
+        async with httpx.AsyncClient(timeout=_READ_TIMEOUT) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/service_probes",
+                headers={**sb_headers(), "Accept": "application/json"},
+                params={
+                    "select":     ",".join(cols),
+                    "probed_at":  f"lt.{cutoff}",
+                    "probe_type": "eq.paid",
+                    "settle_ok":  "eq.true",
+                    "order":      "probed_at.desc",
+                    "limit":      str(limit),
+                },
+            )
+        if resp.status_code != 200:
+            logger.error(f"fetch_paid_probe_history error: HTTP {resp.status_code}")
+            return []
+        return resp.json()
+    except Exception as e:
+        logger.error(f"fetch_paid_probe_history failure: {e}")
+        return []
+
+
 async def upsert_service_scores(rows: list[dict]) -> bool:
     """UPSERT score rows on resource_url (merge-duplicates). Returns True on
     success. updated_at is stamped here, not by the caller."""

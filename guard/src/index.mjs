@@ -2,6 +2,7 @@
 // look the resource up in AgentPay's paid-probe scores and abort, warn or pass.
 // Unknown resources always pass — absence of data is never a reason to block.
 
+export const VERSION = '0.1.1';
 export const SCORES_URL = 'https://agentpay.tools/scores.json';
 export const VERIFIED_ROUTE_URL = 'https://agentpay.tools/tools/verified_route/call';
 export const DEFAULT_TTL_MS = 10 * 60 * 1000;
@@ -25,13 +26,16 @@ export function normalizeUrl(input) {
 
 /** Decide for one scores.json entry. Pure. */
 export function decide(entry, thresholds = DEFAULT_THRESHOLDS) {
-  if (!entry || !(entry.paid_probes > 0)) {
-    return { verdict: 'unknown', reason: 'no paid probe in the scoring window' };
-  }
+  if (!entry) return { verdict: 'unknown', reason: 'no paid probe in the scoring window' };
+  const probed = entry.paid_probes > 0;
   const rate = Number(entry.delivery_rate);
   const flags = Array.isArray(entry.flags) ? entry.flags : [];
   const why = entry.why ? ` — ${entry.why}` : '';
-  const tally = `${pct(rate)} delivered over ${entry.paid_probes} paid probes`;
+  // A flag outlives the window until a paid probe succeeds, so a flagged
+  // entry can have no paid probe in it.
+  const tally = probed
+    ? `${pct(rate)} delivered over ${entry.paid_probes} paid probes`
+    : `last paid probe ${String(entry.last_fail_at || '').slice(0, 10) || 'before the window'}, not delivered since`;
 
   // Same rule as verified_route: either no-delivery flag blocks. A single
   // failure blocks too, but is worded as unconfirmed.
@@ -41,6 +45,7 @@ export function decide(entry, thresholds = DEFAULT_THRESHOLDS) {
   if (flags.includes(FLAG_NO_DELIVERY_UNCONFIRMED)) {
     return { verdict: 'block', reason: `a paid probe returned nothing usable, not yet confirmed (${tally})${why}` };
   }
+  if (!probed) return { verdict: 'unknown', reason: 'no paid probe in the scoring window' };
   if (rate < thresholds.block) {
     return { verdict: 'warn', reason: `low delivery rate (${pct(rate)} over ${entry.paid_probes} paid probes)${why}` };
   }
@@ -106,7 +111,7 @@ export function createScoreSource({ url = SCORES_URL, ttlMs = DEFAULT_TTL_MS, fe
   let lastError = null;
 
   async function refresh() {
-    const res = await fetchImpl(url, { headers: { accept: 'application/json', 'user-agent': 'x402-guard' } });
+    const res = await fetchImpl(url, { headers: { accept: 'application/json', 'user-agent': `x402-guard/${VERSION}` } });
     if (!res.ok) throw new Error(`scores fetch ${res.status}`);
     index = new ScoreIndex(await res.json());
     fetchedAt = Date.now();

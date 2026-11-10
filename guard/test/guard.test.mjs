@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  normalizeUrl, decide, ScoreIndex, createScoreSource, checkUrl, deliveryGuard,
+  normalizeUrl, decide, ScoreIndex, createScoreSource, checkUrl, deliveryGuard, VERSION,
 } from '../src/index.mjs';
 
 const fixture = JSON.parse(await readFile(new URL('./fixtures/scores.json', import.meta.url), 'utf8'));
@@ -32,6 +32,9 @@ test('decide: verdict matrix', () => {
   assert.equal(oneMiss.verdict, 'block');
   assert.match(oneMiss.reason, /not yet confirmed/);
   assert.doesNotMatch(oneMiss.reason, /took payment/);
+  const aged = decide(byName['Aged Out Screening']);                   // flag carried past the window
+  assert.equal(aged.verdict, 'block');
+  assert.match(aged.reason, /last paid probe 2026-09-28/);
   assert.equal(decide(byName['Unprobed OCR']).verdict, 'unknown');
   assert.equal(decide(null).verdict, 'unknown');
 });
@@ -43,7 +46,7 @@ test('decide: thresholds are configurable', () => {
 
 test('ScoreIndex: exact and prefix matching', () => {
   const idx = new ScoreIndex(fixture);
-  assert.equal(idx.size, 8);
+  assert.equal(idx.size, 9);
   assert.equal(idx.lookup('https://good.example/v1/search?x=1').match, 'exact');
   assert.equal(idx.lookup('https://good.example/v1/search/extra').match, 'prefix');
   assert.equal(idx.lookup('https://good.example/v1/searchextra'), null);   // not a path boundary
@@ -67,8 +70,8 @@ test('createScoreSource: caches within ttl, fails open on error, keeps last good
   const flaky = async () => (flip = !flip) ? { ok: true, status: 200, json: async () => fixture }
                                            : { ok: false, status: 503, json: async () => null };
   const src3 = createScoreSource({ fetchImpl: flaky, ttlMs: 0 });
-  assert.equal((await src3.get()).size, 8);
-  assert.equal((await src3.get()).size, 8);   // 503 → previous index kept
+  assert.equal((await src3.get()).size, 9);
+  assert.equal((await src3.get()).size, 9);   // 503 → previous index kept
 });
 
 test('ScoreIndex.alternatives: passing providers for the same need, excluding self', () => {
@@ -168,4 +171,13 @@ test('checkUrl: carries entry + match for a hit, nulls for a miss', async () => 
   const miss = await checkUrl('https://nobody.example/', { source });
   assert.equal(miss.verdict, 'unknown');
   assert.equal(miss.entry, null);
+});
+
+test('scores fetch identifies itself with the package version', async () => {
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(VERSION, pkg.version);
+  let seen;
+  const fetchImpl = async (_url, init) => { seen = init.headers['user-agent']; return { ok: true, status: 200, json: async () => fixture }; };
+  await createScoreSource({ fetchImpl }).get();
+  assert.equal(seen, `x402-guard/${pkg.version}`);
 });
