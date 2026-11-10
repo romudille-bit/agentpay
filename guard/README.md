@@ -92,8 +92,8 @@ Each scores.json entry carries the last 30 days of *paid* probes against that re
 
 | Verdict | When |
 |---|---|
-| `block` | flagged `took_payment_no_delivery` **and** either ≤ 50 % of paid probes delivered or the most recent probe is the failure |
-| `warn` | flagged but delivered since; or < 50 % delivery; or < 90 % delivery; or a single probe (`provisional`); or settle failures |
+| `block` | flagged `took_payment_no_delivery` (two or more paid probes settled and returned nothing usable) or `no_delivery_unconfirmed` (one did) — the same services `verified_route` never recommends |
+| `warn` | < 90 % delivery; or a single probe (`provisional`); or settle failures |
 | `pass` | confirmed, ≥ 90 % delivered |
 | `unknown` | not in scores.json, or no paid probe in the window |
 

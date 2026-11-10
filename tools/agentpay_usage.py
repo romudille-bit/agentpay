@@ -48,6 +48,8 @@ SELF_ADDRESSES = {
         "0x1111111111111111111111111111111111111111",  # free_v2_smoke.py test payer
         "0x28211bC4BA5c634B935fd3B89B8Ed4123c73248C",  # agentpaytools Basename owner (operator wallet)
         "0x0dAaDd5f797752B6e2C30Fb8a4B3485eCA0D61f5",  # Claude Desktop MCP (npx, paid mode) — operator testing
+        "0x16294335ada38313101dff45237bf759b1200b46",  # OKX Agentic Wallet (email login) — operator
+        "0x9ca7924f4b4264b8f1d99c5bb66ab64f0b311623",  # OKX Agentic Wallet (Google login, unused) — operator
     ]
 }
 
@@ -57,6 +59,7 @@ SELF_ADDRESSES = {
 MONITOR_ADDRESSES = {
     a.lower() for a in [
         "GCEOU7BSH7RIVZXYQJUYBS76YCTNVB63XWZGT5ZNPWMJW6MUQKN2KX7C",  # vet402 observatory (Stellar)
+        "0xc9c7b38c0942914fc8ea12063bc92dcd3b581670",  # vet402 observatory (Base)
         "GCKTH26VNR4H4WLCXS5DX6563XRQQXWP5QKQWFD6CHOGTZJ2N5GKBU2L",  # unidentified Stellar x402 seller monitor, daily sweep since 2026-10-24
     ]
 }

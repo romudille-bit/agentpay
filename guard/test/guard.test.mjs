@@ -26,8 +26,12 @@ test('decide: verdict matrix', () => {
   assert.equal(decide(byName['Good Search']).verdict, 'pass');
   assert.equal(decide(byName['New Price']).verdict, 'warn');           // provisional
   assert.equal(decide(byName['Thief Inference']).verdict, 'block');    // flagged, rate 0.5
-  assert.equal(decide(byName['Recovered Screen']).verdict, 'warn');    // flagged once, delivered since
+  assert.equal(decide(byName['Recovered Screen']).verdict, 'block');   // flagged, even though it delivered since
   assert.equal(decide(byName['Latest Fail News']).verdict, 'block');   // flagged, latest probe failed
+  const oneMiss = decide(byName['One Miss Geo']);                      // single failure, unconfirmed
+  assert.equal(oneMiss.verdict, 'block');
+  assert.match(oneMiss.reason, /not yet confirmed/);
+  assert.doesNotMatch(oneMiss.reason, /took payment/);
   assert.equal(decide(byName['Unprobed OCR']).verdict, 'unknown');
   assert.equal(decide(null).verdict, 'unknown');
 });
@@ -39,7 +43,7 @@ test('decide: thresholds are configurable', () => {
 
 test('ScoreIndex: exact and prefix matching', () => {
   const idx = new ScoreIndex(fixture);
-  assert.equal(idx.size, 7);
+  assert.equal(idx.size, 8);
   assert.equal(idx.lookup('https://good.example/v1/search?x=1').match, 'exact');
   assert.equal(idx.lookup('https://good.example/v1/search/extra').match, 'prefix');
   assert.equal(idx.lookup('https://good.example/v1/searchextra'), null);   // not a path boundary
@@ -63,8 +67,8 @@ test('createScoreSource: caches within ttl, fails open on error, keeps last good
   const flaky = async () => (flip = !flip) ? { ok: true, status: 200, json: async () => fixture }
                                            : { ok: false, status: 503, json: async () => null };
   const src3 = createScoreSource({ fetchImpl: flaky, ttlMs: 0 });
-  assert.equal((await src3.get()).size, 7);
-  assert.equal((await src3.get()).size, 7);   // 503 → previous index kept
+  assert.equal((await src3.get()).size, 8);
+  assert.equal((await src3.get()).size, 8);   // 503 → previous index kept
 });
 
 test('ScoreIndex.alternatives: passing providers for the same need, excluding self', () => {

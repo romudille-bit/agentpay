@@ -6,6 +6,7 @@ export const SCORES_URL = 'https://agentpay.tools/scores.json';
 export const VERIFIED_ROUTE_URL = 'https://agentpay.tools/tools/verified_route/call';
 export const DEFAULT_TTL_MS = 10 * 60 * 1000;
 export const FLAG_NO_DELIVERY = 'took_payment_no_delivery';
+export const FLAG_NO_DELIVERY_UNCONFIRMED = 'no_delivery_unconfirmed';
 
 // Thresholds mirror the prober's own scoring (probe.py): < 0.5 is "bad",
 // >= 0.9 is "good"; between is mixed.
@@ -29,21 +30,16 @@ export function decide(entry, thresholds = DEFAULT_THRESHOLDS) {
   }
   const rate = Number(entry.delivery_rate);
   const flags = Array.isArray(entry.flags) ? entry.flags : [];
-  const flagged = flags.includes(FLAG_NO_DELIVERY);
-  const lastFail = Date.parse(entry.last_fail_at || '') || 0;
-  const lastOk = Date.parse(entry.last_ok_at || '') || 0;
   const why = entry.why ? ` — ${entry.why}` : '';
+  const tally = `${pct(rate)} delivered over ${entry.paid_probes} paid probes`;
 
-  // Block only on evidence of charging without delivering: flagged AND either
-  // half or more of paid probes failed, or the latest probe is the failure.
-  if (flagged && (rate <= thresholds.block || lastFail > lastOk)) {
-    return {
-      verdict: 'block',
-      reason: `took payment without delivering (${pct(rate)} delivered over ${entry.paid_probes} paid probes)${why}`,
-    };
+  // Same rule as verified_route: either no-delivery flag blocks. A single
+  // failure blocks too, but is worded as unconfirmed.
+  if (flags.includes(FLAG_NO_DELIVERY)) {
+    return { verdict: 'block', reason: `took payment without delivering (${tally})${why}` };
   }
-  if (flagged) {
-    return { verdict: 'warn', reason: `took payment without delivering once, delivered since (${pct(rate)})${why}` };
+  if (flags.includes(FLAG_NO_DELIVERY_UNCONFIRMED)) {
+    return { verdict: 'block', reason: `a paid probe returned nothing usable, not yet confirmed (${tally})${why}` };
   }
   if (rate < thresholds.block) {
     return { verdict: 'warn', reason: `low delivery rate (${pct(rate)} over ${entry.paid_probes} paid probes)${why}` };
