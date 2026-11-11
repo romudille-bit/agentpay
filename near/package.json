@@ -1,0 +1,18 @@
+{
+  "name": "agentpay-near-check",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pre-payment delivery check and paid fetch for agents that hold funds on NEAR.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "bin": { "near-check": "./bin/near-check.mjs" },
+  "scripts": {
+    "check": "node bin/near-check.mjs check",
+    "quote": "node bin/near-check.mjs quote",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@romudille/x402-guard": "^0.1.1"
+  }
+}
