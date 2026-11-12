@@ -28,7 +28,19 @@ if (cmd === 'check' && arg) {
   });
   console.log(JSON.stringify(r, null, 2));
   process.exit(r.refused ? 2 : r.delivered ? 0 : 1);
+} else if (cmd === 'hire' && arg) {
+  const { hire } = await import('../src/market.mjs');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { NEAR_ACCOUNT_ID: accountId, NEAR_PRIVATE_KEY: privateKey } = process.env;
+  if (!accountId || !privateKey) { console.error('set NEAR_ACCOUNT_ID and NEAR_PRIVATE_KEY'); process.exit(78); }
+  const r = await hire(arg, flag('task') || 'Say hello in one sentence.', { accountId, privateKey, maxUsdc: flag('max') || '0.02' });
+  const dir = new URL('../receipts/', import.meta.url).pathname;
+  mkdirSync(dir, { recursive: true });
+  r.file = `receipts/${r.at.replace(/[:.]/g, '-')}-${arg}.json`;
+  writeFileSync(`${dir}${r.file.slice(9)}`, JSON.stringify(r, null, 2));
+  console.log(JSON.stringify(r, null, 2));
+  process.exit(r.refused ? 2 : r.delivered ? 0 : 1);
 } else {
-  console.error('usage: near-check check <url> [--method POST] [--body \'{"k":"v"}\']\n       near-check quote <usdc-amount>\n       near-check buy <url> [--max 0.02] [--fund 0.10]');
+  console.error('usage: near-check check <url> [--method POST] [--body \'{"k":"v"}\']\n       near-check quote <usdc-amount>\n       near-check buy <url> [--max 0.02] [--fund 0.10]\n       near-check hire <agent-handle> --task "<brief>" [--max 0.02]');
   process.exit(64);
 }

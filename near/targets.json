@@ -1,0 +1,187 @@
+[
+ {
+  "handle": "autodoc-sentinels",
+  "task": "Static analysis\n```python\nimport os\nos.system(input())\n```",
+  "sla_s": 60
+ },
+ {
+  "handle": "afriradar",
+  "task": "Top Kenyan unit trusts\nList the top 3 Kenyan money market unit trusts by yield this week.",
+  "sla_s": 120
+ },
+ {
+  "handle": "tredio",
+  "task": "Attention index\nTopic: NEAR Protocol",
+  "sla_s": 120
+ },
+ {
+  "handle": "x402-endpoint-check",
+  "task": "Endpoint check\nCheck https://quittance-five.vercel.app/api/receipt?q=0x9214ed6Ae679e80edbD809d36e77213c9B94F5FB",
+  "sla_s": 120
+ },
+ {
+  "handle": "buildproof",
+  "task": "Document check\nSHA-256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "sla_s": 300
+ },
+ {
+  "handle": "taifoon-finance",
+  "task": "NEAR spot price\nWhat is the spot price of NEAR in USD?",
+  "sla_s": 600
+ },
+ {
+  "handle": "taifoon-legal-compliance",
+  "task": "Wallet risk score\nRisk score for wallet 0xE8B25A72dD6aeF69515452a61AD231C7DF2843b7 on Base.",
+  "sla_s": 600
+ },
+ {
+  "handle": "taifoon-customer-support",
+  "task": "One question\nWhat is x402, in one sentence?",
+  "sla_s": 600
+ },
+ {
+  "handle": "taifoon-creative",
+  "task": "Translate to Spanish\nTranslate to Spanish: The agent paid and the seller delivered.",
+  "sla_s": 600
+ },
+ {
+  "handle": "taifoon",
+  "task": "Two-bullet summary\nSummarise in two bullets: x402 lets an API answer HTTP 402 with a price; the client pays in stablecoin and retries the same request.",
+  "sla_s": 600
+ },
+ {
+  "handle": "taifoon-research",
+  "task": "Yes or no\nYes or no, with one line of reasoning: is 2027 a leap year?",
+  "sla_s": 600
+ },
+ {
+  "handle": "taifoon-operations",
+  "task": "Ordered steps\nBreak this goal into ordered steps: publish a small npm package.",
+  "sla_s": 600
+ },
+ {
+  "handle": "taifoon-dev-tools",
+  "task": "Hash a text\nsha256 of the text: hello near",
+  "sla_s": 600
+ },
+ {
+  "handle": "taifoon-data",
+  "task": "Word count\nCount the words in: the quick brown fox jumps over the lazy dog",
+  "sla_s": 600
+ },
+ {
+  "handle": "luigi-check",
+  "task": "Token check\nwrap.near",
+  "sla_s": 600
+ },
+ {
+  "handle": "patrick-usdc-tools",
+  "task": "JSON to CSV\n[{\"a\":1,\"b\":\"x\"},{\"a\":2,\"b\":\"y\"}]",
+  "sla_s": 600
+ },
+ {
+  "handle": "brandname-check",
+  "task": "Name check\nCandidate name: nearcheck",
+  "sla_s": 900
+ },
+ {
+  "handle": "pagedoctor",
+  "task": "Diagnose a page\nDiagnose https://near.org",
+  "sla_s": 900
+ },
+ {
+  "handle": "pdfcompress",
+  "task": "Compress a PDF\nPlease compress the PDF at https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+  "sla_s": 3600
+ },
+ {
+  "handle": "pdfpages",
+  "task": "Rotate a page\nRotate page 1 of the PDF at https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf by 90 degrees.",
+  "sla_s": 3600
+ },
+ {
+  "handle": "watermarker",
+  "task": "Watermark a PDF\nStamp the text DRAFT in the centre of every page of https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+  "sla_s": 3600
+ },
+ {
+  "handle": "pdf-to-images",
+  "task": "PDF to PNG\nTurn page 1 of https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf into a PNG image.",
+  "sla_s": 3600
+ },
+ {
+  "handle": "pdfmetastrip",
+  "task": "Strip metadata\nRemove the metadata from the PDF at https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+  "sla_s": 3600
+ },
+ {
+  "handle": "pdf-metadata-strip",
+  "task": "Strip metadata\nRemove the metadata from the PDF at https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+  "sla_s": 3600
+ },
+ {
+  "handle": "pdf-pages",
+  "task": "Rotate a page\nRotate page 1 of the PDF at https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf by 90 degrees.",
+  "sla_s": 3600
+ },
+ {
+  "handle": "pdf-to-image",
+  "task": "PDF to PNG\nTurn page 1 of https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf into a PNG image.",
+  "sla_s": 3600
+ },
+ {
+  "handle": "pdf-compressor",
+  "task": "Compress a PDF\nPlease compress the PDF at https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+  "sla_s": 3600
+ },
+ {
+  "handle": "pdf-image-studio",
+  "task": "Compress a PDF\nPlease compress the PDF at https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+  "sla_s": 3600
+ },
+ {
+  "handle": "web-assets",
+  "task": "Clean an SVG\nClean and shrink the SVG at https://upload.wikimedia.org/wikipedia/commons/0/02/SVG_logo.svg",
+  "sla_s": 3600
+ },
+ {
+  "handle": "image-optimizer",
+  "task": "Convert to WebP\nConvert https://upload.wikimedia.org/wikipedia/commons/4/47/PNG_transparency_demonstration_1.png to WebP, 400 px wide.",
+  "sla_s": 3600
+ },
+ {
+  "handle": "nanoodle-image",
+  "task": "One picture\nA small lighthouse on a cliff at dusk, flat illustration.",
+  "sla_s": 3600
+ },
+ {
+  "handle": "contract-health-auditor",
+  "task": "Audit wrap.near\nHealth and security audit for the NEAR contract wrap.near.",
+  "sla_s": 3600
+ },
+ {
+  "handle": "adder",
+  "task": "Add two numbers\n2 + 3",
+  "sla_s": 3600
+ },
+ {
+  "handle": "web-page-json-extractor",
+  "task": "Account snapshot\nromudille.near",
+  "sla_s": 3600
+ },
+ {
+  "handle": "harvest",
+  "task": "One question\nWhat is NEP-366, in two sentences?",
+  "sla_s": 3600
+ },
+ {
+  "handle": "codecitationdrift",
+  "task": "Citation check\nNote: Cal. Civ. Code § 1950.5 limits a security deposit to two months' rent for an unfurnished unit.",
+  "sla_s": 10800
+ },
+ {
+  "handle": "qa-probe-0726",
+  "task": "Short confirmation\nPlease reply with a short confirmation that you received this.",
+  "sla_s": 86400
+ }
+]
