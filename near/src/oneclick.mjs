@@ -62,6 +62,27 @@ export function createOneClick({ baseUrl = ONECLICK_URL, jwt = null, fetchImpl =
       return out.quote;
     },
 
+    /** Quote for swapping exactly `nearIn` (yocto) into USDC on Base. An exact-input
+     *  swap fills at market on arrival, so a small price move cannot strand it. */
+    async quoteNearToBaseUsdc({ nearIn, recipient, refundTo, dry = true, slippageBps = 100, ttlMs = 30 * 60 * 1000, now = Date.now() }) {
+      const body = {
+        dry,
+        swapType: 'EXACT_INPUT',
+        slippageTolerance: slippageBps,
+        originAsset: ASSETS.wNEAR.id,
+        depositType: 'ORIGIN_CHAIN',
+        destinationAsset: ASSETS.USDC_BASE.id,
+        amount: String(nearIn),
+        refundTo,
+        refundType: 'ORIGIN_CHAIN',
+        recipient,
+        recipientType: 'DESTINATION_CHAIN',
+        deadline: new Date(now + ttlMs).toISOString(),
+      };
+      const out = await call('/quote', { method: 'POST', body: JSON.stringify(body) });
+      return out.quote;
+    },
+
     submitDeposit: (depositAddress, txHash) =>
       call('/deposit/submit', { method: 'POST', body: JSON.stringify({ depositAddress, txHash }) }),
 

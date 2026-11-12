@@ -5,14 +5,26 @@
   "description": "Pre-payment delivery check and paid fetch for agents that hold funds on NEAR.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=22" },
-  "bin": { "near-check": "./bin/near-check.mjs" },
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "near-check": "./bin/near-check.mjs"
+  },
   "scripts": {
     "check": "node bin/near-check.mjs check",
     "quote": "node bin/near-check.mjs quote",
+    "buy": "node --env-file-if-exists=../.env --env-file-if-exists=.env bin/near-check.mjs buy",
     "test": "node --test"
   },
   "dependencies": {
-    "@romudille/x402-guard": "^0.1.1"
+    "@fastnear/x402": "^2.5.0",
+    "@romudille/x402-guard": "^0.1.1",
+    "@x402/core": "^2.30.0",
+    "@x402/evm": "^2.30.0",
+    "@x402/fetch": "^2.30.0",
+    "@x402/near": "^2.30.0",
+    "near-api-js": "^7.5.3",
+    "viem": "^2.57.19"
   }
 }

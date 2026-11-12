@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-12T07:41:33.702Z",
+  "url": "https://quittance-five.vercel.app/api/receipt?q=0x9214ed6Ae679e80edbD809d36e77213c9B94F5FB",
+  "payer": "romudille.near",
+  "max_usdc": "0.02",
+  "paid": true,
+  "refused": null,
+  "verdict": "unknown",
+  "reason": "not in scores.json",
+  "rail": "near",
+  "price_usdc": "0.01",
+  "pay_to": "austinchris1.near",
+  "response": {
+    "status": 200,
+    "ms": 6023,
+    "delivered": true,
+    "body_bytes": 6415,
+    "body_sha256": "aa8c372ec5af2e4e21965ddc7e3ae4b6eccc90bde7aed9cbd205a8a902441de1",
+    "error_body": null,
+    "settle": {
+      "success": true,
+      "transaction": "EiXNxeV6bVsG8tg7x675HyTmhuLa6LW5Udus3WuDcL51",
+      "network": "near:mainnet",
+      "payer": "romudille.near"
+    }
+  },
+  "delivered": true,
+  "file": "receipts/2026-11-12T07-41-33-702Z.json"
+}

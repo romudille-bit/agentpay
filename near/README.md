@@ -13,7 +13,10 @@ Before an agent pays an x402 seller, `near-check` answers three questions:
 3. **What does that cost?** A live 1Click quote: NEAR in, exact USDC out on Base, with the
    overhead and the time estimate.
 
-Status: the check and the quote work today. The paying legs and receipts are in progress.
+Then `buy` pays, checks that the data came back, and writes a receipt.
+
+Status: the check, the quote and the direct NEAR rail work, with a real payment on mainnet
+(`receipts/`). The Base rail through Intents is built and being tested.
 
 ## Try it
 
@@ -21,10 +24,17 @@ Needs Node 22 or later. No key, no wallet, nothing is paid.
 
 ```bash
 cd near && npm install
-npm test                                                     # 12 tests pass
+npm test                                                     # 19 tests pass
 npm run check -- https://geoip.bip-rep.com/lookup            # see "verdict": "block", exit code 2
 npm run check -- https://agentpay.tools/tools/verified_route/call   # see the 402 price and the NEAR cost
 npm run quote -- 1                                           # see what 1 USDC on Base costs in NEAR
+```
+
+Paying needs a NEAR account with a little USDC on NEAR (and NEAR, for Base sellers).
+Put `NEAR_ACCOUNT_ID` and `NEAR_PRIVATE_KEY` in `near/.env`, then:
+
+```bash
+npm run buy -- "<x402 url>" --max 0.02      # refuses a flagged seller or a price over the cap
 ```
 
 ## NEAR's role
@@ -41,7 +51,8 @@ Built for NEAR HACKATHON 2026. Tracks: AI Security & Defense, Agent Economy.
 - Everything under `near/` is hackathon work. The diff is `pre-hackathon...hackathon-submission`.
 - The rest of this repository is AgentPay, an existing product on Base, Stellar and Stacks.
   It is baseline and not part of the entry.
-- Libraries: `@romudille/x402-guard` (ours, published before this entry; reads the public
+- Libraries: `@x402/near`, `@x402/evm`, `@x402/core`, `@x402/fetch`, `@fastnear/x402`, `near-api-js`, `viem`,
+  and `@romudille/x402-guard` (ours, published before this entry; reads the public
   scores at agentpay.tools/scores.json). Code was written with AI assistance.
 
 MIT, see the repository `LICENSE`.
