@@ -1,0 +1,36 @@
+{
+  "at": "2026-11-13T07:33:32.603Z",
+  "url": "https://www.x402financialdata.com/crypto-prices?symbols=BTC,ETH",
+  "payer": "romudille.near",
+  "max_usdc": "0.01",
+  "paid": true,
+  "refused": null,
+  "verdict": "pass",
+  "reason": "100% delivered over 5 paid probes (confirmed) — probed 5× in 30d, 100% delivered, median 1798ms",
+  "rail": "base-via-intents",
+  "price_usdc": "0.005",
+  "pay_to": "0xe4181c7de066959bcca010525304ba68a84768e0",
+  "funding": {
+    "reused": true,
+    "address": "0x2ae75518A3cFBc91991E32b8B2E843189882B79b",
+    "deposit_address": "40085f1c4aea515350b5e58fdec68badd751690441cd0884e806218b7293ad42",
+    "deposit_tx": null,
+    "cost_near": null
+  },
+  "response": {
+    "status": 200,
+    "ms": 1584,
+    "delivered": true,
+    "body_bytes": 973,
+    "body_sha256": "a4813d954226e5984e80599435be8d08ae4c45dea07a5fa59eca7e5a24c734f6",
+    "error_body": null,
+    "settle": {
+      "success": true,
+      "payer": "0x2ae75518A3cFBc91991E32b8B2E843189882B79b",
+      "transaction": "0x3fa3ff59e5557059ca218a5de6e4e487548caab006710dbf9c0026fcc46cf06b",
+      "network": "eip155:8453"
+    }
+  },
+  "delivered": true,
+  "file": "receipts/2026-11-13T07-33-32-603Z.json"
+}

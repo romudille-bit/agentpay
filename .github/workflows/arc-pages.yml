@@ -1,8 +1,8 @@
-name: arc-pages
+name: pages
 on:
   push:
     branches: [main]
-    paths: ["arc/docs/**"]
+    paths: ["arc/docs/**", "near/docs/**"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,9 +19,14 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      # The Arc ledger keeps the site root; the NEAR page sits under /near/.
+      - run: |
+          mkdir -p _site/near
+          cp -r arc/docs/. _site/
+          cp -r near/docs/. _site/near/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: arc/docs
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4

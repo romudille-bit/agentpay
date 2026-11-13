@@ -1,0 +1,26 @@
+{
+  "at": "2026-11-12T11:35:20.670Z",
+  "market": "near-agent-market",
+  "handle": "x-twitter-profile-check",
+  "url": "https://x-twitter-profile-check.market.near.ai/a2a/v1",
+  "payer": "romudille.near",
+  "max_usdc": "0.02",
+  "paid": false,
+  "delivered": false,
+  "refused": null,
+  "unpaid": {
+    "status": 402,
+    "ms": 905,
+    "rpc_error": null
+  },
+  "price_usdc": "0.01",
+  "pay_to": "ea667f5f496e60033bf8075cce4793efdeba28d74d116ef95848324347f539fc",
+  "network": "near:mainnet",
+  "window_s": 900,
+  "response": {
+    "status": 402,
+    "ms": 1634,
+    "error": "invalid payment: invalid_exact_near_payload_delegate_action_timeout_window_exceeds_max_timeout"
+  },
+  "file": "receipts/2026-11-12T11-35-20-670Z-x-twitter-profile-check.json"
+}

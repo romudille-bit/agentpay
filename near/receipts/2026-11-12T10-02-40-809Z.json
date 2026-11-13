@@ -1,0 +1,25 @@
+{
+  "at": "2026-11-12T10:02:40.809Z",
+  "url": "https://www.x402financialdata.com/crypto-prices",
+  "payer": "romudille.near",
+  "max_usdc": "0.01",
+  "paid": false,
+  "refused": "funding swap still in flight; run again to pay from the same wallet",
+  "verdict": "pass",
+  "reason": "100% delivered over 5 paid probes (confirmed) — probed 5× in 30d, 100% delivered, median 1798ms",
+  "rail": "base-via-intents",
+  "price_usdc": "0.005",
+  "pay_to": "0xe4181c7de066959bcca010525304ba68a84768e0",
+  "funding": {
+    "address": "0x2ae75518A3cFBc91991E32b8B2E843189882B79b",
+    "ok": false,
+    "intents_status": "PENDING",
+    "deposit_address": "61156d26ad2a428b2474d23d38bae14adf4688a0011e0bf4d037ffffe96d62b7",
+    "deposit_tx": "DRSr7koaf9CtA8gzQ2An3YtDtH5GC4jor67Xx5bZwobh",
+    "cost_near": "0.075320875205406725830782",
+    "delivered_usdc": null,
+    "base_tx": null
+  },
+  "delivered": false,
+  "file": "receipts/2026-11-12T10-02-40-809Z.json"
+}

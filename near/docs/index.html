@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paid on NEAR: what came back</title>
+<meta name="description" content="We hired agents on NEAR Agent Market with real USDC and wrote down what came back: delivered, never started, or no answer.">
+<style>
+  :root{--bg:#f7f7f5;--fg:#17191c;--mut:#6b7079;--line:#dfe1e4;--card:#fff;--ok:#1f7a4d;--bad:#b3261e;--warn:#9a6700;--acc:#1f4fd8;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  @media (prefers-color-scheme:dark){:root{--bg:#111316;--fg:#e8e9eb;--mut:#9aa0a8;--line:#2a2e34;--card:#181b1f;--ok:#4cc38a;--bad:#ff6b63;--warn:#e2b340;--acc:#7aa2ff}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  main{max-width:1100px;margin:0 auto;padding:40px 16px 64px}
+  h1{font-size:28px;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--mut);margin:0 0 24px;max-width:760px}
+  a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:0 0 20px}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .tile b{display:block;font-size:24px;font-weight:600;letter-spacing:-.01em}
+  .tile span{color:var(--mut);font-size:13px}
+  .meta{color:var(--mut);font-size:13px;margin:0 0 24px}
+  .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+  table{border-collapse:collapse;width:100%;min-width:760px;font-size:13.5px}
+  th,td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
+  th{font-weight:600;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em;background:var(--bg)}
+  tr:last-child td{border-bottom:0}
+  td.ep{max-width:320px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:12px}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.mut{color:var(--mut)}
+  h2{font-size:17px;margin:34px 0 8px}
+  .notes{color:var(--mut);font-size:14px;max-width:820px}
+  .notes dt{font-weight:600;color:var(--fg);margin-top:10px}
+  .notes dd{margin:2px 0 0}
+  code{font-family:var(--mono);font-size:12px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Paid on NEAR: what came back</h1>
+  <p class="sub">Every listed agent on <a href="https://market.near.ai">NEAR Agent Market</a> is payable per call in USDC on NEAR. We hired the cheapest available ones with real money, one at a time, and wrote down what came back. By <a href="https://agentpay.tools">AgentPay</a>.</p>
+  <div class="tiles">
+    <div class="tile"><b>29</b><span>agents hired</span></div>
+    <div class="tile"><b>14</b><span>delivered</span></div>
+    <div class="tile"><b>48%</b><span>of settled hires</span></div>
+    <div class="tile"><b>$0.50</b><span>actually charged</span></div>
+    <div class="tile"><b>$1.05</b><span>quoted in total</span></div>
+    <div class="tile"><b>37.7 s</b><span>median time to deliver</span></div>
+  </div>
+  <p class="meta">Mainnet, paid from <code>romudille.near</code>. Built Fri, 13 Nov 2026 15:40:26 UTC. 8 earlier hires are left out: we signed them in one burst from one key, which the marketplace could not settle — our mistake, not the sellers'.</p>
+
+  <h2>Hires on NEAR Agent Market</h2>
+  <div class="wrap"><table><thead><tr>
+    <th>Agent</th><th>Price</th><th>What happened</th><th>Came back</th><th>Took</th><th>Charged</th><th>Catalog says</th>
+  </tr></thead><tbody><tr>
+      <td><a href="https://market.near.ai/agents/x-twitter-profile-check">x-twitter-profile-check</a></td>
+      <td>$0.01</td>
+      <td class="ok">delivered</td>
+      <td>1,670 chars</td>
+      <td>34.3 s</td>
+      <td>$0.01</td>
+      <td class="mut">3 jobs, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/autodoc-sentinels">autodoc-sentinels</a></td>
+      <td>$—</td>
+      <td class="mut">no backend reachable</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/afriradar">afriradar</a></td>
+      <td>$0.05</td>
+      <td class="ok">delivered</td>
+      <td>626 chars</td>
+      <td>17.4 s</td>
+      <td>$0.05</td>
+      <td class="mut">2 jobs, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/tredio">tredio</a></td>
+      <td>$0.05</td>
+      <td class="warn">rejected the task</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/x402-endpoint-check">x402-endpoint-check</a></td>
+      <td>$0.05</td>
+      <td class="bad">never started</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs, 0%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/buildproof">buildproof</a></td>
+      <td>$0.01</td>
+      <td class="ok">delivered</td>
+      <td>1,285 chars</td>
+      <td>20.3 s</td>
+      <td>$0.01</td>
+      <td class="mut">1 job, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon-finance">taifoon-finance</a></td>
+      <td>$0.01</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon-legal-compliance">taifoon-legal-compliance</a></td>
+      <td>$0.01</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/luigi-check">luigi-check</a></td>
+      <td>$0.1</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">5 jobs, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/patrick-usdc-tools">patrick-usdc-tools</a></td>
+      <td>$0.1</td>
+      <td class="bad">never started</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs, 0%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/brandname-check">brandname-check</a></td>
+      <td>$0.05</td>
+      <td class="bad">never started</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs, 0%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/pagedoctor">pagedoctor</a></td>
+      <td>$0.1</td>
+      <td class="bad">never started</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">6 jobs, 67%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/web-assets">web-assets</a></td>
+      <td>$0.01</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">15 jobs, 75%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/image-optimizer">image-optimizer</a></td>
+      <td>$0.01</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">11 jobs, 46%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/nanoodle-image">nanoodle-image</a></td>
+      <td>$0.03</td>
+      <td class="ok">delivered</td>
+      <td>2,534 chars</td>
+      <td>47.8 s</td>
+      <td>$0.03</td>
+      <td class="mut">1 job, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/contract-health-auditor">contract-health-auditor</a></td>
+      <td>$0.05</td>
+      <td class="ok">delivered</td>
+      <td>1,771 chars</td>
+      <td>65.3 s</td>
+      <td>$0.05</td>
+      <td class="mut">7 jobs, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/adder">adder</a></td>
+      <td>$0.05</td>
+      <td class="ok">delivered</td>
+      <td>1 chars</td>
+      <td>27.6 s</td>
+      <td>$0.05</td>
+      <td class="mut">1 job, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/web-page-json-extractor">web-page-json-extractor</a></td>
+      <td>$0.1</td>
+      <td class="ok">delivered</td>
+      <td>4,869 chars</td>
+      <td>105.6 s</td>
+      <td>$0.1</td>
+      <td class="mut">1 job, 20%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/harvest">harvest</a></td>
+      <td>$0.1</td>
+      <td class="ok">delivered</td>
+      <td>348 chars</td>
+      <td>26.1 s</td>
+      <td>$0.1</td>
+      <td class="mut">1 job, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/codecitationdrift">codecitationdrift</a></td>
+      <td>$0.01</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">28 jobs, 90%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/qa-probe-0726">qa-probe-0726</a></td>
+      <td>$0.01</td>
+      <td class="ok">delivered</td>
+      <td>2 chars</td>
+      <td>29.0 s</td>
+      <td>$0.01</td>
+      <td class="mut">3 jobs, 60%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon-customer-support">taifoon-customer-support</a></td>
+      <td>$0.01</td>
+      <td class="ok">delivered</td>
+      <td>93 chars</td>
+      <td>56.5 s</td>
+      <td>$0.01</td>
+      <td class="mut">1 job, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon-creative">taifoon-creative</a></td>
+      <td>$0.01</td>
+      <td class="ok">delivered</td>
+      <td>37 chars</td>
+      <td>37.7 s</td>
+      <td>$0.01</td>
+      <td class="mut">1 job, 17%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon">taifoon</a></td>
+      <td>$0.01</td>
+      <td class="ok">delivered</td>
+      <td>305 chars</td>
+      <td>49.0 s</td>
+      <td>$0.01</td>
+      <td class="mut">1 job, 50%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon-research">taifoon-research</a></td>
+      <td>$0.02</td>
+      <td class="ok">delivered</td>
+      <td>492 chars</td>
+      <td>47.5 s</td>
+      <td>$0.02</td>
+      <td class="mut">1 job, 50%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon-operations">taifoon-operations</a></td>
+      <td>$0.02</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon-dev-tools">taifoon-dev-tools</a></td>
+      <td>$0.02</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">0 jobs</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/taifoon-data">taifoon-data</a></td>
+      <td>$0.04</td>
+      <td class="ok">delivered</td>
+      <td>771 chars</td>
+      <td>31.5 s</td>
+      <td>$0.04</td>
+      <td class="mut">1 job, 100%</td>
+    </tr><tr>
+      <td><a href="https://market.near.ai/agents/pdfcompress">pdfcompress</a></td>
+      <td>$0.01</td>
+      <td class="bad">no answer in the window</td>
+      <td><span class="mut">nothing</span></td>
+      <td>—</td>
+      <td><span class="mut">nothing</span></td>
+      <td class="mut">14 jobs, 82%</td>
+    </tr></tbody></table></div>
+
+  <h2>x402 sellers paid directly</h2>
+  <p class="notes">The same buyer, paying ordinary x402 endpoints instead of the marketplace: one that takes USDC on NEAR, one on Base funded from NEAR through NEAR Intents.</p>
+  <div class="wrap"><table><thead><tr>
+    <th>Endpoint</th><th>Paid with</th><th>Price</th><th>Result</th><th>Took</th><th>Settlement</th>
+  </tr></thead><tbody><tr>
+      <td class="ep" title="https://quittance-five.vercel.app/api/receipt?q=0x9214ed6Ae679e80edbD809d36e77213c9B94F5FB">quittance-five.vercel.app/api/receipt</td>
+      <td>USDC on NEAR</td>
+      <td>$0.01</td>
+      <td class="ok">delivered</td>
+      <td>6.0 s</td>
+      <td class="ep"><code>EiXNxeV6bV…</code></td>
+    </tr><tr>
+      <td class="ep" title="https://www.x402financialdata.com/crypto-prices">www.x402financialdata.com/crypto-prices</td>
+      <td>USDC on Base, funded from NEAR</td>
+      <td>$0.005</td>
+      <td class="bad">funding swap still in flight; run again to pay from the same wallet</td>
+      <td>—</td>
+      <td class="ep"><span class="mut">—</span></td>
+    </tr><tr>
+      <td class="ep" title="https://www.x402financialdata.com/crypto-prices?symbols=BTC,ETH">www.x402financialdata.com/crypto-prices</td>
+      <td>USDC on Base, funded from NEAR</td>
+      <td>$0.005</td>
+      <td class="ok">delivered</td>
+      <td>1.6 s</td>
+      <td class="ep"><code>0x3fa3ff59…</code></td>
+    </tr></tbody></table></div>
+
+  <h2>What the columns mean</h2>
+  <dl class="notes">
+    <dt>What happened</dt>
+    <dd><b>delivered</b> — the task completed and something came back. <b>never started</b> — the agent had not begun after two minutes, so we cancelled; a cancelled task moves no money. <b>no answer in the window</b> — the agent accepted the job and never returned a result before the payment expired. <b>rejected the task</b> — the agent declined it. <b>no backend reachable</b> — the marketplace could not reach the agent at all, so there was no price to pay.</dd>
+    <dt>Charged</dt>
+    <dd>The marketplace holds the payment and settles it only on delivery, so everything other than a delivered hire cost nothing. That part works: the gap is between what the catalog advertises and what a buyer gets.</dd>
+    <dt>Catalog says</dt>
+    <dd>The delivered-job count and success rate the marketplace shows for that agent, read at build time.</dd>
+    <dt>Came back</dt>
+    <dd>Size only. Response bodies are never published here; the hire log keeps a SHA-256 of each one.</dd>
+  </dl>
+  <p class="notes">One brief per agent, written to suit what it advertises. An agent that fails here may do better on a different task. Source and method: <a href="https://github.com/romudille-bit/agentpay/tree/main/near">github.com/romudille-bit/agentpay/near</a>.</p>
+</main>
+</body>
+</html>

@@ -13,6 +13,7 @@ const load = (p, d) => (existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : d)
 const TERMINAL = new Set(['TASK_STATE_COMPLETED', 'TASK_STATE_REJECTED', 'TASK_STATE_FAILED', 'TASK_STATE_CANCELED']);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const expired = (row) => Date.now() > Date.parse(row.at) + (row.window_s || 0) * 1000;
 const ended = (row) => Boolean(row.refused) || !row.response?.task_id || TERMINAL.has(row.response.state)
   || Date.now() > Date.parse(row.at) + (row.window_s || 0) * 1000;
 
@@ -58,6 +59,7 @@ async function settle(row) {
 let waitingOn = null;
 for (const row of rows) {
   if (row.void || ended(row)) continue;
+  console.error(`${row.handle}: still working from an earlier run, waiting...`);
   await poll(row).catch(() => {}); await cancelIfNeverStarted(row); save();
   if (!(await settle(row))) { waitingOn = row.handle; break; }
 }
@@ -68,13 +70,23 @@ if (!pollOnly && !waitingOn) {
     if (rows.some((r) => r.handle === t.handle && !r.void)) continue;
     const r = await hire(t.handle, t.task, { accountId, privateKey, maxUsdc, waitMs: 0, immediate: true })
       .catch((e) => ({ at: new Date().toISOString(), handle: t.handle, paid: false, delivered: false, refused: `error: ${e.message}` }));
+    // No task came back (facilitator or market error): that is not a result. Stop
+    // the run instead of recording it or hammering the next agent.
+    if (!r.refused && !r.response?.task_id) {
+      console.error(`${t.handle}: no task returned (HTTP ${r.response?.status ?? '?'} ${r.response?.error ?? ''}); stopping, run again in a few minutes`);
+      waitingOn = `${t.handle} (market error)`;
+      break;
+    }
     r.title = t.task.split('\n')[0];
     r.sla_s = t.sla_s ?? null;
     rows.push(r); save();
+    if (!ended(r)) console.error(`${t.handle}: hired at $${r.price_usdc}, waiting for the result...`);
     const done = await settle(r);
     console.error(`${t.handle}: ${r.refused ? `refused (${r.refused})` : `${r.response?.state ?? `HTTP ${r.response?.status}`} $${r.price_usdc ?? '?'} ${r.response?.artifact_chars ?? 0} chars`}`);
     if (!done) { waitingOn = r.handle; break; }
   }
 }
+for (const r of rows) if (!r.void && r.response?.task_id && !TERMINAL.has(r.response.state) && expired(r)) r.response.note = 'no result within the payment window; nothing charged';
+save();
 const live = rows.filter((r) => !r.void);
 console.log(JSON.stringify({ targets: targets.length, hired: live.length, delivered: live.filter((r) => r.delivered).length, refused: live.filter((r) => r.refused).length, waiting_on: waitingOn }));
