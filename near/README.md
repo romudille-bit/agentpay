@@ -20,17 +20,31 @@ We hired the cheapest available agents on Agent Market with real USDC, one at a 
 
 | | |
 |---|---|
-| Agents hired | 20 |
-| Delivered | 8 |
-| Never started, or never answered | 9 |
-| Charged | $0.40 — only the delivered ones |
+| Agents hired | 29 |
+| **Returned nothing** | **15 — 52%** |
+| Delivered | 14 |
+| Spent waiting for results that never came | 8.7 hours |
+| Delivered work received | 9.9 minutes |
+| Charged | $0.50 of $1.05 quoted — only the delivered ones |
 
 Published with every row: **[the results page](https://romudille-bit.github.io/agentpay/near/)**.
 
-Two things stand out. The marketplace's escrow is honest: nothing that failed to deliver
-was charged. But the catalog is not a buying signal — agents listed as *available now*,
-one of them at a 100% success rate, took the job and never answered. The only way to know
-is to pay and watch, which is what this does.
+The marketplace's escrow is exact — nothing that failed to deliver was charged. The cost is
+time instead: an agent that goes quiet burns its whole payment window before a buyer can be
+sure, and working through these hires took 23.9 hours end to end.
+
+The catalog does not separate the two. The agents with the longest delivered-job histories
+are among the ones that never answered: `codecitationdrift` advertises 28 jobs at 90%,
+`web-assets` 15 at 75%, `luigi-check` 5 at 100% — all three took the hire and returned
+nothing, and `luigi-check` still reads 100% today. Twelve of the fourteen that did deliver
+had one to three jobs to their name.
+
+Paying and watching is the signal that holds. That is what this reads before it spends, and
+what AgentPay's `verified_route` sells on other chains.
+
+Funding a payment on another chain from NEAR is the slow part: of three attempts through
+NEAR Intents, two timed out and refunded, and the one that worked took over two hours to
+land 0.2975 USDC on Base.
 
 ## Do X, see Y
 
@@ -39,7 +53,7 @@ Needs Node 22 or later. These three cost nothing — no key, no wallet, no payme
 ```bash
 cd near && npm install
 npm test
-#   → 33 tests pass
+#   → 37 tests pass
 
 npm run check -- https://geoip.bip-rep.com/lookup
 #   → "verdict": "block" — a seller our probes paid that returned nothing. Exit code 2.
@@ -62,8 +76,8 @@ npm run buy -- "https://quittance-five.vercel.app/api/receipt?q=<a swap deposit 
 npm run sweep -- --budget-s 3600
 #   → works through targets.json one hire at a time, writing docs/hires.json
 
-npm run page
-#   → rebuilds docs/index.html from the log
+npm run funding && npm run page
+#   → re-reads the funding attempts and rebuilds docs/index.html from the log
 ```
 
 Every run writes a receipt to `receipts/`: what was quoted, what was paid, what came back,

@@ -71,25 +71,42 @@ export async function claims(handles, { fetchImpl = globalThis.fetch } = {}) {
   return out;
 }
 
+/** Seconds a buyer spent on one hire: the work it returned, or the wait it cost. */
+export function spent(row) {
+  const o = outcome(row);
+  if (o === 'unavailable' || o === 'working') return 0;
+  if (o === 'delivered') return (row.response.ms || 0) / 1000;
+  // An agent that stops answering burns its whole payment window before the
+  // buyer can be sure; a cancelled or refused one costs only what it held.
+  return o === 'no_answer' ? (row.window_s || 0) : (row.response?.ms || 0) / 1000;
+}
+
 export function summarise(rows) {
   const settled = rows.filter((r) => outcome(r) !== 'working');
   const delivered = rows.filter((r) => outcome(r) === 'delivered');
+  const failed = settled.filter((r) => outcome(r) !== 'delivered');
   const times = delivered.map((r) => r.response.ms).filter(Number.isFinite).sort((a, b) => a - b);
+  const stamps = rows.map((r) => Date.parse(r.at)).filter(Number.isFinite);
   return {
     hired: rows.length,
     settled: settled.length,
     delivered: delivered.length,
+    failed: failed.length,
     rate: settled.length ? Math.round((delivered.length / settled.length) * 100) : 0,
+    fail_rate: settled.length ? Math.round((failed.length / settled.length) * 100) : 0,
     charged: rows.filter((r) => r.charged).reduce((s, r) => s + Number(r.price_usdc || 0), 0).toFixed(2),
     quoted: rows.reduce((s, r) => s + Number(r.price_usdc || 0), 0).toFixed(2),
     median_ms: times.length ? times[Math.floor(times.length / 2)] : null,
+    waited_h: +(failed.reduce((s, r) => s + spent(r), 0) / 3600).toFixed(1),
+    worked_min: +(delivered.reduce((s, r) => s + spent(r), 0) / 60).toFixed(1),
+    span_h: stamps.length ? +((Math.max(...stamps) - Math.min(...stamps)) / 3600000).toFixed(1) : 0,
     at: new Date().toISOString(),
   };
 }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-function render({ rows, direct, claim, sum, voided }) {
+function render({ rows, direct, claim, sum, fund }) {
   const tile = (v, k) => `<div class="tile"><b>${esc(v)}</b><span>${esc(k)}</span></div>`;
   const secs = (ms) => (ms == null ? '—' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
   const cls = { delivered: 'ok', rejected: 'warn', no_start: 'bad', no_answer: 'bad', empty: 'bad', unavailable: 'mut', working: 'mut' };
@@ -116,9 +133,17 @@ function render({ rows, direct, claim, sum, voided }) {
       <td class="ep" title="${esc(r.url)}">${esc(r.url.replace(/^https?:\/\//, '').split('?')[0])}</td>
       <td>${esc(r.rail === 'near' ? 'USDC on NEAR' : 'USDC on Base, funded from NEAR')}</td>
       <td>$${esc(r.price_usdc ?? '—')}</td>
-      <td class="${r.delivered ? 'ok' : 'bad'}">${r.delivered ? 'delivered' : esc(r.refused || 'not delivered')}</td>
-      <td>${esc(secs(r.response?.ms))}</td>
+      <td class="${r.delivered ? 'ok' : 'bad'}">${r.delivered ? 'delivered' : esc(String(r.refused || 'not delivered').split(';')[0])}</td>
+      <td>${esc(secs(r.response?.ms))}${r.response?.ms && r.rail !== 'near' ? ' <span class="mut" title="the funding swap had to land before this call could be made">+ funding</span>' : ''}</td>
       <td class="ep">${r.response?.settle?.transaction ? `<code>${esc(String(r.response.settle.transaction).slice(0, 10))}…</code>` : '<span class="mut">—</span>'}</td>
+    </tr>`).join('');
+
+  const fundRows = (fund || []).map((f) => `<tr>
+      <td class="ep" title="${esc(f.address)}"><code>${esc(f.address.slice(0, 10))}…</code></td>
+      <td>${esc(f.sent ?? '—')}</td>
+      <td class="${f.status === 'SUCCESS' ? 'ok' : 'warn'}">${esc(f.status === 'SUCCESS' ? 'delivered' : `refunded — ${String(f.reason || '').toLowerCase().replace(/_/g, ' ')}`)}</td>
+      <td>${esc(f.received ? `${Number(f.received).toFixed(4)} USDC on Base` : 'nothing')}</td>
+      <td>${esc(f.seconds == null ? '—' : f.seconds < 3600 ? `${Math.round(f.seconds / 60)} min` : `${(f.seconds / 3600).toFixed(1)} h`)}</td>
     </tr>`).join('');
 
   return `<!doctype html>
@@ -141,7 +166,8 @@ function render({ rows, direct, claim, sum, voided }) {
   .tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
   .tile b{display:block;font-size:24px;font-weight:600;letter-spacing:-.01em}
   .tile span{color:var(--mut);font-size:13px}
-  .meta{color:var(--mut);font-size:13px;margin:0 0 24px}
+  .lede{max-width:820px;margin:0 0 14px}
+  .lede:last-of-type{margin-bottom:26px}
   .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
   table{border-collapse:collapse;width:100%;min-width:760px;font-size:13.5px}
   th,td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
@@ -158,12 +184,13 @@ function render({ rows, direct, claim, sum, voided }) {
 </head>
 <body>
 <main>
-  <h1>Paid on NEAR: what came back</h1>
-  <p class="sub">Every listed agent on <a href="https://market.near.ai">NEAR Agent Market</a> is payable per call in USDC on NEAR. We hired the cheapest available ones with real money, one at a time, and wrote down what came back. By <a href="https://agentpay.tools">AgentPay</a>.</p>
+  <h1>${sum.fail_rate}% of the agents we paid for returned nothing</h1>
+  <p class="sub">Every listed agent on <a href="https://market.near.ai">NEAR Agent Market</a> is payable per call in USDC on NEAR. We hired the cheapest available ones on mainnet with real money, one at a time, and wrote down what came back. By <a href="https://agentpay.tools">AgentPay</a>.</p>
   <div class="tiles">
-    ${[tile(sum.hired, 'agents hired'), tile(sum.delivered, 'delivered'), tile(`${sum.rate}%`, 'of settled hires'), tile(`$${sum.charged}`, 'actually charged'), tile(`$${sum.quoted}`, 'quoted in total'), tile(secs(sum.median_ms), 'median time to deliver')].join('\n    ')}
+    ${[tile(sum.hired, 'agents hired'), tile(`${sum.fail_rate}%`, 'returned nothing'), tile(sum.delivered, 'delivered'), tile(`${sum.waited_h} h`, 'spent waiting for results that never came'), tile(`${sum.worked_min} min`, 'of work received'), tile(`$${sum.charged}`, `charged of $${sum.quoted} quoted`)].join('\n    ')}
   </div>
-  <p class="meta">Mainnet, paid from <code>romudille.near</code>. Built ${esc(new Date(sum.at).toUTCString().replace(' GMT', ' UTC'))}.${voided ? ` ${voided} earlier hires are left out: we signed them in one burst from one key, which the marketplace could not settle — our mistake, not the sellers'.` : ''}</p>
+  <p class="lede">Nothing here was charged for a failure — the marketplace holds each payment until the agent delivers, and that part is exact. The cost is time. Working through these hires took ${esc(sum.span_h)} hours end to end, because an agent that goes quiet burns its whole payment window before a buyer can be sure. ${esc(sum.waited_h)} hours of waiting bought ${esc(sum.worked_min)} minutes of work.</p>
+  <p class="lede">A buyer cannot tell the two apart beforehand. The catalog's own track record does not separate them: the agents below with the longest delivered-job histories are among those that never answered. Paying and watching is the only signal that holds, which is why <a href="https://agentpay.tools">AgentPay</a> sells one — <code>verified_route</code> ranks x402 endpoints by whether a paid probe actually got data back.</p>
 
   <h2>Hires on NEAR Agent Market</h2>
   <div class="wrap"><table><thead><tr>
@@ -175,6 +202,12 @@ function render({ rows, direct, claim, sum, voided }) {
   <div class="wrap"><table><thead><tr>
     <th>Endpoint</th><th>Paid with</th><th>Price</th><th>Result</th><th>Took</th><th>Settlement</th>
   </tr></thead><tbody>${directRows || '<tr><td colspan="6" class="mut">No direct purchases recorded yet.</td></tr>'}</tbody></table></div>
+
+  <h2>Funding a Base payment from a NEAR balance</h2>
+  <p class="notes">The cross-chain rail is the slow part: two of three attempts timed out and refunded, and the one that worked took over two hours to land. Re-read from the NEAR Intents status API, which reports its last record update, so each wait is an outer bound. A refund returns the deposit in full.</p>
+  <div class="wrap"><table><thead><tr>
+    <th>Deposit address</th><th>Sent</th><th>Result</th><th>Received</th><th>Took</th>
+  </tr></thead><tbody>${fundRows || '<tr><td colspan="5" class="mut">No funding attempts recorded.</td></tr>'}</tbody></table></div>
 
   <h2>What the columns mean</h2>
   <dl class="notes">
@@ -199,10 +232,9 @@ const secs = (ms) => (ms == null ? '—' : ms < 1000 ? `${ms} ms` : `${(ms / 100
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv.includes('--root') ? process.argv[process.argv.indexOf('--root') + 1] : here;
   const rows = hires(root);
-  const voided = read(`${root}docs/hires.json`, []).filter((r) => r.void).length;
   const claim = process.argv.includes('--no-fetch') ? {} : await claims([...new Set(rows.map((r) => r.handle))]);
   const sum = summarise(rows);
   mkdirSync(`${root}docs`, { recursive: true });
-  writeFileSync(`${root}docs/index.html`, render({ rows, direct: buys(root), claim, sum, voided }));
+  writeFileSync(`${root}docs/index.html`, render({ rows, direct: buys(root), claim, sum, fund: read(`${root}docs/funding.json`, []) }));
   console.log(JSON.stringify(sum));
 }
