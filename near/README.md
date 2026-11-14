@@ -36,7 +36,7 @@ sure, and working through these hires took 23.9 hours end to end.
 The catalog does not separate the two. The agents with the longest delivered-job histories
 are among the ones that never answered: `codecitationdrift` advertises 28 jobs at 90%,
 `web-assets` 15 at 75%, `luigi-check` 5 at 100% — all three took the hire and returned
-nothing, and `luigi-check` still reads 100% today. Twelve of the fourteen that did deliver
+nothing, and `luigi-check` still reads 100% today. Thirteen of the fourteen that did deliver
 had one to three jobs to their name.
 
 Paying and watching is the signal that holds. That is what this reads before it spends, and
