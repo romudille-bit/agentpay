@@ -5,10 +5,10 @@
 A buyer on NEAR can pay for work three ways. `near-check` does all three, caps every
 payment, and records what actually came back:
 
-1. **Hire an agent** on [NEAR Agent Market](https://market.near.ai) — 691 listed agents,
-   every one payable per call in USDC on NEAR over A2A + x402.
+1. **Hire an agent** on [NEAR Agent Market](https://market.near.ai) — 691 listed agents
+   on 11 Nov, every one payable per call in USDC on NEAR over A2A + x402.
 2. **Pay an x402 endpoint** that takes USDC on NEAR directly.
-3. **Pay an x402 endpoint on another chain**, funded from NEAR through
+3. **Pay an x402 endpoint on another chain**, funded from the same USDC balance through
    [NEAR Intents](https://docs.near-intents.org) (1Click).
 
 Before paying a known endpoint it asks AgentPay's public paid-probe scores whether that
@@ -52,13 +52,30 @@ what AgentPay's `verified_route` sells on other chains. The marketplace already 
 needs to show the same thing in the catalog: delivery measured over paid hires, and the date
 an agent last delivered.
 
-Funding a payment on another chain from NEAR is the slow part: of three attempts through
-NEAR Intents, two timed out and refunded, and the one that worked took over two hours to
-land 0.2975 USDC on Base. The quote for that route estimates 24 seconds. On a one-cent
-purchase the swap also adds 26–50% to the price, because of the minimum swap size.
+Funding a payment on another chain was the slow part on the day we ran it. Three attempts
+through NEAR Intents, all on the morning of 12 Nov, each quoted at about 24 seconds:
+
+| Sent | Result | Deposit to refund or delivery |
+|---|---|---|
+| NEAR | refunded, quote expired | 28 minutes |
+| NEAR | refunded, quote expired | 2 h 39 min |
+| USDC on NEAR | 0.2975 USDC arrived on Base | 2 h 20 min |
+
+The last two resolved within the same minute, which looks like a stall that morning rather
+than the usual wait; three attempts cannot say what is typical. The two NEAR-origin attempts
+came from this code as it was then. The one that arrived sent USDC and was run from a
+one-off script; `buy` then paid from the wallet it funded. The code now funds from USDC on
+NEAR, the same way, so the agent holds one asset — that path has not yet completed a swap
+from the repository's own `buy`. A swap costs about a quarter of a cent plus 1% whatever its
+size, so `buy` funds $0.10 at a time rather than one purchase.
 
 How to read the numbers:
 
+- **Small sample.** 25 hires over two days. Nine of them are `taifoon-*` agents from one
+  owner (5 delivered, 4 did not); without them it is 9 of 16 delivered, the same 44% failing.
+- **Settlements.** Each delivered hire carries its settlement transaction in
+  `docs/hires.json` (`settle_tx`) and is linked from the page: fourteen USDC transfers to the
+  marketplace, $0.50 in total, and none for any hire that failed.
 - **Delivered is generous.** A completed task with any non-empty result counts; we do not
   grade the answer. The share that returned nothing is a floor.
 - **Targets.** `targets.json` holds 37 agents picked from the catalog on 12 Nov: listed as
@@ -82,35 +99,40 @@ Needs Node 22 or later. These three cost nothing — no key, no wallet, no payme
 ```bash
 cd near && npm install
 npm test
-#   → 42 tests pass
+#   → 45 tests pass
 
 npm run check -- https://geoip.bip-rep.com/lookup
 #   → "verdict": "block" — a seller our probes paid that returned nothing. Exit code 2.
 
 npm run check -- https://www.x402financialdata.com/crypto-prices
 #   → "verdict": "pass", "rail": "base-via-intents", the seller's live price, and what
-#     funding it costs in NEAR
+#     funding it costs in USDC on NEAR
 ```
 
 Paying needs a NEAR account holding a little USDC on NEAR. Put `NEAR_ACCOUNT_ID` and
 `NEAR_PRIVATE_KEY` in `near/.env` (a `.env` in the repository root is read too; `near/.env`
 wins). The key must be full-access: `ft_transfer` needs a 1 yoctoNEAR deposit, which a
-function-call key cannot attach. Then:
+function-call key cannot attach. The key is read from the environment and used only to
+sign; it is never written to a receipt, a log or the page. The agent cannot pay more than
+`--max` for one call, cannot pay in any token but USDC, and `sweep` stops at `--total`. Then:
 
 ```bash
 npm run hire -- harvest --task "One question
 What is NEP-366, in two sentences?" --max 0.10
 #   → quotes the agent, pays, waits, and prints whether it delivered. Over the cap, or
-#     quoted in anything but USDC: refused before signing.
+#     quoted in anything but USDC: refused before signing. Still not done after two
+#     minutes: cancelled, so no payment is left on hold.
 
 npm run buy -- "https://quittance-five.vercel.app/api/receipt?q=<a swap deposit address>"
 #   → pays USDC on NEAR and returns the settlement transaction with the data
 
-npm run sweep -- --budget-s 3600
-#   → works through targets.json one hire at a time, writing docs/hires.json
+npm run sweep -- --budget-s 3600 --total 1.00
+#   → works through targets.json one hire at a time, writing docs/hires.json, and stops
+#     before the money charged or on hold would pass --total
 
-npm run funding && npm run page
-#   → re-reads the funding attempts and rebuilds docs/index.html from the log
+npm run funding && npm run settlements && npm run page
+#   → re-reads the funding attempts and the settlement transactions from the chain, and
+#     rebuilds docs/index.html from the log
 ```
 
 Every run writes a receipt to `receipts/`: what was quoted, what was paid, what came back,
@@ -123,7 +145,7 @@ and the settlement transaction. Response bodies are never stored, only their siz
   needs no NEAR for fees. Both the marketplace and plain x402 sellers settle this way.
 - **NEAR Agent Market** is the catalog and the escrow: it holds the payment and releases it
   only when the hired agent delivers.
-- **NEAR Intents (1Click)** turns a NEAR balance into USDC on another chain, so one account
+- **NEAR Intents (1Click)** turns USDC on NEAR into USDC on another chain, so one account
   can buy from sellers that have never heard of NEAR. There is no Intents testnet, so this
   path is mainnet with small amounts.
 

@@ -1,32 +1,44 @@
 [
  {
   "address": "8a48c15e5ce84d6b60a16e5dd5f966fbdb970e3bd1ec5adc42497fe76f2893de",
-  "sent_at": "2026-11-12T07:42:00Z",
-  "ended_at": "2026-11-12T10:28:11.000Z",
-  "seconds": 9971,
+  "sent_at": "2026-11-12T07:42:04.746Z",
+  "ended_at": "2026-11-12T08:09:37.737Z",
+  "seconds": 1653,
   "status": "REFUNDED",
   "sent": "0.029566713518784593720026",
+  "sent_unit": "NEAR",
   "received": null,
-  "reason": "QUOTE_EXPIRED"
+  "reason": "QUOTE_EXPIRED",
+  "quoted_eta_s": 24,
+  "deposit_tx": "J6vypmkkP9iGWNRsZGamabqGmLTj6rFSENDMP6NrGeJH",
+  "end_tx": "EbGJAhRAhfd9NykvFp4LdZhA4zGntAqZLZZ898FRqrq"
  },
  {
   "address": "61156d26ad2a428b2474d23d38bae14adf4688a0011e0bf4d037ffffe96d62b7",
-  "sent_at": "2026-11-12T10:02:40.809Z",
-  "ended_at": "2026-11-12T12:42:10.000Z",
-  "seconds": 9569,
+  "sent_at": "2026-11-12T10:02:44.707Z",
+  "ended_at": "2026-11-12T12:41:59.423Z",
+  "seconds": 9555,
   "status": "REFUNDED",
   "sent": "0.075320875205406725830782",
+  "sent_unit": "NEAR",
   "received": null,
-  "reason": "QUOTE_EXPIRED"
+  "reason": "QUOTE_EXPIRED",
+  "quoted_eta_s": 24,
+  "deposit_tx": "DRSr7koaf9CtA8gzQ2An3YtDtH5GC4jor67Xx5bZwobh",
+  "end_tx": "FgZKktMtkXjusQxMydduTdNeTHAjax9reW9StVqQcRx6"
  },
  {
   "address": "40085f1c4aea515350b5e58fdec68badd751690441cd0884e806218b7293ad42",
-  "sent_at": "2026-11-12T10:22:00Z",
-  "ended_at": "2026-11-12T12:41:59.000Z",
-  "seconds": 8399,
+  "sent_at": "2026-11-12T10:21:59.235Z",
+  "ended_at": "2026-11-12T12:41:55.000Z",
+  "seconds": 8396,
   "status": "SUCCESS",
   "sent": "0.3",
+  "sent_unit": "USDC",
   "received": "0.297538",
-  "reason": null
+  "reason": null,
+  "quoted_eta_s": 22,
+  "deposit_tx": "AND2RrbpPRE44FVkjDk7zYWpmkBVBSSuGH3UpSuxA677",
+  "end_tx": "0x52d16ee3d3bcb7099cc217fee3edae86f679acf94f1d431ee01dfae207531e6b"
  }
 ]

@@ -26,5 +26,6 @@
     "artifact_chars": 1670,
     "artifact_sha256": "d466103755adc9546790b105f84d6ee624716177b9597f12aa60e591de9d3d1f"
   },
-  "file": "receipts/2026-11-12T11-35-34-005Z-x-twitter-profile-check.json"
+  "file": "receipts/2026-11-12T11-35-34-005Z-x-twitter-profile-check.json",
+  "settle_tx": "E8Pd32e9zUqXdnFhGUzfNNScUYCRn2MJ6H4i8eQEhCqT"
 }

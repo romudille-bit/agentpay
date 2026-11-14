@@ -302,7 +302,8 @@
    "artifact_sha256": "8d35d9c67ddf7b7999c6f6b99a6ac2716c1fb4618d252e675dd8fff9edda4349"
   },
   "title": "Top Kenyan unit trusts",
-  "sla_s": 120
+  "sla_s": 120,
+  "settle_tx": "FhjcfmCKiuWDEUuRTyamgZCiTUFkUwijGQHFHmvPrBoW"
  },
  {
   "at": "2026-11-12T11:50:00.207Z",
@@ -395,7 +396,8 @@
    "artifact_sha256": "7d3dab49c5042695a5f03e1715db4dab6a48d20e514ff3d9087a4c0abebba1d9"
   },
   "title": "Document check",
-  "sla_s": 300
+  "sla_s": 300,
+  "settle_tx": "6FV7WYdLxkS1evJUx6YYdZ5gtbq2nYoFdxPdPRAiQ6TA"
  },
  {
   "at": "2026-11-12T11:58:05.032Z",
@@ -681,7 +683,8 @@
    "artifact_sha256": "28b3a158fd3d9c7536d26b70f490a35886932a96c9885ff87a7a2fc14ca30f50"
   },
   "title": "One picture",
-  "sla_s": 3600
+  "sla_s": 3600,
+  "settle_tx": "DtvFLfmFaZbSYyfHF7LeA4rn2Tzxs32QTmM6RmgL4ANd"
  },
  {
   "at": "2026-11-12T18:05:15.825Z",
@@ -712,7 +715,8 @@
    "artifact_sha256": "421edcb03da8431caaff20a427cf25d7406e2fb31f0b83f3c02331d7315b39b4"
   },
   "title": "Audit wrap.near",
-  "sla_s": 3600
+  "sla_s": 3600,
+  "settle_tx": "ATaqw3MKZ6M9rYUPaPCq7LAwt2VWdsevZCYnjqSwekXv"
  },
  {
   "at": "2026-11-12T18:06:25.821Z",
@@ -743,7 +747,8 @@
    "artifact_sha256": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d"
   },
   "title": "Add two numbers",
-  "sla_s": 3600
+  "sla_s": 3600,
+  "settle_tx": "7dFVR6eLfb2E9nFfDCUU8paPbtNwFjWEURwrit6USPv6"
  },
  {
   "at": "2026-11-12T18:06:57.254Z",
@@ -774,7 +779,8 @@
    "artifact_sha256": "3e50ec3c047764eba5c6477d26abe561ec4d48f6bdfdce95dcc0ab5e3f306540"
   },
   "title": "Account snapshot",
-  "sla_s": 3600
+  "sla_s": 3600,
+  "settle_tx": "51TzzdDbNShGZsTKm3LPE6X3PVssTG4VrjJhroE8bCng"
  },
  {
   "at": "2026-11-12T18:08:47.960Z",
@@ -805,7 +811,8 @@
    "artifact_sha256": "b18a8553e59043214d1d304aa2ed2de4f9d1c447d4285ca134f9b489b74df60e"
   },
   "title": "One question",
-  "sla_s": 3600
+  "sla_s": 3600,
+  "settle_tx": "HrLKiag2ov2WKMqqxitcspoQFT7rK4RypbJKS5q6jRJC"
  },
  {
   "at": "2026-11-13T07:33:48.736Z",
@@ -868,7 +875,8 @@
    "artifact_sha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3"
   },
   "title": "Short confirmation",
-  "sla_s": 86400
+  "sla_s": 86400,
+  "settle_tx": "35UPACxXkZJbTfFQnQm5tJ54dCp2iDobm6CHxJf78RYK"
  },
  {
   "at": "2026-11-13T10:44:27.507Z",
@@ -899,7 +907,8 @@
    "artifact_sha256": "4c0f9730ef9ead428b2ad8b363e45fecea870ea292fc1e6a6b410db96a9e66a6"
   },
   "title": "One question",
-  "sla_s": 600
+  "sla_s": 600,
+  "settle_tx": "7mgBR5oNFkCJ4ZxtMgDwWiVA4PiZ2SuoDaxRPYEeHCzR"
  },
  {
   "at": "2026-11-13T10:45:26.883Z",
@@ -930,7 +939,8 @@
    "artifact_sha256": "518a72f270ac24112832bffd3634fda0f5eff3ce1d0e0a5f5ac74edc7f599c24"
   },
   "title": "Translate to Spanish",
-  "sla_s": 600
+  "sla_s": 600,
+  "settle_tx": "DReb824DitWRHiZni4rsgTRgiaSZo1kLiy6EBrrCXMip"
  },
  {
   "at": "2026-11-13T10:46:09.605Z",
@@ -961,7 +971,8 @@
    "artifact_sha256": "d105979e6cf2cb6d22b460695209c3acab6abd3c56f0f002fbb822cca23ade0e"
   },
   "title": "Two-bullet summary",
-  "sla_s": 600
+  "sla_s": 600,
+  "settle_tx": "HyKcrbxhX6Qez984ugHyMbJgmPY63ESsM8bsft3jFDS2"
  },
  {
   "at": "2026-11-13T10:47:03.437Z",
@@ -992,7 +1003,8 @@
    "artifact_sha256": "0f0e1dbe67023ea332b76c536077ffa00b666d3cc6e2ab8df76dd5c6f9f77b6d"
   },
   "title": "Yes or no",
-  "sla_s": 600
+  "sla_s": 600,
+  "settle_tx": "6dg9o1A1B2cb7EqLqThpSzN95NzB1jP1fzKkRd4kncV1"
  },
  {
   "at": "2026-11-13T10:47:51.877Z",
@@ -1087,7 +1099,8 @@
    "artifact_sha256": "b6b8f9177321d7633617453dee36d3f2b9ac696ca3398164e47a01f78c7b862e"
   },
   "title": "Word count",
-  "sla_s": 600
+  "sla_s": 600,
+  "settle_tx": "DKdAE5gWonJgah9mm1smFkeFodVH3R4eRVwSBedtwD7d"
  },
  {
   "at": "2026-11-13T11:28:31.374Z",
