@@ -6,7 +6,7 @@ const hour = 3600 * 1000;
 const row = (over = {}) => ({ at: new Date(Date.now() - hour).toISOString(), handle: 'a', price_usdc: '0.01', window_s: 600, delivered: false, charged: false, response: { state: 'TASK_STATE_COMPLETED', ms: 1000, artifact_chars: 10 }, ...over });
 
 test('every outcome has a label', () => {
-  for (const k of ['delivered', 'rejected', 'no_start', 'no_answer', 'empty', 'unavailable', 'working']) assert.ok(LABEL[k]);
+  for (const k of ['delivered', 'rejected', 'no_start', 'cut_short', 'no_answer', 'empty', 'unavailable', 'working']) assert.ok(LABEL[k]);
 });
 
 test('a completed hire with an artifact is delivered', () => {
@@ -88,4 +88,21 @@ test('funding rows carry the measured wait and the refund reason', async () => {
   const bad = frow('def', '2026-11-12T10:03:00Z', { status: 'REFUNDED', updatedAt: '2026-11-12T12:42:10.000Z', swapDetails: { refundReason: 'QUOTE_EXPIRED', depositedAmountFormatted: '0.075' } });
   assert.equal(bad.reason, 'QUOTE_EXPIRED');
   assert.equal(bad.received, null);
+});
+
+test('hires we cut short and agents never reached stay out of the count', () => {
+  const s = summarise([
+    row({ delivered: true, charged: true }),
+    row({ response: { state: 'TASK_STATE_WORKING' } }),
+    row({ sla_s: 600, response: { state: 'TASK_STATE_CANCELED', ms: 122000 } }),
+    row({ sla_s: 120, response: { state: 'TASK_STATE_CANCELED', ms: 442000 } }),
+    row({ refused: 'no reachable backend', price_usdc: undefined }),
+  ]);
+  assert.equal(outcome(row({ sla_s: 600, response: { state: 'TASK_STATE_CANCELED', ms: 122000 } })), 'cut_short');
+  assert.equal(s.hired, 4);
+  assert.equal(s.settled, 3);
+  assert.equal(s.cut_short, 1);
+  assert.equal(s.unreachable, 1);
+  assert.equal(s.failed, 2);
+  assert.equal(s.fail_rate, 67);
 });

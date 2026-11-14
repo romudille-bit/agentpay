@@ -2,19 +2,21 @@
 // The data is inlined, so the page opens from disk as well as from GitHub Pages.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const here = new URL('..', import.meta.url).pathname;
+const here = fileURLToPath(new URL('..', import.meta.url));
 const MARKET_API = 'https://market.near.ai/v1';
 const UA = { 'user-agent': 'agentpay-near-check/0.1' };
 const read = (p, d) => (existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : d);
 
-/** One label per hire. `working` is still open and counts in no rate. */
+/** One label per hire. Only hires that ran their course count in the rate. */
 export function outcome(row) {
   const state = row.response?.state;
   if (row.refused) return 'unavailable';
   if (row.delivered) return 'delivered';
   if (state === 'TASK_STATE_REJECTED') return 'rejected';
-  if (state === 'TASK_STATE_CANCELED') return 'no_start';
+  // We cancel a task that has not started. Inside the agent's listed deadline that is our call, not its failure.
+  if (state === 'TASK_STATE_CANCELED') return row.sla_s && (row.response.ms || 0) / 1000 < row.sla_s ? 'cut_short' : 'no_start';
   if (state === 'TASK_STATE_COMPLETED') return 'empty';
   if (Date.now() > Date.parse(row.at) + (row.window_s || 0) * 1000) return 'no_answer';
   return 'working';
@@ -23,10 +25,11 @@ export function outcome(row) {
 export const LABEL = {
   delivered: 'delivered',
   rejected: 'rejected the task',
-  no_start: 'never started',
+  no_start: 'had not started when we cancelled',
+  cut_short: 'cancelled by us before its deadline',
   no_answer: 'no answer in the window',
   empty: 'completed, nothing attached',
-  unavailable: 'no backend reachable',
+  unavailable: 'not reachable, not hired',
   working: 'still working',
 };
 
@@ -74,7 +77,7 @@ export async function claims(handles, { fetchImpl = globalThis.fetch } = {}) {
 /** Seconds a buyer spent on one hire: the work it returned, or the wait it cost. */
 export function spent(row) {
   const o = outcome(row);
-  if (o === 'unavailable' || o === 'working') return 0;
+  if (o === 'unavailable' || o === 'working' || o === 'cut_short') return 0;
   if (o === 'delivered') return (row.response.ms || 0) / 1000;
   // An agent that stops answering burns its whole payment window before the
   // buyer can be sure; a cancelled or refused one costs only what it held.
@@ -82,24 +85,28 @@ export function spent(row) {
 }
 
 export function summarise(rows) {
-  const settled = rows.filter((r) => outcome(r) !== 'working');
-  const delivered = rows.filter((r) => outcome(r) === 'delivered');
+  // Hired = a price was quoted and a payment signed. The rate covers hires that ran
+  // their course: not ones still open, and not ones we cut short ourselves.
+  const hired = rows.filter((r) => outcome(r) !== 'unavailable');
+  const cutShort = hired.filter((r) => outcome(r) === 'cut_short');
+  const settled = hired.filter((r) => !['working', 'cut_short'].includes(outcome(r)));
+  const delivered = settled.filter((r) => outcome(r) === 'delivered');
   const failed = settled.filter((r) => outcome(r) !== 'delivered');
   const times = delivered.map((r) => r.response.ms).filter(Number.isFinite).sort((a, b) => a - b);
-  const stamps = rows.map((r) => Date.parse(r.at)).filter(Number.isFinite);
   return {
-    hired: rows.length,
+    hired: hired.length,
     settled: settled.length,
+    cut_short: cutShort.length,
+    unreachable: rows.length - hired.length,
     delivered: delivered.length,
     failed: failed.length,
     rate: settled.length ? Math.round((delivered.length / settled.length) * 100) : 0,
     fail_rate: settled.length ? Math.round((failed.length / settled.length) * 100) : 0,
-    charged: rows.filter((r) => r.charged).reduce((s, r) => s + Number(r.price_usdc || 0), 0).toFixed(2),
-    quoted: rows.reduce((s, r) => s + Number(r.price_usdc || 0), 0).toFixed(2),
+    charged: hired.filter((r) => r.charged).reduce((s, r) => s + Number(r.price_usdc || 0), 0).toFixed(2),
+    quoted: hired.reduce((s, r) => s + Number(r.price_usdc || 0), 0).toFixed(2),
     median_ms: times.length ? times[Math.floor(times.length / 2)] : null,
     waited_h: +(failed.reduce((s, r) => s + spent(r), 0) / 3600).toFixed(1),
     worked_min: +(delivered.reduce((s, r) => s + spent(r), 0) / 60).toFixed(1),
-    span_h: stamps.length ? +((Math.max(...stamps) - Math.min(...stamps)) / 3600000).toFixed(1) : 0,
     at: new Date().toISOString(),
   };
 }
@@ -109,7 +116,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 function render({ rows, direct, claim, sum, fund }) {
   const tile = (v, k) => `<div class="tile"><b>${esc(v)}</b><span>${esc(k)}</span></div>`;
   const secs = (ms) => (ms == null ? '—' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
-  const cls = { delivered: 'ok', rejected: 'warn', no_start: 'bad', no_answer: 'bad', empty: 'bad', unavailable: 'mut', working: 'mut' };
+  const cls = { delivered: 'ok', rejected: 'warn', no_start: 'bad', cut_short: 'mut', no_answer: 'bad', empty: 'bad', unavailable: 'mut', working: 'mut' };
 
   const hireRows = rows.map((r) => {
     const o = outcome(r);
@@ -184,13 +191,13 @@ function render({ rows, direct, claim, sum, fund }) {
 </head>
 <body>
 <main>
-  <h1>${sum.fail_rate}% of the agents we paid for returned nothing</h1>
-  <p class="sub">Every listed agent on <a href="https://market.near.ai">NEAR Agent Market</a> is payable per call in USDC on NEAR. We hired the cheapest available ones on mainnet with real money, one at a time, and wrote down what came back. By <a href="https://agentpay.tools">AgentPay</a>.</p>
+  <h1>${sum.failed} of the ${sum.settled} agents we hired returned nothing</h1>
+  <p class="sub">Every listed agent on <a href="https://market.near.ai">NEAR Agent Market</a> is payable per call in USDC on NEAR. We hired the cheapest available ones on mainnet with real money, one at a time, and wrote down what came back.${sum.cut_short ? ` ${sum.cut_short} more hires we cancelled ourselves before the agent's own deadline; they are listed and left out of the count.` : ''} By <a href="https://agentpay.tools">AgentPay</a>.</p>
   <div class="tiles">
-    ${[tile(sum.hired, 'agents hired'), tile(`${sum.fail_rate}%`, 'returned nothing'), tile(sum.delivered, 'delivered'), tile(`${sum.waited_h} h`, 'spent waiting for results that never came'), tile(`${sum.worked_min} min`, 'of work received'), tile(`$${sum.charged}`, `charged of $${sum.quoted} quoted`)].join('\n    ')}
+    ${[tile(sum.settled, 'hires that ran their course'), tile(`${sum.fail_rate}%`, 'returned nothing'), tile(sum.delivered, 'delivered'), tile(`${sum.waited_h} h`, 'spent waiting for results that never came'), tile(`${sum.worked_min} min`, 'of work received'), tile(`$${sum.charged}`, `charged of $${sum.quoted} quoted`)].join('\n    ')}
   </div>
-  <p class="lede">Nothing here was charged for a failure — the marketplace holds each payment until the agent delivers, and that part is exact. The cost is time. Working through these hires took ${esc(sum.span_h)} hours end to end, because an agent that goes quiet burns its whole payment window before a buyer can be sure. ${esc(sum.waited_h)} hours of waiting bought ${esc(sum.worked_min)} minutes of work.</p>
-  <p class="lede">A buyer cannot tell the two apart beforehand. The catalog's own track record does not separate them: the agents below with the longest delivered-job histories are among those that never answered. Paying and watching is the only signal that holds, which is why <a href="https://agentpay.tools">AgentPay</a> sells one — <code>verified_route</code> ranks x402 endpoints by whether a paid probe actually got data back.</p>
+  <p class="lede">Nothing here was charged for a failure — the marketplace holds each payment until the agent delivers, and that part is exact. The cost is time: an agent that goes quiet burns its whole payment window before a buyer can be sure. We spent ${esc(sum.waited_h)} hours waiting on hires that returned nothing, against ${esc(sum.worked_min)} minutes of delivered work.</p>
+  <p class="lede">A buyer cannot tell the two apart beforehand. The catalog's own track record does not separate them: the agents below with the longest delivered-job histories are among those that never answered. Paying and watching is the only signal that holds, which is why <a href="https://agentpay.tools">AgentPay</a> sells one — <code>verified_route</code> ranks x402 endpoints by whether a paid probe actually got data back. The marketplace already holds what it needs to show the same thing: delivery measured over paid hires, and the date an agent last delivered.</p>
 
   <h2>Hires on NEAR Agent Market</h2>
   <div class="wrap"><table><thead><tr>
@@ -204,7 +211,7 @@ function render({ rows, direct, claim, sum, fund }) {
   </tr></thead><tbody>${directRows || '<tr><td colspan="6" class="mut">No direct purchases recorded yet.</td></tr>'}</tbody></table></div>
 
   <h2>Funding a Base payment from a NEAR balance</h2>
-  <p class="notes">The cross-chain rail is the slow part: two of three attempts timed out and refunded, and the one that worked took over two hours to land. Re-read from the NEAR Intents status API, which reports its last record update, so each wait is an outer bound. A refund returns the deposit in full. We reported the stuck swaps to NEAR support while they were pending: the first reply said they were processing and to wait, the second confirmed a refund for an expired quote.</p>
+  <p class="notes">The cross-chain rail is the slow part: the quote for this route estimates 24 seconds, two of three attempts timed out and refunded, and the one that worked took over two hours to land. On a purchase this small the swap also adds 26–50% to the price. Re-read from the NEAR Intents status API, which reports its last record update, so each wait is an outer bound. A refund returns the deposit in full. We reported the stuck swaps to NEAR support while they were pending: the first reply said they were processing and to wait, the second confirmed a refund for an expired quote.</p>
   <div class="wrap"><table><thead><tr>
     <th>Deposit address</th><th>Sent</th><th>Result</th><th>Received</th><th>Took</th>
   </tr></thead><tbody>${fundRows || '<tr><td colspan="5" class="mut">No funding attempts recorded.</td></tr>'}</tbody></table></div>
@@ -212,24 +219,22 @@ function render({ rows, direct, claim, sum, fund }) {
   <h2>What the columns mean</h2>
   <dl class="notes">
     <dt>What happened</dt>
-    <dd><b>delivered</b> — the task completed and something came back. <b>never started</b> — the agent had not begun after two minutes, so we cancelled; a cancelled task moves no money. <b>no answer in the window</b> — the agent accepted the job and never returned a result before the payment expired. <b>rejected the task</b> — the agent declined it. <b>no backend reachable</b> — the marketplace could not reach the agent at all, so there was no price to pay.</dd>
+    <dd><b>delivered</b> — the task completed and something came back. Any non-empty result counts, we do not grade it, so the share that returned nothing is a floor. <b>no answer in the window</b> — the agent accepted the job and never returned a result before the payment expired. <b>had not started when we cancelled</b> — the task was still waiting to start after the agent's listed deadline, so we cancelled; a cancelled task moves no money. <b>rejected the task</b> — the agent declined it. <b>cancelled by us before its deadline</b> — our sweep gave up on a task that had not started while the agent still had time; not counted either way. <b>not reachable, not hired</b> — the marketplace could not reach the agent, so no price was quoted and nothing was signed; not counted.</dd>
     <dt>Charged</dt>
-    <dd>The marketplace holds the payment and settles it only on delivery, so everything other than a delivered hire cost nothing. That part works: the gap is between what the catalog advertises and what a buyer gets.</dd>
+    <dd>The marketplace holds the payment and settles it only on delivery, so everything other than a delivered hire cost nothing. That part works: the gap is between what the catalog advertises and what a buyer gets. Checked on chain on 14 Nov: the payer's USDC balance on NEAR fell by exactly $0.81 — $0.50 for the delivered hires, $0.01 for the direct purchase, $0.30 sent to Base through NEAR Intents.</dd>
     <dt>Catalog says</dt>
     <dd>The delivered-job count and success rate the marketplace shows for that agent, read at build time.</dd>
     <dt>Came back</dt>
     <dd>Size only. Response bodies are never published here; the hire log keeps a SHA-256 of each one.</dd>
   </dl>
-  <p class="notes">One brief per agent, written to suit what it advertises. An agent that fails here may do better on a different task. Source and method: <a href="https://github.com/romudille-bit/agentpay/tree/main/near">github.com/romudille-bit/agentpay/near</a>.</p>
+  <p class="notes">One brief per agent, written to suit what it advertises. An agent that fails here may do better on a different task. Source and method: <a href="https://github.com/romudille-bit/agentpay/tree/main/near">github.com/romudille-bit/agentpay/near</a> (the judged version is the <a href="https://github.com/romudille-bit/agentpay/tree/hackathon-submission/near"><code>hackathon-submission</code></a> tag).</p>
 </main>
 </body>
 </html>
 `;
 }
 
-const secs = (ms) => (ms == null ? '—' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
-
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
   const root = process.argv.includes('--root') ? process.argv[process.argv.indexOf('--root') + 1] : here;
   const rows = hires(root);
   const claim = process.argv.includes('--no-fetch') ? {} : await claims([...new Set(rows.map((r) => r.handle))]);

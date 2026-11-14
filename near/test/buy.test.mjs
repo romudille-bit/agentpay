@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buy } from '../src/buy.mjs';
-import { deliveredFrom } from '../src/pay.mjs';
+import { NEAR_USDC } from '../src/challenge.mjs';
+import { OverCap, cappedFetch, deliveredFrom } from '../src/pay.mjs';
 
 const ok = { status: 200, ms: 5, delivered: true, body_bytes: 10, body_sha256: 'x', error_body: null, settle: { success: true, transaction: 'tx' } };
 const base = { accountId: 'me.near', privateKey: 'ed25519:x' };
@@ -60,4 +61,25 @@ test('Base rail with a swap still in flight does not pay and never leaks the key
   } });
   assert.match(r.refused, /still in flight/);
   assert.equal(JSON.stringify(r).includes('0xsecret'), false);
+});
+
+const quote402 = (accept) => ({ status: 402, headers: { get: () => null }, clone: () => ({ json: async () => ({ accepts: [accept] }) }) });
+const nearAccept = { scheme: 'exact', network: 'near:mainnet', asset: NEAR_USDC, amount: '10000', payTo: 'seller.near' };
+
+test('the cap is checked on the quote that would be signed, not on the earlier check', async () => {
+  const dear = cappedFetch(async () => quote402({ ...nearAccept, amount: '5000000' }), '0.02');
+  await assert.rejects(dear('https://x.example'), OverCap);
+  const other = cappedFetch(async () => quote402({ ...nearAccept, asset: 'wbtc.near' }), '0.02');
+  await assert.rejects(other('https://x.example'), /not USDC/);
+  const fair = cappedFetch(async () => quote402(nearAccept), '0.02');
+  assert.equal((await fair('https://x.example')).status, 402);
+  const paid = cappedFetch(async () => ({ status: 200 }), '0.02');
+  assert.equal((await paid('https://x.example')).status, 200);
+});
+
+test('a seller that raises its price at payment time is refused, not paid', async () => {
+  const r = await buy('https://bait.example', { ...base, deps: { check: checked({}), payNear: async () => { throw new OverCap('seller asked for 5000000 units at payment time, over the cap 0.02'); } } });
+  assert.match(r.refused, /at payment time/);
+  assert.equal(r.paid, false);
+  assert.equal(r.delivered, false);
 });

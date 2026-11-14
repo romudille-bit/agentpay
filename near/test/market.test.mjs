@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { artifactText, hire, hireDelivered } from '../src/market.mjs';
+import { NEAR_USDC, artifactText, hire, hireDelivered } from '../src/market.mjs';
 
-const row = { scheme: 'exact', network: 'near:mainnet', asset: 'usdc.near', amount: '10000', payTo: 'treasury', maxTimeoutSeconds: 900 };
+const row = { scheme: 'exact', network: 'near:mainnet', asset: NEAR_USDC, amount: '10000', payTo: 'treasury', maxTimeoutSeconds: 900 };
 const res = (status, body) => ({ status, json: async () => body });
 const done = (text) => ({ id: 't1', status: { state: 'TASK_STATE_COMPLETED' }, artifacts: text === null ? [] : [{ parts: [{ text }] }] });
 const base = { accountId: 'me.near', privateKey: 'k', sign: async () => 'HEADER', sleep: async () => {} };
@@ -74,4 +74,11 @@ test('immediate mode asks the market to return the task id at once', async () =>
   assert.equal(m.calls[1].config.returnImmediately, true);
   assert.equal(r.response.task_id, 't1');
   assert.equal(r.paid, true);
+});
+
+test('a quote in a token other than USDC is refused before anything is signed', async () => {
+  const m = market({ quote: res(402, { accepts: [{ ...row, asset: 'wbtc.near' }] }) });
+  const r = await hire('odd', 'task', { ...base, fetchImpl: m.fetchImpl, sign: async () => { throw new Error('must not sign'); } });
+  assert.match(r.refused, /no USDC-on-NEAR price/);
+  assert.equal(m.calls.length, 1);
 });

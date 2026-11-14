@@ -2,9 +2,10 @@
 // Deposit times come from our own run log; everything else is re-queried live, so
 // anyone can check a row by its deposit address.
 
+import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 
-const here = new URL('..', import.meta.url).pathname;
+const here = fileURLToPath(new URL('..', import.meta.url));
 export const ONECLICK = 'https://1click.chaindefuser.com/v0';
 
 /** Deposit address -> when we sent the deposit. Receipts carry most of them; the
@@ -53,7 +54,7 @@ export async function funding(root = here, { fetchImpl = globalThis.fetch } = {}
   return out.sort((a, b) => String(a.sent_at).localeCompare(String(b.sent_at)));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
   const rows = await funding();
   mkdirSync(`${here}docs`, { recursive: true });
   writeFileSync(`${here}docs/funding.json`, JSON.stringify(rows, null, 1));

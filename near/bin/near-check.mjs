@@ -1,12 +1,17 @@
 #!/usr/bin/env node
+import { fileURLToPath } from 'node:url';
 import { check } from '../src/check.mjs';
 import { createOneClick, overhead } from '../src/oneclick.mjs';
 
 const [cmd, arg, ...rest] = process.argv.slice(2);
 const flag = (name) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : undefined; };
+const jsonFlag = (name) => {
+  if (!flag(name)) return undefined;
+  try { return JSON.parse(flag(name)); } catch { console.error(`--${name} is not valid JSON`); process.exit(64); }
+};
 
 if (cmd === 'check' && arg) {
-  const body = flag('body') ? JSON.parse(flag('body')) : undefined;
+  const body = jsonFlag('body');
   const r = await check(arg, { method: flag('method') || (body ? 'POST' : 'GET'), body });
   console.log(JSON.stringify(r, null, 2));
   process.exit(r.verdict === 'block' ? 2 : 0);
@@ -19,8 +24,8 @@ if (cmd === 'check' && arg) {
   const { buy } = await import('../src/buy.mjs');
   const { NEAR_ACCOUNT_ID: accountId, NEAR_PRIVATE_KEY: privateKey } = process.env;
   if (!accountId || !privateKey) { console.error('set NEAR_ACCOUNT_ID and NEAR_PRIVATE_KEY'); process.exit(78); }
-  const body = flag('body') ? JSON.parse(flag('body')) : undefined;
-  const here = new URL('..', import.meta.url).pathname;
+  const body = jsonFlag('body');
+  const here = fileURLToPath(new URL('..', import.meta.url));
   const r = await buy(arg, {
     accountId, privateKey, body, method: flag('method') || (body ? 'POST' : 'GET'),
     maxUsdc: flag('max') || '0.02', fundUsdc: flag('fund') || '0.10',
@@ -34,7 +39,7 @@ if (cmd === 'check' && arg) {
   const { NEAR_ACCOUNT_ID: accountId, NEAR_PRIVATE_KEY: privateKey } = process.env;
   if (!accountId || !privateKey) { console.error('set NEAR_ACCOUNT_ID and NEAR_PRIVATE_KEY'); process.exit(78); }
   const r = await hire(arg, flag('task') || 'Say hello in one sentence.', { accountId, privateKey, maxUsdc: flag('max') || '0.02' });
-  const dir = new URL('../receipts/', import.meta.url).pathname;
+  const dir = fileURLToPath(new URL('../receipts/', import.meta.url));
   mkdirSync(dir, { recursive: true });
   r.file = `receipts/${r.at.replace(/[:.]/g, '-')}-${arg}.json`;
   writeFileSync(`${dir}${r.file.slice(9)}`, JSON.stringify(r, null, 2));

@@ -3,9 +3,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { check } from './check.mjs';
 import { toUnits } from './oneclick.mjs';
-import { fundBaseWallet, payBase, payNear, sessionWallets } from './pay.mjs';
+import { OverCap, fundBaseWallet, payBase, payNear, sessionWallets } from './pay.mjs';
 
-const gt = (a, b) => Number(a) > Number(b);
+const gt = (a, b) => BigInt(toUnits(a, 6)) > BigInt(toUnits(b, 6));
 
 /** `maxUsdc` caps the price of this call; `fundUsdc` is what a Base wallet is topped up with. */
 export async function buy(url, { accountId, privateKey, maxUsdc = '0.02', fundUsdc = '0.10', method = 'GET', body, receiptsDir = null, walletDir = null, log = () => {}, deps = {} } = {}) {
@@ -20,7 +20,12 @@ export async function buy(url, { accountId, privateKey, maxUsdc = '0.02', fundUs
 
   if (!receipt.refused) {
     if (c.rail === 'near') {
-      receipt.response = await (deps.payNear || payNear)(url, { accountId, privateKey, method, body });
+      try {
+        receipt.response = await (deps.payNear || payNear)(url, { accountId, privateKey, maxUsdc, method, body });
+      } catch (e) {
+        if (!(e instanceof OverCap)) throw e;
+        receipt.refused = e.message; // the paying request was quoted differently from the check
+      }
     } else {
       // Reuse a session wallet that still holds enough; bridge only when none does.
       const price = BigInt(toUnits(c.price_usdc, 6));

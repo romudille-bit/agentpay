@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toUnits, overhead, createOneClick, ASSETS } from '../src/oneclick.mjs';
-import { decodePaymentRequired, offers, pickRail, readChallenge } from '../src/challenge.mjs';
+import { BASE_USDC, NEAR_USDC, decodePaymentRequired, offers, pickRail, readChallenge } from '../src/challenge.mjs';
 import { check, fromUnits } from '../src/check.mjs';
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
@@ -10,8 +10,8 @@ const res = (status, { headers = {}, json } = {}) => ({
   headers: { get: (k) => headers[k.toLowerCase()] ?? null },
   json: async () => json, text: async () => JSON.stringify(json ?? {}),
 });
-const nearOffer = { scheme: 'exact', network: 'near:mainnet', amount: '10000', asset: 'usdc.near', payTo: 'seller.near' };
-const baseOffer = { scheme: 'exact', network: 'eip155:8453', amount: '10000', asset: '0x8335', payTo: '0xabc' };
+const nearOffer = { scheme: 'exact', network: 'near:mainnet', amount: '10000', asset: NEAR_USDC, payTo: 'seller.near' };
+const baseOffer = { scheme: 'exact', network: 'eip155:8453', amount: '10000', asset: BASE_USDC, payTo: '0xabc' };
 
 test('toUnits is exact and rejects bad input', () => {
   assert.equal(toUnits('0.01', 6), '10000');
@@ -56,7 +56,7 @@ test('decodes a v2 header and ignores junk', () => {
 });
 
 test('offers normalises v1 names and drops non-exact', () => {
-  const list = offers({ accepts: [{ scheme: 'exact', network: 'base', maxAmountRequired: '5000', payTo: '0x1' }, { scheme: 'upto', network: 'near:mainnet', amount: '1' }] });
+  const list = offers({ accepts: [{ scheme: 'exact', network: 'base', maxAmountRequired: '5000', asset: BASE_USDC, payTo: '0x1' }, { scheme: 'upto', network: 'near:mainnet', amount: '1' }] });
   assert.equal(list.length, 1);
   assert.equal(list[0].network, 'eip155:8453');
   assert.equal(list[0].amount, '5000');
@@ -104,4 +104,11 @@ test('check: an unreachable seller reports the error and does not pay', async ()
   });
   assert.equal(r.unpaid.error, 'ECONNREFUSED');
   assert.equal(r.pay, false);
+});
+
+test('offers in any token other than USDC are dropped', () => {
+  assert.equal(offers({ accepts: [{ ...nearOffer, asset: 'wbtc.near' }] }).length, 0);
+  assert.equal(offers({ accepts: [{ ...baseOffer, asset: '0x0000000000000000000000000000000000000001' }] }).length, 0);
+  assert.equal(offers({ accepts: [{ ...baseOffer, asset: BASE_USDC.toLowerCase() }] }).length, 1);
+  assert.equal(pickRail({ accepts: [{ ...nearOffer, asset: 'wbtc.near' }, baseOffer] }).rail, 'base-via-intents');
 });

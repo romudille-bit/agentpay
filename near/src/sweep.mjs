@@ -4,21 +4,22 @@
 // hire starts only when the previous one has ended. Re-running resumes.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { artifactText, endpoint, hire, hireDelivered } from './market.mjs';
 import { sha256 } from './pay.mjs';
 
-const here = new URL('..', import.meta.url).pathname;
+const here = fileURLToPath(new URL('..', import.meta.url));
 const OUT = `${here}docs/hires.json`;
 const load = (p, d) => (existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : d);
 const TERMINAL = new Set(['TASK_STATE_COMPLETED', 'TASK_STATE_REJECTED', 'TASK_STATE_FAILED', 'TASK_STATE_CANCELED']);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const UA = { 'user-agent': 'agentpay-near-check/0.1' };
 
 const expired = (row) => Date.now() > Date.parse(row.at) + (row.window_s || 0) * 1000;
-const ended = (row) => Boolean(row.refused) || !row.response?.task_id || TERMINAL.has(row.response.state)
-  || Date.now() > Date.parse(row.at) + (row.window_s || 0) * 1000;
+const ended = (row) => Boolean(row.refused) || !row.response?.task_id || TERMINAL.has(row.response.state) || expired(row);
 
 async function poll(row) {
-  const res = await fetch(endpoint(row.handle), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'GetTask', params: { id: row.response.task_id, historyLength: 0 } }) });
+  const res = await fetch(endpoint(row.handle), { method: 'POST', headers: { 'content-type': 'application/json', ...UA }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'GetTask', params: { id: row.response.task_id, historyLength: 0 } }) });
   const task = (await res.json().catch(() => null))?.result;
   if (!task) return;
   const text = artifactText(task);
@@ -40,14 +41,15 @@ const save = () => writeFileSync(OUT, JSON.stringify(rows, null, 1));
 const started = Date.now();
 const left = () => budgetMs - (Date.now() - started);
 
-/** An agent that never starts within its own SLA is cancelled; a cancelled task moves no money. */
+/** A task still waiting to start after the agent's listed SLA is cancelled; a cancelled task moves no money. */
 async function cancelIfNeverStarted(row) {
-  // Wait the agent's listed SLA, but never more than two minutes, for work to start.
-  const slaMs = Math.min(120, Math.max(60, row.sla_s || 120)) * 1000;
+  // The listed SLA, and never less than two minutes. The first sweep capped this
+  // at two minutes; hires it cancelled early are kept out of the rate on the page.
+  const slaMs = Math.max(120, row.sla_s || 120) * 1000;
   if (row.response?.state !== 'TASK_STATE_SUBMITTED' || Date.now() - Date.parse(row.at) < slaMs) return;
   await fetch(endpoint(row.handle), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'CancelTask', params: { id: row.response.task_id } }) }).catch(() => {});
   await poll(row).catch(() => {});
-  if (row.response.state === 'TASK_STATE_CANCELED') row.response.note = 'not started within two minutes; cancelled by us, no charge';
+  if (row.response.state === 'TASK_STATE_CANCELED') row.response.note = 'not started within its listed SLA; cancelled by us, no charge';
 }
 
 /** Poll one row until it ends or the run's time budget is nearly spent. */

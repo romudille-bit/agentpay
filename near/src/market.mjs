@@ -2,13 +2,18 @@
 // and a plain rule for whether the hire delivered.
 
 import { randomUUID } from 'node:crypto';
+import { toUnits } from './oneclick.mjs';
 import { Account, JsonRpcProvider, actions, encodeSignedDelegate } from 'near-api-js';
+import { NEAR_USDC } from './challenge.mjs';
 import { NEAR_RPC, sha256 } from './pay.mjs';
 
 export const MARKET_API = 'https://market.near.ai/v1';
-export const NEAR_USDC = '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1';
+export { NEAR_USDC };
 const TERMINAL = new Set(['TASK_STATE_COMPLETED', 'TASK_STATE_REJECTED', 'TASK_STATE_FAILED', 'TASK_STATE_CANCELED']);
-// The verifier rejects a window at the full quoted timeout; stay inside it.
+// The delegate action's lifetime is counted in blocks. The market's verifier compares
+// that count with the quoted seconds and rejects one at the full value, so sign for
+// less. Blocks are faster than a second, so the authorization lapses before the
+// quoted window does; every delivery we saw landed within two minutes.
 const TTL_FRACTION = 0.8;
 const UA = { 'user-agent': 'agentpay-near-check/0.1' };
 
@@ -73,10 +78,11 @@ export async function hire(handle, task, { accountId, privateKey, maxUsdc = '0.0
   const quoteRes = await post(url, call, {}, fetchImpl);
   const quote = await json(quoteRes);
   out.unpaid = { status: quoteRes.status, ms: Date.now() - t0, rpc_error: quote?.error?.message ?? null };
-  const row = (quote?.accepts || []).find((a) => String(a.network).startsWith('near:') && a.scheme === 'exact');
-  if (quoteRes.status !== 402 || !row) { out.refused = out.unpaid.rpc_error || `no NEAR price quoted (HTTP ${quoteRes.status})`; return out; }
+  // USDC only: a quote in any other token is not a price this cap can judge.
+  const row = (quote?.accepts || []).find((a) => String(a.network).startsWith('near:') && a.scheme === 'exact' && a.asset === NEAR_USDC);
+  if (quoteRes.status !== 402 || !row) { out.refused = out.unpaid.rpc_error || `no USDC-on-NEAR price quoted (HTTP ${quoteRes.status})`; return out; }
   Object.assign(out, { price_usdc: fromAtomic(row.amount), pay_to: row.payTo, network: row.network, window_s: row.maxTimeoutSeconds });
-  if (Number(out.price_usdc) > Number(maxUsdc)) { out.refused = `price ${out.price_usdc} is over the cap ${maxUsdc}`; return out; }
+  if (BigInt(row.amount) > BigInt(toUnits(maxUsdc, 6))) { out.refused = `price ${out.price_usdc} is over the cap ${maxUsdc}`; return out; }
 
   const t1 = Date.now();
   // `immediate` returns the task id at once; the caller polls GetTask later.

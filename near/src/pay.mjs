@@ -12,12 +12,12 @@ import { wrapFetchWithPayment } from '@x402/fetch';
 import { Account, JsonRpcProvider } from 'near-api-js';
 import { NEAR } from 'near-api-js/tokens';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
-import { BASE_MAINNET, NEAR_MAINNET } from './challenge.mjs';
-import { createOneClick } from './oneclick.mjs';
+import { BASE_MAINNET, BASE_USDC, NEAR_MAINNET, decodePaymentRequired, isUsdc } from './challenge.mjs';
+import { createOneClick, toUnits } from './oneclick.mjs';
 
 export const NEAR_RPC = 'https://rpc.mainnet.fastnear.com';
 export const BASE_RPC = 'https://mainnet.base.org';
-export const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+export { BASE_USDC };
 const TERMINAL = new Set(['SUCCESS', 'REFUNDED', 'FAILED']);
 
 export const sha256 = (text) => createHash('sha256').update(text).digest('hex');
@@ -55,9 +55,34 @@ export async function outcome(res, startedAt) {
   };
 }
 
-export async function payNear(url, { accountId, privateKey, method = 'GET', body, rpcUrl = NEAR_RPC, fetchImpl } = {}) {
+/** Thrown before signing when a 402 asks for more than the cap or for another token. */
+export class OverCap extends Error {}
+
+/**
+ * fetch that reads every 402 before the payer does. The paying request gets its
+ * own quote, so the cap is checked here, on the quote that would be signed.
+ */
+export function cappedFetch(fetchImpl, maxUsdc) {
+  const cap = BigInt(toUnits(maxUsdc, 6));
+  return async (...args) => {
+    const res = await fetchImpl(...args);
+    if (res.status !== 402) return res;
+    let challenge = decodePaymentRequired(res.headers.get('payment-required'));
+    if (!challenge) { try { challenge = await res.clone().json(); } catch { challenge = null; } }
+    for (const a of challenge?.accepts || []) {
+      if (!String(a.network).startsWith('near')) continue;
+      const amount = String(a.amount ?? a.maxAmountRequired ?? '');
+      if (!isUsdc(NEAR_MAINNET, a.asset)) throw new OverCap(`seller asked to be paid in ${a.asset}, not USDC`);
+      if (!/^\d+$/.test(amount) || BigInt(amount) > cap) throw new OverCap(`seller asked for ${amount} units at payment time, over the cap ${maxUsdc}`);
+    }
+    return res;
+  };
+}
+
+export async function payNear(url, { accountId, privateKey, maxUsdc, method = 'GET', body, rpcUrl = NEAR_RPC, fetchImpl = globalThis.fetch } = {}) {
+  if (maxUsdc == null) throw new Error('payNear needs maxUsdc');
   const signer = createLocalNearSigner({ accountId, secretKey: privateKey, rpcUrls: { [NEAR_MAINNET]: rpcUrl } });
-  const paidFetch = createNearPaymentFetch({ signer, network: NEAR_MAINNET, ...(fetchImpl ? { fetch: fetchImpl } : {}) });
+  const paidFetch = createNearPaymentFetch({ signer, network: NEAR_MAINNET, fetch: cappedFetch(fetchImpl, maxUsdc) });
   const started = Date.now();
   return outcome(await paidFetch(url, init(method, body)), started);
 }
