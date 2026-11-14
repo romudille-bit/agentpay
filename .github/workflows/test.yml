@@ -42,3 +42,24 @@ jobs:
           SUPABASE_URL: ""
           SUPABASE_KEY: ""
         run: pytest -v --tb=short
+
+  near:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: near
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install
+        run: npm ci
+
+      - name: Run near tests
+        run: npm test
