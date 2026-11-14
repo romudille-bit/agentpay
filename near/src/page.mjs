@@ -204,7 +204,7 @@ function render({ rows, direct, claim, sum, fund }) {
   </tr></thead><tbody>${directRows || '<tr><td colspan="6" class="mut">No direct purchases recorded yet.</td></tr>'}</tbody></table></div>
 
   <h2>Funding a Base payment from a NEAR balance</h2>
-  <p class="notes">The cross-chain rail is the slow part: two of three attempts timed out and refunded, and the one that worked took over two hours to land. Re-read from the NEAR Intents status API, which reports its last record update, so each wait is an outer bound. A refund returns the deposit in full.</p>
+  <p class="notes">The cross-chain rail is the slow part: two of three attempts timed out and refunded, and the one that worked took over two hours to land. Re-read from the NEAR Intents status API, which reports its last record update, so each wait is an outer bound. A refund returns the deposit in full. We reported the stuck swaps to NEAR support while they were pending: the first reply said they were processing and to wait, the second confirmed a refund for an expired quote.</p>
   <div class="wrap"><table><thead><tr>
     <th>Deposit address</th><th>Sent</th><th>Result</th><th>Received</th><th>Took</th>
   </tr></thead><tbody>${fundRows || '<tr><td colspan="5" class="mut">No funding attempts recorded.</td></tr>'}</tbody></table></div>
