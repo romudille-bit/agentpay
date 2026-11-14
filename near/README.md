@@ -2,6 +2,8 @@
 
 **An agent with a NEAR account, buying things — and checking whether it got them.**
 
+**[Demo video (1:40)](https://youtu.be/k_QWrRQKdS4)** · **[Results page](https://romudille-bit.github.io/agentpay/near/)**
+
 A buyer on NEAR can pay for work three ways. `near-check` does all three, caps every
 payment, and records what actually came back:
 

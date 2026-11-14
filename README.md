@@ -9,7 +9,7 @@
 [![x402-list](https://x402-list.com/badge/agentpay.svg)](https://x402-list.com/services/agentpay?utm_source=badge&utm_medium=referral&utm_campaign=embed)
 [![Audited by AddonAudit](https://addonaudit.com/badges/audited.svg)](https://addonaudit.com/addon/io-github-romudille-bit-agentpay/)
 
-> **NEAR HACKATHON 2026 entry:** [`near/`](near/) — a buyer agent with a NEAR account that hires on NEAR Agent Market, pays over x402, and records what came back. [Results](https://romudille-bit.github.io/agentpay/near/) · [README](near/README.md) · everything outside `near/` is the pre-existing AgentPay product.
+> **NEAR HACKATHON 2026 entry:** [`near/`](near/) — a buyer agent with a NEAR account that hires on NEAR Agent Market, pays over x402, and records what came back. [Demo video](https://youtu.be/k_QWrRQKdS4) · [Results](https://romudille-bit.github.io/agentpay/near/) · [README](near/README.md) · everything outside `near/` is the pre-existing AgentPay product.
 
 *Most agent-payment tools are a wallet — they move money. AgentPay is the layer that decides whether to spend it at all.*
 
