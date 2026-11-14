@@ -36,18 +36,18 @@
 </head>
 <body>
 <main>
-  <h1>52% of the agents we paid for returned nothing</h1>
-  <p class="sub">Every listed agent on <a href="https://market.near.ai">NEAR Agent Market</a> is payable per call in USDC on NEAR. We hired the cheapest available ones on mainnet with real money, one at a time, and wrote down what came back. By <a href="https://agentpay.tools">AgentPay</a>.</p>
+  <h1>11 of the 25 agents we hired returned nothing</h1>
+  <p class="sub">Every listed agent on <a href="https://market.near.ai">NEAR Agent Market</a> is payable per call in USDC on NEAR. We hired the cheapest available ones on mainnet with real money, one at a time, and wrote down what came back. 3 more hires we cancelled ourselves before the agent's own deadline; they are listed and left out of the count. By <a href="https://agentpay.tools">AgentPay</a>.</p>
   <div class="tiles">
-    <div class="tile"><b>29</b><span>agents hired</span></div>
-    <div class="tile"><b>52%</b><span>returned nothing</span></div>
+    <div class="tile"><b>25</b><span>hires that ran their course</span></div>
+    <div class="tile"><b>44%</b><span>returned nothing</span></div>
     <div class="tile"><b>14</b><span>delivered</span></div>
-    <div class="tile"><b>8.7 h</b><span>spent waiting for results that never came</span></div>
+    <div class="tile"><b>8.5 h</b><span>spent waiting for results that never came</span></div>
     <div class="tile"><b>9.9 min</b><span>of work received</span></div>
     <div class="tile"><b>$0.50</b><span>charged of $1.05 quoted</span></div>
   </div>
-  <p class="lede">Nothing here was charged for a failure — the marketplace holds each payment until the agent delivers, and that part is exact. The cost is time. Working through these hires took 23.9 hours end to end, because an agent that goes quiet burns its whole payment window before a buyer can be sure. 8.7 hours of waiting bought 9.9 minutes of work.</p>
-  <p class="lede">A buyer cannot tell the two apart beforehand. The catalog's own track record does not separate them: the agents below with the longest delivered-job histories are among those that never answered. Paying and watching is the only signal that holds, which is why <a href="https://agentpay.tools">AgentPay</a> sells one — <code>verified_route</code> ranks x402 endpoints by whether a paid probe actually got data back.</p>
+  <p class="lede">Nothing here was charged for a failure — the marketplace holds each payment until the agent delivers, and that part is exact. The cost is time: an agent that goes quiet burns its whole payment window before a buyer can be sure. We spent 8.5 hours waiting on hires that returned nothing, against 9.9 minutes of delivered work.</p>
+  <p class="lede">A buyer cannot tell the two apart beforehand. The catalog's own track record does not separate them: the agents below with the longest delivered-job histories are among those that never answered. Paying and watching is the only signal that holds, which is why <a href="https://agentpay.tools">AgentPay</a> sells one — <code>verified_route</code> ranks x402 endpoints by whether a paid probe actually got data back. The marketplace already holds what it needs to show the same thing: delivery measured over paid hires, and the date an agent last delivered.</p>
 
   <h2>Hires on NEAR Agent Market</h2>
   <div class="wrap"><table><thead><tr>
@@ -63,7 +63,7 @@
     </tr><tr>
       <td><a href="https://market.near.ai/agents/autodoc-sentinels">autodoc-sentinels</a></td>
       <td>$—</td>
-      <td class="mut">no backend reachable</td>
+      <td class="mut">not reachable, not hired</td>
       <td><span class="mut">nothing</span></td>
       <td>—</td>
       <td><span class="mut">nothing</span></td>
@@ -87,7 +87,7 @@
     </tr><tr>
       <td><a href="https://market.near.ai/agents/x402-endpoint-check">x402-endpoint-check</a></td>
       <td>$0.05</td>
-      <td class="bad">never started</td>
+      <td class="bad">had not started when we cancelled</td>
       <td><span class="mut">nothing</span></td>
       <td>—</td>
       <td><span class="mut">nothing</span></td>
@@ -127,7 +127,7 @@
     </tr><tr>
       <td><a href="https://market.near.ai/agents/patrick-usdc-tools">patrick-usdc-tools</a></td>
       <td>$0.1</td>
-      <td class="bad">never started</td>
+      <td class="mut">cancelled by us before its deadline</td>
       <td><span class="mut">nothing</span></td>
       <td>—</td>
       <td><span class="mut">nothing</span></td>
@@ -135,7 +135,7 @@
     </tr><tr>
       <td><a href="https://market.near.ai/agents/brandname-check">brandname-check</a></td>
       <td>$0.05</td>
-      <td class="bad">never started</td>
+      <td class="mut">cancelled by us before its deadline</td>
       <td><span class="mut">nothing</span></td>
       <td>—</td>
       <td><span class="mut">nothing</span></td>
@@ -143,7 +143,7 @@
     </tr><tr>
       <td><a href="https://market.near.ai/agents/pagedoctor">pagedoctor</a></td>
       <td>$0.1</td>
-      <td class="bad">never started</td>
+      <td class="mut">cancelled by us before its deadline</td>
       <td><span class="mut">nothing</span></td>
       <td>—</td>
       <td><span class="mut">nothing</span></td>
@@ -235,7 +235,7 @@
       <td>37 chars</td>
       <td>37.7 s</td>
       <td>$0.01</td>
-      <td class="mut">1 job, 17%</td>
+      <td class="mut">2 jobs, 29%</td>
     </tr><tr>
       <td><a href="https://market.near.ai/agents/taifoon">taifoon</a></td>
       <td>$0.01</td>
@@ -314,7 +314,7 @@
     </tr></tbody></table></div>
 
   <h2>Funding a Base payment from a NEAR balance</h2>
-  <p class="notes">The cross-chain rail is the slow part: two of three attempts timed out and refunded, and the one that worked took over two hours to land. Re-read from the NEAR Intents status API, which reports its last record update, so each wait is an outer bound. A refund returns the deposit in full. We reported the stuck swaps to NEAR support while they were pending: the first reply said they were processing and to wait, the second confirmed a refund for an expired quote.</p>
+  <p class="notes">The cross-chain rail is the slow part: the quote for this route estimates 24 seconds, two of three attempts timed out and refunded, and the one that worked took over two hours to land. On a purchase this small the swap also adds 26–50% to the price. Re-read from the NEAR Intents status API, which reports its last record update, so each wait is an outer bound. A refund returns the deposit in full. We reported the stuck swaps to NEAR support while they were pending: the first reply said they were processing and to wait, the second confirmed a refund for an expired quote.</p>
   <div class="wrap"><table><thead><tr>
     <th>Deposit address</th><th>Sent</th><th>Result</th><th>Received</th><th>Took</th>
   </tr></thead><tbody><tr>
@@ -340,15 +340,15 @@
   <h2>What the columns mean</h2>
   <dl class="notes">
     <dt>What happened</dt>
-    <dd><b>delivered</b> — the task completed and something came back. <b>never started</b> — the agent had not begun after two minutes, so we cancelled; a cancelled task moves no money. <b>no answer in the window</b> — the agent accepted the job and never returned a result before the payment expired. <b>rejected the task</b> — the agent declined it. <b>no backend reachable</b> — the marketplace could not reach the agent at all, so there was no price to pay.</dd>
+    <dd><b>delivered</b> — the task completed and something came back. Any non-empty result counts, we do not grade it, so the share that returned nothing is a floor. <b>no answer in the window</b> — the agent accepted the job and never returned a result before the payment expired. <b>had not started when we cancelled</b> — the task was still waiting to start after the agent's listed deadline, so we cancelled; a cancelled task moves no money. <b>rejected the task</b> — the agent declined it. <b>cancelled by us before its deadline</b> — our sweep gave up on a task that had not started while the agent still had time; not counted either way. <b>not reachable, not hired</b> — the marketplace could not reach the agent, so no price was quoted and nothing was signed; not counted.</dd>
     <dt>Charged</dt>
-    <dd>The marketplace holds the payment and settles it only on delivery, so everything other than a delivered hire cost nothing. That part works: the gap is between what the catalog advertises and what a buyer gets.</dd>
+    <dd>The marketplace holds the payment and settles it only on delivery, so everything other than a delivered hire cost nothing. That part works: the gap is between what the catalog advertises and what a buyer gets. Checked on chain on 14 Nov: the payer's USDC balance on NEAR fell by exactly $0.81 — $0.50 for the delivered hires, $0.01 for the direct purchase, $0.30 sent to Base through NEAR Intents.</dd>
     <dt>Catalog says</dt>
     <dd>The delivered-job count and success rate the marketplace shows for that agent, read at build time.</dd>
     <dt>Came back</dt>
     <dd>Size only. Response bodies are never published here; the hire log keeps a SHA-256 of each one.</dd>
   </dl>
-  <p class="notes">One brief per agent, written to suit what it advertises. An agent that fails here may do better on a different task. Source and method: <a href="https://github.com/romudille-bit/agentpay/tree/main/near">github.com/romudille-bit/agentpay/near</a>.</p>
+  <p class="notes">One brief per agent, written to suit what it advertises. An agent that fails here may do better on a different task. Source and method: <a href="https://github.com/romudille-bit/agentpay/tree/main/near">github.com/romudille-bit/agentpay/near</a> (the judged version is the <a href="https://github.com/romudille-bit/agentpay/tree/hackathon-submission/near"><code>hackathon-submission</code></a> tag).</p>
 </main>
 </body>
 </html>
