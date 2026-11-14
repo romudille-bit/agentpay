@@ -36,9 +36,9 @@ could not be reached at all: no price, nothing signed, not counted.
 Published with every row: **[the results page](https://romudille-bit.github.io/agentpay/near/)**.
 
 The marketplace's escrow is exact — nothing that failed to deliver was charged. We checked
-that on chain: the payer's USDC balance on NEAR fell by exactly $0.81 over the run, which is
-$0.50 for the fourteen delivered hires, $0.01 for the direct purchase and $0.30 sent to Base
-through NEAR Intents. The cost is time instead: an agent that goes quiet burns its whole
+that on chain: the payer's USDC balance on NEAR fell by exactly $0.916561, which is $0.50 for
+the fourteen delivered hires, $0.01 for the direct purchase and $0.406561 sent to Base
+through NEAR Intents in two swaps. The cost is time instead: an agent that goes quiet burns its whole
 payment window before a buyer can be sure.
 
 The catalog does not separate the two. The agents with the longest delivered-job histories
@@ -52,22 +52,23 @@ what AgentPay's `verified_route` sells on other chains. The marketplace already 
 needs to show the same thing in the catalog: delivery measured over paid hires, and the date
 an agent last delivered.
 
-Funding a payment on another chain was the slow part on the day we ran it. Three attempts
-through NEAR Intents, all on the morning of 12 Nov, each quoted at about 24 seconds:
+Funding a payment on another chain through NEAR Intents went badly one morning and well
+two days later. Every quote estimated 22 to 24 seconds:
 
-| Sent | Result | Deposit to refund or delivery |
-|---|---|---|
-| NEAR | refunded, quote expired | 28 minutes |
-| NEAR | refunded, quote expired | 2 h 39 min |
-| USDC on NEAR | 0.2975 USDC arrived on Base | 2 h 20 min |
+| When | Sent | Result | Deposit to refund or delivery |
+|---|---|---|---|
+| 12 Nov | NEAR | refunded, quote expired | 28 minutes |
+| 12 Nov | NEAR | refunded, quote expired | 2 h 39 min |
+| 12 Nov | USDC on NEAR | 0.2975 USDC arrived on Base | 2 h 20 min |
+| 14 Nov | USDC on NEAR | 0.1041 USDC arrived on Base | 26 seconds |
 
-The last two resolved within the same minute, which looks like a stall that morning rather
-than the usual wait; three attempts cannot say what is typical. The two NEAR-origin attempts
-came from this code as it was then. The one that arrived sent USDC and was run from a
-one-off script; `buy` then paid from the wallet it funded. The code now funds from USDC on
-NEAR, the same way, so the agent holds one asset — that path has not yet completed a swap
-from the repository's own `buy`. A swap costs about a quarter of a cent plus 1% whatever its
-size, so `buy` funds $0.10 at a time rather than one purchase.
+The second and third resolved within the same minute, which looks like a stall that morning
+rather than the usual wait. The two NEAR-origin attempts came from this code as it was then;
+the third sent USDC from a one-off script, and `buy` paid from the wallet it funded. The
+code now funds from USDC on NEAR, so the agent holds one asset, and the 14 Nov row is that
+code end to end: `buy --fresh` funded a new Base wallet and the next `buy` paid a seller from
+it (settlement `0x14b21cca…` on Base). A swap costs about a quarter of a cent plus 1% whatever
+its size, so `buy` funds $0.10 at a time rather than one purchase.
 
 How to read the numbers:
 

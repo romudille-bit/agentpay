@@ -40,5 +40,19 @@
   "quoted_eta_s": 22,
   "deposit_tx": "AND2RrbpPRE44FVkjDk7zYWpmkBVBSSuGH3UpSuxA677",
   "end_tx": "0x52d16ee3d3bcb7099cc217fee3edae86f679acf94f1d431ee01dfae207531e6b"
+ },
+ {
+  "address": "ba5bb1e8ce6024d9a2f6ff8208f3b899fab22d00f137a7f1893ede99127ce6d2",
+  "sent_at": "2026-11-14T08:50:53.615Z",
+  "ended_at": "2026-11-14T08:51:20.000Z",
+  "seconds": 26,
+  "status": "SUCCESS",
+  "sent": "0.106561",
+  "sent_unit": "USDC",
+  "received": "0.104137",
+  "reason": null,
+  "quoted_eta_s": 22,
+  "deposit_tx": "9JJReBcUbnnm94Fnrnpkbh6FRg7jY8gsU8AvuiA5Yc9C",
+  "end_tx": "0x9f7817411ac0a9a3d5b0dbe31baac280e57cae1bfe5f940e3c4ee8a573bb9664"
  }
 ]

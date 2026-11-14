@@ -8,7 +8,7 @@ import { OverCap, fundBaseWallet, payBase, payNear, sessionWallets } from './pay
 const gt = (a, b) => BigInt(toUnits(a, 6)) > BigInt(toUnits(b, 6));
 
 /** `maxUsdc` caps the price of this call; `fundUsdc` is what a Base wallet is topped up with. */
-export async function buy(url, { accountId, privateKey, maxUsdc = '0.02', fundUsdc = '0.10', method = 'GET', body, receiptsDir = null, walletDir = null, log = () => {}, deps = {} } = {}) {
+export async function buy(url, { accountId, privateKey, maxUsdc = '0.02', fundUsdc = '0.10', method = 'GET', body, receiptsDir = null, walletDir = null, fresh = false, log = () => {}, deps = {} } = {}) {
   const doCheck = deps.check || check;
   const receipt = { at: new Date().toISOString(), url, payer: accountId, max_usdc: String(maxUsdc), paid: false, refused: null };
   const c = await doCheck(url, { method, body, nearAccount: accountId });
@@ -29,7 +29,9 @@ export async function buy(url, { accountId, privateKey, maxUsdc = '0.02', fundUs
     } else {
       // Reuse a session wallet that still holds enough; bridge only when none does.
       const price = BigInt(toUnits(c.price_usdc, 6));
-      const held = (await (deps.sessionWallets || sessionWallets)(walletDir)).find((w) => w.usdc_atomic >= price);
+      // `fresh` funds a new wallet even when an earlier one still holds enough.
+      // Among wallets that hold enough, spend the smallest first.
+      const held = fresh ? null : (await (deps.sessionWallets || sessionWallets)(walletDir)).filter((w) => w.usdc_atomic >= price).sort((a, b) => (a.usdc_atomic < b.usdc_atomic ? -1 : 1))[0];
       let evmKey = held?.privateKey;
       if (held) {
         receipt.funding = { reused: true, address: held.address, deposit_address: held.deposit_address ?? null, deposit_tx: held.deposit_tx ?? null, funded_with: held.cost_usdc ? 'USDC on NEAR' : 'NEAR', cost_usdc: held.cost_usdc ?? null, cost_near: held.cost_near ?? null };

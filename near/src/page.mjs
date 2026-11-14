@@ -140,7 +140,7 @@ function render({ rows, direct, claim, sum, fund }) {
       <td class="ep" title="${esc(r.url)}">${esc(r.url.replace(/^https?:\/\//, '').split('?')[0])}</td>
       <td>${esc(r.rail === 'near' ? 'USDC on NEAR' : 'USDC on Base, funded through NEAR Intents')}</td>
       <td>$${esc(r.price_usdc ?? '—')}</td>
-      <td class="${r.delivered ? 'ok' : 'bad'}">${r.delivered ? 'delivered' : esc(String(r.refused || 'not delivered').split(';')[0])}</td>
+      <td class="${r.delivered ? 'ok' : 'bad'}">${r.delivered ? 'delivered' : esc(String(r.refused || (r.response && !r.response.settle ? `not paid — seller answered HTTP ${r.response.status}` : 'not delivered')).split(';')[0])}</td>
       <td>${esc(secs(r.response?.ms))}${r.response?.ms && r.rail !== 'near' ? ' <span class="mut" title="the funding swap had to land before this call could be made">+ funding</span>' : ''}</td>
       <td class="ep">${r.response?.settle?.transaction ? `<code>${esc(String(r.response.settle.transaction).slice(0, 10))}…</code>` : '<span class="mut">—</span>'}</td>
     </tr>`).join('');
@@ -150,7 +150,7 @@ function render({ rows, direct, claim, sum, fund }) {
       <td>${esc(f.sent == null ? '—' : `${Number(f.sent).toFixed(4)} ${f.sent_unit || ''}`.trim())}</td>
       <td class="${f.status === 'SUCCESS' ? 'ok' : 'warn'}">${esc(f.status === 'SUCCESS' ? 'delivered' : `refunded — ${String(f.reason || '').toLowerCase().replace(/_/g, ' ')}`)}</td>
       <td>${esc(f.received ? `${Number(f.received).toFixed(4)} USDC on Base` : 'nothing')}</td>
-      <td>${esc(f.seconds == null ? '—' : f.seconds < 3600 ? `${Math.round(f.seconds / 60)} min` : `${(f.seconds / 3600).toFixed(1)} h`)}</td>
+      <td>${esc(f.seconds == null ? '—' : f.seconds < 60 ? `${f.seconds} s` : f.seconds < 3600 ? `${Math.round(f.seconds / 60)} min` : `${(f.seconds / 3600).toFixed(1)} h`)}</td>
     </tr>`).join('');
 
   return `<!doctype html>
@@ -205,13 +205,13 @@ function render({ rows, direct, claim, sum, fund }) {
   </tr></thead><tbody>${hireRows || '<tr><td colspan="7" class="mut">No hires recorded yet.</td></tr>'}</tbody></table></div>
 
   <h2>x402 sellers paid directly</h2>
-  <p class="notes">The same buyer, paying ordinary x402 endpoints instead of the marketplace: one that takes USDC on NEAR, one on Base paid from a wallet funded through NEAR Intents.</p>
+  <p class="notes">The same buyer, paying ordinary x402 endpoints instead of the marketplace: one that takes USDC on NEAR, one on Base paid from wallets funded through NEAR Intents. Rows that were not paid cost nothing: one waited on a swap that was still in flight, and one we sent without a parameter the seller requires.</p>
   <div class="wrap"><table><thead><tr>
     <th>Endpoint</th><th>Paid with</th><th>Price</th><th>Result</th><th>Took</th><th>Settlement</th>
   </tr></thead><tbody>${directRows || '<tr><td colspan="6" class="mut">No direct purchases recorded yet.</td></tr>'}</tbody></table></div>
 
   <h2>Funding a Base payment from a NEAR balance</h2>
-  <p class="notes">Three attempts, all on the morning of 12 Nov 2026; the quote for this route estimated ${esc(fund?.[0]?.quoted_eta_s ?? 24)} seconds. The first two sent NEAR and were refunded as expired quotes; the third sent USDC and arrived. The second and third resolved within the same minute, which looks like a stall on that morning rather than the usual wait, and three attempts cannot say what is typical. Each wait runs from our deposit transaction to the refund or delivery transaction. A refund returns the deposit in full. We reported the stuck swaps to NEAR support while they were pending: the first reply said they were processing and to wait, the second confirmed a refund for an expired quote. A swap costs about a quarter of a cent plus 1%, so the buyer funds several purchases at once rather than one.</p>
+  <p class="notes">Each quote for this route estimated 22 to 24 seconds. On the morning of 12 Nov 2026 three attempts took far longer: the first two sent NEAR and were refunded as expired quotes; the third sent USDC and arrived after more than two hours. The second and third resolved within the same minute, which looks like a stall that morning rather than the usual wait. On 14 Nov the same route, sent as USDC by the buyer in this repository, arrived in 26 seconds. Each wait runs from our deposit transaction to the refund or delivery transaction. A refund returns the deposit in full. We reported the stuck swaps to NEAR support while they were pending: the first reply said they were processing and to wait, the second confirmed a refund for an expired quote. A swap costs about a quarter of a cent plus 1%, so the buyer funds several purchases at once rather than one.</p>
   <div class="wrap"><table><thead><tr>
     <th>Deposit address</th><th>Sent</th><th>Result</th><th>Received</th><th>Took</th>
   </tr></thead><tbody>${fundRows || '<tr><td colspan="5" class="mut">No funding attempts recorded.</td></tr>'}</tbody></table></div>
@@ -221,7 +221,7 @@ function render({ rows, direct, claim, sum, fund }) {
     <dt>What happened</dt>
     <dd><b>delivered</b> — the task completed and something came back. Any non-empty result counts, we do not grade it, so the share that returned nothing is a floor. <b>no answer in the window</b> — the agent accepted the job and never returned a result before the payment expired. <b>had not started when we cancelled</b> — the task was still waiting to start after the agent's listed deadline, so we cancelled; a cancelled task moves no money. <b>rejected the task</b> — the agent declined it. <b>cancelled by us before its deadline</b> — our sweep gave up on a task that had not started while the agent still had time; not counted either way. <b>not reachable, not hired</b> — the marketplace could not reach the agent, so no price was quoted and nothing was signed; not counted.</dd>
     <dt>Charged</dt>
-    <dd>The marketplace holds the payment and settles it only on delivery, so everything other than a delivered hire cost nothing. Each charged amount links to its settlement transaction. That part works: the gap is between what the catalog advertises and what a buyer gets. Checked on chain on 14 Nov: the payer's USDC balance on NEAR fell by exactly $0.81 — $0.50 for the delivered hires, $0.01 for the direct purchase, $0.30 sent to Base through NEAR Intents.</dd>
+    <dd>The marketplace holds the payment and settles it only on delivery, so everything other than a delivered hire cost nothing. Each charged amount links to its settlement transaction. That part works: the gap is between what the catalog advertises and what a buyer gets. Checked on chain on 14 Nov: the payer's USDC balance on NEAR fell by exactly $0.916561 — $0.50 for the delivered hires, $0.01 for the direct purchase, $0.406561 sent to Base through NEAR Intents in two swaps.</dd>
     <dt>Catalog says</dt>
     <dd>The delivered-job count and success rate the marketplace shows for that agent, read at build time.</dd>
     <dt>Came back</dt>

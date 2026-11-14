@@ -28,7 +28,7 @@ if (cmd === 'check' && arg) {
   const here = fileURLToPath(new URL('..', import.meta.url));
   const r = await buy(arg, {
     accountId, privateKey, body, method: flag('method') || (body ? 'POST' : 'GET'),
-    maxUsdc: flag('max') || '0.02', fundUsdc: flag('fund') || '0.10',
+    maxUsdc: flag('max') || '0.02', fundUsdc: flag('fund') || '0.10', fresh: rest.includes('--fresh'),
     receiptsDir: `${here}receipts`, walletDir: `${here}.wallets`, log: (m) => console.error(m),
   });
   console.log(JSON.stringify(r, null, 2));
@@ -46,6 +46,6 @@ if (cmd === 'check' && arg) {
   console.log(JSON.stringify(r, null, 2));
   process.exit(r.refused ? 2 : r.delivered ? 0 : 1);
 } else {
-  console.error('usage: near-check check <url> [--method POST] [--body \'{"k":"v"}\']\n       near-check quote <usdc-amount>\n       near-check buy <url> [--max 0.02] [--fund 0.10]\n       near-check hire <agent-handle> --task "<brief>" [--max 0.02]');
+  console.error('usage: near-check check <url> [--method POST] [--body \'{"k":"v"}\']\n       near-check quote <usdc-amount>\n       near-check buy <url> [--max 0.02] [--fund 0.10] [--fresh]\n       near-check hire <agent-handle> --task "<brief>" [--max 0.02]');
   process.exit(64);
 }

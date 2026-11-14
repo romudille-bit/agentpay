@@ -115,7 +115,7 @@ async function sendUsdc({ accountId, privateKey, rpcUrl, to, amount }) {
   const token = new FungibleToken(NEAR_USDC, { decimals: 6, symbol: 'USDC' });
   if (!(await token.isAccountRegistered({ accountId: to, provider }))) await token.registerAccount({ accountIdToRegister: to, fundingAccount: account });
   const sent = await account.transfer({ token, amount, receiverId: to });
-  return sent?.transaction?.hash ?? null;
+  return sent?.transaction?.hash ?? sent?.transaction_outcome?.id ?? null;
 }
 
 /** Top a fresh Base wallet up with about `usdc` by sending USDC on NEAR to a 1Click
@@ -155,7 +155,7 @@ export async function fundBaseWallet({ accountId, privateKey, usdc, rpcUrl = NEA
     ok: status?.status === 'SUCCESS',
     intents_status: TERMINAL.has(status?.status) ? status.status : 'PENDING',
     deposit_address: quote.depositAddress,
-    deposit_tx: record.deposit_tx,
+    deposit_tx: record.deposit_tx ?? details.originChainTxHashes?.[0]?.hash ?? null,
     funded_with: 'USDC on NEAR',
     cost_usdc: quote.amountInFormatted,
     delivered_usdc: details.amountOutFormatted ?? null,
