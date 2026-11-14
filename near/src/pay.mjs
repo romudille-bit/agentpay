@@ -119,7 +119,8 @@ async function sendUsdc({ accountId, privateKey, rpcUrl, to, amount }) {
 }
 
 /** Top a fresh Base wallet up with about `usdc` by sending USDC on NEAR to a 1Click
- *  deposit address. The agent holds one asset and spends it on either chain. The
+ *  deposit address. The agent spends one asset on either chain; the deposit itself needs a
+ *  little NEAR for gas and for token storage on the new deposit address. The
  *  wallet file is written before any money moves, so a later run can pick a slow
  *  swap up. */
 export async function fundBaseWallet({ accountId, privateKey, usdc, rpcUrl = NEAR_RPC, oneClick = createOneClick(), walletDir = null, pollMs = 5000, timeoutMs = 150000, bufferBps = 300, log = () => {}, transfer = sendUsdc }) {

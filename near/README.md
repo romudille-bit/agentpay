@@ -65,10 +65,13 @@ two days later. Every quote estimated 22 to 24 seconds:
 The second and third resolved within the same minute, which looks like a stall that morning
 rather than the usual wait. The two NEAR-origin attempts came from this code as it was then;
 the third sent USDC from a one-off script, and `buy` paid from the wallet it funded. The
-code now funds from USDC on NEAR, so the agent holds one asset, and the 14 Nov row is that
+code now funds from USDC on NEAR, so the agent spends one asset on either chain (the deposit
+is its own transaction, so it also needs a little NEAR for gas and for token storage on each
+new deposit address), and the 14 Nov row is that
 code end to end: `buy --fresh` funded a new Base wallet and the next `buy` paid a seller from
-it (settlement `0x14b21cca…` on Base). A swap costs about a quarter of a cent plus 1% whatever
-its size, so `buy` funds $0.10 at a time rather than one purchase.
+it (settlement `0x14b21cca…` on Base). The two swaps that arrived each cost a flat quarter of a cent
+($0.0025 and $0.0024) whatever their size, so `buy` funds $0.10 at a time rather than one
+purchase.
 
 How to read the numbers:
 
