@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { artifactText, endpoint, hire, hireDelivered } from './market.mjs';
+import { artifactText, committedUsdc, endpoint, hire, hireDelivered } from './market.mjs';
 import { sha256 } from './pay.mjs';
 
 const here = fileURLToPath(new URL('..', import.meta.url));
@@ -34,6 +34,8 @@ const args = process.argv.slice(2);
 const opt = (name, d) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : d; };
 const budgetMs = Number(opt('budget-s', '150')) * 1000;
 const maxUsdc = opt('max', '0.10');
+// Ceiling for the whole log: charged hires plus any still on hold. Each hire's cap shrinks to what is left.
+const totalUsdc = opt('total', '2.00');
 const pollOnly = args.includes('--poll');
 const targets = load(`${here}targets.json`, []);
 const rows = load(OUT, []);
@@ -70,7 +72,10 @@ if (!pollOnly && !waitingOn) {
   for (const t of targets) {
     if (left() < 30000) break;
     if (rows.some((r) => r.handle === t.handle && !r.void)) continue;
-    const r = await hire(t.handle, t.task, { accountId, privateKey, maxUsdc, waitMs: 0, immediate: true })
+    const leftUsdc = Number(totalUsdc) - Number(committedUsdc(rows));
+    if (leftUsdc <= 0) { console.error(`total budget $${totalUsdc} reached; stopping`); break; }
+    const cap = Math.min(Number(maxUsdc), leftUsdc).toFixed(6);
+    const r = await hire(t.handle, t.task, { accountId, privateKey, maxUsdc: cap, waitMs: 0, immediate: true })
       .catch((e) => ({ at: new Date().toISOString(), handle: t.handle, paid: false, delivered: false, refused: `error: ${e.message}` }));
     // No task came back (facilitator or market error): that is not a result. Stop
     // the run instead of recording it or hammering the next agent.
@@ -79,6 +84,7 @@ if (!pollOnly && !waitingOn) {
       waitingOn = `${t.handle} (market error)`;
       break;
     }
+    if (/over the cap/.test(r.refused || '') && Number(cap) < Number(maxUsdc)) { console.error(`${t.handle}: ${r.refused} (what is left of the $${totalUsdc} total); stopping`); break; }
     r.title = t.task.split('\n')[0];
     r.sla_s = t.sla_s ?? null;
     rows.push(r); save();

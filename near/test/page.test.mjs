@@ -80,14 +80,34 @@ test('the summary separates time waited from time that produced work', async () 
   assert.equal(s.worked_min, 1);
 });
 
-test('funding rows carry the measured wait and the refund reason', async () => {
+test('funding rows carry the measured wait, the unit sent and the refund reason', async () => {
   const { row: frow } = await import('../src/funding.mjs');
-  const r = frow('abc', '2026-11-12T10:22:00Z', { status: 'SUCCESS', updatedAt: '2026-11-12T12:42:00Z', swapDetails: { amountInFormatted: '0.3', amountOutFormatted: '0.297538' } });
+  const usdc = { quoteRequest: { originAsset: 'nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1' } };
+  const r = frow('abc', { status: 'SUCCESS', quoteResponse: usdc, swapDetails: { amountInFormatted: '0.3', amountOutFormatted: '0.297538' } }, { sentAt: '2026-11-12T10:22:00Z', endedAt: '2026-11-12T12:42:00Z' });
   assert.equal(r.seconds, 8400);
   assert.equal(r.received, '0.297538');
-  const bad = frow('def', '2026-11-12T10:03:00Z', { status: 'REFUNDED', updatedAt: '2026-11-12T12:42:10.000Z', swapDetails: { refundReason: 'QUOTE_EXPIRED', depositedAmountFormatted: '0.075' } });
+  assert.equal(r.sent_unit, 'USDC');
+  const bad = frow('def', { status: 'REFUNDED', quoteResponse: { quoteRequest: { originAsset: 'nep141:wrap.near' } }, swapDetails: { refundReason: 'QUOTE_EXPIRED', depositedAmountFormatted: '0.075' } });
   assert.equal(bad.reason, 'QUOTE_EXPIRED');
+  assert.equal(bad.sent_unit, 'NEAR');
   assert.equal(bad.received, null);
+  assert.equal(bad.seconds, null);
+});
+
+test('each delivered hire gets one settlement, and a transfer is never used twice', async () => {
+  const { match } = await import('../src/settlements.mjs');
+  const at = '2026-11-13T10:44:27.000Z';
+  const t0 = Date.parse(at);
+  const hire = (over) => ({ at, handle: 'h', delivered: true, price_usdc: '0.01', pay_to: 'treasury', response: { ms: 50000 }, ...over });
+  const rows = [hire({}), hire({ at: '2026-11-13T10:45:26.000Z' }), hire({ delivered: false }), hire({ price_usdc: '0.04', at: '2026-11-13T11:27:59.000Z' })];
+  const sent = [
+    { at: t0 - 60000, amount: '10000', to: 'treasury', tx: 'earlier' },
+    { at: t0 + 52000, amount: '10000', to: 'treasury', tx: 'A' },
+    { at: t0 + 92000, amount: '10000', to: 'treasury', tx: 'B' },
+    { at: t0 + 60000, amount: '10000', to: 'someone-else', tx: 'C' },
+  ];
+  assert.equal(match(rows, sent), 2);
+  assert.deepEqual(rows.map((r) => r.settle_tx), ['A', 'B', undefined, undefined]);
 });
 
 test('hires we cut short and agents never reached stay out of the count', () => {

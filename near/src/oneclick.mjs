@@ -41,7 +41,7 @@ export function createOneClick({ baseUrl = ONECLICK_URL, jwt = null, fetchImpl =
 
     /** Quote for delivering exactly `usdcOut` USDC on Base to `recipient`.
      *  dry:true is a free preview; dry:false commits and returns a depositAddress. */
-    async quoteUsdcOnBase({ usdcOut, recipient, refundTo, origin = 'wNEAR', dry = true, slippageBps = 100, ttlMs = 10 * 60 * 1000, now = Date.now() }) {
+    async quoteUsdcOnBase({ usdcOut, recipient, refundTo, origin = 'USDC_NEAR', dry = true, slippageBps = 100, ttlMs = 10 * 60 * 1000, now = Date.now() }) {
       const from = ASSETS[origin];
       if (!from) throw new Error(`unknown origin asset: ${origin}`);
       const body = {
@@ -62,17 +62,20 @@ export function createOneClick({ baseUrl = ONECLICK_URL, jwt = null, fetchImpl =
       return out.quote;
     },
 
-    /** Quote for swapping exactly `nearIn` (yocto) into USDC on Base. An exact-input
-     *  swap fills at market on arrival, so a small price move cannot strand it. */
-    async quoteNearToBaseUsdc({ nearIn, recipient, refundTo, dry = true, slippageBps = 100, ttlMs = 30 * 60 * 1000, now = Date.now() }) {
+    /** Quote for swapping exactly `amountIn` (atomic units of `origin`) into USDC on
+     *  Base. An exact-input swap fills at market on arrival, so a small price move
+     *  cannot strand it. */
+    async quoteToBaseUsdc({ amountIn, recipient, refundTo, origin = 'USDC_NEAR', dry = true, slippageBps = 100, ttlMs = 30 * 60 * 1000, now = Date.now() }) {
+      const from = ASSETS[origin];
+      if (!from) throw new Error(`unknown origin asset: ${origin}`);
       const body = {
         dry,
         swapType: 'EXACT_INPUT',
         slippageTolerance: slippageBps,
-        originAsset: ASSETS.wNEAR.id,
+        originAsset: from.id,
         depositType: 'ORIGIN_CHAIN',
         destinationAsset: ASSETS.USDC_BASE.id,
-        amount: String(nearIn),
+        amount: String(amountIn),
         refundTo,
         refundType: 'ORIGIN_CHAIN',
         recipient,

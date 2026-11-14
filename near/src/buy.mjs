@@ -32,7 +32,7 @@ export async function buy(url, { accountId, privateKey, maxUsdc = '0.02', fundUs
       const held = (await (deps.sessionWallets || sessionWallets)(walletDir)).find((w) => w.usdc_atomic >= price);
       let evmKey = held?.privateKey;
       if (held) {
-        receipt.funding = { reused: true, address: held.address, deposit_address: held.deposit_address ?? null, deposit_tx: held.deposit_tx ?? null, cost_near: held.cost_near ?? null };
+        receipt.funding = { reused: true, address: held.address, deposit_address: held.deposit_address ?? null, deposit_tx: held.deposit_tx ?? null, funded_with: held.cost_usdc ? 'USDC on NEAR' : 'NEAR', cost_usdc: held.cost_usdc ?? null, cost_near: held.cost_near ?? null };
       } else {
         const fund = gt(c.price_usdc, fundUsdc) ? c.price_usdc : fundUsdc;
         const f = await (deps.fundBaseWallet || fundBaseWallet)({ accountId, privateKey, usdc: fund, walletDir, log });

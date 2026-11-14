@@ -73,6 +73,8 @@ test('the cap is checked on the quote that would be signed, not on the earlier c
   await assert.rejects(other('https://x.example'), /not USDC/);
   const fair = cappedFetch(async () => quote402(nearAccept), '0.02');
   assert.equal((await fair('https://x.example')).status, 402);
+  const blank = cappedFetch(async () => ({ status: 402, headers: { get: () => null }, clone: () => ({ json: async () => { throw new Error('not json'); } }) }), '0.02');
+  await assert.rejects(blank('https://x.example'), /no readable price/);
   const paid = cappedFetch(async () => ({ status: 200 }), '0.02');
   assert.equal((await paid('https://x.example')).status, 200);
 });

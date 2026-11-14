@@ -67,6 +67,13 @@ export function hireDelivered(task) {
   return task?.status?.state === 'TASK_STATE_COMPLETED' && artifactText(task).length > 0;
 }
 
+/** USDC a set of hires has spent or still has on hold: charged ones, plus any still open inside its window. */
+export function committedUsdc(rows, now = Date.now()) {
+  const open = (r) => r.paid && !TERMINAL.has(r.response?.state) && now <= Date.parse(r.at) + (r.window_s || 0) * 1000;
+  const units = rows.filter((r) => !r.void && (r.charged || open(r))).reduce((s, r) => s + BigInt(toUnits(r.price_usdc, 6)), 0n);
+  return fromAtomic(units);
+}
+
 /** Quote, then pay and wait. Refuses before signing when the price is over `maxUsdc`. */
 export async function hire(handle, task, { accountId, privateKey, maxUsdc = '0.02', pollMs = 10000, waitMs = 120000, immediate = false, sign = signPayment, fetchImpl = globalThis.fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   const url = endpoint(handle);
@@ -99,6 +106,13 @@ export async function hire(handle, task, { accountId, privateKey, maxUsdc = '0.0
     await sleep(pollMs);
     const polled = (await json(await post(url, rpc('GetTask', { id: state.id, historyLength: 0 }, 2), {}, fetchImpl)))?.result;
     if (polled) state = polled;
+  }
+  if (!immediate && !TERMINAL.has(state.status?.state)) {
+    // Out of patience: cancel so no payment is left on hold. An agent already working may refuse; then the receipt says it is still open.
+    await post(url, rpc('CancelTask', { id: state.id }, 3), {}, fetchImpl).catch(() => {});
+    const after = (await json(await post(url, rpc('GetTask', { id: state.id, historyLength: 0 }, 4), {}, fetchImpl).catch(() => null)))?.result;
+    if (after) state = after;
+    if (!TERMINAL.has(state.status?.state)) out.open = true;
   }
   const text = artifactText(state);
   out.delivered = hireDelivered(state);

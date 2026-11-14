@@ -19,7 +19,8 @@
     "sweep": "node --env-file-if-exists=../.env --env-file-if-exists=.env src/sweep.mjs",
     "test": "node --test",
     "page": "node src/page.mjs",
-    "funding": "node src/funding.mjs"
+    "funding": "node src/funding.mjs",
+    "settlements": "node src/settlements.mjs"
   },
   "dependencies": {
     "@fastnear/x402": "^2.5.0",

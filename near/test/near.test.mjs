@@ -93,7 +93,8 @@ test('check: a Base seller gets a NEAR funding quote', async () => {
   });
   assert.equal(r.rail, 'base-via-intents');
   assert.equal(r.price_usdc, '0.01');
-  assert.equal(r.funding.cost_near, '0.0033');
+  assert.equal(r.funding.cost_usdc, '0.0033');
+  assert.equal(r.funding.from, 'USDC on NEAR');
   assert.equal(r.pay, true);
 });
 

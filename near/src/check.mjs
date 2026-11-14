@@ -1,5 +1,5 @@
 // The pre-payment check: delivery verdict, the seller's live 402, the rail a
-// NEAR account would pay on, and what funding that payment costs in NEAR.
+// NEAR account would pay on, and what funding that payment costs in USDC on NEAR.
 
 import { checkUrl } from '@romudille/x402-guard';
 import { readChallenge, pickRail } from './challenge.mjs';
@@ -33,12 +33,12 @@ export async function check(url, { method = 'GET', body, fetchImpl = globalThis.
     try {
       // Dry quote: the recipient only shapes the price, nothing is sent.
       const q = await oneClick.quoteUsdcOnBase({ usdcOut: out.price_usdc, recipient: offer.payTo, refundTo: nearAccount, dry: true });
-      out.funding = { from: 'wNEAR', cost_near: q.amountInFormatted, overhead: overhead(q), eta_s: q.timeEstimate };
+      out.funding = { from: 'USDC on NEAR', cost_usdc: q.amountInFormatted, overhead: overhead(q), eta_s: q.timeEstimate };
     } catch (e) {
       out.funding = { error: e.message };
     }
   } else if (rail === 'near') {
-    out.funding = { from: 'USDC on NEAR', cost_near: null, overhead: 0, eta_s: null };
+    out.funding = { from: 'USDC on NEAR', cost_usdc: out.price_usdc, overhead: 0, eta_s: null };
   }
   return out;
 }

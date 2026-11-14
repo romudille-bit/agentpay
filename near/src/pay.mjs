@@ -10,9 +10,9 @@ import { decodePaymentResponseHeader } from '@x402/core/http';
 import { registerExactEvmScheme } from '@x402/evm/exact/client';
 import { wrapFetchWithPayment } from '@x402/fetch';
 import { Account, JsonRpcProvider } from 'near-api-js';
-import { NEAR } from 'near-api-js/tokens';
+import { FungibleToken } from 'near-api-js/tokens';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
-import { BASE_MAINNET, BASE_USDC, NEAR_MAINNET, decodePaymentRequired, isUsdc } from './challenge.mjs';
+import { BASE_MAINNET, BASE_USDC, NEAR_MAINNET, NEAR_USDC, decodePaymentRequired, isUsdc } from './challenge.mjs';
 import { createOneClick, toUnits } from './oneclick.mjs';
 
 export const NEAR_RPC = 'https://rpc.mainnet.fastnear.com';
@@ -69,7 +69,8 @@ export function cappedFetch(fetchImpl, maxUsdc) {
     if (res.status !== 402) return res;
     let challenge = decodePaymentRequired(res.headers.get('payment-required'));
     if (!challenge) { try { challenge = await res.clone().json(); } catch { challenge = null; } }
-    for (const a of challenge?.accepts || []) {
+    if (!Array.isArray(challenge?.accepts)) throw new OverCap('seller sent a 402 with no readable price; nothing signed');
+    for (const a of challenge.accepts) {
       if (!String(a.network).startsWith('near')) continue;
       const amount = String(a.amount ?? a.maxAmountRequired ?? '');
       if (!isUsdc(NEAR_MAINNET, a.asset)) throw new OverCap(`seller asked to be paid in ${a.asset}, not USDC`);
@@ -107,26 +108,35 @@ export async function sessionWallets(walletDir, opts) {
   return out;
 }
 
-/** Top a fresh Base wallet up with about `usdc` by sending NEAR to a 1Click deposit
- *  address. The wallet file is written before any money moves, so a later run can
- *  pick a slow swap up. */
-export async function fundBaseWallet({ accountId, privateKey, usdc, rpcUrl = NEAR_RPC, oneClick = createOneClick(), walletDir = null, pollMs = 5000, timeoutMs = 150000, bufferBps = 300, log = () => {} }) {
+/** USDC on NEAR to `to`. A deposit address is new, so its token storage is paid first. */
+async function sendUsdc({ accountId, privateKey, rpcUrl, to, amount }) {
+  const provider = new JsonRpcProvider({ url: rpcUrl });
+  const account = new Account(accountId, provider, privateKey);
+  const token = new FungibleToken(NEAR_USDC, { decimals: 6, symbol: 'USDC' });
+  if (!(await token.isAccountRegistered({ accountId: to, provider }))) await token.registerAccount({ accountIdToRegister: to, fundingAccount: account });
+  const sent = await account.transfer({ token, amount, receiverId: to });
+  return sent?.transaction?.hash ?? null;
+}
+
+/** Top a fresh Base wallet up with about `usdc` by sending USDC on NEAR to a 1Click
+ *  deposit address. The agent holds one asset and spends it on either chain. The
+ *  wallet file is written before any money moves, so a later run can pick a slow
+ *  swap up. */
+export async function fundBaseWallet({ accountId, privateKey, usdc, rpcUrl = NEAR_RPC, oneClick = createOneClick(), walletDir = null, pollMs = 5000, timeoutMs = 150000, bufferBps = 300, log = () => {}, transfer = sendUsdc }) {
   const evmKey = generatePrivateKey();
   const address = privateKeyToAccount(evmKey).address;
   const need = await oneClick.quoteUsdcOnBase({ usdcOut: usdc, recipient: address, refundTo: accountId, dry: true });
-  const nearIn = (BigInt(need.amountIn) * BigInt(10000 + bufferBps)) / 10000n;
-  const quote = await oneClick.quoteNearToBaseUsdc({ nearIn, recipient: address, refundTo: accountId, dry: false });
-  const record = { address, privateKey: evmKey, created: new Date().toISOString(), deposit_address: quote.depositAddress, cost_near: quote.amountInFormatted };
+  const amountIn = (BigInt(need.amountIn) * BigInt(10000 + bufferBps)) / 10000n;
+  const quote = await oneClick.quoteToBaseUsdc({ amountIn, recipient: address, refundTo: accountId, dry: false });
+  const record = { address, privateKey: evmKey, created: new Date().toISOString(), deposit_address: quote.depositAddress, cost_usdc: quote.amountInFormatted };
   const save = () => {
     if (!walletDir) return;
     mkdirSync(walletDir, { recursive: true });
     writeFileSync(`${walletDir}/${address}.json`, JSON.stringify(record), { mode: 0o600 });
   };
   save();
-  log(`quote: ${quote.amountInFormatted} NEAR -> about ${quote.amountOutFormatted} USDC on Base, deposit ${quote.depositAddress}`);
-  const account = new Account(accountId, new JsonRpcProvider({ url: rpcUrl }), privateKey);
-  const sent = await account.transfer({ token: NEAR, amount: quote.amountIn, receiverId: quote.depositAddress });
-  record.deposit_tx = sent?.transaction?.hash ?? null;
+  log(`quote: ${quote.amountInFormatted} USDC on NEAR -> about ${quote.amountOutFormatted} USDC on Base, deposit ${quote.depositAddress}`);
+  record.deposit_tx = await transfer({ accountId, privateKey, rpcUrl, to: quote.depositAddress, amount: quote.amountIn });
   save();
   log(`deposit sent: ${record.deposit_tx}`);
   if (record.deposit_tx) await oneClick.submitDeposit(quote.depositAddress, record.deposit_tx).catch(() => {});
@@ -146,7 +156,8 @@ export async function fundBaseWallet({ accountId, privateKey, usdc, rpcUrl = NEA
     intents_status: TERMINAL.has(status?.status) ? status.status : 'PENDING',
     deposit_address: quote.depositAddress,
     deposit_tx: record.deposit_tx,
-    cost_near: quote.amountInFormatted,
+    funded_with: 'USDC on NEAR',
+    cost_usdc: quote.amountInFormatted,
     delivered_usdc: details.amountOutFormatted ?? null,
     base_tx: details.destinationChainTxHashes?.[0]?.hash ?? null,
   };

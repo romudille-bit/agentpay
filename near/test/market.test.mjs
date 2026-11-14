@@ -82,3 +82,28 @@ test('a quote in a token other than USDC is refused before anything is signed', 
   assert.match(r.refused, /no USDC-on-NEAR price/);
   assert.equal(m.calls.length, 1);
 });
+
+test('the run budget counts charged hires and ones still on hold, not failures', async () => {
+  const { committedUsdc } = await import('../src/market.mjs');
+  const now = Date.parse('2026-11-13T12:00:00Z');
+  const rows = [
+    { at: '2026-11-13T10:00:00Z', price_usdc: '0.05', paid: true, charged: true, response: { state: 'TASK_STATE_COMPLETED' } },
+    { at: '2026-11-13T11:59:00Z', price_usdc: '0.02', paid: true, charged: false, window_s: 600, response: { state: 'TASK_STATE_WORKING' } },
+    { at: '2026-11-13T09:00:00Z', price_usdc: '0.10', paid: true, charged: false, window_s: 600, response: { state: 'TASK_STATE_WORKING' } },
+    { at: '2026-11-13T10:00:00Z', price_usdc: '0.10', paid: true, charged: false, response: { state: 'TASK_STATE_REJECTED' } },
+    { at: '2026-11-13T10:00:00Z', price_usdc: '0.10', paid: true, charged: true, void: 'our error' },
+  ];
+  assert.equal(committedUsdc(rows, now), '0.07');
+});
+
+test('a one-off hire that outlasts the wait is cancelled, or marked open if the agent will not stop', async () => {
+  const working = { id: 't1', status: { state: 'TASK_STATE_WORKING' } };
+  const m = market({ paid: res(200, { result: { task: working } }), polled: [{ id: 't1', status: { state: 'TASK_STATE_CANCELED' } }] });
+  const r = await hire('slow', 'task', { ...base, waitMs: 0, fetchImpl: m.fetchImpl });
+  assert.equal(r.response.state, 'TASK_STATE_CANCELED');
+  assert.equal(r.open, undefined);
+  assert.ok(m.calls.some((c) => c.method === 'CancelTask'));
+  const stuck = market({ paid: res(200, { result: { task: working } }), polled: [working] });
+  const s = await hire('stuck', 'task', { ...base, waitMs: 0, fetchImpl: stuck.fetchImpl });
+  assert.equal(s.open, true);
+});

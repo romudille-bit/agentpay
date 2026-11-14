@@ -19,7 +19,7 @@ if (cmd === 'check' && arg) {
   const q = await createOneClick().quoteUsdcOnBase({
     usdcOut: arg, recipient: flag('to') || '0xE8B25A72dD6aeF69515452a61AD231C7DF2843b7', refundTo: flag('refund') || 'near', dry: true,
   });
-  console.log(JSON.stringify({ usdc_on_base: arg, cost_near: q.amountInFormatted, cost_usd: q.amountInUsd, overhead: overhead(q), eta_s: q.timeEstimate }, null, 2));
+  console.log(JSON.stringify({ usdc_on_base: arg, cost_usdc_on_near: q.amountInFormatted, overhead: overhead(q), eta_s: q.timeEstimate }, null, 2));
 } else if (cmd === 'buy' && arg) {
   const { buy } = await import('../src/buy.mjs');
   const { NEAR_ACCOUNT_ID: accountId, NEAR_PRIVATE_KEY: privateKey } = process.env;
