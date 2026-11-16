@@ -785,6 +785,38 @@ class TestLifecycleStateMachine:
         assert len(rejected_inserts) == 1
         assert rejected_inserts[0]["payment_id"] == payment_id
         assert "replay" in rejected_inserts[0].get("error_reason", "").lower()
+        # AGE-264: the row carries what the caller presented, so the rejection
+        # can be checked on-chain afterwards — in its own column, never in
+        # tx_hash (settled hashes only) — plus who sent it.
+        assert rejected_inserts[0]["submitted_tx_hash"] == "replayhash"
+        assert rejected_inserts[0].get("tx_hash") is None
+        assert rejected_inserts[0]["client_ip"]
+        assert rejected_inserts[0]["user_agent"]
+
+    def test_rejected_row_caps_caller_controlled_values(
+        self, client, supabase_lifecycle_capture, patch_route_verify
+    ):
+        """AGE-264: the submitted hash and the user agent are caller input,
+        so the rejected row stores them length-capped."""
+        from gateway.routes.tools import _SUBMITTED_HASH_MAX, _REJECTED_UA_MAX
+        patch_route_verify("replay")
+
+        first = client.post("/tools/pre_trade_check/call", json={"parameters": {}})
+        payment_id = first.json()["payment_id"]
+        r = client.post(
+            "/tools/pre_trade_check/call",
+            json={"parameters": {}},
+            headers={
+                "X-Payment": f"tx_hash={'a' * 5000},from=GAGENT,id={payment_id}",
+                "X-Agent-Address": "GAGENT",
+                "User-Agent": "u" * 5000,
+            },
+        )
+        assert r.status_code == 402
+        row = [i for i in supabase_lifecycle_capture["insert"]
+               if i.get("state") == "rejected"][0]
+        assert row["submitted_tx_hash"] == "a" * _SUBMITTED_HASH_MAX
+        assert row["user_agent"] == "u" * _REJECTED_UA_MAX
 
     def test_unknown_payment_id_rejection_writes_nothing(
         self, client, supabase_lifecycle_capture,

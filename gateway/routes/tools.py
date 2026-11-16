@@ -1209,6 +1209,12 @@ _REJECTION_NOISE_MARKERS = (
 )
 
 
+# Caps on the caller-controlled values a rejected row stores. A Stellar or
+# Stacks hash is 64 hex chars and an EVM one 66; the rest is headroom.
+_SUBMITTED_HASH_MAX = 128
+_REJECTED_UA_MAX = 256
+
+
 async def _record_rejected_attempt(
     payment_id: str,
     reason: str,
@@ -1217,6 +1223,9 @@ async def _record_rejected_attempt(
     network: str,
     amount_usdc: str,
     agent_address: Optional[str] = None,
+    submitted_tx_hash: Optional[str] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
 ) -> None:
     """Durably record a rejected real payment attempt.
 
@@ -1230,6 +1239,11 @@ async def _record_rejected_attempt(
          unparseable header), which is scanner traffic, not an attempt.
     On an unknown PATCH outcome (None) nothing is inserted: a transient blip
     must not mint duplicate rows.
+
+    `submitted_tx_hash` is the proof the caller presented, recorded so a
+    rejection can be checked on-chain afterwards (a payer we wrongly refused
+    vs. a fake or reused hash). It is unverified caller input: it goes in its
+    own column, never tx_hash, and is length-capped along with user_agent.
     """
     if not sb_enabled():
         return
@@ -1250,12 +1264,18 @@ async def _record_rejected_attempt(
         state="rejected",
         agent_address=agent_address,
         error_reason=reason,
+        submitted_tx_hash=(submitted_tx_hash or "")[:_SUBMITTED_HASH_MAX] or None,
+        client_ip=client_ip,
+        user_agent=(user_agent or "")[:_REJECTED_UA_MAX] or None,
     )
 
 
 async def _settle_stellar(
     tool, resolved: str, tool_name: str, x_payment: str,
     agent_address: Optional[str],
+    *,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
 ) -> Union[dict, JSONResponse]:
     """X-Payment header → verify the Stellar payment.
 
@@ -1285,7 +1305,8 @@ async def _settle_stellar(
         # await before the return). _record_rejected_attempt PATCHes a legacy
         # row if one exists and otherwise INSERTs a complete 'rejected' row,
         # unless the reason marks scanner noise.
-        rejected_pid = (parse_payment_header(x_payment) or {}).get("id")
+        rejected = parse_payment_header(x_payment) or {}
+        rejected_pid = rejected.get("id")
         if rejected_pid:
             await _record_rejected_attempt(
                 rejected_pid, auth["reason"],
@@ -1293,6 +1314,9 @@ async def _settle_stellar(
                 network=f"stellar-{settings.STELLAR_NETWORK}",
                 amount_usdc=str(tool.price_usdc or "0"),
                 agent_address=agent_address,
+                submitted_tx_hash=rejected.get("tx_hash"),
+                client_ip=client_ip,
+                user_agent=user_agent,
             )
 
         return JSONResponse(
@@ -1720,6 +1744,7 @@ async def _settle_stacks_path(
                 tool_name=tool.name,
                 network=f"stacks-{settings.STACKS_NETWORK}",
                 amount_usdc=str(tool.price_usdc or "0"),
+                submitted_tx_hash=auth.get("txid"),
             )
             return _reject(settle["reason"])
         # The reservation stays: the tx may still confirm and be redeemed.
@@ -2181,7 +2206,11 @@ async def call_tool(
         )
 
     if x_payment:
-        auth = await _settle_stellar(tool, resolved, tool_name, x_payment, agent_address)
+        auth = await _settle_stellar(
+            tool, resolved, tool_name, x_payment, agent_address,
+            client_ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
         if isinstance(auth, JSONResponse):
             return auth
         parsed = parse_payment_header(x_payment) or {}

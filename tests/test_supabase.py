@@ -423,6 +423,57 @@ class TestPaymentLogsLifecycle:
         assert row_id == 999
 
     @pytest.mark.asyncio
+    async def test_insert_writes_submitted_tx_hash_apart_from_tx_hash(self):
+        # AGE-264: a rejected attempt's presented hash is unverified caller
+        # input — it rides its own column and tx_hash stays unset.
+        captured = {}
+
+        def capture_request(request):
+            import json
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(201, json=[{"id": 1}])
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/payment_logs").mock(side_effect=capture_request)
+            await insert_pending_payment_log(
+                payment_id="test-uuid", tool_name="session_create",
+                network="stellar-mainnet", amount_usdc="0.01",
+                state="rejected", error_reason="Transaction not found on Horizon",
+                submitted_tx_hash="deadbeef",
+            )
+        assert captured["body"]["submitted_tx_hash"] == "deadbeef"
+        assert "tx_hash" not in captured["body"]
+
+    @pytest.mark.asyncio
+    async def test_insert_survives_missing_submitted_tx_hash_column(self):
+        # Migration not applied: PostgREST 400s naming the column; the row
+        # must still land, without it.
+        bodies = []
+
+        def respond(request):
+            import json
+            body = json.loads(request.content)
+            bodies.append(body)
+            if "submitted_tx_hash" in body:
+                return httpx.Response(400, json={
+                    "message": "Could not find the 'submitted_tx_hash' column "
+                               "of 'payment_logs' in the schema cache"})
+            return httpx.Response(201, json=[{"id": 7}])
+
+        with respx.mock:
+            respx.post(f"{SB}/rest/v1/payment_logs").mock(side_effect=respond)
+            row_id = await insert_pending_payment_log(
+                payment_id="test-uuid", tool_name="session_create",
+                network="stellar-mainnet", amount_usdc="0.01",
+                state="rejected", error_reason="replay",
+                submitted_tx_hash="deadbeef",
+            )
+        assert row_id == 7
+        assert len(bodies) == 2
+        assert "submitted_tx_hash" not in bodies[1]
+        assert bodies[1]["error_reason"] == "replay"
+
+    @pytest.mark.asyncio
     async def test_insert_pending_payment_log_skips_None_optional_fields(self):
         # Optional fields (agent_address, tx_hash, etc.) shouldn't be
         # included in the request body when None — we don't want to

@@ -1,0 +1,20 @@
+-- payment_logs.submitted_tx_hash — what a rejected attempt presented (AGE-264, 2026-11-16).
+--
+-- A rejected payment attempt used to leave a row with no hash at all, so a
+-- rejection could not be checked on-chain afterwards: a payer we wrongly
+-- refused (refund owed) looked the same as a fake or reused hash. This column
+-- stores the hash the caller submitted with the rejected attempt.
+--
+-- It is caller-supplied and UNVERIFIED. It is deliberately not tx_hash:
+-- tx_hash holds settled hashes that the ledger, the usage script and refund
+-- handling read. Length-capped in code (128 chars).
+--
+-- PRIVATE, like the rest of payment_logs: every public surface selects
+-- explicit columns and this one is never included.
+--
+-- The gateway degrades gracefully until this is applied (400-retry drops the
+-- column), so deploy order doesn't matter — but apply it, or the hash
+-- silently never accrues.
+--
+-- Apply in the Supabase SQL Editor:
+ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS submitted_tx_hash text;

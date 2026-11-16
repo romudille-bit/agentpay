@@ -492,6 +492,9 @@ async def create_session(
                     network=f"stellar-{settings.STELLAR_NETWORK}",
                     amount_usdc=SESSION_PRICE_USDC,
                     agent_address=agent_address,
+                    submitted_tx_hash=parsed.get("tx_hash"),
+                    client_ip=request.client.host if request.client else None,
+                    user_agent=request.headers.get("user-agent"),
                 )
             return JSONResponse(
                 status_code=402,

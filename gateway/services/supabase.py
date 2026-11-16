@@ -609,6 +609,7 @@ async def insert_pending_payment_log(
     parameters: Optional[dict] = None,
     error_reason: Optional[str] = None,
     session_id: Optional[str] = None,
+    submitted_tx_hash: Optional[str] = None,
 ) -> Optional[int]:
     """INSERT a new payment_logs row.
 
@@ -654,6 +655,11 @@ async def insert_pending_payment_log(
         # to PATCH), so the reason rides the insert.
         "error_reason":      error_reason,
         "session_id":        session_id,
+        # What a rejected attempt presented as proof — caller-supplied and
+        # unverified, so it never goes in tx_hash (settled hashes only).
+        # Migration: db/migrations/payment_logs_submitted_tx_hash.sql — until
+        # it is applied, the 400-retry below drops the column.
+        "submitted_tx_hash": submitted_tx_hash,
     }.items():
         if val is not None:
             payload[key] = val
@@ -681,16 +687,21 @@ async def insert_pending_payment_log(
                 headers={**sb_headers(), "Prefer": "return=representation"},
                 json=payload,
             )
-            if (resp.status_code == 400 and "parameters" in payload
-                    and "parameters" in resp.text):
-                # Migration not applied yet — a missing column degrades to the
-                # pre-observability shape rather than blocking the row (the
-                # pre-402 caller fails closed on None, so a schema gap must
-                # not turn into refused challenges).
-                logger.warning("insert_pending_payment_log: parameters column "
-                               "missing (apply payment_logs_parameters.sql) — "
+            # Migration not applied yet — a missing column degrades to the
+            # older row shape rather than blocking the row (the pre-402
+            # caller fails closed on None, so a schema gap must not turn
+            # into refused challenges). One retry per optional column.
+            for col, migration in (
+                ("parameters", "payment_logs_parameters.sql"),
+                ("submitted_tx_hash", "payment_logs_submitted_tx_hash.sql"),
+            ):
+                if not (resp.status_code == 400 and col in payload
+                        and col in resp.text):
+                    continue
+                logger.warning(f"insert_pending_payment_log: {col} column "
+                               f"missing (apply {migration}) — "
                                "retrying without it")
-                payload.pop("parameters")
+                payload.pop(col)
                 resp = await client.post(
                     f"{settings.SUPABASE_URL}/rest/v1/payment_logs",
                     headers={**sb_headers(), "Prefer": "return=representation"},
