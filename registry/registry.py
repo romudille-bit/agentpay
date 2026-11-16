@@ -331,8 +331,8 @@ _TOOLS: dict[str, Tool] = {
         triggers=["funding rate", "perp", "perpetual", "long", "short", "futures", "leverage sentiment"],
         use_when="You need funding rates to gauge leveraged market sentiment or cost of holding a perp position.",
         avoid_when="you need open interest or long/short ratio — open_interest; one verdict combining funding, OI, slippage and security for a trade — pre_trade_check.",
-        returns="funding_rate_pct, annualized_rate_pct, sentiment (bullish/neutral/bearish) per exchange",
-        response_example={"asset": "BTC", "rates": [{"exchange": "binance", "funding_rate_pct": 0.012, "annualized_rate_pct": 13.14, "sentiment": "bullish"}, {"exchange": "bybit", "funding_rate_pct": 0.011, "annualized_rate_pct": 12.04, "sentiment": "bullish"}, {"exchange": "okx", "funding_rate_pct": 0.009, "annualized_rate_pct": 9.85, "sentiment": "neutral"}], "source": "binance/bybit/okx"},
+        returns="funding_rate_pct, annualized_rate_pct and a contrarian sentiment per exchange: bearish = longs are paying (crowded longs), bullish = shorts are paying (crowded shorts), neutral = near the 0.01% equilibrium",
+        response_example={"asset": "BTC", "rates": [{"asset": "BTC", "exchange": "Binance", "funding_rate_pct": 0.036, "annualized_rate_pct": 39.42, "next_funding_time": 1794844800000, "sentiment": "bearish"}, {"asset": "BTC", "exchange": "Bybit", "funding_rate_pct": 0.012, "annualized_rate_pct": 13.14, "next_funding_time": 1794844800000, "sentiment": "neutral"}, {"asset": "BTC", "exchange": "OKX", "funding_rate_pct": -0.012, "annualized_rate_pct": -13.14, "next_funding_time": 1794844800000, "sentiment": "bullish"}], "count": 3, "sources": ["Binance", "Bybit", "OKX"]},
     ),
     "token_security": Tool(
         name="token_security",
