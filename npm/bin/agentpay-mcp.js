@@ -14,12 +14,13 @@
  * verified_route(need, budget_usd, chain) — MCP-4:
  *   Keyless buyer-side trust preview, named to match the paid gateway tool +
  *   Bazaar listing. Vets the marketplace (discover → junk-filter → usage-rank)
- *   and returns a recommendation + ready_to_pay + an honest handoff: the PAID
+ *   and returns a recommendation — or "no confident pick" — with the provider
+ *   URL and ready_to_pay withheld, plus an honest handoff: the PAID
  *   verified_route ($0.01) runs the full multi-query sweep + usage-based sybil-
  *   collapse + trust allowlist — settle it via the agentpay-x402 SDK. The MCP is
  *   keyless and never settles a paid call itself.
  *
- * route(need, budget) — MCP-2 (legacy alias kept for back-compat).
+ * route(need, budget) — MCP-2 (legacy alias of the free preview, kept for back-compat).
  *
  * Wallet identity (v2.5.0): every install mints ONE EVM key on
  * first run, persisted at ~/.agentpay/mcp-wallet.json (0600); the address is
@@ -67,7 +68,7 @@ import * as stacksTx from './stacks_tx.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.8.1';
+const VERSION = '2.9.0';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -765,6 +766,52 @@ function recencyDays(iso) {
   }
 }
 
+// Ranking rules mirrored from gateway/radar.py — keep the two in step.
+// Distinct payers dominate; raw call volume is capped per payer so one wallet
+// pumping calls cannot buy rank.
+const CALLS_PER_PAYER_CAP = 20;
+const SINGLE_PAYER_MAX_PAYERS = 2;
+const FLAG_SINGLE_PAYER_VOLUME = 'single_payer_volume';
+// The other tail: every payer called about once (onboarding / free-tier shape).
+const SHALLOW_LEGS_PER_PAYER = 1.5;
+const SHALLOW_MIN_PAYERS = 3;
+const FLAG_SHALLOW_USAGE = 'shallow_usage';
+// Confidence floor: below it the answer is "no confident pick", not a winner.
+const MIN_PICK_PAYERS = 3;
+const MIN_PICK_QUALITY = 25;
+const PICK_MARGIN = 1.2;
+
+function usageQ(payers, calls, days) {
+  let q = payers * 5 + Math.min(calls, payers * CALLS_PER_PAYER_CAP);
+  if (days != null && days <= 7) q += 5; // recency bonus: recently used = alive
+  return q;
+}
+
+/** The pick, or { pick: null, reason }. `survivors` is already ranked. */
+function confidentPick(survivors) {
+  const eligible = survivors.filter((s) => !s.flags.includes(FLAG_SINGLE_PAYER_VOLUME));
+  if (!eligible.length) {
+    return { pick: null, reason: survivors.length
+      ? 'no eligible provider — every candidate carries a disqualifying flag'
+      : 'no candidates' };
+  }
+  const top = eligible[0];
+  if (top.payers30d < MIN_PICK_PAYERS) {
+    return { pick: null, reason:
+      `top candidate '${top.name}' has ${top.payers30d} distinct payer(s) in 30d — need ${MIN_PICK_PAYERS}` };
+  }
+  if (top.quality < MIN_PICK_QUALITY) {
+    return { pick: null, reason:
+      `top candidate '${top.name}' quality ${top.quality} is below the floor of ${MIN_PICK_QUALITY}` };
+  }
+  const runner = eligible.slice(1).find((s) => s.payTo !== top.payTo);
+  if (runner && runner.quality > 0 && top.quality < PICK_MARGIN * runner.quality) {
+    return { pick: null, reason:
+      `too close to call: '${top.name}' ${top.quality} vs '${runner.name}' ${runner.quality}` };
+  }
+  return { pick: top, reason: null };
+}
+
 function decide(cands, budget) {
   // Factory detection: count distinct service names per payTo wallet
   const namesPerPayTo = {};
@@ -805,10 +852,22 @@ function decide(cands, budget) {
 
     // Stage 3 — usage quality score (Bazaar cold-start signal)
     const days = recencyDays(c.lastCalled);
-    let quality = c.payers30d * 3 + c.calls30d;
-    if (days != null && days <= 7) quality += 5;  // recency bonus: recently used = alive
+    let quality = usageQ(c.payers30d, c.calls30d, days);
     if (isFactory) quality = Math.floor(quality / 4); // heavy downrank
     if (c.payers30d === 0 && c.calls30d === 0) flags.push('unproven(0/0)');
+    // Usage shape, as the gateway flags it from listing counters. The on-chain
+    // fleet check needs payer depth, which only the paid tool has.
+    const legs = c.payers30d ? c.calls30d / c.payers30d : c.calls30d;
+    if (c.payers30d <= SINGLE_PAYER_MAX_PAYERS
+        && c.calls30d > Math.max(c.payers30d, 1) * CALLS_PER_PAYER_CAP) {
+      flags.push(FLAG_SINGLE_PAYER_VOLUME);
+    }
+    if (c.payers30d >= SHALLOW_MIN_PAYERS && legs < SHALLOW_LEGS_PER_PAYER) {
+      flags.push(FLAG_SHALLOW_USAGE);
+    }
+    if (flags.includes(FLAG_SINGLE_PAYER_VOLUME) || flags.includes(FLAG_SHALLOW_USAGE)) {
+      quality = Math.floor(quality / 2);
+    }
 
     scored.push({ ...c, flags, dropped, dropReason, quality, recDays: days });
   }
@@ -817,68 +876,8 @@ function decide(cands, budget) {
   const survivors = scored.filter(s => !s.dropped);
   survivors.sort((a, b) => (b.quality - a.quality) || (a.priceUsd - b.priceUsd));
 
-  const recommendation = survivors[0] || null;
-  return { scored, survivors, recommendation };
-}
-
-async function routeTool(need, budget) {
-  const data = await bazaarSearch(need);
-  const cands = discover(data);
-  const { scored, survivors, recommendation } = decide(cands, budget);
-
-  // Build the ranked list for the response
-  const rankedList = scored
-    .sort((a, b) => {
-      if (a.dropped !== b.dropped) return a.dropped ? 1 : -1;
-      return b.quality - a.quality;
-    })
-    .map(s => ({
-      name: s.name,
-      url: s.url,
-      price_usd: s.priceUsd,
-      network: s.network,
-      calls_30d: s.calls30d,
-      payers_30d: s.payers30d,
-      last_called_days_ago: s.recDays,
-      has_schema: s.hasSchema,
-      flags: s.flags,
-      dropped: s.dropped,
-      drop_reason: s.dropReason || null,
-      quality_score: s.quality,
-    }));
-
-  let rec = null;
-  if (recommendation) {
-    const why = [
-      'real schema',
-      `${recommendation.payers30d} unique payers / ${recommendation.calls30d} calls in 30d`,
-      recommendation.recDays != null ? `used ${recommendation.recDays}d ago` : null,
-      'fits budget',
-      'price-tiebroken among quality peers',
-    ].filter(Boolean).join('; ');
-
-    rec = {
-      name: recommendation.name,
-      url: recommendation.url,
-      price_usd: recommendation.priceUsd,
-      network: recommendation.network,
-      why,
-      ready_to_pay: {
-        url: recommendation.url,
-        accepts: recommendation.acceptsEntry,
-      },
-    };
-  }
-
-  return {
-    need,
-    budget,
-    total_found: cands.length,
-    survivors: survivors.length,
-    ranked_candidates: rankedList,
-    recommendation: rec,
-    note: 'Advise-only — peer-to-peer: the agent pays the chosen provider directly via x402. Use agentpay-x402 SDK (pip install agentpay-x402) to settle with the ready_to_pay details above.',
-  };
+  const { pick: recommendation, reason: noPickReason } = confidentPick(survivors);
+  return { scored, survivors, recommendation, noPickReason };
 }
 
 // ── verified_route — keyless trust preview, named for the paid tool (MCP-4) ──
@@ -897,7 +896,7 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
     );
   }
 
-  const { survivors, recommendation } = decide(cands, budgetUsd);
+  const { survivors, recommendation, noPickReason } = decide(cands, budgetUsd);
 
   // THIN PREVIEW: prove a real, used provider exists (name + usage stats + why),
   // but WITHHOLD the actionable payload — provider URL + ready_to_pay x402
@@ -929,16 +928,23 @@ async function verifiedRouteTool(need, budgetUsd, chain) {
     chain: chain || null,
     scanned: cands.length,
     survivors: survivors.length,
+    verdict: rec ? 'pick' : 'no_confident_pick',
+    ...(rec ? {} : { no_pick_reason: noPickReason }),
     recommendation: rec,
     // Names + stats only (no URLs) — proof the vetting works, not a usable list.
     top_survivors: survivors.slice(0, 5).map((s) => ({
       name: s.name, price_usd: s.priceUsd, network: s.network,
       payers30d: s.payers30d, calls30d: s.calls30d, flags: s.flags,
     })),
-    vetting: `free keyless PREVIEW — single-query vet of '${need}': ${cands.length} listings → ${survivors.length} survivors. Provider URL + ready-to-pay challenge are withheld.`,
+    vetting: `free keyless PREVIEW — single-query vet of '${need}': ${cands.length} listings → ${survivors.length} survivors. ${rec ? 'Provider URL + ready-to-pay challenge are withheld.' : `No confident pick: ${noPickReason}.`}`,
     upgrade: [
-      'This is the keyless, single-query PREVIEW: it proves a real, used provider',
-      'exists, but withholds the provider URL + ready-to-pay x402 challenge.',
+      ...(rec ? [
+        'This is the keyless, single-query PREVIEW: it proves a real, used provider',
+        'exists, but withholds the provider URL + ready-to-pay x402 challenge.',
+      ] : [
+        'This is the keyless, single-query PREVIEW: nothing in this one Bazaar search',
+        'cleared the confidence floor, so it names no pick.',
+      ]),
       'The PAID verified_route ($0.01) returns those AND runs the FULL multi-query',
       'catalog sweep + usage-based sybil-collapse (folds one-wallet factories) +',
       'trust allowlist + delivery evidence from paid probes — the authoritative pick',
@@ -1038,13 +1044,14 @@ const VERIFIED_ROUTE_TOOL_DEF = {
 const ROUTE_TOOL_DEF = {
   name: 'route',
   description: [
-    'Legacy alias of verified_route (kept for back-compat). Find and judge the best',
-    'paid x402 tool for a need, within a budget. Discovers across Coinbase Bazaar,',
-    'drops stubs (no schema / factory clones), ranks survivors by real usage',
-    '(unique payers × 3 + calls + recency bonus), enforces the budget, price-',
-    'tiebreaks quality-equal candidates. Returns ranked candidates + a recommendation',
-    '+ ready-to-pay details. Advise-only — no payment happens here. Prefer',
-    'verified_route (same vetting, matches the paid tool + Bazaar listing).',
+    'Legacy alias of the free verified_route preview (kept for back-compat). Vets one',
+    'Coinbase Bazaar search for a need within a budget: drops stubs, down-ranks factory',
+    'clones and one-wallet or one-call-per-wallet usage, ranks on distinct payers, and',
+    'names a pick only above a confidence floor (otherwise verdict no_confident_pick).',
+    'Returns the pick\'s name, usage stats and reason; the provider URL and ready-to-pay',
+    'details are withheld, as in the preview. This is NOT the paid verified_route, which',
+    'ranks the whole catalog with sybil collapse and delivery evidence. Advise-only —',
+    'no payment happens here. Prefer verified_route.',
     '',
     'Use when: "which x402 tool for X", "find a paid API for X under $Y".',
   ].join(' '),
@@ -1280,7 +1287,7 @@ async function callToolRequest(request) {
     }
   }
 
-  // route — legacy alias (back-compat). Same vetting via routeTool.
+  // route — legacy alias (back-compat). Answers with the free preview, never the paid tool.
   if (name === 'route') {
     try {
       const need = args.need;
@@ -1288,7 +1295,10 @@ async function callToolRequest(request) {
         throw new McpError(ErrorCode.InvalidParams, '`need` is required and must be a string');
       }
       const budget = typeof args.budget === 'number' ? args.budget : DEFAULT_BUDGET;
-      const result = await routeTool(need, budget);
+      const result = {
+        ...(await verifiedRouteTool(need, budget, '')),
+        legacy_alias: 'route returns the free verified_route preview; call verified_route instead.',
+      };
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       if (err instanceof McpError) throw err;

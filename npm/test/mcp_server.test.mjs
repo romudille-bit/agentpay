@@ -257,8 +257,9 @@ test('a listing priced in decimal USD is not reported as free', async () => {
   const listing = {
     resources: [{
       resource: { url: 'https://seller.test/tool', serviceName: 'seller' },
+      // A schema, so the listing survives vetting and its price is reported.
       accepts: [{ amount: '0.01', asset: USDC, network: 'eip155:8453',
-                  payTo: '0x' + 'dd'.repeat(20) }],
+                  payTo: '0x' + 'dd'.repeat(20), outputSchema: { type: 'object' } }],
       quality: { l30DaysTotalCalls: '500', l30DaysUniquePayers: '5' },
     }],
   };
@@ -277,6 +278,49 @@ test('a listing priced in decimal USD is not reported as free', async () => {
   // Not free, and priced as the decimal it advertised.
   assert.doesNotMatch(text, /"price_usd":\s*0\s*[,}]/);
   assert.match(text, /"price_usd":\s*0\.01/);
+});
+
+/** One `route` call against a fake Bazaar that returns `resources`. */
+async function routeOver(resources) {
+  const listing = { resources };
+  const g = await fakeGateway((req) => (req.url === '/tools' ? { json: toolsList } : { json: listing }));
+  const { replies } = await callOnce(g.url, {
+    name: 'route', bazaarUrl: `${g.url}/discovery/search`, args: { need: 'dex pair liquidity' },
+  });
+  g.server.close();
+  return JSON.parse(textOf(replies[0]));
+}
+
+function bazaarListing(name, payers, calls, payTo = 'dd') {
+  return {
+    resource: { url: `https://${name}.test/tool`, serviceName: name },
+    accepts: [{ amount: '10000', asset: USDC, network: 'eip155:8453',
+                payTo: '0x' + payTo.repeat(20), outputSchema: { type: 'object' } }],
+    quality: { l30DaysTotalCalls: String(calls), l30DaysUniquePayers: String(payers) },
+  };
+}
+
+test('route answers with the preview: a pick, with the provider URL withheld', async () => {
+  const out = await routeOver([bazaarListing('seller', 12, 90)]);
+  assert.equal(out.verdict, 'pick');
+  assert.equal(out.recommendation.name, 'seller');
+  assert.match(out.recommendation.provider_url, /withheld/);
+  assert.doesNotMatch(JSON.stringify(out), /seller\.test/);
+  assert.equal(out.ranked_candidates, undefined);
+});
+
+test('route names no pick when the best listing has one payer', async () => {
+  // The Nov 2026 shape: 34 calls from a single wallet topped the search.
+  const out = await routeOver([bazaarListing('losbeto', 1, 34), bazaarListing('other', 2, 3, 'ee')]);
+  assert.equal(out.verdict, 'no_confident_pick');
+  assert.equal(out.recommendation, null);
+  assert.match(out.no_pick_reason, /distinct payer|disqualifying/);
+});
+
+test('route names no pick when two providers are too close to call', async () => {
+  const out = await routeOver([bazaarListing('a', 6, 40), bazaarListing('b', 6, 36, 'ee')]);
+  assert.equal(out.verdict, 'no_confident_pick');
+  assert.match(out.no_pick_reason, /too close to call/);
 });
 
 // ── Stacks (sBTC) settlement + the cap/receipt rule ──────────────────────────
