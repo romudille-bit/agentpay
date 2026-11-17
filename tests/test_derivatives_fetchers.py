@@ -133,7 +133,7 @@ class TestOpenInterestPrice:
         out = await _run(tr._fetch_open_interest, v, {"symbol": "STX"})
         assert out["price_usd"] == pytest.approx(0.26)
         assert out["primary"] == "binance"
-        assert out["total_oi_usd"] == pytest.approx(21_000_000 * 0.26)
+        assert "Binance" in out["oi_venues"]
 
     async def test_no_price_anywhere_still_reports_okx_usd(self):
         """Pre-existing degrade path: Binance and Bybit geo-blocked, CoinGecko empty."""
@@ -141,6 +141,40 @@ class TestOpenInterestPrice:
         out = await _run(tr._fetch_open_interest, v, {"symbol": "STX"})
         assert out["primary"] == "okx"
         assert out["total_oi_usd"] == 1_950_000
+        assert out["oi_venues"] == ["OKX"]
+
+
+class TestOpenInterestTotal:
+    async def _oi(self, **kw):
+        v = Venues(cg_price={"blockstack": 0.25}, **kw)
+        return await _run(tr._fetch_open_interest, v, {"symbol": "STX"})
+
+    async def test_total_is_the_sum_of_the_venues_listed(self):
+        out = await self._oi()
+        assert out["oi_venues"] == ["Binance", "Bybit", "OKX"]
+        # Binance and Bybit are coin units x price; OKX reports USD itself.
+        assert out["total_oi_usd"] == 21_000_000 * 0.25 + 20_400_000 * 0.25 + 1_950_000
+        by_venue = {e["exchange"]: e for e in out["exchanges"]}
+        assert out["total_oi_usd"] == sum(by_venue[v]["oi_usd"] for v in out["oi_venues"])
+
+    async def test_blocked_venues_leave_the_total_and_the_list_together(self):
+        out = await self._oi(down={"binance": 451, "bybit": 403})
+        assert out["oi_venues"] == ["OKX"]
+        assert out["total_oi_usd"] == 1_950_000
+
+    async def test_one_venue_down_is_visible_in_oi_venues(self):
+        out = await self._oi(down={"bybit": 403})
+        assert out["oi_venues"] == ["Binance", "OKX"]
+        assert out["total_oi_usd"] == 21_000_000 * 0.25 + 1_950_000
+
+    async def test_ls_only_venues_are_never_summed(self):
+        out = await self._oi(gate_row={"lsr_account": 1.2})
+        assert "Gate.io" not in out["oi_venues"]
+
+    def test_registry_example_total_matches_its_venues(self):
+        ex = _TOOLS["open_interest"].response_example
+        by_venue = {e["exchange"]: e for e in ex["exchanges"]}
+        assert ex["total_oi_usd"] == sum(by_venue[v]["oi_usd"] for v in ex["oi_venues"])
 
 
 class TestGateTakerRatio:
@@ -155,6 +189,11 @@ class TestGateTakerRatio:
         g = await self._gate(lsr_taker=0, long_taker_size=0, short_taker_size=0)
         assert g["taker_long_short"] is None
         assert g["long_short_ratio"] == 1.207          # the account ratio is untouched
+
+    async def test_all_buy_bucket_is_none_not_zero(self):
+        """Gate answers lsr_taker 0 for buys / 0 sells; the ratio is undefined."""
+        g = await self._gate(lsr_taker=0, long_taker_size=49, short_taker_size=0)
+        assert g["taker_long_short"] is None
 
     async def test_real_taker_ratio_is_kept(self):
         g = await self._gate(lsr_taker=0.1442, long_taker_size=59, short_taker_size=409)
