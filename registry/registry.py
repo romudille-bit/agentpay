@@ -383,8 +383,8 @@ _TOOLS: dict[str, Tool] = {
         triggers=["open interest", "oi", "long short ratio", "futures positioning", "perp oi", "market positioning", "leverage"],
         use_when="You need to know total open interest in perpetual futures and whether it's rising or falling. Combine with funding_rates for a full derivatives picture.",
         avoid_when="you need the funding cost of holding a position — funding_rates; a single trade verdict — pre_trade_check.",
-        returns="total_oi_usd, oi_change_1h_pct, oi_change_24h_pct, long_short_ratio (median across venues) with long_short_ratios per venue and long_short_spread, per-exchange breakdown",
-        response_example={"asset": "ETH", "price_usd": 2069.73, "total_oi_usd": 8420000000.0, "oi_change_1h_pct": 1.2, "oi_change_24h_pct": 12.4, "long_short_ratio": 1.08, "long_short_ratios": {"Binance": 1.08, "OKX": 1.11, "Gate.io": 1.02}, "long_short_spread": 0.09, "exchanges": [{"exchange": "Binance", "oi_contracts": 4066123.5, "oi_change_1h_pct": 1.2, "oi_change_24h_pct": 12.4, "long_short_ratio": 1.08}], "source": "binance/bybit/okx + gate/bitget (L/S)", "primary": "binance"},
+        returns="total_oi_usd (sum of the venues listed in oi_venues), oi_change_1h_pct, oi_change_24h_pct, long_short_ratio (median across venues) with long_short_ratios per venue and long_short_spread, per-exchange breakdown",
+        response_example={"asset": "ETH", "price_usd": 2069.73, "total_oi_usd": 8415777792.0, "oi_venues": ["Binance"], "oi_change_1h_pct": 1.2, "oi_change_24h_pct": 12.4, "long_short_ratio": 1.08, "long_short_ratios": {"Binance": 1.08, "OKX": 1.11, "Gate.io": 1.02}, "long_short_spread": 0.09, "exchanges": [{"exchange": "Binance", "oi_contracts": 4066123.5, "oi_usd": 8415777792.0, "oi_change_1h_pct": 1.2, "oi_change_24h_pct": 12.4, "long_short_ratio": 1.08}], "source": "binance/bybit/okx + gate/bitget (L/S)", "primary": "binance"},
     ),
     "orderbook_depth": Tool(
         name="orderbook_depth",

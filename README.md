@@ -84,7 +84,7 @@ Every call is session-tracked — you get a receipt showing every tool called, e
 | `whale_activity` | `token`, `min_usd` (default 100k) | large_transfers[] (full from/to + tx_hash), total_volume_usd |
 | `defi_tvl` | `protocol` (optional, e.g. "uniswap") | tvl, change_1d, change_7d, chains[] |
 | `token_security` | `contract_address`, `chain` | risk_level, is_honeypot, buy_tax, sell_tax |
-| `open_interest` | `symbol` (BTC, ETH…) | total_oi_usd, oi_change_1h/24h_pct, long_short_ratio |
+| `open_interest` | `symbol` (BTC, ETH…) | total_oi_usd (summed across oi_venues), oi_change_1h/24h_pct, long_short_ratio |
 | `orderbook_depth` | `symbol` (e.g. ETHUSDT) | best_bid/ask, spread_pct, slippage at $10k/$50k/$250k |
 | `funding_rates` | `asset` (optional) | funding_rate_pct, annualized_rate_pct, sentiment per exchange |
 | `crypto_news` | `currencies` (e.g. "ETH,BTC"), `filter` | headlines[] with title, url, sentiment, score |

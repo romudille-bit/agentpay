@@ -876,7 +876,7 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
 
 
 async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
-    """Total open interest + 1h/24h change (Binance primary, OKX fallback, Bybit) and the
+    """Open interest summed across Binance/Bybit/OKX, 1h/24h change (Binance, else OKX) and the
     median account long/short ratio across Binance/OKX/Gate.io/Bitget. Free public APIs."""
     # Registry schema uses "symbol" (e.g. "ETH" or "BTC"); fall back to "asset" for compat
     raw = params.get("symbol", params.get("asset", "BTC")).strip().upper()
@@ -1081,12 +1081,11 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
             lsr = row.get("lsr_account")
             if lsr is None:
                 return None
-            # Gate reports lsr_taker = 0 for a bucket with no taker trades on
-            # either side (0/0). That is "no data", not "every taker sold".
+            # Gate reports lsr_taker = 0 whenever no taker sold in the bucket
+            # (x/0), including all-buy buckets. That is undefined, not "all sold".
             taker = row.get("lsr_taker")
             no_taker_flow = (
-                "long_taker_size" in row and "short_taker_size" in row
-                and not float(row["long_taker_size"] or 0)
+                "short_taker_size" in row
                 and not float(row["short_taker_size"] or 0)
             )
             return {
@@ -1163,20 +1162,22 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
             ls_outlier = {"exchange": name, "long_short_ratio": val,
                           "deviation": round(val - ls_median, 3)}
 
-    # Binance is primary (contracts × price); OKX reports USD directly and is the fallback
+    # total_oi_usd sums every venue that reported OI; oi_venues names them, so
+    # a drop when a venue is unreachable is readable. OKX reports USD directly.
+    for e in oi_venues:
+        if e.get("oi_usd") is None and price:
+            e["oi_usd"] = round(e["oi_contracts"] * price, 0)
+    summed = [e for e in oi_venues if e.get("oi_usd")]
+    total_oi_usd = sum(e["oi_usd"] for e in summed) if summed else None
+
+    # 1h/24h change comes from one venue: Binance, else OKX
     primary = binance_res or okx_res
-    total_oi_usd = None
-    if binance_res and price:
-        total_oi_usd = round(binance_res["oi_contracts"] * price, 0)
-    elif okx_res:
-        total_oi_usd = okx_res.get("oi_usd") or (
-            round(okx_res["oi_contracts"] * price, 0) if price else None
-        )
 
     return {
         "asset":              asset,
         "price_usd":          price or None,
         "total_oi_usd":       total_oi_usd,
+        "oi_venues":          [e["exchange"] for e in summed],
         "oi_change_1h_pct":   primary.get("oi_change_1h_pct") if primary else None,
         "oi_change_24h_pct":  primary.get("oi_change_24h_pct") if primary else None,
         "long_short_ratio":   ls_median,
