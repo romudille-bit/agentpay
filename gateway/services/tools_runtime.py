@@ -34,6 +34,7 @@ _COINGECKO_IDS: dict[str, str] = {
     "link": "chainlink", "uni": "uniswap", "aave": "aave",
     "doge": "dogecoin", "shib": "shiba-inu", "op": "optimism",
     "arb": "arbitrum", "atom": "cosmos", "near": "near",
+    "stx": "blockstack",   # CoinGecko never renamed the id; "stx" resolves to nothing
 }
 
 # ERC-20 contract addresses for whale tracking
@@ -822,7 +823,9 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
         # OKX requires a specific instId — only query if asset is given
         if not asset:
             return []
-        inst_id = f"{asset}-USD-SWAP"
+        # USDT-margined swap, the contract family Binance and Bybit report.
+        # The coin-margined `-USD-SWAP` is not listed for most alts.
+        inst_id = f"{asset}-USDT-SWAP"
         r = await client.get(
             "https://www.okx.com/api/v5/public/funding-rate",
             params={"instId": inst_id},
@@ -867,7 +870,8 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
         "asset":    asset or "major",
         "rates":    rows,
         "count":    len(rows),
-        "sources":  ["Binance", "Bybit", "OKX"],
+        "sources":  [v for v in ("Binance", "Bybit", "OKX")
+                     if any(r["exchange"] == v for r in rows)],
     }
 
 
@@ -1077,10 +1081,18 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
             lsr = row.get("lsr_account")
             if lsr is None:
                 return None
+            # Gate reports lsr_taker = 0 for a bucket with no taker trades on
+            # either side (0/0). That is "no data", not "every taker sold".
+            taker = row.get("lsr_taker")
+            no_taker_flow = (
+                "long_taker_size" in row and "short_taker_size" in row
+                and not float(row["long_taker_size"] or 0)
+                and not float(row["short_taker_size"] or 0)
+            )
             return {
                 "exchange":             "Gate.io",
                 "long_short_ratio":     round(float(lsr), 3),
-                "taker_long_short":     round(float(row["lsr_taker"]), 3) if row.get("lsr_taker") is not None else None,
+                "taker_long_short":     round(float(taker), 3) if taker is not None and not no_taker_flow else None,
                 "top_trader_long_short": round(float(row["top_lsr_size"]), 3) if row.get("top_lsr_size") is not None else None,
             }
         except httpx.HTTPStatusError as e:
@@ -1122,6 +1134,12 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
     binance_res, bybit_res, okx_res, gate_res, bitget_res, price = await asyncio.gather(
         _binance_oi(), _bybit_oi(), _okx_oi(), _gate_ls(), _bitget_ls(), _price_usd()
     )
+
+    # No CoinGecko price: use the one OKX implies (same position in coin and
+    # in USD), so total_oi_usd does not silently switch to OKX-only.
+    if not price and okx_res and okx_res.get("oi_usd") and okx_res.get("oi_contracts"):
+        price = okx_res["oi_usd"] / okx_res["oi_contracts"]
+        price = round(price, 2) if price >= 1 else round(price, 6)
 
     oi_venues = [e for e in [binance_res, bybit_res, okx_res] if e]
     ls_only   = [e for e in [gate_res, bitget_res] if e]
