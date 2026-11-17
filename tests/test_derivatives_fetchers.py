@@ -17,10 +17,11 @@ class Venues:
     """Canned venue responses. `down` maps a venue to the HTTP status it returns."""
 
     def __init__(self, *, okx_funding_inst="STX-USDT-SWAP", cg_price=None,
-                 gate_row=None, down=None):
+                 gate_row=None, down=None, binance_mark=None):
         self.okx_funding_inst = okx_funding_inst   # the only instId OKX lists
         self.cg_price = cg_price                   # {coin_id: usd} CoinGecko resolves
         self.gate_row = gate_row
+        self.binance_mark = binance_mark           # Binance markPrice, if any
         self.down = down or {}
         self.seen: list[httpx.Request] = []
 
@@ -37,7 +38,8 @@ class Venues:
             if p.endswith("/premiumIndex"):
                 return httpx.Response(200, json={
                     "symbol": q["symbol"], "lastFundingRate": "-0.0000931",
-                    "nextFundingTime": 1794844800000})
+                    "nextFundingTime": 1794844800000,
+                    **({"markPrice": str(self.binance_mark)} if self.binance_mark else {})})
             if p.endswith("/openInterest"):
                 return httpx.Response(200, json={"openInterest": "21000000"})
             if p.endswith("/openInterestHist"):
@@ -120,11 +122,32 @@ class TestFundingRates:
 
 class TestOpenInterestPrice:
     async def test_stx_resolves_to_coingeckos_blockstack_id(self):
-        v = Venues(cg_price={"blockstack": 0.2573})
+        """CoinGecko is the last resort: OKX down, no Binance mark price."""
+        v = Venues(cg_price={"blockstack": 0.2573}, down={"okx": 503})
         out = await _run(tr._fetch_open_interest, v, {"symbol": "STX"})
         cg = next(r for r in v.seen if r.url.path.endswith("/simple/price"))
         assert cg.url.params["ids"] == "blockstack"
         assert out["price_usd"] == 0.2573
+
+    async def test_venue_price_wins_over_coingecko(self):
+        v = Venues(cg_price={"blockstack": 9.99})
+        out = await _run(tr._fetch_open_interest, v, {"symbol": "STX"})
+        assert out["price_usd"] == pytest.approx(0.26)
+
+    async def test_unmapped_symbol_is_never_sent_to_coingecko(self):
+        """CoinGecko's id "wif" is a different coin from the WIF perp."""
+        v = Venues(cg_price={"wif": 0.00000168}, down={"okx": 503})
+        out = await _run(tr._fetch_open_interest, v, {"symbol": "WIF"})
+        assert not [r for r in v.seen if r.url.path.endswith("/simple/price")]
+        assert out["price_usd"] is None
+        assert out["total_oi_usd"] is None and out["oi_venues"] == []
+
+    async def test_binance_mark_price_is_used_when_okx_is_down(self):
+        v = Venues(cg_price={"wif": 0.00000168}, down={"okx": 503}, binance_mark=0.135)
+        out = await _run(tr._fetch_open_interest, v, {"symbol": "WIF"})
+        assert out["price_usd"] == 0.135
+        assert out["oi_venues"] == ["Binance", "Bybit"]
+        assert out["total_oi_usd"] == round(21_000_000 * 0.135) + round(20_400_000 * 0.135)
 
     async def test_unknown_coingecko_id_falls_back_to_the_venue_implied_price(self):
         """An asset CoinGecko can't resolve must not null the price or switch
@@ -152,8 +175,8 @@ class TestOpenInterestTotal:
     async def test_total_is_the_sum_of_the_venues_listed(self):
         out = await self._oi()
         assert out["oi_venues"] == ["Binance", "Bybit", "OKX"]
-        # Binance and Bybit are coin units x price; OKX reports USD itself.
-        assert out["total_oi_usd"] == 21_000_000 * 0.25 + 20_400_000 * 0.25 + 1_950_000
+        # Binance and Bybit are coin units x the OKX-implied 0.26; OKX reports USD itself.
+        assert out["total_oi_usd"] == 21_000_000 * 0.26 + 20_400_000 * 0.26 + 1_950_000
         by_venue = {e["exchange"]: e for e in out["exchanges"]}
         assert out["total_oi_usd"] == sum(by_venue[v]["oi_usd"] for v in out["oi_venues"])
 
@@ -165,7 +188,7 @@ class TestOpenInterestTotal:
     async def test_one_venue_down_is_visible_in_oi_venues(self):
         out = await self._oi(down={"bybit": 403})
         assert out["oi_venues"] == ["Binance", "OKX"]
-        assert out["total_oi_usd"] == 21_000_000 * 0.25 + 1_950_000
+        assert out["total_oi_usd"] == 21_000_000 * 0.26 + 1_950_000
 
     async def test_ls_only_venues_are_never_summed(self):
         out = await self._oi(gate_row={"lsr_account": 1.2})

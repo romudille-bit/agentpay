@@ -973,17 +973,31 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
             logger.warning(f"open_interest Bybit error: {e}")
             return None
 
-    # Fetch price to convert contracts → USD
-    async def _price_usd() -> float:
+    # Price when OKX gives none: Binance mark price, then CoinGecko for mapped
+    # ids only. A bare symbol sent as a CoinGecko id can match another coin.
+    async def _fallback_price() -> float:
         try:
             r = await client.get(
-                f"{settings.COINGECKO_API_URL}/simple/price",
-                params={"ids": _COINGECKO_IDS.get(asset.lower(), asset.lower()),
-                        "vs_currencies": "usd"},
+                "https://fapi.binance.com/fapi/v1/premiumIndex",
+                params={"symbol": symbol_binance},
                 timeout=8.0,
             )
             r.raise_for_status()
-            coin_id = _COINGECKO_IDS.get(asset.lower(), asset.lower())
+            mark = float(r.json().get("markPrice") or 0)
+            if mark:
+                return mark
+        except Exception:
+            pass
+        coin_id = _COINGECKO_IDS.get(asset.lower())
+        if not coin_id:
+            return 0.0
+        try:
+            r = await client.get(
+                f"{settings.COINGECKO_API_URL}/simple/price",
+                params={"ids": coin_id, "vs_currencies": "usd"},
+                timeout=8.0,
+            )
+            r.raise_for_status()
             return float(r.json().get(coin_id, {}).get("usd", 0))
         except Exception:
             return 0.0
@@ -1131,13 +1145,14 @@ async def _fetch_open_interest(client: httpx.AsyncClient, params: dict) -> dict:
             return None
 
     binance_res, bybit_res, okx_res, gate_res, bitget_res, price = await asyncio.gather(
-        _binance_oi(), _bybit_oi(), _okx_oi(), _gate_ls(), _bitget_ls(), _price_usd()
+        _binance_oi(), _bybit_oi(), _okx_oi(), _gate_ls(), _bitget_ls(), _fallback_price()
     )
 
-    # No CoinGecko price: use the one OKX implies (same position in coin and
-    # in USD), so total_oi_usd does not silently switch to OKX-only.
-    if not price and okx_res and okx_res.get("oi_usd") and okx_res.get("oi_contracts"):
+    # Prefer the price OKX implies (same position in coin and in USD): it is
+    # the perp's own price and keeps every venue in the sum on one basis.
+    if okx_res and okx_res.get("oi_usd") and okx_res.get("oi_contracts"):
         price = okx_res["oi_usd"] / okx_res["oi_contracts"]
+    if price:
         price = round(price, 2) if price >= 1 else round(price, 6)
 
     oi_venues = [e for e in [binance_res, bybit_res, okx_res] if e]
