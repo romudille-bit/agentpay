@@ -149,9 +149,35 @@ def _make_session_create(params: dict) -> dict:
     }
 
 
+_CG_COIN_CACHE: dict[str, tuple[str, str | None] | None] = {}
+
+
+async def _coingecko_coin(client: httpx.AsyncClient, symbol: str) -> tuple[str, str | None] | None:
+    """(coin id, name) for a symbol or id, or None. A bare symbol is never used
+    as an id: CoinGecko ids like "wif" or "ape" belong to other coins."""
+    key = symbol.strip().lower()
+    if key in _COINGECKO_IDS:
+        return _COINGECKO_IDS[key], None
+    if key in _CG_COIN_CACHE:
+        return _CG_COIN_CACHE[key]
+    resp = await client.get(f"{settings.COINGECKO_API_URL}/search", params={"query": key})
+    resp.raise_for_status()
+    hits = [c for c in resp.json().get("coins", [])
+            if key in (str(c.get("symbol", "")).lower(), c.get("id"))]
+    # Several coins share a ticker; the best market-cap rank is the one meant.
+    hits.sort(key=lambda c: c.get("market_cap_rank") or 10**9)
+    found = (hits[0]["id"], hits[0].get("name")) if hits else None
+    if len(_CG_COIN_CACHE) < 2000:
+        _CG_COIN_CACHE[key] = found
+    return found
+
+
 async def _fetch_token_price(client: httpx.AsyncClient, params: dict) -> dict:
     symbol = params.get("symbol", "BTC").lower()
-    coin_id = _COINGECKO_IDS.get(symbol, symbol)
+    coin = await _coingecko_coin(client, symbol)
+    if not coin:
+        return {"error": f"Token '{symbol}' not found on CoinGecko"}
+    coin_id, name = coin
     resp = await client.get(
         f"{settings.COINGECKO_API_URL}/simple/price",
         params={
@@ -168,8 +194,9 @@ async def _fetch_token_price(client: httpx.AsyncClient, params: dict) -> dict:
     return {
         "symbol": symbol.upper(),
         "coin_id": coin_id,
+        **({"name": name} if name else {}),
         "price_usd": data.get("usd", 0),
-        "change_24h_pct": round(data.get("usd_24h_change", 0), 4),
+        "change_24h_pct": round(data.get("usd_24h_change") or 0, 4),
         "market_cap_usd": data.get("usd_market_cap", 0),
         "source": "coingecko",
     }
@@ -287,13 +314,18 @@ async def _fetch_dex_liquidity(client: httpx.AsyncClient, params: dict) -> dict:
     """Handles both legacy 'dex_liquidity' and renamed 'token_market_data' calls."""
     token_a = params.get("token_a", "ETH").lower()
     token_b = params.get("token_b", "USDC").upper()
-    coin_id = _COINGECKO_IDS.get(token_a, token_a)
+    coin = await _coingecko_coin(client, token_a)
+    if not coin:
+        return {"error": f"Token '{token_a}' not found on CoinGecko"}
+    coin_id = coin[0]
 
     resp = await client.get(
         f"{settings.COINGECKO_API_URL}/coins/{coin_id}",
         params={"localization": "false", "tickers": "false",
                 "community_data": "false", "developer_data": "false"},
     )
+    if resp.status_code == 404:
+        return {"error": f"Token '{token_a}' not found on CoinGecko"}
     resp.raise_for_status()
     data = resp.json()
     market = data.get("market_data", {})
@@ -301,11 +333,12 @@ async def _fetch_dex_liquidity(client: httpx.AsyncClient, params: dict) -> dict:
     return {
         "token_a": token_a.upper(),
         "token_b": token_b,
+        "coin_id": coin_id,
         "price_usd": market.get("current_price", {}).get("usd", 0),
         "volume_24h_usd": market.get("total_volume", {}).get("usd", 0),
         "volume_change_24h_pct": round(market.get("total_volume_change_24h", 0) or 0, 2),
         "market_cap_usd": market.get("market_cap", {}).get("usd", 0),
-        "price_change_24h_pct": round(market.get("price_change_percentage_24h", 0), 4),
+        "price_change_24h_pct": round(market.get("price_change_percentage_24h") or 0, 4),
         "ath_usd": market.get("ath", {}).get("usd", 0),
         "source": "coingecko",
     }
