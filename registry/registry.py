@@ -484,6 +484,7 @@ _TOOLS: dict[str, Tool] = {
                     "description": "Optional human-readable label for this session",
                 },
             },
+            "required": ["max_spend"],
         },
         category="session",
         triggers=["start session", "open session", "register agent", "budget cap", "session create", "agentpay session"],

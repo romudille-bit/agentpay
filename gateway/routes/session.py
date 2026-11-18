@@ -34,6 +34,7 @@ from gateway import stellar_x402
 from gateway._limiter import limiter
 from gateway import payment_response
 from gateway.config import GATEWAY_URL, settings
+from gateway.services import paid_inputs
 from gateway.services import probe_rollup
 from gateway.services import sessions
 from gateway.services.supabase import (
@@ -177,7 +178,7 @@ _SESSION_BAZAAR_EXTENSION["info"]["errors"] = base_pay.build_error_responses()
 
 class SessionCreateRequest(BaseModel):
     agent_address: Optional[str] = None
-    max_spend: str = "0.10"      # Agent's budget cap for this session
+    max_spend: Optional[str] = None   # hard cap; required on a paid call
     label: Optional[str] = None  # Optional human label for this session
     ttl_seconds: Optional[int] = None  # server-side cap lifetime (bounded)
 
@@ -438,7 +439,7 @@ async def create_session(
             tool_name=SESSION_TOOL_NAME,
             price_usdc=SESSION_PRICE_USDC,
             developer_address=settings.GATEWAY_PUBLIC_KEY,
-            request_data={"max_spend": body.max_spend},
+            request_data={"max_spend": body.max_spend or "0.10"},
             # Durable mirror only for an identified payer (same rule as the
             # tools route); monitors POST anonymously.
             persist=bool(agent_address),
@@ -459,7 +460,18 @@ async def create_session(
         # Build the 402 challenge body + headers (Base option + PAYMENT-REQUIRED
         # included for Bazaar CDP Facilitator indexing).
         content, headers = _session_402_payload(challenge)
+        content.update(paid_inputs.hint(
+            SESSION_TOOL_NAME, {"max_spend": body.max_spend}))
         return JSONResponse(status_code=402, content=content, headers=headers)
+
+    # Paid and not yet settled: the cap is the one input the buyer must choose.
+    # A classic Stellar X-Payment has already paid, so it keeps the $0.10 default.
+    if not x_payment:
+        refused = paid_inputs.refusal(SESSION_TOOL_NAME, {"max_spend": body.max_spend})
+        if refused is not None:
+            logger.info("[SESSION] refused before settle: no max_spend")
+            return refused
+    body.max_spend = body.max_spend or "0.10"
 
     # ── Step 2a: Stellar payment ───────────────────────────────────────────────
     if x_payment:

@@ -59,6 +59,7 @@ from gateway.services.supabase import (
     sb_enabled,
     update_payment_log_state,
 )
+from gateway.services import paid_inputs
 from gateway.services import probe_rollup
 from gateway.services import sessions
 from gateway.services.tools_runtime import real_tool_response
@@ -1135,6 +1136,8 @@ async def _issue_402(
         "error":       "Payment required",
         "x402Version": 2,
         "resource":    resource_block,
+        # Required inputs and ready-to-send defaults, before the client pays.
+        **(paid_inputs.hint(resolved, body.parameters) if not is_free else {}),
         # Standard x402 accepts[] in the body (not just the PAYMENT-REQUIRED
         # header) so generic payers find the Base path.
         "accepts":     ([accepts_entry] if accepts_entry else []) + stacks_entries + stellar_entries,
@@ -2179,6 +2182,15 @@ async def call_tool(
         return await _issue_402(
             tool, resolved, tool_name, body, request, agent_address, resource_url,
         )
+
+    # Paid and not yet settled: refuse a call that leaves out its required
+    # inputs. A classic Stellar X-Payment has already moved the money, so that
+    # path keeps the defaults and the parameters_note in the response.
+    if not _is_free_tool and not x_payment:
+        refused = paid_inputs.refusal(resolved, body.parameters)
+        if refused is not None:
+            logger.info(f"[CALL] tool={tool_name} refused before settle: missing inputs")
+            return refused
 
     if x_payment:
         auth = await _settle_stellar(tool, resolved, tool_name, x_payment, agent_address)
