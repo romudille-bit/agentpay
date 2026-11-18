@@ -54,7 +54,9 @@ def hint(tool: str, params: dict | None) -> dict:
     rule = _RULES.get(tool)
     if not rule:
         return {}
+    gaps = missing(tool, params)
     return {"required_parameters": list(rule["required"]),
+            **({"missing_parameters": gaps} if gaps else {}),
             "suggested_parameters": suggested(tool, params)}
 
 

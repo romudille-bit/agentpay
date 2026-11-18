@@ -38,6 +38,7 @@
  *
  * Env:
  *   AGENTPAY_GATEWAY_URL  — default https://agentpay.tools
+ *   AGENTPAY_TOOLS_TTL_MS — how long the gateway's tool list is kept (default 10 min)
  *   AGENTPAY_ENABLE_PAID  — "1" to settle paid tools from the persisted wallet
  *   AGENTPAY_BASE_KEY     — optional BYO EVM private key (implies paid mode)
  *   AGENTPAY_WALLET_PATH  — override the wallet file location (sandboxed hosts)
@@ -68,7 +69,7 @@ import * as stacksTx from './stacks_tx.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.9.0';
+const VERSION = '2.9.1';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -186,7 +187,11 @@ const CAP_RULE = `Session cap $${MAX_SPEND_USD} (AGENTPAY_MAX_SPEND). Before the
 
 // ── Tool registry cache ───────────────────────────────────────────────────────
 
+// Refreshed every TOOLS_TTL_MS, so a gateway deploy reaches a long-running
+// server without a restart.
+const TOOLS_TTL_MS = Number(process.env.AGENTPAY_TOOLS_TTL_MS) || 10 * 60_000;
 let _tools = null;
+let _toolsAt = 0;
 
 async function fetchTools() {
   const resp = await fetch(`${GATEWAY_URL}/tools`, {
@@ -195,14 +200,23 @@ async function fetchTools() {
   });
   if (!resp.ok) throw new Error(`GET /tools → ${resp.status}`);
   const data = await resp.json();
-  // Throw rather than cache a payload with no tools array: _tools is memoised
-  // for the process, so a bad response would otherwise poison every later list.
+  // Throw rather than cache a payload with no tools array: a bad response
+  // would otherwise poison every list until the next refresh.
   if (!Array.isArray(data.tools)) throw new Error('GET /tools returned no tools array');
   return data.tools;
 }
 
 async function getTools() {
-  if (!_tools) _tools = await fetchTools();
+  if (_tools && Date.now() - _toolsAt < TOOLS_TTL_MS) return _tools;
+  try {
+    _tools = await fetchTools();
+    _toolsAt = Date.now();
+  } catch (err) {
+    if (!_tools) throw err;
+    // Keep serving the last good list; ask again in a minute.
+    log(`AgentPay MCP: tool list refresh failed (${err.message}); keeping the previous list`);
+    _toolsAt = Date.now() - TOOLS_TTL_MS + 60_000;
+  }
   return _tools;
 }
 
@@ -236,6 +250,25 @@ const META_PAYMENT_RESPONSE = 'x402/payment-response';
 // The free preview's name. On the remote `verified_route` is the gateway's paid
 // tool (an unpaid call answers PaymentRequired), so the preview is listed apart.
 const PREVIEW_TOOL = REMOTE ? 'verified_route_preview' : 'verified_route';
+
+/** A priced call that leaves out an input the gateway requires. The gateway
+ * refuses it before settling, so this is raised before anything is signed. */
+class MissingInputsError extends Error {
+  constructor(toolName, body) {
+    const missing = body.missing ?? body.missing_parameters ?? [];
+    super(`missing ${missing.join(', ')}`);
+    const suggested = body.suggested_parameters ?? {};
+    this.result = {
+      isError: true,
+      structuredContent: { error: 'missing_required_parameters', tool: toolName,
+                           missing, suggested_parameters: suggested, charged: false },
+      content: [{ type: 'text', text:
+        `AgentPay '${toolName}' needs: ${missing.join(', ')}. Nothing was charged. ` +
+        `Ask the user for the value, or call again with ${JSON.stringify(suggested)} ` +
+        'to accept the defaults.' }],
+    };
+  }
+}
 
 class PaymentRequiredError extends Error {
   constructor(paymentRequired) {
@@ -341,6 +374,10 @@ async function payInBand(toolName, url, params, payment) {
     throw new PaymentRequiredError(pr);
   }
   if (r.status === 429) throw rateLimited(toolName);
+  if (r.status === 400) {
+    const refused = await r.clone().json().catch(() => ({}));
+    if (refused.error === 'missing_required_parameters') throw new MissingInputsError(toolName, refused);
+  }
   // Other 4xx are refused before settlement (bad body, unknown tool).
   if (r.status < 500 && !r.ok) throw new Error(`Paid call failed: ${r.status}${await failureReason(r)}`);
   if (!r.ok) {
@@ -400,6 +437,11 @@ async function callTool(toolName, params, payment = null) {
   const amountUsdc = challenge.amount_usdc;
 
   const isFree = parseFloat(amountUsdc) === 0;
+  // The gateway names the required inputs a priced call left out; ask for
+  // them before anyone signs or pays.
+  if (!isFree && Array.isArray(challenge.missing_parameters) && challenge.missing_parameters.length) {
+    throw new MissingInputsError(toolName, challenge);
+  }
   if (!isFree) {
     // ── Paid tool: settle in-place when a wallet is configured ──
     if (!PAID) throw new PaymentRequiredError(paymentRequiredFrom(challenge, toolName, url));
@@ -1275,6 +1317,7 @@ async function callToolRequest(request) {
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       if (err instanceof McpError) throw err;
+      if (err instanceof MissingInputsError) return err.result;
       if (err instanceof PaymentRequiredError) {
         const pr = err.paymentRequired;
         return { isError: true, structuredContent: pr,
@@ -1332,6 +1375,7 @@ async function callToolRequest(request) {
     return { content: [{ type: 'text', text }] };
   } catch (err) {
     if (err instanceof McpError) throw err;
+    if (err instanceof MissingInputsError) return err.result;
     if (err instanceof PaymentRequiredError) {
       const pr = err.paymentRequired;
       return { isError: true, structuredContent: pr,

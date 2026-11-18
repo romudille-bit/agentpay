@@ -546,3 +546,86 @@ test('with a Stacks key and a Base-only 402, the call settles on Base', async ()
   assert.equal(JSON.parse(textOf(replies[0])).receipt.network, 'base-mainnet');
   assert.match(stderr, /offers no Stacks option — settling on Base/);
 });
+
+// ── required inputs and tool-list refresh ───────────────────────────────────
+
+test('a priced call with a required input missing is refused before anything is signed', async () => {
+  const g = await fakeGateway((req) => {
+    if (req.url === '/tools') return { json: toolsList };
+    return { status: 402, json: { ...challenge(), required_parameters: ['symbol'],
+                                  missing_parameters: ['symbol'],
+                                  suggested_parameters: { symbol: 'ETH', side: 'long', size_usd: 10000 } } };
+  });
+  const { replies } = await callOnce(g.url, { args: {} });
+  g.server.close();
+
+  const result = replies[0].result;
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent.missing, ['symbol']);
+  assert.equal(result.structuredContent.charged, false);
+  assert.equal(result.structuredContent.suggested_parameters.symbol, 'ETH');
+  assert.match(result.content[0].text, /needs: symbol/);
+  assert.equal(g.seen.filter((r) => r.headers['payment-signature']).length, 0);
+});
+
+test('a 400 for missing inputs on an in-band payment says nothing was charged', async () => {
+  const g = await fakeGateway((req) => {
+    if (req.url === '/tools') return { json: toolsList };
+    return { status: 400, json: { error: 'missing_required_parameters', tool: 'pre_trade_check',
+                                  missing: ['symbol'], charged: false,
+                                  suggested_parameters: { symbol: 'ETH' } } };
+  });
+  const payment = { x402Version: 2, accepted: { network: 'eip155:8453' },
+                    payload: { authorization: { from: '0x' + 'ab'.repeat(20) } } };
+  const { replies } = await callOnce(g.url, { sequence: [
+    { name: 'pre_trade_check', arguments: {}, _meta: { 'x402/payment': payment } }] });
+  g.server.close();
+
+  const result = replies[0].result;
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent.missing, ['symbol']);
+  assert.match(result.content[0].text, /Nothing was charged/);
+});
+
+test('the tool list is refreshed after its TTL, so a gateway deploy reaches a running server', async () => {
+  let lists = 0;
+  const g = await fakeGateway((req) => {
+    if (req.url !== '/tools') return { status: 500, json: {} };
+    lists += 1;
+    return { json: { tools: [{ name: lists === 1 ? 'old_tool' : 'new_tool', description: 'x',
+                               price_usdc: '0', parameters: { type: 'object', properties: {} } }] } };
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-mcp-'));
+  const child = spawn(process.execPath, [BIN], {
+    env: { ...process.env, AGENTPAY_GATEWAY_URL: g.url, AGENTPAY_TOOLS_TTL_MS: '200',
+           AGENTPAY_WALLET_PATH: path.join(dir, 'w.json') },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  const send = (m) => child.stdin.write(JSON.stringify(m) + '\n');
+  const reply = (id) => new Promise((resolve) => {
+    const deadline = setTimeout(() => resolve(null), 6000);
+    const tick = setInterval(() => {
+      const got = parse(out).find((m) => m.id === id);
+      if (got) { clearTimeout(deadline); clearInterval(tick); resolve(got); }
+    }, 50);
+  });
+  send({ jsonrpc: '2.0', id: 1, method: 'initialize',
+         params: { protocolVersion: '2024-11-05', capabilities: {},
+                   clientInfo: { name: 'test', version: '0' } } });
+  send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+  send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  const first = await reply(2);
+  await new Promise((r) => setTimeout(r, 400));
+  send({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+  const second = await reply(3);
+  child.kill();
+  g.server.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  const names = (r) => (r?.result?.tools || []).map((t) => t.name);
+  assert.ok(names(first).includes('old_tool'));
+  assert.ok(names(second).includes('new_tool') && !names(second).includes('old_tool'));
+});
+
