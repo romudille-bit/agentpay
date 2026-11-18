@@ -2194,7 +2194,6 @@ async def persist_tool_registration(tool_dict: dict) -> bool:
                     "triggers":          tool_dict.get("triggers", []),
                     "use_when":          tool_dict.get("use_when", ""),
                     "returns":           tool_dict.get("returns", ""),
-                    "response_example":  tool_dict.get("response_example"),
                 },
             )
         if resp.status_code not in (200, 201, 204):
