@@ -63,6 +63,36 @@ class TestPreTradeCheck:
         assert "orderbook_depth" in r["components"]
 
     @pytest.mark.asyncio
+    async def test_split_venues_are_mixed_and_do_not_change_the_verdict(self, monkeypatch):
+        # Median 1.21 looks calm, but one venue is short-heavy and one long-heavy.
+        oi = {**CALM_OI, "long_short_ratio": 1.21,
+              "long_short_ratios": {"Binance": 0.54, "Gate.io": 1.21, "OKX": 2.38}}
+        _stub_components(monkeypatch, {"open_interest": oi})
+        r = await tools_runtime._fetch_pre_trade_check(
+            {"symbol": "ETH", "size_usd": 10_000, "side": "long"})
+        c = r["factors"]["crowding"]
+        assert c["level"] == "mixed" and c["venues_split"] is True
+        assert "Binance" in c["reason"] and "OKX" in c["reason"]
+        assert r["verdict"] == "ok"
+
+    def test_venues_on_the_same_side_are_not_mixed(self):
+        # Wide spread, but every venue is long: that is degree, not disagreement.
+        oi = {"long_short_ratio": 2.2, "oi_change_24h_pct": 1.0,
+              "long_short_ratios": {"Binance": 1.8, "Gate.io": 1.6, "Bitget": 5.0}}
+        c = tools_runtime._ptc_crowding(oi, "long")
+        assert c["level"] == "ok" and c["venues_split"] is False
+
+    def test_crowding_on_your_side_outranks_mixed(self):
+        oi = {"long_short_ratio": 2.6, "oi_change_24h_pct": 1.0,
+              "long_short_ratios": {"Binance": 0.6, "OKX": 2.6, "Bitget": 4.0}}
+        c = tools_runtime._ptc_crowding(oi, "long")
+        assert c["level"] == "caution" and c["venues_split"] is True
+
+    def test_no_per_venue_ratios_is_not_mixed(self):
+        c = tools_runtime._ptc_crowding(CALM_OI, "long")
+        assert c["level"] == "ok" and c["venues_split"] is False
+
+    @pytest.mark.asyncio
     async def test_asset_alias_maps_to_symbol(self, monkeypatch):
         # Recipes send {"asset": ...}; it must not fall back to ETH.
         _stub_components(monkeypatch)

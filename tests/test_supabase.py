@@ -1167,7 +1167,10 @@ class TestPersistToolRegistration:
         # Upsert semantics so re-registration converges instead of 409-ing.
         assert "merge-duplicates" in (captured["prefer"] or "")
         import json as _json
-        assert _json.loads(captured["body"])["name"] == "runtime_tool_abc"
+        body = _json.loads(captured["body"])
+        assert body["name"] == "runtime_tool_abc"
+        # The tools table has no response_example column; sending it fails the write.
+        assert "response_example" not in body
 
     @pytest.mark.asyncio
     async def test_persist_maps_empty_developer_address_to_null(self):
