@@ -629,3 +629,60 @@ test('the tool list is refreshed after its TTL, so a gateway deploy reaches a ru
   assert.ok(names(second).includes('new_tool') && !names(second).includes('old_tool'));
 });
 
+// ── a refusal before settlement must not keep the Stacks nonce ──────────────
+
+test('a Stacks payment refused with a 400 releases its nonce and the booked spend', async () => {
+  // First settle: the gateway refuses before broadcasting, with no payment_status.
+  // The next call must sign at the chain nonce again, not one ahead.
+  let settles = 0;
+  const g = await fakeGateway((req) => {
+    if (req.url === '/tools') return { json: toolsList };
+    if (req.url.startsWith('/v2/accounts/')) return { json: { nonce: 4, balance: '0x0' } };
+    if (req.url.startsWith('/extended/v1/address/')) return { json: { results: [] } };
+    if (req.headers['payment-signature']) {
+      settles += 1;
+      if (settles === 1) return { status: 400, json: { detail: 'bad request body' } };
+      return { json: { result: { verdict: 'ok' }, payment: { tx_hash: RELAYED, network: 'stacks-testnet' } } };
+    }
+    return { status: 402, json: stacksChallenge() };
+  });
+  const { replies } = await callOnce(g.url, { env: stacksEnv(g.url), calls: 2 });
+  g.server.close();
+
+  assert.match(textOf(replies[0]), /nothing was broadcast, the cap is unchanged/);
+  const out = JSON.parse(textOf(replies[1]));
+  assert.equal(out.verdict, 'ok');
+  assert.equal(out.receipt.session_spent_usd, '0.01');          // the refused one is not counted
+
+  const signed = g.seen.filter((r) => r.headers['payment-signature']);
+  assert.equal(signed.length, 2);
+  for (const req of signed) {
+    const tx = Buffer.from(decodeHeader(req).payload.signedTransaction, 'hex');
+    assert.equal(tx.readBigUInt64BE(27), 4n);                   // same nonce both times
+  }
+});
+
+test('a pending Stacks payment is re-sent with the parameters of the new call', async () => {
+  let settles = 0;
+  const g = await fakeGateway((req) => {
+    if (req.url === '/tools') return { json: toolsList };
+    if (req.url.startsWith('/v2/accounts/')) return { json: { nonce: 4, balance: '0x0' } };
+    if (req.headers['payment-signature']) {
+      settles += 1;
+      if (settles === 1) return { status: 503, json: { payment_status: 'uncertain', txid: RELAYED } };
+      return { json: { result: { verdict: 'ok' }, payment: { tx_hash: RELAYED, network: 'stacks-testnet' } } };
+    }
+    return { status: 402, json: stacksChallenge() };
+  });
+  const { replies } = await callOnce(g.url, { env: stacksEnv(g.url), sequence: [
+    { name: 'pre_trade_check', arguments: { symbol: 'BTC' } },
+    { name: 'pre_trade_check', arguments: { symbol: 'STX' } }] });
+  g.server.close();
+
+  assert.equal(JSON.parse(textOf(replies[1])).verdict, 'ok');
+  const signed = g.seen.filter((r) => r.headers['payment-signature']);
+  assert.equal(signed.length, 2);
+  assert.equal(signed[0].headers['payment-signature'], signed[1].headers['payment-signature']);
+  assert.equal(JSON.parse(signed[1].body).parameters.symbol, 'STX');
+});
+
