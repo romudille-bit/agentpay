@@ -17,11 +17,14 @@ class Venues:
     """Canned venue responses. `down` maps a venue to the HTTP status it returns."""
 
     def __init__(self, *, okx_funding_inst="STX-USDT-SWAP", cg_price=None,
-                 gate_row=None, down=None, binance_mark=None):
+                 gate_row=None, down=None, binance_mark=None, intervals=None,
+                 okx_code="0"):
         self.okx_funding_inst = okx_funding_inst   # the only instId OKX lists
         self.cg_price = cg_price                   # {coin_id: usd} CoinGecko resolves
         self.gate_row = gate_row
         self.binance_mark = binance_mark           # Binance markPrice, if any
+        self.intervals = intervals or {}           # venue -> funding interval, hours
+        self.okx_code = okx_code
         self.down = down or {}
         self.seen: list[httpx.Request] = []
 
@@ -35,6 +38,10 @@ class Venues:
             return httpx.Response(self.down[venue], text="blocked")
 
         if venue == "binance":
+            if p.endswith("/fundingInfo"):
+                h = self.intervals.get("binance")
+                return httpx.Response(200, json=[
+                    {"symbol": "STXUSDT", "fundingIntervalHours": h}] if h else [])
             if p.endswith("/premiumIndex"):
                 return httpx.Response(200, json={
                     "symbol": q["symbol"], "lastFundingRate": "-0.0000931",
@@ -47,6 +54,9 @@ class Venues:
             if p.endswith("/globalLongShortAccountRatio"):
                 return httpx.Response(200, json=[{"longShortRatio": "0.623"}])
         if venue == "bybit":
+            if p.endswith("/instruments-info"):
+                return httpx.Response(200, json={"result": {"list": [
+                    {"fundingInterval": int(self.intervals.get("bybit", 8) * 60)}]}})
             if p.endswith("/tickers"):
                 return httpx.Response(200, json={"result": {"list": [{
                     "symbol": q["symbol"], "fundingRate": "-0.00018967",
@@ -59,9 +69,13 @@ class Venues:
                 if q["instId"] != self.okx_funding_inst:
                     # What OKX really answers for an unlisted instrument: 200, not 4xx.
                     return httpx.Response(200, json={"code": "51001", "data": [], "msg": "Instrument ID doesn't exist."})
+                if self.okx_code != "0":
+                    return httpx.Response(200, json={"code": self.okx_code, "data": [], "msg": "Too Many Requests"})
+                nxt = 1794873600000
                 return httpx.Response(200, json={"code": "0", "data": [{
                     "instId": q["instId"], "fundingRate": "-0.000143",
-                    "nextFundingTime": "1794873600000"}]})
+                    "fundingTime": str(nxt - int(self.intervals.get("okx", 8) * 3.6e6)),
+                    "nextFundingTime": str(nxt)}]})
             if p.endswith("/public/open-interest"):
                 return httpx.Response(200, json={"data": [{
                     "oiCcy": "7500000", "oiUsd": "1950000"}]})   # implies $0.26
@@ -118,6 +132,57 @@ class TestFundingRates:
         v = Venues(down={"binance": 451, "bybit": 403, "okx": 503})
         out = await _run(tr._fetch_funding_rates, v, {"asset": "STX"})
         assert "error" in out and "rates" not in out
+
+
+@pytest.fixture(autouse=True)
+def _empty_interval_cache():
+    tr._FUNDING_INTERVAL_CACHE.clear()
+    yield
+    tr._FUNDING_INTERVAL_CACHE.clear()
+
+
+class TestFundingInterval:
+    async def _by_venue(self, **kw):
+        out = await _run(tr._fetch_funding_rates, Venues(**kw), {"asset": "STX"})
+        return {r["exchange"]: r for r in out["rates"]}
+
+    async def test_eight_hour_contracts_are_unchanged(self):
+        for r in (await self._by_venue()).values():
+            assert r["interval_hours"] == 8.0
+            assert r["funding_rate_8h_pct"] == r["funding_rate_pct"]
+            assert r["annualized_rate_pct"] == round(r["funding_rate_pct"] * 3 * 365, 2)
+
+    async def test_four_hour_contracts_are_normalised_to_8h(self):
+        rows = await self._by_venue(intervals={"binance": 4, "bybit": 4, "okx": 4})
+        for r in rows.values():
+            assert r["interval_hours"] == 4.0
+            assert r["funding_rate_8h_pct"] == pytest.approx(r["funding_rate_pct"] * 2)
+            # Six settlements a day, not three.
+            assert r["annualized_rate_pct"] == pytest.approx(r["funding_rate_pct"] * 6 * 365, abs=0.01)
+
+    async def test_venues_can_differ_for_one_asset(self):
+        rows = await self._by_venue(intervals={"binance": 4})
+        assert rows["Binance"]["interval_hours"] == 4.0
+        assert rows["Bybit"]["interval_hours"] == rows["OKX"]["interval_hours"] == 8.0
+
+    async def test_interval_lookup_is_cached(self):
+        v = Venues(intervals={"binance": 4})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(v.handler)) as client:
+            await tr._fetch_funding_rates(client, {"asset": "STX"})
+            await tr._fetch_funding_rates(client, {"asset": "STX"})
+        assert sum(r.url.path.endswith("/fundingInfo") for r in v.seen) == 1
+
+    async def test_okx_error_code_is_logged_not_silent(self, caplog):
+        with caplog.at_level("WARNING"):
+            rows = await self._by_venue(okx_code="50011")
+        assert "OKX" not in rows
+        assert "OKX code 50011" in caplog.text
+
+    def test_carry_compares_per_8h_rates(self):
+        # 0.03% per 4h is 0.06% per 8h: elevated for a long, though the raw rate is not.
+        fr = {"rates": [{"funding_rate_pct": 0.03, "funding_rate_8h_pct": 0.06}] * 3}
+        assert tr._ptc_carry(fr, "long")["level"] == "caution"
+        assert tr._ptc_carry({"rates": [{"funding_rate_pct": 0.03}] * 3}, "long")["level"] == "ok"
 
 
 class TestOpenInterestPrice:
