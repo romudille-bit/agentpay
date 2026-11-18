@@ -14,6 +14,7 @@ from a separate constants module just to read them back here.
 import asyncio
 import logging
 import statistics
+import time
 
 import httpx
 
@@ -801,6 +802,53 @@ def _funding_sentiment(rate_pct: float) -> str:
     return "neutral"
 
 
+_FUNDING_INTERVAL_TTL = 6 * 3600
+_FUNDING_INTERVAL_CACHE: dict[tuple[str, str], tuple[float, float]] = {}
+
+
+async def _funding_interval(client: httpx.AsyncClient, venue: str, asset: str) -> float:
+    """Hours between funding settlements on Binance or Bybit. Most alts settle
+    every 4h, not 8h; 8.0 is the default when the venue does not say."""
+    key = (venue, asset)
+    hit = _FUNDING_INTERVAL_CACHE.get(key)
+    if hit and time.time() - hit[1] < _FUNDING_INTERVAL_TTL:
+        return hit[0]
+    hours = 8.0
+    try:
+        if venue == "binance":
+            # Lists only contracts that differ from the 8h default.
+            r = await client.get("https://fapi.binance.com/fapi/v1/fundingInfo", timeout=10.0)
+            r.raise_for_status()
+            for row in r.json():
+                if row.get("symbol") == f"{asset}USDT" and row.get("fundingIntervalHours"):
+                    hours = float(row["fundingIntervalHours"])
+        else:
+            r = await client.get(
+                "https://api.bybit.com/v5/market/instruments-info",
+                params={"category": "linear", "symbol": f"{asset}USDT"}, timeout=10.0)
+            r.raise_for_status()
+            mins = ((r.json().get("result") or {}).get("list") or [{}])[0].get("fundingInterval")
+            if mins:
+                hours = float(mins) / 60.0
+    except Exception:
+        return 8.0   # not cached, so the next call asks again
+    _FUNDING_INTERVAL_CACHE[key] = (hours, time.time())
+    return hours
+
+
+def _funding_row(asset: str, exchange: str, rate: float, hours: float, next_ms) -> dict:
+    pct = rate * 100
+    return {
+        "asset":    asset,
+        "exchange": exchange,
+        "funding_rate_pct":    round(pct, 6),
+        "interval_hours":      hours,
+        "funding_rate_8h_pct": round(pct * 8.0 / hours, 6),
+        "annualized_rate_pct": round(pct * (24.0 / hours) * 365, 2),
+        "next_funding_time":   next_ms,
+    }
+
+
 async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
     asset = params.get("asset", "").strip().upper()
 
@@ -812,6 +860,8 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
         r.raise_for_status()
         data = r.json()
         rows = data if isinstance(data, list) else [data]
+        # The no-asset list is majors only, which all settle every 8h.
+        hours = await _funding_interval(client, "binance", asset) if asset else 8.0
         results = []
         for item in rows:
             sym = item.get("symbol", "")
@@ -821,13 +871,8 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
             if asset and ticker != asset:
                 continue
             rate = float(item.get("lastFundingRate") or 0)
-            results.append({
-                "asset":    ticker,
-                "exchange": "Binance",
-                "funding_rate_pct":    round(rate * 100, 6),
-                "annualized_rate_pct": round(rate * 100 * 3 * 365, 2),
-                "next_funding_time":   item.get("nextFundingTime"),
-            })
+            results.append(_funding_row(ticker, "Binance", rate, hours,
+                                        item.get("nextFundingTime")))
         return results
 
     async def _bybit() -> list[dict]:
@@ -836,6 +881,7 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
         r   = await client.get("https://api.bybit.com/v5/market/tickers", params=p, timeout=10.0)
         r.raise_for_status()
         items = r.json().get("result", {}).get("list", [])
+        hours = await _funding_interval(client, "bybit", asset) if asset and items else 8.0
         results = []
         for item in items:
             s = item.get("symbol", "")
@@ -843,13 +889,8 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
                 continue
             ticker = s[:-4]
             rate   = float(item.get("fundingRate") or 0)
-            results.append({
-                "asset":    ticker,
-                "exchange": "Bybit",
-                "funding_rate_pct":    round(rate * 100, 6),
-                "annualized_rate_pct": round(rate * 100 * 3 * 365, 2),
-                "next_funding_time":   int(item.get("nextFundingTime") or 0),
-            })
+            results.append(_funding_row(ticker, "Bybit", rate, hours,
+                                        int(item.get("nextFundingTime") or 0)))
         return results
 
     async def _okx() -> list[dict]:
@@ -865,17 +906,17 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
             timeout=10.0,
         )
         r.raise_for_status()
-        items = r.json().get("data", [])
+        body = r.json()
+        # OKX answers 200 on failure. 51001 = contract not listed; anything else
+        # (rate limit, maintenance) is a venue that failed, worth a log line.
+        if str(body.get("code", "0")) not in ("0", "51001"):
+            logger.warning(f"funding_rates OKX code {body.get('code')}: {body.get('msg')}")
         results = []
-        for item in items:
+        for item in body.get("data", []):
             rate = float(item.get("fundingRate") or 0)
-            results.append({
-                "asset":    asset,
-                "exchange": "OKX",
-                "funding_rate_pct":    round(rate * 100, 6),
-                "annualized_rate_pct": round(rate * 100 * 3 * 365, 2),
-                "next_funding_time":   int(item.get("nextFundingTime") or 0),
-            })
+            t0, t1 = int(item.get("fundingTime") or 0), int(item.get("nextFundingTime") or 0)
+            hours = (t1 - t0) / 3.6e6 if t1 > t0 else 8.0
+            results.append(_funding_row(asset, "OKX", rate, hours, t1))
         return results
 
     # Run all three in parallel; ignore individual failures
@@ -894,10 +935,10 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
         major = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "ARB", "OP", "MATIC"}
         rows  = [r for r in rows if r["asset"] in major]
 
-    rows.sort(key=lambda r: abs(r["funding_rate_pct"]), reverse=True)
+    rows.sort(key=lambda r: abs(r["funding_rate_8h_pct"]), reverse=True)
 
     for r in rows:
-        r["sentiment"] = _funding_sentiment(r["funding_rate_pct"])
+        r["sentiment"] = _funding_sentiment(r["funding_rate_8h_pct"])
 
     return {
         "asset":    asset or "major",
@@ -1601,7 +1642,9 @@ def _ptc_carry(fr: dict, side: str) -> dict:
     if fr.get("error") or not fr.get("rates"):
         return {"level": "unknown", "reason": "funding rates unavailable"}
     import statistics
-    rates = [r["funding_rate_pct"] for r in fr["rates"] if r.get("funding_rate_pct") is not None]
+    # Per-8h rates, so venues on 4h or 1h funding compare with the 8h thresholds.
+    rates = [r.get("funding_rate_8h_pct", r.get("funding_rate_pct")) for r in fr["rates"]]
+    rates = [x for x in rates if x is not None]
     if not rates:
         return {"level": "unknown", "reason": "no funding data for asset"}
     med = statistics.median(rates)
