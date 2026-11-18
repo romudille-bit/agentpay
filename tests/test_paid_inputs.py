@@ -135,7 +135,13 @@ class TestUnpaidStillGetsThe402:
         assert r.status_code == 402, r.text
         body = r.json()
         assert body["required_parameters"] == [key]
+        assert body["missing_parameters"] == [key]
         assert key in body["suggested_parameters"]
+
+    def test_complete_unpaid_call_has_nothing_missing(self, client):
+        r = client.post("/tools/pre_trade_check/call", json={"symbol": "SOL"})
+        assert r.status_code == 402
+        assert "missing_parameters" not in r.json()
 
     def test_free_tool_402_has_no_suggestion(self, client):
         assert "required_parameters" not in client.post("/tools/token_price/call").json()

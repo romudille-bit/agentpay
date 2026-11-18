@@ -14,6 +14,12 @@ project uses [Semantic Versioning](https://semver.org/).
   with those parameters. Unpaid calls still get the 402, which now carries
   the same suggestion. Classic Stellar payments keep the old defaults.
 
+### Changed (MCP server 2.9.1)
+- The gateway's tool list is refreshed every 10 minutes
+  (`AGENTPAY_TOOLS_TTL_MS`), so a gateway deploy reaches a running server.
+- A priced call that leaves out a required input answers with a tool error
+  naming it and the suggested defaults, before anything is signed.
+
 ## [0.5.2] — 2026-11-09
 
 **Sponsored Stacks payments, with a fallback when the relay says no.**
