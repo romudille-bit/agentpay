@@ -72,6 +72,9 @@ def refusal(tool: str, params: dict | None) -> JSONResponse | None:
         "missing": gaps,
         "suggested_parameters": suggested(tool, params),
         "charged": False,
+        # Clients that sign before sending (Stacks) read this to release the
+        # nonce and the spend they booked for a payment that was never used.
+        "payment_status": "rejected",
         "message": ("Nothing was charged and your payment was not used. Resend "
                     "the same payment with suggested_parameters to accept the "
                     "defaults, or with your own values."),
