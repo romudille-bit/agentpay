@@ -14,6 +14,14 @@ project uses [Semantic Versioning](https://semver.org/).
   with those parameters. Unpaid calls still get the 402, which now carries
   the same suggestion. Classic Stellar payments keep the old defaults.
 
+### Fixed (MCP server 2.9.2)
+- A Stacks payment the gateway refuses before settling (any 4xx) releases
+  its nonce and the booked spend once the chain confirms it never went out.
+  Before, the next payment was signed one nonce ahead and waited in the
+  mempool behind a nonce that was never broadcast.
+- A pending Stacks payment is re-sent with the parameters of the call being
+  made, not the ones it was first sent with.
+
 ### Changed (MCP server 2.9.1)
 - The gateway's tool list is refreshed every 10 minutes
   (`AGENTPAY_TOOLS_TTL_MS`), so a gateway deploy reaches a running server.

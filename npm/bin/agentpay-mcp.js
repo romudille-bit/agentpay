@@ -69,7 +69,7 @@ import * as stacksTx from './stacks_tx.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const VERSION = '2.9.1';
+const VERSION = '2.9.2';
 const GATEWAY_URL = (process.env.AGENTPAY_GATEWAY_URL || 'https://agentpay.tools').replace(/\/$/, '');
 
 // Silence all non-critical logging — any stray stdout corrupts the MCP stream.
@@ -632,7 +632,8 @@ async function settleStacks(toolName, url, params, challenge, stacksOpt, { unspo
   // Redeem first: an earlier uncertain settle for this tool may have confirmed.
   const pending = pendingStacks.get(toolName);
   if (pending) {
-    const r = await postStacksPayment(url, pending.built, pending.params);
+    // The payment is the same; the parameters are the ones asked for now.
+    const r = await postStacksPayment(url, pending.built, params);
     if (r.status === 200) {
       pendingStacks.delete(toolName);
       const result = await r.json();
@@ -692,11 +693,17 @@ async function settleStacks(toolName, url, params, challenge, stacksOpt, { unspo
   }
 
   let body = {}; try { body = await r.json(); } catch { /* non-JSON */ }
-  const reason = String(body.error_reason || body.reason || body.detail || `HTTP ${r.status}`);
-  if (String(body.payment_status || '') === 'rejected' && await stacksTxAbsent(built)) {
+  const reason = String(body.error_reason || body.reason || body.detail || body.error || `HTTP ${r.status}`);
+  // A 4xx is the gateway refusing before it settles (bad or missing inputs,
+  // rate limit), whether or not the body says "rejected". Keeping the nonce
+  // for a payment that never went out strands the next one behind a gap.
+  const refused = String(body.payment_status || '') === 'rejected'
+    || (r.status >= 400 && r.status < 500 && String(body.payment_status || '') !== 'uncertain');
+  if (refused && await stacksTxAbsent(built)) {
     // Nothing broadcast: give the cap back and let the next call sign afresh.
     spentMicro -= amountMicro;
     stacksNextNonce = null;
+    if (body.error === 'missing_required_parameters') throw new MissingInputsError(toolName, body);
     // The relay refused to sponsor (per-sender quota, budget). Auto mode pays
     // its own fee against a fresh 402; required mode stops here.
     const sponsorRefused = built.sponsored && /sponsor/i.test(reason)
