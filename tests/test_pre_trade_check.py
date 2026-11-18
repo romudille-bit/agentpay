@@ -93,6 +93,15 @@ class TestPreTradeCheck:
         assert c["level"] == "ok" and c["venues_split"] is False
 
     @pytest.mark.asyncio
+    async def test_stx_on_the_cex_venue_is_still_a_native_asset(self, monkeypatch):
+        # venue=cex skips the Stacks lookup; STX must not read as an unscreened token.
+        _stub_components(monkeypatch)
+        r = await tools_runtime._fetch_pre_trade_check(
+            {"symbol": "STX", "size_usd": 10_000, "side": "long", "venue": "cex"})
+        assert r["factors"]["security"]["level"] == "n/a"
+        assert r["verdict"] == "ok"
+
+    @pytest.mark.asyncio
     async def test_asset_alias_maps_to_symbol(self, monkeypatch):
         # Recipes send {"asset": ...}; it must not fall back to ETH.
         _stub_components(monkeypatch)
