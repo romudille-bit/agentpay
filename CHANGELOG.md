@@ -6,6 +6,14 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (gateway, affects every client)
+- **Paid calls must state their required inputs.** `pre_trade_check` needs
+  `symbol`, `verified_route` needs `need`, `session_create` needs `max_spend`.
+  A paid call without them gets a 400 with `missing` and
+  `suggested_parameters` before anything settles; resend the same payment
+  with those parameters. Unpaid calls still get the 402, which now carries
+  the same suggestion. Classic Stellar payments keep the old defaults.
+
 ## [0.5.2] — 2026-11-09
 
 **Sponsored Stacks payments, with a fallback when the relay says no.**

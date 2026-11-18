@@ -365,7 +365,7 @@ class TestSessionAndDiscovery:
         with respx.mock:
             v, s = _verify_ok(), _settle_ok()
             r = client.post("/v1/session/create",
-                            json={"max_spend_usdc": "0.10"},
+                            json={"max_spend": "0.10"},
                             headers={"PAYMENT-SIGNATURE": sig})
         assert r.status_code == 200, r.text
         assert v.called and s.called
