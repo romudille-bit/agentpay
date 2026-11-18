@@ -83,6 +83,8 @@ class TestPaidToolCalls:
         body = r.json()
         assert body["error"] == "missing_required_parameters"
         assert body["missing"] == [gap] and body["charged"] is False
+        # Signing clients release their nonce and booked spend on "rejected".
+        assert body["payment_status"] == "rejected"
         assert gap in body["suggested_parameters"]
 
     @pytest.mark.parametrize("rail", SIGNED_RAILS)
