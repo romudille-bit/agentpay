@@ -165,6 +165,11 @@ class TestFundingInterval:
         assert rows["Binance"]["interval_hours"] == 4.0
         assert rows["Bybit"]["interval_hours"] == rows["OKX"]["interval_hours"] == 8.0
 
+    async def test_okx_next_funding_time_is_the_upcoming_settlement(self):
+        """OKX `nextFundingTime` is the settlement after the upcoming one."""
+        rows = await self._by_venue()
+        assert rows["OKX"]["next_funding_time"] == 1794873600000 - 8 * 3_600_000
+
     async def test_interval_lookup_is_cached(self):
         v = Venues(intervals={"binance": 4})
         async with httpx.AsyncClient(transport=httpx.MockTransport(v.handler)) as client:

@@ -916,7 +916,9 @@ async def _fetch_funding_rates(client: httpx.AsyncClient, params: dict) -> dict:
             rate = float(item.get("fundingRate") or 0)
             t0, t1 = int(item.get("fundingTime") or 0), int(item.get("nextFundingTime") or 0)
             hours = (t1 - t0) / 3.6e6 if t1 > t0 else 8.0
-            results.append(_funding_row(asset, "OKX", rate, hours, t1))
+            # OKX `fundingTime` is the upcoming settlement; `nextFundingTime`
+            # is the one after it.
+            results.append(_funding_row(asset, "OKX", rate, hours, t0 or t1))
         return results
 
     # Run all three in parallel; ignore individual failures
@@ -1811,8 +1813,9 @@ async def _fetch_pre_trade_check(params: dict) -> dict:
         known = _PTC_KNOWN_TOKENS.get(symbol)
         if known:
             chain, token_address = known
-        elif symbol in _PTC_NATIVE_ASSETS:
+        elif symbol in _PTC_NATIVE_ASSETS or symbol in _PTC_STACKS_NATIVE:
             # No contract exists; visibly N/A rather than silently absent.
+            # Stacks-native symbols land here when the caller forces venue=cex.
             security_static = {
                 "level": "n/a",
                 "reason": f"{symbol} is a native chain asset — no token "

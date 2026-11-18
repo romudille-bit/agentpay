@@ -124,7 +124,8 @@ async def _okx(c: httpx.AsyncClient, asset: str, since_ms: int) -> VenueFunding:
                 for x in h.json().get("data") or [] if int(x["fundingTime"]) >= since_ms]
     except Exception:
         pass
-    return VenueFunding("okx", _f(d.get("fundingRate")) * 100, interval, t1 or None, hist)
+    # `fundingTime` is the upcoming settlement; `nextFundingTime` the one after.
+    return VenueFunding("okx", _f(d.get("fundingRate")) * 100, interval, (t0 or t1) or None, hist)
 
 
 async def _gate(c: httpx.AsyncClient, asset: str, since_ms: int) -> VenueFunding:

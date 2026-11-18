@@ -253,3 +253,13 @@ def test_registry_entry_is_paid_and_discoverable():
     assert t and t.price_usdc == "0.01" and t.parameters["required"] == ["symbol"]
     assert "funding_spread" in rt._TOOL_BAZAAR
     assert "funding_spread" in {x["tool"] for x in rt._PAID_RELATED["pre_trade_check"]}
+
+
+@pytest.mark.asyncio
+async def test_okx_next_funding_time_is_the_upcoming_settlement():
+    # OKX `fundingTime` is the upcoming settlement; `nextFundingTime` the one after.
+    fake = FakeVenues(EIGHT_H_VENUES)
+    async with fake.client() as c:
+        r = await fs.fetch(c, {"symbol": "BTC"}, now_ms=NOW)
+    by = {v["venue"]: v for v in r["venues"]}
+    assert by["okx"]["next_funding_time"] == NOW
