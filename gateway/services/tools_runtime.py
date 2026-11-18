@@ -1562,7 +1562,11 @@ async def _fetch_market_snapshot(client: httpx.AsyncClient) -> dict:
 
 # ── pre_trade_check — composite bundle ($0.01) ────────────────────────────────
 
-_PTC_RANK = {"ok": 0, "unknown": 1, "caution": 1, "avoid": 2}
+# "mixed" (venues disagree on positioning) is a note for now: it ranks as ok.
+_PTC_RANK = {"ok": 0, "mixed": 0, "unknown": 1, "caution": 1, "avoid": 2}
+# A venue is long-heavy at L/S >= 1.5 (60% of accounts long), short-heavy at <= 1/1.5.
+_PTC_LS_LONG_HEAVY = 1.5
+_PTC_LS_SHORT_HEAVY = 1 / 1.5
 
 
 def _ptc_liquidity(ob: dict, size_usd: float) -> dict:
@@ -1631,12 +1635,22 @@ def _ptc_crowding(oi: dict, side: str) -> dict:
         or (side == "short" and lsr is not None and lsr < 0.5)
     )
     oi_swinging = ch24 is not None and abs(ch24) > 20
+    # Venues split: one long-heavy and one short-heavy, which the median hides.
+    ratios = {v: r for v, r in (oi.get("long_short_ratios") or {}).items() if r is not None}
+    lo = min(ratios.items(), key=lambda kv: kv[1], default=None)
+    hi = max(ratios.items(), key=lambda kv: kv[1], default=None)
+    split = bool(ratios) and lo[1] <= _PTC_LS_SHORT_HEAVY and hi[1] >= _PTC_LS_LONG_HEAVY
+    out["venues_split"] = split
     if crowded_same_side and oi_swinging:
         out.update(level="avoid", reason=f"crowded {side} (L/S {lsr}) with OI swinging {ch24}%/24h")
     elif crowded_same_side:
         out.update(level="caution", reason=f"positioning crowded on your side (L/S {lsr})")
     elif oi_swinging:
         out.update(level="caution", reason=f"open interest moved {ch24}% in 24h")
+    elif split:
+        out.update(level="mixed",
+                   reason=(f"venues disagree on positioning: {lo[0]} L/S {lo[1]} (short-heavy) "
+                           f"vs {hi[0]} L/S {hi[1]} (long-heavy); median {lsr}"))
     else:
         out.update(level="ok", reason="positioning unremarkable")
     return out
