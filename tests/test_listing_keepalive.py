@@ -174,3 +174,70 @@ def test_probe_query_is_the_brand_term_on_purpose():
     small set, so absence there is real absence. Changing this to a head term
     would make the keepalive buy a settle it doesn't need."""
     assert ka.PROBE_QUERY == "agentpay"
+
+
+# ── every paid tool, not only the session ────────────────────────────────────
+
+def _all_indexed(_q):
+    return _payload(SESSION_URL, *(ka.tool_resource_url(t)
+                                   for t, _, _ in ka.TOOL_LISTINGS))
+
+
+def test_all_listings_indexed_costs_nothing():
+    s = _Session()
+    out, log = _logs()
+    r = ka.keepalive_all(s, log, search=_all_indexed)
+    assert set(r) == {"session_create"} | {t for t, _, _ in ka.TOOL_LISTINGS}
+    assert all(v["indexed"] is True and v["settled"] is False for v in r.values())
+    assert s.calls == []
+
+
+def test_each_tool_is_probed_by_its_service_name():
+    seen = []
+
+    def search(q):
+        seen.append(q)
+        return _all_indexed(q)
+
+    ka.keepalive_all(_Session(), _logs()[1], search=search)
+    assert seen == [ka.PROBE_QUERY] + [name for _, name, _ in ka.TOOL_LISTINGS]
+
+
+def test_only_the_missing_tool_is_settled():
+    """sbtc_peg has dropped out; the other four are present."""
+    s = _Session()
+    out, log = _logs()
+    gone = ka.tool_resource_url("sbtc_peg")
+
+    def search(_q):
+        p = _all_indexed(_q)
+        p["resources"] = [r for r in p["resources"] if r["resource"] != gone]
+        return p
+
+    r = ka.keepalive_all(s, log, search=search)
+    assert s.calls == [("sbtc_peg", {})]
+    assert s.chains == ["base"]
+    assert r["sbtc_peg"]["settled"] is True
+    assert sum(v["settled"] for v in r.values()) == 1
+
+
+def test_one_failed_check_does_not_stop_the_rest():
+    s = _Session()
+    out, log = _logs()
+
+    def search(q):
+        if q == "AgentPay Funding Spread":
+            raise TimeoutError("bazaar slow")
+        return _all_indexed(q)
+
+    r = ka.keepalive_all(s, log, search=search)
+    assert r["funding_spread"]["indexed"] is None
+    assert r["sbtc_peg"]["indexed"] is True
+    assert s.calls == []
+
+
+def test_service_names_match_the_gateway_listing():
+    """A renamed listing would make the probe miss and buy a settle every run."""
+    from gateway.routes.tools import _TOOL_BAZAAR
+    for tool, name, _ in ka.TOOL_LISTINGS:
+        assert name in repr(_TOOL_BAZAAR[tool]), tool

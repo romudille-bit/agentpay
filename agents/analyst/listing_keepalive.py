@@ -56,6 +56,21 @@ SESSION_RESOURCE_URL = "https://agentpay.tools/v1/session/create"
 
 KEEPALIVE_PARAMS = {"max_spend": "0.10"}
 
+# The other paid tools, each probed by its own Bazaar service name: the brand
+# query returns only some of them. (tool, service name, params a settle sends)
+TOOL_LISTINGS = (
+    ("pre_trade_check", "AgentPay Pre-Trade Risk Check",
+     {"symbol": "ETH", "size_usd": 1000, "side": "long"}),
+    ("verified_route", "AgentPay x402 Trust Oracle",
+     {"need": "crypto prices", "budget_usd": 0.01}),
+    ("funding_spread", "AgentPay Funding Spread", {"symbol": "BTC"}),
+    ("sbtc_peg", "AgentPay sBTC Peg", {}),
+)
+
+
+def tool_resource_url(tool: str) -> str:
+    return f"https://agentpay.tools/tools/{tool}/call"
+
 
 def _search(query: str, timeout: int = 20) -> dict:
     url = f"{BAZAAR_SEARCH}?query={urllib.parse.quote(query)}"
@@ -86,8 +101,9 @@ def is_indexed(payload: dict, resource_url: str = SESSION_RESOURCE_URL) -> bool:
 
 def keepalive(session, log, *, search=_search, query: str = PROBE_QUERY,
               resource_url: str = SESSION_RESOURCE_URL,
-              enabled: bool = True, price=None) -> dict:
-    """Check the listing; settle one $0.01 session_create only if it is gone.
+              enabled: bool = True, price=None,
+              tool: str = "session_create", params: dict | None = None) -> dict:
+    """Check one listing; settle one $0.01 call of `tool` only if it is gone.
 
     `session` is the analyst's live Session (budget cap enforced by it).
     Returns a JSON-safe dict for the run payload. Never raises.
@@ -117,15 +133,15 @@ def keepalive(session, log, *, search=_search, query: str = PROBE_QUERY,
                 "reason": "implausible payload: resources missing/empty"}
 
     if is_indexed(payload, resource_url):
-        log("keepalive: session listing is indexed — nothing to do ($0.00)")
+        log(f"keepalive: {tool} listing is indexed — nothing to do ($0.00)")
         return {"ran": True, "indexed": True, "settled": False,
                 "reason": "already indexed"}
 
-    log(f"keepalive: session listing MISSING from Bazaar "
+    log(f"keepalive: {tool} listing MISSING from Bazaar "
         f"({len(indexed_urls(payload))} results for {query!r}) — refreshing it")
 
     cost = price if price is not None else (
-        session.tool_cost_usd("session_create") or _default_cost())
+        session.tool_cost_usd(tool) or _default_cost())
     if session.would_exceed(cost):
         log("keepalive: budget cap reached — listing left stale")
         return {"ran": True, "indexed": False, "settled": False,
@@ -134,7 +150,9 @@ def keepalive(session, log, *, search=_search, query: str = PROBE_QUERY,
     try:
         # The Bazaar indexes CDP-settled (Base) payments, so the keepalive
         # settles on Base whatever rail the run itself is on.
-        r = session.call("session_create", dict(KEEPALIVE_PARAMS), chain="base")
+        r = session.call(
+            tool, dict(KEEPALIVE_PARAMS if params is None else params),
+            chain="base")
     except Exception as e:
         # Same lesson as 2026-08-07: a paid-call failure degrades, never kills.
         log(f"keepalive: settle failed ({type(e).__name__}: {e})")
@@ -142,9 +160,25 @@ def keepalive(session, log, *, search=_search, query: str = PROBE_QUERY,
                 "reason": f"settle failed: {type(e).__name__}"}
 
     tx = getattr(r, "tx", None)
-    log(f"keepalive: settled session_create to refresh the listing | tx {tx}")
+    log(f"keepalive: settled {tool} to refresh the listing | tx {tx}")
     return {"ran": True, "indexed": False, "settled": True, "tx": tx,
             "reason": "listing was de-indexed"}
+
+
+def keepalive_all(session, log, *, search=_search, enabled: bool = True) -> dict:
+    """Run the keepalive for session_create and every tool in TOOL_LISTINGS.
+
+    Each listing is checked and settled on its own, so one flaky query or one
+    failed settle never stops the rest. Returns {tool: result}.
+    """
+    out = {"session_create": keepalive(session, log, search=search,
+                                       enabled=enabled)}
+    for tool, service_name, params in TOOL_LISTINGS:
+        out[tool] = keepalive(
+            session, log, search=search, query=service_name,
+            resource_url=tool_resource_url(tool), enabled=enabled,
+            tool=tool, params=params)
+    return out
 
 
 def _default_cost():

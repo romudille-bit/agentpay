@@ -726,12 +726,12 @@ def main() -> int:
     def _last(tool):
         return next((c["data"] for c in reversed(intel_calls) if c["tool"] == tool), None)
 
-    # keep our own Bazaar listing alive. The check is free; a $0.01
-    # session_create settles ONLY if the listing has actually dropped out of
-    # the index. Placed before the goal branches (which return) so it runs on
-    # every goal kind, and wrapped so it can never cost us the run.
+    # keep our own Bazaar listings alive. The checks are free; a $0.01 call
+    # settles ONLY for a paid tool that has actually dropped out of the index.
+    # Placed before the goal branches (which return) so it runs on every goal
+    # kind, and wrapped so it can never cost us the run.
     try:
-        listing_keepalive.keepalive(s, log, enabled=_keepalive_enabled())
+        listing_keepalive.keepalive_all(s, log, enabled=_keepalive_enabled())
     except Exception as e:
         log(f"keepalive: unexpected error ({type(e).__name__}: {e})")
 
