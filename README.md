@@ -67,7 +67,7 @@ Every call is session-tracked, and the cap is enforced **before** any payment is
 
 ---
 
-## 20 Tools (17 Free + 3 Paid)
+## 22 Tools (17 Free + 5 Paid)
 
 Every call is session-tracked — you get a receipt showing every tool called, every cost, and every timestamp.
 
