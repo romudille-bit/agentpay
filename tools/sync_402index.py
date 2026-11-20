@@ -5,7 +5,8 @@ sync_402index.py — Sync AgentPay's live tool registry to 402index.io.
 Reads the gateway's /.well-known/l402-services (source of truth) and reconciles
 it against 402index.io:
   - POSTs any tools missing from the public listing
-  - DELETEs stale entries (when INDEX402_TOKEN is set — requires domain claim)
+  - PATCHes entries whose name, price or network drifted (needs INDEX402_TOKEN)
+  - DELETEs stale entries (needs INDEX402_TOKEN — requires domain claim)
 
 Idempotent and safe to re-run. Only submits/deletes when state has drifted.
 
@@ -17,7 +18,7 @@ Usage:
 Environment:
     GATEWAY_URL      (default: https://agentpay.tools)
     INDEX_URL        (default: https://402index.io)
-    CONTACT_EMAIL    (default: velvetvau@gmail.com)
+    CONTACT_EMAIL    (default: romudille@agentpay.tools)
     INDEX402_TOKEN   (optional) — domain-verification token for DELETE/PATCH.
                       When unset, stale entries are only reported.
 """
@@ -33,7 +34,7 @@ import urllib.error
 
 GATEWAY_URL   = os.environ.get("GATEWAY_URL",   "https://agentpay.tools")
 INDEX_URL     = os.environ.get("INDEX_URL",     "https://402index.io")
-CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "velvetvau@gmail.com")
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "romudille@agentpay.tools")
 INDEX_TOKEN   = os.environ.get("INDEX402_TOKEN", "")   # empty = read-only mode
 GATEWAY_HOST  = GATEWAY_URL.split("//", 1)[-1].split("/", 1)[0]
 
@@ -83,6 +84,10 @@ def http_post_json(url: str, payload: dict, timeout: int = 15) -> tuple[int, dic
     return _http_json("POST", url, payload, timeout)
 
 
+def http_patch_json(url: str, payload: dict, timeout: int = 15) -> tuple[int, dict]:
+    return _http_json("PATCH", url, payload, timeout)
+
+
 def http_delete_json(url: str, payload: dict, timeout: int = 15) -> tuple[int, dict]:
     return _http_json("DELETE", url, payload, timeout)
 
@@ -104,9 +109,32 @@ def fetch_indexed_services() -> dict[str, dict]:
     result: dict[str, dict] = {}
     for s in items:
         url = (s.get("url") or "").rstrip("/")
-        if url:
+        # The search is fuzzy and returns other providers; keep our host only.
+        if _host(url) == GATEWAY_HOST:
             result[url] = s
     return result
+
+
+# Indexed from Bazaar, not in /.well-known/l402-services: never stale.
+KEEP = {f"{GATEWAY_URL}/v1/session/create": "AgentPay Spend Cap & Receipts"}
+
+
+def _host(url: str) -> str:
+    return url.split("//", 1)[-1].split("/", 1)[0].lower()
+
+
+def drift(indexed: dict, wanted: dict) -> dict:
+    """Fields of an indexed entry that differ from what we would register."""
+    out = {}
+    # The network only matters on priced entries; skipping it on free ones
+    # keeps a sync inside the 10 writes/hour limit.
+    fields = ("name", "price_usd", "payment_network") if wanted.get("price_usd") else ("name", "price_usd")
+    for field in fields:
+        if wanted.get(field) is not None and indexed.get(field) != wanted[field]:
+            out[field] = wanted[field]
+    if "price_usd" in out and wanted.get("description"):
+        out["description"] = wanted["description"]  # old text quotes the old price
+    return out
 
 
 def build_registration(service: dict) -> dict:
@@ -119,7 +147,7 @@ def build_registration(service: dict) -> dict:
 
     return {
         "url":             service["endpoint"],
-        "name":            f"AgentPay {title}",
+        "name":            f"AgentPay {title}".replace("Sbtc", "sBTC"),
         "protocol":        "x402",
         "http_method":     service.get("method", "POST"),
         # The gateway returns 402 before parsing parameters, so an empty body
@@ -128,7 +156,7 @@ def build_registration(service: dict) -> dict:
         "description":     service.get("description", ""),
         "price_usd":       float(price_usd) if price_usd is not None else None,
         "payment_asset":   "USDC",
-        "payment_network": "stellar-mainnet",
+        "payment_network": "eip155:8453",
         "category":        category,
         "provider":        "AgentPay",
         "contact_email":   CONTACT_EMAIL,
@@ -169,7 +197,19 @@ def main() -> int:
     else:
         to_submit = [s for s in live if s["endpoint"].rstrip("/") not in indexed_urls]
 
-    stale_urls = sorted(indexed_urls - live_urls)
+    to_patch = []
+    for s in live:
+        rec = indexed_map.get(s["endpoint"].rstrip("/"))
+        changes = drift(rec, build_registration(s)) if rec else {}
+        if changes:
+            to_patch.append((rec, changes))
+
+    for url, name in KEEP.items():
+        rec = indexed_map.get(url)
+        if rec and rec.get("name") != name:
+            to_patch.append((rec, {"name": name}))
+
+    stale_urls = sorted(indexed_urls - live_urls - set(KEEP))
     to_delete = [indexed_map[u] for u in stale_urls]
 
     # ── Report plan ──────────────────────────────────────────────────────────
@@ -179,11 +219,16 @@ def main() -> int:
         print(f"  + {s['id']:<20} {s['endpoint']}")
 
     print()
+    print(f"Drifted to patch: {len(to_patch)}")
+    for rec, changes in to_patch:
+        print(f"  ~ {rec.get('url','?')}  {changes}")
+
+    print()
     print(f"Stale to delete:  {len(to_delete)}")
     for s in to_delete:
         print(f"  - {s.get('name','?'):<32} {s.get('url','?')}  (id: {s.get('id','?')})")
 
-    if not to_submit and not to_delete:
+    if not to_submit and not to_delete and not to_patch:
         print("\nNothing to do — 402index.io is already up to date.")
         return 0
 
@@ -212,6 +257,27 @@ def main() -> int:
                 break
         if idx < len(to_submit):
             time.sleep(1.0)
+
+    # ── Apply patches (requires token) ───────────────────────────────────────
+    successes_patch = 0
+    if to_patch and not INDEX_TOKEN:
+        print("\nCannot patch drifted entries — INDEX402_TOKEN is not set.")
+    elif to_patch:
+        print("\nPatching drifted services...")
+        for idx, (rec, changes) in enumerate(to_patch, 1):
+            payload = {"domain": GATEWAY_HOST, "verification_token": INDEX_TOKEN, **changes}
+            status, body = http_patch_json(f"{INDEX_URL}/api/v1/services/{rec.get('id')}", payload)
+            ok = 200 <= status < 300
+            print(f"  [{idx}/{len(to_patch)}] {'OK ' if ok else 'ERR'} {status} {rec.get('url','?')}")
+            if ok:
+                successes_patch += 1
+            else:
+                failures.append(("patch", str(rec.get("id")), status, body))
+                if status == 429:
+                    print("  Rate limited — stopping patches. Re-run in an hour.")
+                    break
+            if idx < len(to_patch):
+                time.sleep(1.0)
 
     # ── Apply deletions (requires token) ─────────────────────────────────────
     successes_del = 0
@@ -249,7 +315,8 @@ def main() -> int:
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print()
-    print(f"Registered: {successes_add}   Deleted: {successes_del}   Failed: {len(failures)}")
+    print(f"Registered: {successes_add}   Patched: {successes_patch}   "
+          f"Deleted: {successes_del}   Failed: {len(failures)}")
     if failures:
         print("Failures:")
         for op, ident, status, body in failures:
