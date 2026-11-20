@@ -34,6 +34,10 @@ If the AgentPay MCP isn't connected yet, wire it first (Node >= 18):
 { "mcpServers": { "agentpay": { "command": "npx", "args": ["-y", "@romudille/agentpay-mcp"] } } }
 ```
 
+Nothing to install? Add the remote server instead: `https://agentpay.tools/mcp` (Streamable
+HTTP, no auth). On the remote, the free preview is `verified_route_preview` and
+`verified_route` is the paid tool.
+
 Then call **`verified_route`** — the buyer-side trust oracle. It sweeps the whole x402
 catalog across many queries, collapses sybil/factory clusters (one wallet stamping many
 "distinct" tools → one entry), ranks the genuinely-used survivors, and recommends within
