@@ -35,3 +35,26 @@ def test_x402_trust_key_is_base64url_unpadded():
 def test_x402_trust_proof_is_absent_when_unconfigured(monkeypatch):
     monkeypatch.setattr(discovery.settings, "X402_TRUST_PROVIDER_KEY", "")
     assert _client().get("/.well-known/x402-trust.txt").status_code == 404
+
+
+def test_paycheck_declares_every_quoted_payout_wallet(monkeypatch):
+    addr = "0x" + "c" * 40
+    monkeypatch.setattr(discovery.settings, "BASE_GATEWAY_ADDRESS", addr)
+    monkeypatch.setattr(discovery.settings, "STACKS_GATEWAY_ADDRESS", "SP" + "A" * 38)
+    monkeypatch.setattr(discovery.settings, "GATEWAY_PUBLIC_KEY", "G" + "B" * 55)
+    r = _client().get("/.well-known/paycheck.json?payTo=0xattacker")
+    assert r.status_code == 200
+    assert r.json() == {"payTo": [addr, "SP" + "A" * 38, "G" + "B" * 55]}
+
+
+def test_paycheck_skips_unset_rails(monkeypatch):
+    addr = "0x" + "c" * 40
+    monkeypatch.setattr(discovery.settings, "BASE_GATEWAY_ADDRESS", addr)
+    monkeypatch.setattr(discovery.settings, "STACKS_GATEWAY_ADDRESS", "")
+    monkeypatch.setattr(discovery.settings, "GATEWAY_PUBLIC_KEY", "")
+    assert _client().get("/.well-known/paycheck.json").json() == {"payTo": [addr]}
+
+
+def test_paycheck_is_absent_when_base_is_unconfigured(monkeypatch):
+    monkeypatch.setattr(discovery.settings, "BASE_GATEWAY_ADDRESS", "")
+    assert _client().get("/.well-known/paycheck.json").status_code == 404

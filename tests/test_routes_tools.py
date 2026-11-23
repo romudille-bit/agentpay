@@ -1151,7 +1151,11 @@ class TestPreTradeCheckBazaar:
         assert payload["resource"]["serviceName"] == "AgentPay Pre-Trade Risk Check"
         assert "pre-trade-check" in payload["resource"]["tags"]
         assert "bazaar" in payload.get("extensions", {})
-        assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["verdict"]
+        assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["result"]["verdict"]
+        # Both listed examples show the call envelope the paid response uses.
+        assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["tool"] == "pre_trade_check"
+        listed = payload["accepts"][0]["outputSchema"]["output"]
+        assert set(listed) == {"tool", "result"} and listed["result"]["verdict"]
 
     def test_verified_route_402_carries_bazaar_extension(self, client, monkeypatch):
         # verified_route must expose extensions.bazaar on its live 402 too, or it
@@ -1169,7 +1173,7 @@ class TestPreTradeCheckBazaar:
         assert payload["resource"]["serviceName"] == "AgentPay x402 Trust Oracle"
         assert "trust-oracle" in payload["resource"]["tags"]
         assert "bazaar" in payload.get("extensions", {})
-        assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["recommendation"]
+        assert payload["extensions"]["bazaar"]["info"]["output"]["example"]["result"]["recommendation"]
 
     def test_free_tool_402_has_no_bazaar_block(self, client, monkeypatch):
         import base64, json
@@ -1182,6 +1186,33 @@ class TestPreTradeCheckBazaar:
         h = r.headers["PAYMENT-REQUIRED"]
         payload = json.loads(base64.b64decode(h + "=" * (-len(h) % 4)))
         assert "extensions" not in payload
+
+
+    def test_free_tool_and_session_listings_are_not_enveloped(self, client, monkeypatch):
+        """Only the four tools/{name}/call listings change shape; free tools
+        and session_create (paid at /v1/session/create) keep theirs."""
+        import base64, json
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        for name in ("token_price", "session_create"):
+            r = client.post(f"/tools/{name}/call", json={"parameters": {}})
+            h = r.headers.get("PAYMENT-REQUIRED")
+            if not h:
+                continue
+            payload = json.loads(base64.b64decode(h + "=" * (-len(h) % 4)))
+            out = (payload["accepts"][0].get("outputSchema") or {}).get("output")
+            assert not (isinstance(out, dict) and set(out) == {"tool", "result"}), name
+
+    def test_paid_402_header_stays_under_node_limit(self, client, monkeypatch):
+        """Node's http parser rejects responses whose headers total more than
+        16 KB, and PAYMENT-REQUIRED is most of ours. Production adds the
+        Stacks and Stellar options (~2.8 KB more than this test app), so
+        11,680 here was ~14.5 KB live on 23 Nov. Raise only with a plan."""
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        for name in ("verified_route", "pre_trade_check", "funding_spread", "sbtc_peg"):
+            r = client.post(f"/tools/{name}/call", json={"parameters": {}})
+            assert len(r.headers["PAYMENT-REQUIRED"]) < 12_000, name
 
 
 class TestCallToolGet:

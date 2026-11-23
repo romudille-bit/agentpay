@@ -645,6 +645,27 @@ _TOOL_BAZAAR: dict[str, dict] = {
     },
 }
 
+def _listed_response(tool_name: str, result_example):
+    """A tool's output as the paid /tools/{name}/call returns it, for listings.
+
+    The tool's own output sits under `result` inside the call envelope (see
+    call_tool). Listing the bare output made independent paid tests report
+    "response reshaped vs its listing" and cap the grade. Only `tool` and
+    `result` are listed: both are always returned, and every byte here rides
+    in the PAYMENT-REQUIRED header, which is already close to the 16 KB that
+    Node clients accept for all headers together.
+    """
+    if result_example is None:
+        return None
+    return {"tool": tool_name, "result": result_example}
+
+
+for _bz_name, _bz_cfg in _TOOL_BAZAAR.items():
+    _bz_out = _bz_cfg["extension"].get("info", {}).get("output")
+    if _bz_out and "example" in _bz_out:
+        _bz_out["example"] = _listed_response(_bz_name, _bz_out["example"])
+del _bz_name, _bz_out
+
 # Documented error responses are part of CDP's agent-ready curation bar.
 # One shared catalogue (gateway.base.build_error_responses) is injected into
 # every listed resource's extensions.bazaar info block, so the live 402 and
@@ -836,7 +857,10 @@ def _base_402_option(tool, resource_url: str):
     if tool.parameters or tool.response_example is not None:
         output_schema = {
             "input":  tool.parameters or {},
-            "output": tool.response_example,
+            # Enveloped only for the tools listed in _TOOL_BAZAAR; free tools
+            # and session_create keep the listing they have today.
+            "output": (_listed_response(tool.name, tool.response_example)
+                       if tool.name in _TOOL_BAZAAR else tool.response_example),
         }
     bz = _bazaar_for(tool.name)
     payment_required_header = base_pay.build_payment_required_header(

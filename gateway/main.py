@@ -706,7 +706,11 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"],
+    # A browser can only read response headers listed here. x402 v2 carries
+    # the challenge in PAYMENT-REQUIRED, so without it a browser-based agent
+    # gets the 402 but cannot read what to pay.
+    expose_headers=["PAYMENT-REQUIRED", "X-PAYMENT-REQUIRED", "X-PAYMENT-EXPIRES",
+                    "PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"],
 )
 
 # ── Mount routers ─────────────────────────────────────────────────────────────
