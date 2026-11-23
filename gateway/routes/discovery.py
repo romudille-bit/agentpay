@@ -7,6 +7,7 @@ routes/discovery.py — Discovery + manifest endpoints.
   GET /.well-known/x402                — x402 protocol manifest
   GET /.well-known/402index-verify.txt — 402index.io domain proof
   GET /.well-known/x402-trust.txt      — x402-trust.com domain proof
+  GET /.well-known/paycheck.json       — payout-wallet declaration (Lumière PayCheck)
   GET /robots.txt                      — search-engine policy
   GET /llms.txt                        — LLM-readable service description
   GET /sitemap.xml                     — sitemap covering all public URLs
@@ -580,6 +581,24 @@ async def well_known_402index_verify():
         content=settings.INDEX402_VERIFY_HASH + "\n",
         media_type="text/plain",
     )
+
+
+@router.get("/.well-known/paycheck.json", response_class=JSONResponse)
+async def well_known_paycheck():
+    """
+    Payout-wallet declaration, in the paycheck.json format Lumière PayCheck reads.
+
+    Declares every payTo our 402s quote (Base, Stacks, Stellar), so a future
+    rotation is recognised as ours and an undeclared address reads as a
+    hijack. Missing one would flag our own wallet. Fixed content from
+    config, never from request input.
+    """
+    pay_to = [a for a in (settings.BASE_GATEWAY_ADDRESS,
+                          settings.STACKS_GATEWAY_ADDRESS,
+                          settings.GATEWAY_PUBLIC_KEY) if a]
+    if not settings.BASE_GATEWAY_ADDRESS:
+        raise HTTPException(status_code=404, detail="Not configured")
+    return JSONResponse({"payTo": pay_to})
 
 
 @router.get("/.well-known/x402-trust.txt", response_class=Response)
