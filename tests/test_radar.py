@@ -268,3 +268,24 @@ def test_output_keys_empty_when_seller_published_nothing():
     payload = {"resources": [{"resource": "https://a.com/t",
                               "accepts": [{"amount": "1000", "network": "eip155:8453"}]}]}
     assert radar.parse_resources(payload)[0]["output_keys"] == []
+
+
+def test_factory_check_reads_each_wallet_group_once():
+    """One wallet listed 46,000 clones in Nov 2026; re-scanning its group for
+    every listing made a paid verified_route call take minutes."""
+    reads = 0
+
+    class Counting(dict):
+        def __getitem__(self, k):
+            nonlocal reads
+            if k == "payers30d":
+                reads += 1
+            return super().__getitem__(k)
+
+    n = 400
+    cands = [Counting(_candidate(f"https://clone.example/{i}", "eip155:8453", f"clone-{i}",
+                                 pay_to="0xFARM")) for i in range(n)]
+    scored, _ = radar.decide(cands, Decimal("1"), usage_aware=True)
+    assert all("factory" in s["flags"] for s in scored)
+    assert reads < 10 * n
+
