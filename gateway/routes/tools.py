@@ -1026,6 +1026,13 @@ def _append_accepts_to_header(header: Optional[str], entry: dict,
     return base64.b64encode(json.dumps(payload).encode()).decode()
 
 
+def _stellar_description(tool) -> str:
+    """Short label for the Stellar accepts entry and its facilitator
+    requirements. The full description is already in `resource` and the Base
+    entry; a second copy cost ~1.4 KB of the PAYMENT-REQUIRED header."""
+    return f"AgentPay {tool.name}"
+
+
 def _wants_stx(request: Request) -> bool:
     asked = (request.query_params.get("asset") or request.headers.get("x-pay-asset") or "")
     return asked.strip().lower() == "stx"
@@ -1136,8 +1143,9 @@ async def _issue_402(
     stellar_entries = []
     if stellar_x402.configured() and not is_free:
         stellar_entries.append(base_pay.build_accepts_entry(
-            stellar_x402.payment_requirements(tool.price_usdc, resource_url, tool.description),
-            resource_url, tool.description,
+            stellar_x402.payment_requirements(tool.price_usdc, resource_url,
+                                              _stellar_description(tool)),
+            resource_url, _stellar_description(tool),
         ))
         payment_required_header = _append_accepts_to_header(
             payment_required_header, stellar_entries[0], resource_url, tool.description,
@@ -1441,7 +1449,7 @@ async def _settle_stellar_standard_path(
         raise HTTPException(status_code=503,
                             detail="Stellar standard scheme not configured on this gateway")
     requirements = stellar_x402.payment_requirements(
-        tool.price_usdc, resource_url, tool.description)
+        tool.price_usdc, resource_url, _stellar_description(tool))
     if stellar_x402.payload_network(payload) != requirements["network"]:
         return _stellar_reject("network_mismatch")
 

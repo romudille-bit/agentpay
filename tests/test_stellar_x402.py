@@ -310,6 +310,19 @@ class Test402Entry:
         assert st[0]["extra"] == {"areFeesSponsored": True}
         assert [e["network"] for e in hdr] == [e["network"] for e in body]
 
+    def test_stellar_entry_carries_a_short_description(self, client, monkeypatch):
+        """Same label in the 402 and in the facilitator requirements, and not
+        a second copy of the tool description in the header."""
+        import gateway.routes.tools as rt
+        monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
+        r = client.post("/tools/pre_trade_check/call", json={"parameters": {"symbol": "ETH"}})
+        body, hdr = self._entries(r)
+        assert body[-1]["description"] == hdr[-1]["description"] == "AgentPay pre_trade_check"
+        tool = rt.registry.get_tool("pre_trade_check")
+        assert sx.payment_requirements(
+            tool.price_usdc, "u", rt._stellar_description(tool),
+        )["description"] == "AgentPay pre_trade_check"
+
     def test_stellar_entry_builds_header_when_base_is_off(self, client, monkeypatch):
         import gateway.routes.tools as rt
         monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "")

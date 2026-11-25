@@ -1196,9 +1196,7 @@ class TestPreTradeCheckBazaar:
         monkeypatch.setattr(rt.settings, "BASE_GATEWAY_ADDRESS", "0x" + "c" * 40)
         for name in ("token_price", "session_create"):
             r = client.post(f"/tools/{name}/call", json={"parameters": {}})
-            h = r.headers.get("PAYMENT-REQUIRED")
-            if not h:
-                continue
+            h = r.headers["PAYMENT-REQUIRED"]
             payload = json.loads(base64.b64decode(h + "=" * (-len(h) % 4)))
             out = (payload["accepts"][0].get("outputSchema") or {}).get("output")
             assert not (isinstance(out, dict) and set(out) == {"tool", "result"}), name
