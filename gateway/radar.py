@@ -492,6 +492,7 @@ def decide(cands: list[dict], remaining: Decimal,
             names_per_payto.setdefault(c["pay_to"], set()).add(c["name"])
             listings_per_payto.setdefault(c["pay_to"], []).append(c)
 
+    unproven_cluster: dict[str, bool] = {}
     scored: list[dict] = []
     for c in cands:
         flags: list[str] = []
@@ -507,9 +508,12 @@ def decide(cands: list[dict], remaining: Decimal,
         if usage_aware and cluster and not known_factory:
             # Decide on USAGE, not raw endpoint count: a cluster is only a factory
             # when most of its listings are unproven. Real providers keep breadth.
-            grp = listings_per_payto.get(pt, [])
-            proven = sum(1 for x in grp if x["payers30d"] >= PROVEN_PAYERS)
-            cluster = (proven / max(len(grp), 1)) < 0.5
+            # Once per wallet: a clone farm has tens of thousands of listings.
+            if pt not in unproven_cluster:
+                grp = listings_per_payto.get(pt, [])
+                proven = sum(1 for x in grp if x["payers30d"] >= PROVEN_PAYERS)
+                unproven_cluster[pt] = (proven / max(len(grp), 1)) < 0.5
+            cluster = unproven_cluster[pt]
         is_factory = (known_factory or cluster) and not known_trusted
         if is_factory:
             flags.append("factory")
